@@ -44,5 +44,13 @@ export function runMigrations(db: DatabaseSync): void {
       occurred_at       TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE (aggregate_id, aggregate_version)
     );
+
+    -- Read model：由 workspace.* 事件投影而來，查詢只讀這張、不碰 event_store。
+    CREATE TABLE IF NOT EXISTS workspaces_read_model (
+      workspace_id TEXT PRIMARY KEY,
+      name         TEXT NOT NULL,
+      status       TEXT NOT NULL,
+      created_at   TEXT NOT NULL
+    );
   `);
 }

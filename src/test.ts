@@ -3,3 +3,4 @@ import './staticPath.test';
 import './schema.test';
 import './auth.test';
 import './eventStore.test';
+import './workspace.test';

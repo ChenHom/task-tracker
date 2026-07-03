@@ -44,10 +44,10 @@
 
 事件最少（4 個），拿來驗證 ES 骨架。
 
-- [ ] `workspace.created / renamed / archived / deleted`
-- [ ] command handler（load events → 驗證 → append）
-- [ ] `workspaces_read_model` projection
-- [ ] `GET /api/workspaces`、`POST /api/workspaces`
+- [x] `workspace.created / renamed / archived / deleted`
+- [x] command handler（load events → 驗證 → append）
+- [x] `workspaces_read_model` projection
+- [x] `GET /api/workspaces`、`POST /api/workspaces`
 
 ---
 

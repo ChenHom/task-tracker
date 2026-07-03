@@ -10,8 +10,12 @@ import {
   parseCookies,
   sessionCookie,
   clearSessionCookie,
+  requireAuth,
   SESSION_COOKIE,
 } from './auth';
+import { createWorkspace, listWorkspaces, registerWorkspaceProjections, CommandError } from './workspace';
+
+registerWorkspaceProjections();
 
 const PUBLIC_DIR = join(__dirname, '../public');
 const MIME: Record<string, string> = {
@@ -70,6 +74,30 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': clearSessionCookie() });
     res.end(JSON.stringify({ ok: true }));
     return;
+  }
+
+  if (req.url === '/api/workspaces') {
+    const userId = requireAuth(req, res);
+    if (!userId) return; // requireAuth 已寫 401
+
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(listWorkspaces()));
+      return;
+    }
+    if (req.method === 'POST') {
+      const body = (await readJson(req).catch(() => null)) as { name?: unknown } | null;
+      try {
+        const id = createWorkspace(userId, body?.name);
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id }));
+      } catch (e) {
+        const status = e instanceof CommandError ? 400 : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e instanceof CommandError ? e.message : '內部錯誤' }));
+      }
+      return;
+    }
   }
 
   const filePath = resolveSafePath(PUBLIC_DIR, req.url ?? '/');
