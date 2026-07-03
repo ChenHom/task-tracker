@@ -110,6 +110,14 @@ export interface WorkspaceRow {
   status: WorkspaceStatus;
   created_at: string;
 }
+// 資源歸屬檢查用：查 workspace 現況狀態。null = 不存在。
+export function getWorkspaceStatus(workspaceId: string, database = db): WorkspaceStatus | null {
+  const row = database.prepare('SELECT status FROM workspaces_read_model WHERE workspace_id = ?').get(workspaceId) as
+    | { status: WorkspaceStatus }
+    | undefined;
+  return row?.status ?? null;
+}
+
 export function listWorkspaces(userId: string, database = db): WorkspaceRow[] {
   return database
     .prepare(

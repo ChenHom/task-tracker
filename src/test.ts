@@ -5,3 +5,4 @@ import './auth.test';
 import './eventStore.test';
 import './workspace.test';
 import './member.test';
+import './task.test';

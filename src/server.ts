@@ -16,9 +16,27 @@ import {
 import { CommandError } from './eventStore';
 import { createWorkspace, renameWorkspace, listWorkspaces, registerWorkspaceProjections } from './workspace';
 import { registerMemberProjections, requirePermission } from './member';
+import {
+  createTask,
+  applyTaskPatch,
+  archiveTask,
+  deleteTask,
+  listTasks,
+  getTaskWorkspaceId,
+  registerTaskProjections,
+  type CreateTaskInput,
+} from './task';
 
 registerWorkspaceProjections();
 registerMemberProjections();
+registerTaskProjections();
+
+// 統一把 command 錯誤映射成 HTTP：CommandError → 400，其餘 → 500。
+function sendCommandError(res: import('node:http').ServerResponse, e: unknown): void {
+  const status = e instanceof CommandError ? 400 : 500;
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: e instanceof CommandError ? e.message : '內部錯誤' }));
+}
 
 const PUBLIC_DIR = join(__dirname, '../public');
 const MIME: Record<string, string> = {
@@ -118,6 +136,81 @@ const server = createServer(async (req, res) => {
       const status = e instanceof CommandError ? 400 : 500;
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e instanceof CommandError ? e.message : '內部錯誤' }));
+    }
+    return;
+  }
+
+  // ── Task API（全部透過 command，read model 只讀）─────────────────
+  // 列表 / 建立：scoped 在 workspace 底下，權限查該 workspace。
+  const wsTasksMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/tasks$/);
+  if (wsTasksMatch) {
+    const workspaceId = wsTasksMatch[1];
+    if (req.method === 'GET') {
+      const userId = requirePermission(req, res, workspaceId, 'Viewer');
+      if (!userId) return;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(listTasks(workspaceId)));
+      return;
+    }
+    if (req.method === 'POST') {
+      const userId = requirePermission(req, res, workspaceId, 'Member');
+      if (!userId) return;
+      const body = (await readJson(req).catch(() => null)) as CreateTaskInput | null;
+      try {
+        const id = createTask(userId, workspaceId, body ?? {});
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id }));
+      } catch (e) {
+        sendCommandError(res, e);
+      }
+      return;
+    }
+  }
+
+  // 單一 task 操作：先查資源歸屬的 workspace 再驗權限（資源同 workspace 檢查 → 跨 workspace 403/404）。
+  const taskMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)$/);
+  if (taskMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+    const taskId = taskMatch[1];
+    const workspaceId = getTaskWorkspaceId(taskId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'task 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, 'Member');
+    if (!userId) return;
+    try {
+      if (req.method === 'DELETE') {
+        deleteTask(userId, taskId);
+      } else {
+        const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
+        applyTaskPatch(userId, taskId, body ?? {});
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
+  const archiveMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)\/archive$/);
+  if (archiveMatch && req.method === 'POST') {
+    const taskId = archiveMatch[1];
+    const workspaceId = getTaskWorkspaceId(taskId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'task 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, 'Member');
+    if (!userId) return;
+    try {
+      archiveTask(userId, taskId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
     }
     return;
   }

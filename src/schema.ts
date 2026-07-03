@@ -61,5 +61,19 @@ export function runMigrations(db: DatabaseSync): void {
       joined_at    TEXT NOT NULL,
       PRIMARY KEY (workspace_id, user_id)
     );
+
+    -- Task read model：由 task.* 事件投影。version 供樂觀鎖 / UI 顯示。deleted 事件直接移除該列。
+    CREATE TABLE IF NOT EXISTS tasks_read_model (
+      task_id     TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      project_id  TEXT,
+      title       TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      status      TEXT NOT NULL,
+      priority    TEXT NOT NULL,
+      assignee_id TEXT,
+      due_at      TEXT,
+      version     INTEGER NOT NULL
+    );
   `);
 }

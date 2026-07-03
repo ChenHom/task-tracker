@@ -68,10 +68,14 @@
 
 系統核心，事件最多，留到骨架穩了再做。
 
-- [ ] 9 個 `task.*` 事件（created / title_changed / … / archived / deleted）
-- [ ] 狀態機：`Todo → Doing → Review → Done → Archived` 只允許合法轉換
-- [ ] `tasks_read_model` projection
-- [ ] Task API（全部透過 command，不直接改 read model）
+- [x] 9 個 `task.*` 事件（created / title_changed / … / archived / deleted）
+- [x] 狀態機：`Todo → Doing → Review → Done → Archived` 只允許合法轉換
+- [x] `tasks_read_model` projection
+- [x] Task API（全部透過 command，不直接改 read model）
+
+> 狀態機：`status_changed` 只在 Todo/Doing/Review/Done 間走（相鄰前進 + 一步回退）；`Archived` 由 `task.archived`、刪除由 `task.deleted`。
+> 資源→workspace 權限：`PATCH/DELETE/archive /api/tasks/:id` 先查 `getTaskWorkspaceId` 再 `requirePermission`，補完 Phase 4 的資源層檢查。
+> `createTask` 會擋 archived/deleted/不存在的 workspace（防孤兒資料）；既有 task 在 archived workspace 仍可微調（已知取捨，見 task.ts 註解）。
 
 ---
 
