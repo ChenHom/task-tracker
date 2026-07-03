@@ -7,7 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "tsx src/staticPath.test.ts"
+    "test": "tsx src/test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
