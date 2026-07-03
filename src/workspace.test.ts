@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
-import { loadEvents, resetProjections } from './eventStore';
+import { loadEvents, resetProjections, CommandError } from './eventStore';
 import {
   createWorkspace,
   renameWorkspace,
@@ -9,28 +9,29 @@ import {
   deleteWorkspace,
   registerWorkspaceProjections,
   listWorkspaces,
-  CommandError,
 } from './workspace';
+import { registerMemberProjections } from './member';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
 resetProjections();
 registerWorkspaceProjections();
+registerMemberProjections(); // createWorkspace 會 seedOwner → 需要 member.joined projection
 
 // ── create → read model 有值（name 應 trim）──
 const id = createWorkspace('u1', '  My Space  ', db);
-let rows = listWorkspaces(db);
+let rows = listWorkspaces('u1', db);
 assert.strictEqual(rows.length, 1, 'create 後 read model 應有一列');
 assert.strictEqual(rows[0].name, 'My Space', 'name 應被 trim');
 assert.strictEqual(rows[0].status, 'active');
 
 // ── rename → projection 更新 ──
 renameWorkspace('u1', id, 'Renamed', db);
-assert.strictEqual(listWorkspaces(db)[0].name, 'Renamed', 'rename 後 read model name 應更新');
+assert.strictEqual(listWorkspaces('u1', db)[0].name, 'Renamed', 'rename 後 read model name 應更新');
 
 // ── 狀態機：active → archived ──
 archiveWorkspace('u1', id, db);
-assert.strictEqual(listWorkspaces(db)[0].status, 'archived', 'archive 後 status 應為 archived');
+assert.strictEqual(listWorkspaces('u1', db)[0].status, 'archived', 'archive 後 status 應為 archived');
 
 // ── 狀態機：archived 不允許 rename / 重複 archive ──
 assert.throws(() => renameWorkspace('u1', id, 'X', db), CommandError, 'archived 不可改名');
@@ -38,7 +39,7 @@ assert.throws(() => archiveWorkspace('u1', id, db), CommandError, '重複 archiv
 
 // ── 狀態機：archived → deleted（可），deleted 從列表消失 ──
 deleteWorkspace('u1', id, db);
-assert.strictEqual(listWorkspaces(db).length, 0, 'deleted 不應出現在列表');
+assert.strictEqual(listWorkspaces('u1', db).length, 0, 'deleted 不應出現在列表');
 
 // ── 狀態機：deleted 是終態，任何操作都拒絕 ──
 assert.throws(() => deleteWorkspace('u1', id, db), CommandError, '重複 delete 應拒絕');

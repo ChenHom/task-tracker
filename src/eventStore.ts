@@ -9,6 +9,15 @@ export class ConcurrencyError extends Error {
   }
 }
 
+// 業務規則違反（狀態機不允許的轉換、輸入驗證失敗）。對應 HTTP 400。
+// 放這裡讓 workspace / member 等 aggregate 共用，避免彼此循環 import。
+export class CommandError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CommandError';
+  }
+}
+
 export interface StoredEvent {
   id: number;
   aggregate_type: string;

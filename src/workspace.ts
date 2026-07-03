@@ -1,15 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
-import { appendEvent, loadEvents, registerProjection, type StoredEvent } from './eventStore';
-
-// 業務規則違反（狀態機不允許的轉換、輸入驗證失敗）。對應 HTTP 400。
-export class CommandError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'CommandError';
-  }
-}
+import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
+import { seedOwner } from './member';
 
 export type WorkspaceStatus = 'active' | 'archived' | 'deleted';
 
@@ -63,6 +56,7 @@ export function createWorkspace(actorId: string, name: unknown, database = db): 
   const clean = validateName(name);
   const id = randomUUID();
   appendEvent('Workspace', id, 0, 'workspace.created', { name: clean }, meta(actorId), database);
+  seedOwner(id, actorId, database); // 建立者自動成為 Owner，之後才有權限可查
   return id;
 }
 
@@ -109,15 +103,21 @@ export function registerWorkspaceProjections(): void {
   });
 }
 
-// ── Query：只讀 read model（已刪除的不列出）──────────────────────
+// ── Query：只列出「我有 membership」的 workspace（已刪除的不列出）──
 export interface WorkspaceRow {
   workspace_id: string;
   name: string;
   status: WorkspaceStatus;
   created_at: string;
 }
-export function listWorkspaces(database = db): WorkspaceRow[] {
+export function listWorkspaces(userId: string, database = db): WorkspaceRow[] {
   return database
-    .prepare("SELECT workspace_id, name, status, created_at FROM workspaces_read_model WHERE status != 'deleted' ORDER BY created_at")
-    .all() as unknown as WorkspaceRow[];
+    .prepare(
+      `SELECT w.workspace_id, w.name, w.status, w.created_at
+         FROM workspaces_read_model w
+         JOIN workspace_members_read_model m ON m.workspace_id = w.workspace_id
+        WHERE m.user_id = ? AND w.status != 'deleted'
+        ORDER BY w.created_at`,
+    )
+    .all(userId) as unknown as WorkspaceRow[];
 }

@@ -53,11 +53,14 @@
 
 ## Phase 4 — Member + 權限 　`RBAC`
 
-- [ ] `member.invited / joined / role_changed / removed`
-- [ ] `workspace_members_read_model` projection（權限檢查全靠這張）
-- [ ] `requirePermission(workspaceId, minRole)` middleware — 查 members read model
-- [ ] 角色階層：Owner > Admin > Member > Viewer
-- [ ] 資源同 workspace 檢查（跨 workspace 存取 → 403）
+- [x] `member.invited / joined / role_changed / removed`
+- [x] `workspace_members_read_model` projection（權限檢查全靠這張）
+- [x] `requirePermission(workspaceId, minRole)` middleware — 查 members read model
+- [x] 角色階層：Owner > Admin > Member > Viewer
+- [x] 資源同 workspace 檢查（跨 workspace 存取 → 403） <!-- workspace 層已擋；task/comment 等資源層待 Phase 5 帶 workspace_id 後接上 -->
+
+> 建立者自動成為 Owner（`seedOwner`）；`GET /api/workspaces` 已改為只列出「我有 membership」的。
+> `PATCH /api/workspaces/:id`（改名）示範 `requirePermission(id, 'Admin')`。
 
 ---
 

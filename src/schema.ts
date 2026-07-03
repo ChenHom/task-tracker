@@ -52,5 +52,14 @@ export function runMigrations(db: DatabaseSync): void {
       status       TEXT NOT NULL,
       created_at   TEXT NOT NULL
     );
+
+    -- 權限來源：所有角色檢查都查這張。只放「已 joined」的成員（invited 未接受不進來）。
+    CREATE TABLE IF NOT EXISTS workspace_members_read_model (
+      workspace_id TEXT NOT NULL,
+      user_id      TEXT NOT NULL,
+      role         TEXT NOT NULL,
+      joined_at    TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, user_id)
+    );
   `);
 }

@@ -13,9 +13,12 @@ import {
   requireAuth,
   SESSION_COOKIE,
 } from './auth';
-import { createWorkspace, listWorkspaces, registerWorkspaceProjections, CommandError } from './workspace';
+import { CommandError } from './eventStore';
+import { createWorkspace, renameWorkspace, listWorkspaces, registerWorkspaceProjections } from './workspace';
+import { registerMemberProjections, requirePermission } from './member';
 
 registerWorkspaceProjections();
+registerMemberProjections();
 
 const PUBLIC_DIR = join(__dirname, '../public');
 const MIME: Record<string, string> = {
@@ -82,7 +85,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(listWorkspaces()));
+      res.end(JSON.stringify(listWorkspaces(userId)));
       return;
     }
     if (req.method === 'POST') {
@@ -98,6 +101,25 @@ const server = createServer(async (req, res) => {
       }
       return;
     }
+  }
+
+  // PATCH /api/workspaces/:id —— 改名，需該 workspace 的 Admin 以上（demo requirePermission）。
+  const patchMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)$/);
+  if (patchMatch && req.method === 'PATCH') {
+    const workspaceId = patchMatch[1];
+    const userId = requirePermission(req, res, workspaceId, 'Admin');
+    if (!userId) return; // requirePermission 已寫 401/403
+    const body = (await readJson(req).catch(() => null)) as { name?: unknown } | null;
+    try {
+      renameWorkspace(userId, workspaceId, body?.name);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      const status = e instanceof CommandError ? 400 : 500;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e instanceof CommandError ? e.message : '內部錯誤' }));
+    }
+    return;
   }
 
   const filePath = resolveSafePath(PUBLIC_DIR, req.url ?? '/');
