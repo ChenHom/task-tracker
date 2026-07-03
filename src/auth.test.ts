@@ -9,6 +9,11 @@ import {
   destroySession,
   parseCookies,
   sessionCookie,
+  clearSessionCookie,
+  attemptLogin,
+  currentUserId,
+  requireAuth,
+  SESSION_COOKIE,
 } from './auth';
 
 // ── 密碼 ──
@@ -50,5 +55,35 @@ assert.deepStrictEqual(parseCookies('session=abc; theme=dark'), { session: 'abc'
 assert.deepStrictEqual(parseCookies(undefined), {});
 const cookie = sessionCookie('tok123');
 assert.ok(cookie.includes('HttpOnly') && cookie.includes('SameSite=Strict'), 'cookie 應含 HttpOnly + SameSite');
+assert.ok(clearSessionCookie().includes('Max-Age=0'), '登出 cookie 應 Max-Age=0');
+
+// ── 登入嘗試 + login_events（獨立 db，前面已把 u1 刪掉）──
+const db2 = new DatabaseSync(':memory:');
+runMigrations(db2);
+db2.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('u1', 'a@b.com', hashPassword('correct horse'));
+
+assert.strictEqual(attemptLogin('a@b.com', 'correct horse', '1.2.3.4', 'ua', db2), 'u1', '正確帳密回 user_id');
+assert.strictEqual(attemptLogin(' A@B.com ', 'correct horse', null, null, db2), 'u1', 'email 大小寫/空白正規化');
+assert.strictEqual(attemptLogin('a@b.com', 'wrong', null, null, db2), null, '密碼錯回 null');
+assert.strictEqual(attemptLogin('nobody@x.com', 'whatever', null, null, db2), null, '帳號不存在回 null');
+
+const events = db2.prepare('SELECT email, user_id, success FROM login_events ORDER BY id').all() as
+  { email: string; user_id: string | null; success: number }[];
+assert.strictEqual(events.length, 4, '每次嘗試都記一筆 login_event');
+assert.deepStrictEqual(events.map((e) => e.success), [1, 1, 0, 0], 'success 依序 成功,成功,失敗,失敗');
+assert.strictEqual(events[2].user_id, 'u1', '密碼錯但帳號存在 → 仍記到 user_id');
+assert.strictEqual(events[3].user_id, null, '帳號不存在的失敗 → user_id 為 null');
+assert.strictEqual(events[3].email, 'nobody@x.com', '記下嘗試的 email（正規化後）');
+
+// ── requireAuth / currentUserId ──
+const fakeReq = (cookieHeader?: string): any => ({ headers: cookieHeader ? { cookie: cookieHeader } : {} });
+const tok = createSession('u1', db2);
+assert.strictEqual(currentUserId(fakeReq(`${SESSION_COOKIE}=${tok}`), db2), 'u1', '帶有效 session cookie → user_id');
+assert.strictEqual(currentUserId(fakeReq(), db2), null, '無 cookie → null');
+
+let status = 0;
+const fakeRes: any = { writeHead: (s: number) => { status = s; }, end: () => {} };
+assert.strictEqual(requireAuth(fakeReq(), fakeRes), null, '未登入 → requireAuth 回 null');
+assert.strictEqual(status, 401, '未登入 → requireAuth 寫 401');
 
 console.log('auth.test.ts OK');

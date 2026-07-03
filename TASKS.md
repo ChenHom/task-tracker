@@ -18,12 +18,12 @@
 
 先做，其他模組都要靠登入態。
 
-- [ ] `users` table（id, email, password_hash, created_at）
-- [ ] 密碼雜湊用 `node:crypto` 的 `scrypt`（不要自己刻、不要明碼）
-- [ ] `sessions` table + HttpOnly cookie
-- [ ] `POST /api/auth/login`、`POST /api/auth/logout`
-- [ ] `login_events`（登入成功/失敗紀錄）
-- [ ] `requireAuth` middleware（未登入 → 401）
+- [x] `users` table（id, email, password_hash, created_at）
+- [x] 密碼雜湊用 `node:crypto` 的 `scrypt`（不要自己刻、不要明碼）
+- [x] `sessions` table + HttpOnly cookie
+- [x] `POST /api/auth/login`、`POST /api/auth/logout`
+- [x] `login_events`（登入成功/失敗紀錄）
+- [x] `requireAuth` middleware（未登入 → 401）
 
 ---
 
@@ -31,12 +31,12 @@
 
 **最重要**。先用最小 aggregate 把 `append → project → read model` 這條線跑通一次，邏輯先不管對不對。
 
-- [ ] `event_store` table（照 DESIGN.md 的欄位）
-- [ ] `appendEvent(aggregateType, aggregateId, expectedVersion, eventType, payload, metadata)`
-  - [ ] 樂觀鎖：`expectedVersion` 對不上就拒絕（並發衝突偵測，這是 ES 的核心練習點）
-- [ ] `loadEvents(aggregateId)` → 重建 aggregate 現狀
-- [ ] 同步 projection dispatcher：一個 event_type 對一個 handler
-- [ ] 端到端自我驗證：append 一個事件 → read model 有值
+- [x] `event_store` table（照 DESIGN.md 的欄位）
+- [x] `appendEvent(aggregateType, aggregateId, expectedVersion, eventType, payload, metadata)`
+  - [x] 樂觀鎖：`expectedVersion` 對不上就拒絕（並發衝突偵測，這是 ES 的核心練習點）
+- [x] `loadEvents(aggregateId)` → 重建 aggregate 現狀
+- [x] 同步 projection dispatcher：一個 event_type 對一個 handler
+- [x] 端到端自我驗證：append 一個事件 → read model 有值
 
 ---
 
