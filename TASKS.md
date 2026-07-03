@@ -83,13 +83,13 @@
 
 DESIGN.md 已定：這幾個一律傳統 CRUD，不要手癢加進 event sourcing。
 
-- [ ] Project — `projects_read_model` 直接 CRUD
-- [ ] Comment — `comments` table CRUD
-- [ ] Attachment — upload / download / delete
-  - [ ] MIME 驗證、檔名處理（不信任原始檔名）
-  - [ ] symlink 守門（`realpath` 檢查，字串比對擋不住 symlink）
-  - [ ] 上傳檔一律 `nosniff`
-- [ ] Search — `LIKE` 掃 task / comment / project
+- [x] Project — `projects_read_model` 直接 CRUD
+- [x] Comment — `comments` table CRUD
+- [x] Attachment — upload / download / delete
+  - [x] MIME 驗證、檔名處理（不信任原始檔名）
+  - [x] symlink 守門（`realpath` 檢查，字串比對擋不住 symlink）
+  - [x] 上傳檔一律 `nosniff`
+- [x] Search — `LIKE` 掃 task / comment / project
 
 ---
 
@@ -97,8 +97,11 @@ DESIGN.md 已定：這幾個一律傳統 CRUD，不要手癢加進 event sourcin
 
 不做 `activity_logs`，`event_store` 本身就是 audit log。
 
-- [ ] 每個 append 都寫 metadata：`actor_id, ip, user_agent, request_id`
-- [ ] `GET /api/audit?aggregate_id=` → 直接查 `event_store`
+- [x] 每個 append 都寫 metadata：`actor_id, ip, user_agent, request_id`
+- [x] `GET /api/audit?aggregate_id=` → 直接查 `event_store`
+
+> metadata 用 `AsyncLocalStorage`（[requestContext.ts](src/requestContext.ts)）per-request 注入，command 簽名不變；`request_id` 也回傳 `X-Request-Id` header。
+> audit 授權：由 aggregate 推回 workspace（Workspace→自身 / Member→拆 id / Task→payload），需 Admin+，跨 workspace 擋。
 
 ---
 
@@ -106,8 +109,8 @@ DESIGN.md 已定：這幾個一律傳統 CRUD，不要手癢加進 event sourcin
 
 - [x] `nosniff`
 - [x] path traversal 守門
-- [ ] symlink 守門（Attachment 目錄）
-- [ ] 每個 command 做輸入驗證（信任邊界）
-- [ ] SQL 全用 prepared statement（`db.prepare`，已有 pattern）
-- [ ] session 固定 / CSRF 防護
-- [ ] 登入 rate limit
+- [x] symlink 守門（Attachment 目錄）
+- [x] 每個 command 做輸入驗證（信任邊界）
+- [x] SQL 全用 prepared statement（`db.prepare`，已有 pattern）
+- [x] session 固定 / CSRF 防護
+- [x] 登入 rate limit

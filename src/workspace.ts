@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
 import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
+import { buildMetadata as meta } from './requestContext';
 import { seedOwner } from './member';
 
 export type WorkspaceStatus = 'active' | 'archived' | 'deleted';
@@ -44,11 +45,6 @@ function validateName(name: unknown): string {
   if (!trimmed) throw new CommandError('name 不可為空');
   if (trimmed.length > 200) throw new CommandError('name 過長（上限 200 字）');
   return trimmed;
-}
-
-// ponytail: Phase 3 metadata 先記 actor_id；Phase 7 audit 再補 ip / user_agent / request_id。
-function meta(actorId: string) {
-  return { actor_id: actorId };
 }
 
 // ── Command handlers：load events → 驗證狀態機 → append ─────────────

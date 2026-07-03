@@ -61,6 +61,6 @@ assert.deepStrictEqual(
   '4 個事件依序寫入',
 );
 assert.deepStrictEqual(events.map((e) => e.aggregate_version), [1, 2, 3, 4], '版本連續遞增');
-assert.deepStrictEqual(events[0].metadata, { actor_id: 'u1' }, 'metadata 應記 actor_id');
+assert.deepStrictEqual(events[0].metadata, { actor_id: 'u1', ip: null, user_agent: null, request_id: null }, 'metadata 應記 actor + audit 欄位');
 
 console.log('workspace.test.ts OK');

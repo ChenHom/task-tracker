@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
 import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
+import { buildMetadata as meta } from './requestContext';
 import { currentUserId } from './auth';
 
 // ── 角色階層：Owner > Admin > Member > Viewer ──────────────────────
@@ -16,9 +17,6 @@ function validateRole(role: unknown): Role {
 // member aggregate 的 id = workspace_uuid:user_uuid（uuid 不含冒號，放心拆解）。
 function mid(workspaceId: string, userId: string): string {
   return `${workspaceId}:${userId}`;
-}
-function meta(actorId: string) {
-  return { actor_id: actorId };
 }
 
 // ── Aggregate ──────────────────────────────────────────────────────

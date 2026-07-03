@@ -119,7 +119,8 @@ assert.strictEqual(one(id2).title, 'Patched', '單欄位 patch 生效');
 // ── 事件流：9 種事件都能 append，版本連續 ──
 const evs = loadEvents(id, db);
 assert.strictEqual(evs[0].event_type, 'task.created');
-assert.deepStrictEqual(evs[0].metadata, { actor_id: 'u1' }, 'metadata 記 actor_id');
+// 直接呼叫 command（無 HTTP context）→ metadata 只有 actor_id，ip/ua/request_id 為 null
+assert.deepStrictEqual(evs[0].metadata, { actor_id: 'u1', ip: null, user_agent: null, request_id: null }, 'metadata 記 actor + audit 欄位');
 assert.deepStrictEqual(evs.map((e) => e.aggregate_version), evs.map((_, i) => i + 1), '版本連續遞增');
 
 // ── listTasks 只回該 workspace ──

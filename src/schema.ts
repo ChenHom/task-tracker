@@ -75,5 +75,31 @@ export function runMigrations(db: DatabaseSync): void {
       due_at      TEXT,
       version     INTEGER NOT NULL
     );
+
+    -- Project：DESIGN 指定不走 ES，這張就是主表（傳統 CRUD 直接讀寫，無 event_store / projection）。
+    CREATE TABLE IF NOT EXISTS projects_read_model (
+      project_id   TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name         TEXT NOT NULL
+    );
+
+    -- Comment：任務留言，同樣傳統 CRUD（不走 ES）。權限經 task → workspace 查；user_id 為留言作者。
+    CREATE TABLE IF NOT EXISTS comments (
+      comment_id TEXT PRIMARY KEY,
+      task_id    TEXT NOT NULL,
+      user_id    TEXT NOT NULL,
+      content    TEXT NOT NULL
+    );
+
+    -- Attachment：metadata 進 DB，實體檔在 data/attachments/。original_name 只供顯示（不信任、不當路徑）；
+    -- stored_name 是伺服器生成的 uuid，才是磁碟上的真檔名。
+    CREATE TABLE IF NOT EXISTS attachments (
+      attachment_id TEXT PRIMARY KEY,
+      task_id       TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      stored_name   TEXT NOT NULL,
+      mime_type     TEXT NOT NULL,
+      size          INTEGER NOT NULL
+    );
   `);
 }

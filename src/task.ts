@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
 import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
+import { buildMetadata as meta } from './requestContext';
 import { getWorkspaceStatus } from './workspace';
 
 // ── 值域 ───────────────────────────────────────────────────────────
@@ -54,10 +55,6 @@ function validateDueAt(d: unknown): string | null {
   const t = Date.parse(d);
   if (Number.isNaN(t)) throw new CommandError('due_at 不是合法日期');
   return new Date(t).toISOString();
-}
-
-function meta(actorId: string) {
-  return { actor_id: actorId };
 }
 
 // ── Aggregate：只追蹤狀態機相關欄位（其他欄位變更不影響轉換）──────
