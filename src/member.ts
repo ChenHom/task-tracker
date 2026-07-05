@@ -121,7 +121,7 @@ export function hasPermission(role: Role, minRole: Role): boolean {
 }
 
 // 未登入 → 401；非該 workspace 成員或角色不足 → 403。回 userId 代表通過。
-// 跨 workspace 天然被擋：查的是「你在這個 workspace 的角色」，別的 workspace 不算數。
+// 跨 workspace 一定被擋：查的是「你在這個 workspace 的角色」，別的 workspace 不算數。
 export function requirePermission(
   req: IncomingMessage,
   res: ServerResponse,

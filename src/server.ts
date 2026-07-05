@@ -38,6 +38,9 @@ import { createRateLimiter } from './rateLimit';
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
 
+// ponytail: 上傳檔案上限 10MB，超過丟 413。正式環境可改成 nginx / cloudflare 直接擋。
+const uploadMaxBytes = 10 * 1024 * 1024; // 10MB
+
 // CSRF：mutating 請求若帶 Origin，必須同源。無 Origin（curl/API client）放行——SameSite=Strict cookie 是主防線。
 function isCsrfSafe(req: IncomingMessage): boolean {
   const m = req.method ?? 'GET';
@@ -410,7 +413,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       if (!userId) return;
       let data: Buffer;
       try {
-        data = await readBody(req, 10 * 1024 * 1024);
+        data = await readBody(req, uploadMaxBytes);
       } catch {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: '檔案過大' }));
