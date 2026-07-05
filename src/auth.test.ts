@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
 import { CommandError } from './eventStore';
@@ -15,6 +16,8 @@ import {
   attemptLogin,
   currentUserId,
   requireAuth,
+  createPasswordResetToken,
+  resetPassword,
   SESSION_COOKIE,
 } from './auth';
 
@@ -94,5 +97,47 @@ let status = 0;
 const fakeRes: any = { writeHead: (s: number) => { status = s; }, end: () => {} };
 assert.strictEqual(requireAuth(fakeReq(), fakeRes), null, '未登入 → requireAuth 回 null');
 assert.strictEqual(status, 401, '未登入 → requireAuth 寫 401');
+
+// ── 忘記密碼 / 重設密碼（獨立 db）──
+const db3 = new DatabaseSync(':memory:');
+runMigrations(db3);
+const resetUserId = createUser('reset@example.com', 'old-password', db3);
+
+// 存在的 email → 回 token；不存在的 email → 回 null（不洩漏帳號存在與否）
+const resetToken = createPasswordResetToken('Reset@Example.com', db3); // 大小寫/空白正規化應仍找得到
+assert.ok(resetToken, '已註冊 email 應回傳 token');
+assert.strictEqual(createPasswordResetToken('nobody@example.com', db3), null, '未註冊 email 應回 null');
+
+// 落地存的是 hash，不是明碼
+const storedReset = db3.prepare('SELECT token_hash FROM password_resets WHERE user_id = ?').get(resetUserId) as
+  | { token_hash: string }
+  | undefined;
+assert.ok(storedReset, '應寫入一筆 password_resets');
+assert.notStrictEqual(storedReset!.token_hash, resetToken, 'token_hash 不應等於明碼 token');
+
+// 重設前建立一個 session，重設成功後應該全部失效
+const preResetSessionToken = createSession(resetUserId, db3);
+assert.strictEqual(getSessionUser(preResetSessionToken, db3), resetUserId, '重設前 session 應有效');
+
+// 有效 token → 密碼真的被改掉
+assert.ok(resetToken);
+assert.ok(resetPassword(resetToken!, 'new-password', db3), '有效 token 應重設成功');
+const updatedHash = (db3.prepare('SELECT password_hash FROM users WHERE id = ?').get(resetUserId) as { password_hash: string })
+  .password_hash;
+assert.ok(!verifyPassword('old-password', updatedHash), '重設後舊密碼應失效');
+assert.ok(verifyPassword('new-password', updatedHash), '重設後新密碼應生效');
+
+// 同一 token 用過一次後不能再用
+assert.ok(!resetPassword(resetToken!, 'another-password', db3), '用過的 token 不應再次成功');
+
+// 過期 token：直接塞一筆過期的 password_resets（沿用 expired-session 測試的手法）
+const expiredUserId = createUser('expired-reset@example.com', 'old-password', db3);
+db3
+  .prepare('INSERT INTO password_resets (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)')
+  .run('expired-reset-row', expiredUserId, createHash('sha256').update('deadbeef').digest('hex'), '2000-01-01T00:00:00.000Z');
+assert.ok(!resetPassword('deadbeef', 'whatever123', db3), '過期 token 應重設失敗');
+
+// 重設成功後，重設前建立的 session 應全部失效
+assert.strictEqual(getSessionUser(preResetSessionToken, db3), null, '重設密碼後舊 session 應全部失效');
 
 console.log('auth.test.ts OK');

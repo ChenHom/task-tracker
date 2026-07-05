@@ -13,6 +13,8 @@ import {
   sessionCookie,
   clearSessionCookie,
   requireAuth,
+  createPasswordResetToken,
+  resetPassword,
   SESSION_COOKIE,
 } from './auth';
 import { CommandError } from './eventStore';
@@ -37,6 +39,8 @@ import { createRateLimiter } from './rateLimit';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
+// 忘記密碼 rate limit：同樣每 IP 15 分鐘最多 10 次，擋惡意大量發信/枚舉。
+const forgotPasswordLimiter = createRateLimiter(15 * 60 * 1000, 10);
 
 // ponytail: 上傳檔案上限 10MB，超過丟 413。正式環境可改成 nginx / cloudflare 直接擋。
 const uploadMaxBytes = 10 * 1024 * 1024; // 10MB
@@ -151,6 +155,47 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (token) destroySession(token);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': clearSessionCookie() });
     res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  if (req.url === '/api/auth/forgot-password' && req.method === 'POST') {
+    const ip = clientIp(req) ?? 'unknown';
+    if (!forgotPasswordLimiter.check(ip)) {
+      res.writeHead(429, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '請求過於頻繁，請稍後再試' }));
+      return;
+    }
+    const body = (await readJson(req).catch(() => null)) as { email?: unknown } | null;
+    if (!body || typeof body.email !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'email 為必填' }));
+      return;
+    }
+    forgotPasswordLimiter.fail(ip);
+    const token = createPasswordResetToken(body.email);
+    if (token) {
+      // ponytail: 假寄信，印到 console 當作「已寄出」。之後接真實信箱服務只要換掉這一行呼叫。
+      console.log(`[忘記密碼] reset link: http://localhost:3000/#/reset-password?token=${token}`);
+    }
+    // 不論 email 是否存在都回同一句訊息，避免帳號枚舉。
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, message: '若該 email 已註冊，重設連結已寄出' }));
+    return;
+  }
+
+  if (req.url === '/api/auth/reset-password' && req.method === 'POST') {
+    const body = (await readJson(req).catch(() => null)) as { token?: unknown; password?: unknown } | null;
+    try {
+      if (!body || typeof body.token !== 'string' || !body.token || typeof body.password !== 'string' || !body.password) {
+        throw new CommandError('token 與 password 為必填');
+      }
+      const ok = resetPassword(body.token, body.password);
+      if (!ok) throw new CommandError('重設連結無效或已過期');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
     return;
   }
 

@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { db } from './db';
 import { CommandError } from './eventStore';
@@ -60,6 +60,11 @@ export function destroySession(token: string, database = db): void {
   database.prepare('DELETE FROM sessions WHERE id = ?').run(token);
 }
 
+// 讓某使用者「所有裝置」的 session 全部失效（重設密碼後強制重新登入）。
+export function destroySessionsForUser(userId: string, database = db): void {
+  database.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+}
+
 // ── Cookie ─────────────────────────────────────────────────────────
 export function parseCookies(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
@@ -113,6 +118,49 @@ export function attemptLogin(
   const ok = verifyPassword(password, user?.password_hash ?? DUMMY_HASH);
   recordLoginEvent(norm, user?.id ?? null, ok, ip, userAgent, database);
   return ok && user ? user.id : null;
+}
+
+// ── 忘記密碼 / 重設密碼 ────────────────────────────────────────────
+// token 是 randomBytes(32) 產生的高熵隨機值，本身已經無法猜測；落地只存
+// SHA-256 hex digest（快速、確定性雜湊，可直接等值查找）。這跟密碼故意
+// 用慢速+per-row salt 的 scrypt 是不同考量：密碼是低熵、需要防離線暴力
+// 破解逐次嘗試；這裡的 token 已經夠隨機，只需要防「資料庫外洩後 token
+// 明碼可直接使用」，SHA-256 digest 就足夠且能索引查找。
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 小時
+
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+// 依 email 產生一次性重設 token；查無此 email 回 null（呼叫端無論如何都要回同一句訊息，
+// 不得依此結果洩漏 email 是否存在）。
+export function createPasswordResetToken(email: string, database = db): string | null {
+  const norm = email.trim().toLowerCase();
+  const user = database.prepare('SELECT id FROM users WHERE email = ?').get(norm) as { id: string } | undefined;
+  if (!user) return null;
+  const token = randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS).toISOString();
+  database
+    .prepare('INSERT INTO password_resets (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)')
+    .run(randomUUID(), user.id, hashToken(token), expiresAt);
+  return token;
+}
+
+// 驗證 token（存在/未過期/未使用過）並更新密碼；成功後標記 token 已用、
+// 讓該使用者所有裝置的 session 全部失效。不論失敗原因為何（不存在/過期/已用過）一律回 false，
+// 不對外區分理由，避免洩漏額外資訊。
+export function resetPassword(token: string, newPassword: string, database = db): boolean {
+  const row = database.prepare('SELECT id, user_id, expires_at, used_at FROM password_resets WHERE token_hash = ?').get(
+    hashToken(token),
+  ) as { id: string; user_id: string; expires_at: string; used_at: string | null } | undefined;
+  if (!row) return false;
+  if (row.used_at !== null) return false;
+  if (new Date(row.expires_at).getTime() <= Date.now()) return false;
+
+  database.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), row.user_id);
+  database.prepare("UPDATE password_resets SET used_at = datetime('now') WHERE id = ?").run(row.id);
+  destroySessionsForUser(row.user_id, database);
+  return true;
 }
 
 // ── requireAuth middleware ─────────────────────────────────────────

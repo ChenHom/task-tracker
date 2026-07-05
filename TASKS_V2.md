@@ -17,14 +17,18 @@
 
 ---
 
-## Phase 9 — 忘記密碼（Email 重設連結）
+## Phase 9 — 忘記密碼（Email 重設連結）✅
 
-- [ ] `password_resets` table：`id / user_id / token_hash / expires_at / used_at`
-- [ ] `POST /api/auth/forgot-password`（email → 產生一次性 token，1 小時過期）
-  - [ ] email 存在與否回一模一樣的成功訊息（擋帳號枚舉，同 login 端做法）
-  - [ ] 重設連結印到 server console/log（不接真實 email 服務）
-- [ ] `POST /api/auth/reset-password`（token + 新密碼 → 驗證存在/未過期/未使用過 → 更新密碼、token 標記已用）
-- [ ] 重設成功後該 user 其他裝置 session 全部失效（`sessions` 新增依 `user_id` 批次刪除）
+- [x] `password_resets` table：`id / user_id / token_hash / expires_at / used_at`
+- [x] `POST /api/auth/forgot-password`（email → 產生一次性 token，1 小時過期）
+  - [x] email 存在與否回一模一樣的成功訊息（擋帳號枚舉，同 login 端做法）
+  - [x] 重設連結印到 server console/log（不接真實 email 服務）
+- [x] `POST /api/auth/reset-password`（token + 新密碼 → 驗證存在/未過期/未使用過 → 更新密碼、token 標記已用）
+- [x] 重設成功後該 user 其他裝置 session 全部失效（`sessions` 新增依 `user_id` 批次刪除）
+
+> 實測：以 curl 打 `/api/auth/forgot-password`，存在與不存在的 email 回應一字不差；只有存在時 console 印出重設連結。
+> 用印出的 token 打 `/api/auth/reset-password` 成功改密碼，新密碼可登入、舊密碼失效，同一 token 重打第二次回 400；
+> 重設前建立的 session 在重設後也全部失效（`getSessionUser` 回 null）。單元測試涵蓋 token hash 化、過期、單次使用等情境（[auth.test.ts](src/auth.test.ts)）。
 
 ---
 

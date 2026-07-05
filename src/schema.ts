@@ -101,5 +101,16 @@ export function runMigrations(db: DatabaseSync): void {
       mime_type     TEXT NOT NULL,
       size          INTEGER NOT NULL
     );
+
+    -- 忘記密碼：token 本身不落地存明碼，只存 SHA-256 hex digest（token 是高熵隨機值，
+    -- 用快速雜湊即可做等值查找；跟 password_hash 用 scrypt 是不同考量，見 auth.ts 註解）。
+    -- used_at 為 NULL 代表尚未使用；一次性使用，用過就標記，不可重放。
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at    TEXT
+    );
   `);
 }
