@@ -2,6 +2,7 @@
 import './staticPath.test';
 import './schema.test';
 import './auth.test';
+import './seed.test';
 import './eventStore.test';
 import './workspace.test';
 import './member.test';

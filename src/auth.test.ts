@@ -1,9 +1,11 @@
 import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
+import { CommandError } from './eventStore';
 import {
   hashPassword,
   verifyPassword,
+  createUser,
   createSession,
   getSessionUser,
   destroySession,
@@ -23,9 +25,16 @@ assert.ok(!verifyPassword('wrong', stored), '錯誤密碼應被拒');
 assert.ok(!verifyPassword('x', 'malformed'), '格式錯誤的 hash 應回 false 而非丟例外');
 assert.notStrictEqual(hashPassword('a'), hashPassword('a'), '同密碼不同 salt → 不同 hash');
 
-// ── Session（用 in-memory db，不污染 dev.db）──
+// ── createUser ──
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
+const newId = createUser('New@Example.com', 'whatever123', db);
+assert.ok(newId, 'createUser 應回傳新 id');
+const row = db.prepare('SELECT email FROM users WHERE id = ?').get(newId) as { email: string };
+assert.strictEqual(row.email, 'new@example.com', 'email 應正規化為小寫');
+assert.throws(() => createUser('new@example.com', 'other', db), CommandError, '重複 email 應丟 CommandError');
+
+// ── Session（沿用上面的 db，不污染 dev.db）──
 db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('u1', 'a@b.com', stored);
 
 const token = createSession('u1', db);

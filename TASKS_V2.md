@@ -5,13 +5,15 @@
 
 ---
 
-## Phase 8 — 建立使用者 + Seeder
+## Phase 8 — 建立使用者 + Seeder ✅
 
-- [ ] `createUser(email, password)` 內部函式（複用 `hashPassword`，寫入 `users` table）
-- [ ] 重複 email 的 SQLite UNIQUE 例外包裝成乾淨的 `CommandError`
-- [ ] Seeder 腳本：產生 ≥30 位使用者，固定測試密碼、可預期 email（`user01@test.local` ~ `user30@test.local`）
-- [ ] Seeder idempotent（`INSERT OR IGNORE`，重複執行不重複建立）
-- [ ] 自我驗證：seeder 跑兩次，`users` 數量不變
+- [x] `createUser(email, password)` 內部函式（複用 `hashPassword`，寫入 `users` table）
+- [x] 重複 email 的 SQLite UNIQUE 例外包裝成乾淨的 `CommandError`
+- [x] Seeder 腳本：產生 ≥30 位使用者，固定測試密碼、可預期 email（`user01@test.local` ~ `user30@test.local`）
+- [x] Seeder idempotent（`createUser` 對已存在 email 丟 `CommandError`，seeder catch 掉即跳過）
+- [x] 自我驗證：seeder 跑兩次，`users` 數量不變（[seed.test.ts](src/seed.test.ts) + 實際對 dev.db 跑兩次確認 30 筆）
+
+> 實測：seed 出來的帳號可透過 `POST /api/auth/login` 真的登入（`npm run seed` 產生，密碼固定 `test1234`）。
 
 ---
 

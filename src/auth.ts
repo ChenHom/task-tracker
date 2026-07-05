@@ -1,6 +1,7 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { db } from './db';
+import { CommandError } from './eventStore';
 
 // ── 密碼雜湊（scrypt + 隨機 salt，存成 "salt:hash" hex）──────────────
 export function hashPassword(plain: string): string {
@@ -16,6 +17,19 @@ export function verifyPassword(plain: string, stored: string): boolean {
   const actual = scryptSync(plain, Buffer.from(saltHex, 'hex'), expected.length);
   // constant-time 比對，避免 timing attack；長度不等時 timingSafeEqual 會丟例外，先擋
   return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+// ── 建立使用者（無公開註冊，僅供 seeder / 內部呼叫）───────────────────
+export function createUser(email: string, password: string, database = db): string {
+  const norm = email.trim().toLowerCase();
+  const id = randomUUID();
+  try {
+    database.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run(id, norm, hashPassword(password));
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('UNIQUE')) throw new CommandError(`email 已被使用：${norm}`);
+    throw e;
+  }
+  return id;
 }
 
 // ── Session ────────────────────────────────────────────────────────
