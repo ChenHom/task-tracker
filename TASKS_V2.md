@@ -57,16 +57,29 @@
 
 ## Phase 11 — 前端串接
 
-- [ ] 單頁 hash routing：`{hash 前綴: renderFn}` 查表 + `switch`，無框架
-- [ ] 登入頁（呼叫既有 `/api/auth/login`，401 導回登入）
-- [ ] Workspace 列表 + 建立 + 切換
-- [ ] Task 列表（顯示狀態機合法轉換，非法轉換不給選）
-- [ ] Comment（列表 + 新增）
-- [ ] Attachment（上傳 + 列表 + 下載連結，走下載非內嵌渲染）
-- [ ] Search 輸入框
-- [ ] Member 管理頁（依賴 Phase 10）
-- [ ] Audit 檢視頁
-- [ ] 所有使用者輸入渲染一律 `textContent`，不用 `innerHTML`
+- [x] 單頁 hash routing：`{hash 前綴: renderFn}` 查表 + `switch`，無框架
+- [x] 登入頁（呼叫既有 `/api/auth/login`，401 導回登入）
+- [x] Workspace 列表 + 建立 + 切換
+- [x] Task 列表（狀態 `<select>` 列出 Todo/Doing/Review/Done 全部四個選項，不在前端硬編合法轉換；
+      PATCH 交給後端狀態機判斷，非法轉換由後端回 400、前端原樣顯示錯誤訊息 — 落實「權限/規則判斷不能只在前端做」）
+- [x] Comment（列表 + 新增）
+- [x] Attachment（上傳 + 列表 + 下載連結，走下載非內嵌渲染）
+- [x] Search 輸入框
+- [x] Member 管理頁（依賴 Phase 10）
+- [x] Audit 檢視頁
+- [x] 所有使用者輸入渲染一律 `textContent`，不用 `innerHTML`
+
+> 實測：`npx tsc --noEmit` 與 `npm test` 皆乾淨通過。另起 `npx tsx src/server.ts` 手動以 curl 模擬瀏覽器 fetch 行為，
+> 走過完整流程並確認回應形狀與 `public/app.js` 的呼叫方式一致：
+> `POST /api/auth/login` 登入拿到 `Set-Cookie: session=...`、`GET/POST /api/workspaces` 列出並建立
+> workspace、`POST /api/workspaces/:id/tasks` 建立 task、`PATCH /api/tasks/:id` 驗證合法轉換
+> Todo→Doing 成功、非法轉換 Todo→Done 回 400 `{"error":"不允許的狀態轉換：Todo → Done"}`（前端原樣顯示，
+> 未在 JS 端擋）、`POST/GET /api/tasks/:id/comments` 新增並列出留言（含 `<script>` 內容確認走
+> `textContent` 不會被解析）、以 raw bytes + `X-Filename` header 上傳附件並用
+> `GET /api/attachments/:id` 下載回原始內容、確認回應帶 `Content-Disposition: attachment` 與
+> `X-Content-Type-Options: nosniff`、`GET /api/search?...` 與 `GET /api/audit?...` 回傳形狀與
+> `search.ts`/`audit.ts` 定義相符、未帶 cookie 打 `/api/workspaces` 收到 401（對應前端的導回登入邏輯）。
+> 未動用瀏覽器 headless 工具，但已逐一比對 `public/app.js` 的 fetch 呼叫路徑/方法/body 與上述 curl 完全一致。
 
 ---
 
@@ -74,4 +87,5 @@
 
 - [x] 忘記密碼 token：`randomBytes` 產生、存 hash、單次使用、有過期時間
 - [x] Member 邀請：權限升級檢查（Admin 不能任命 Owner）、IDOR 檢查、最後一個 Owner 防呆
-- [ ] 前端 XSS：使用者輸入一律 `textContent`
+- [x] 前端 XSS：使用者輸入一律 `textContent`（`public/app.js` 的 `el()` helper 一律用 `textContent`；
+      `innerHTML` 只用在檔案內自己寫死、無變數插值的靜態骨架 markup）

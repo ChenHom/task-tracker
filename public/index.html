@@ -3,10 +3,29 @@
 <head>
   <meta charset="UTF-8" />
   <title>Task Tracker</title>
+  <style>
+    body { font-family: monospace; margin: 1.5rem; max-width: 900px; }
+    header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; border-bottom: 1px solid #888; padding-bottom: 0.5rem; }
+    nav a, nav button { margin-right: 0.75rem; }
+    table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; }
+    th, td { border: 1px solid #999; padding: 0.3rem 0.5rem; text-align: left; vertical-align: top; }
+    form div { margin: 0.3rem 0; }
+    .error { color: #c00; white-space: pre-wrap; }
+    .message { color: #060; }
+    pre { background: #f0f0f0; padding: 0.5rem; overflow-x: auto; }
+    ul { padding-left: 1.2rem; }
+    .muted { color: #666; }
+  </style>
 </head>
 <body>
-  <h1>Task Tracker</h1>
-  <p id="status">checking API...</p>
+  <header>
+    <strong>Task Tracker</strong>
+    <nav>
+      <a href="#/workspaces">Workspaces</a>
+      <button id="logout-btn" type="button">登出</button>
+    </nav>
+  </header>
+  <main id="app"></main>
   <script src="/app.js"></script>
 </body>
 </html>
