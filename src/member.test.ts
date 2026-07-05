@@ -13,6 +13,8 @@ import {
   hasPermission,
   requirePermission,
   registerMemberProjections,
+  countActiveMembers,
+  listMembers,
 } from './member';
 
 const db = new DatabaseSync(':memory:');
@@ -82,5 +84,52 @@ assert.strictEqual(cap.get(), 403, '非成員應寫 403');
 cap = capture();
 assert.strictEqual(requirePermission(fakeReq(ownerTok), cap.res, 'ws-2', 'Viewer', db), null, '跨 workspace 應回 null');
 assert.strictEqual(cap.get(), 403, '跨 workspace 應寫 403');
+
+// ── Phase 10：權限升級 + 最後一個 Owner 防呆 ─────────────────────────
+db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('carol', 'c@x.com', 'x');
+db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('dave', 'd@x.com', 'x');
+db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('erin', 'e@x.com', 'x');
+
+const WS2 = 'ws-2b';
+seedOwner(WS2, 'owner', db);
+assert.strictEqual(countActiveMembers(WS2, db), 1, 'countActiveMembers：剛建立只有 Owner 一人');
+
+inviteMember('owner', WS2, 'carol', 'Admin', db);
+joinWorkspace('carol', WS2, db);
+assert.strictEqual(countActiveMembers(WS2, db), 2, 'countActiveMembers：Owner + Admin 共兩人');
+
+// Admin 邀一般角色沒問題，但不能邀/任命 Owner（權限升級防呆）。
+inviteMember('carol', WS2, 'dave', 'Member', db);
+joinWorkspace('dave', WS2, db);
+assert.strictEqual(countActiveMembers(WS2, db), 3, 'countActiveMembers：三人');
+assert.throws(() => inviteMember('carol', WS2, 'erin', 'Owner', db), CommandError, 'Admin 不能邀請新成員為 Owner');
+assert.throws(() => changeMemberRole('carol', WS2, 'dave', 'Owner', db), CommandError, 'Admin 不能任命 Owner（changeMemberRole）');
+
+// Admin 不能動既有 Owner 的角色，也不能移除 Owner。
+assert.throws(() => changeMemberRole('carol', WS2, 'owner', 'Admin', db), CommandError, 'Admin 不能改 Owner 的角色');
+assert.throws(() => removeMember('carol', WS2, 'owner', db), CommandError, 'Admin 不能移除 Owner');
+
+// Owner 自我降級/自我移除：還有其他成員時擋（避免出現「有成員但沒有 Owner」）。
+assert.throws(() => changeMemberRole('owner', WS2, 'owner', 'Admin', db), CommandError, '還有其他成員時 Owner 不能自我降級');
+assert.throws(() => removeMember('owner', WS2, 'owner', db), CommandError, '還有其他成員時 Owner 不能自我移除');
+
+// listMembers：含 email，筆數符合目前 active 成員。
+const rows = listMembers(WS2, db);
+assert.strictEqual(rows.length, 3, 'listMembers 應列出目前所有 active 成員');
+assert.ok(rows.some((r) => r.user_id === 'carol' && r.email === 'c@x.com' && r.role === 'Admin'), 'listMembers 應含 email 與角色');
+
+// 清空其他成員，只剩 Owner 一人 → 才能自我降級。
+removeMember('owner', WS2, 'carol', db);
+removeMember('owner', WS2, 'dave', db);
+assert.strictEqual(countActiveMembers(WS2, db), 1, '清空後只剩 Owner 一人');
+changeMemberRole('owner', WS2, 'owner', 'Admin', db); // 唯一成員時允許自我降級
+assert.strictEqual(getMemberRole(WS2, 'owner', db), 'Admin', '唯一成員時應允許 Owner 自我降級');
+
+// 另開一個 workspace 驗證「唯一成員時允許 Owner 自我移除（離開）」。
+const WS3 = 'ws-3b';
+seedOwner(WS3, 'owner', db);
+removeMember('owner', WS3, 'owner', db);
+assert.strictEqual(getMemberRole(WS3, 'owner', db), null, '唯一成員時應允許 Owner 自我移除');
+assert.strictEqual(countActiveMembers(WS3, db), 0, '移除後 active 成員數為 0');
 
 console.log('member.test.ts OK');

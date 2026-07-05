@@ -15,11 +15,21 @@ import {
   requireAuth,
   createPasswordResetToken,
   resetPassword,
+  getUserIdByEmail,
   SESSION_COOKIE,
 } from './auth';
 import { CommandError } from './eventStore';
 import { createWorkspace, renameWorkspace, listWorkspaces, registerWorkspaceProjections } from './workspace';
-import { registerMemberProjections, requirePermission } from './member';
+import {
+  registerMemberProjections,
+  requirePermission,
+  inviteMember,
+  joinWorkspace,
+  changeMemberRole,
+  removeMember,
+  getMemberRole,
+  listMembers,
+} from './member';
 import {
   createTask,
   applyTaskPatch,
@@ -238,6 +248,82 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const status = e instanceof CommandError ? 400 : 500;
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e instanceof CommandError ? e.message : '內部錯誤' }));
+    }
+    return;
+  }
+
+  // ── Member API（邀請/列表 需 Admin+；邀請對象只能是既有帳號，email 查 users）────
+  const wsMembersMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/members$/);
+  if (wsMembersMatch) {
+    const workspaceId = wsMembersMatch[1];
+    if (req.method === 'GET') {
+      const userId = requirePermission(req, res, workspaceId, 'Viewer');
+      if (!userId) return;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(listMembers(workspaceId)));
+      return;
+    }
+    if (req.method === 'POST') {
+      const userId = requirePermission(req, res, workspaceId, 'Admin');
+      if (!userId) return;
+      const body = (await readJson(req).catch(() => null)) as { email?: unknown; role?: unknown } | null;
+      try {
+        if (!body || typeof body.email !== 'string' || !body.email) throw new CommandError('email 為必填');
+        const targetUserId = getUserIdByEmail(body.email);
+        // 內部管理動作（邀請已知帳號），不是公開的忘記密碼流程，沒有帳號枚舉疑慮：查不到就直接說清楚。
+        if (!targetUserId) throw new CommandError('找不到該 email 對應的使用者');
+        inviteMember(userId, workspaceId, targetUserId, body.role);
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        sendCommandError(res, e);
+      }
+      return;
+    }
+  }
+
+  // POST /api/workspaces/:id/members/join —— 只要求已登入；joinWorkspace 自己會驗證
+  // 「有沒有待接受的邀請」，被邀請者本來就還沒有任何角色，不能用 requirePermission。
+  const joinMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/members\/join$/);
+  if (joinMatch && req.method === 'POST') {
+    const workspaceId = joinMatch[1];
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    try {
+      joinWorkspace(userId, workspaceId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
+  // PATCH/DELETE /api/workspaces/:id/members/:userId —— 改角色/移除單一成員，需 Admin+。
+  // 只吃 PATCH/DELETE：POST .../members/join 才不會被這條路由吃掉，會落到上面那條專用路由。
+  // IDOR 防呆：先確認 :userId 真的是該 workspace 的 active 成員，不是就 404（不透露其他資訊）。
+  const memberMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/members\/([^/?]+)$/);
+  if (memberMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+    const workspaceId = memberMatch[1];
+    const targetUserId = memberMatch[2];
+    const userId = requirePermission(req, res, workspaceId, 'Admin');
+    if (!userId) return;
+    if (getMemberRole(workspaceId, targetUserId) === null) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '該使用者不是這個 workspace 的成員' }));
+      return;
+    }
+    try {
+      if (req.method === 'DELETE') {
+        removeMember(userId, workspaceId, targetUserId);
+      } else {
+        const body = (await readJson(req).catch(() => null)) as { role?: unknown } | null;
+        changeMemberRole(userId, workspaceId, targetUserId, body?.role);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
     }
     return;
   }

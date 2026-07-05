@@ -10,7 +10,7 @@ import {
   registerWorkspaceProjections,
   listWorkspaces,
 } from './workspace';
-import { registerMemberProjections } from './member';
+import { registerMemberProjections, inviteMember, joinWorkspace, removeMember } from './member';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
@@ -62,5 +62,19 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(events.map((e) => e.aggregate_version), [1, 2, 3, 4], '版本連續遞增');
 assert.deepStrictEqual(events[0].metadata, { actor_id: 'u1', ip: null, user_agent: null, request_id: null }, 'metadata 應記 actor + audit 欄位');
+
+// ── Phase 10：archive/delete 需要「workspace 只剩 Owner 一人」──────
+const id2 = createWorkspace('u1', 'Team WS', db);
+inviteMember('u1', id2, 'u2', 'Member', db);
+joinWorkspace('u2', id2, db);
+assert.throws(() => archiveWorkspace('u1', id2, db), CommandError, '還有其他成員時不能封存');
+assert.throws(() => deleteWorkspace('u1', id2, db), CommandError, '還有其他成員時不能刪除');
+
+removeMember('u1', id2, 'u2', db); // 移除到只剩 Owner 一人
+archiveWorkspace('u1', id2, db); // 現在可以封存
+assert.strictEqual(listWorkspaces('u1', db).find((w) => w.workspace_id === id2)?.status, 'archived', '只剩 Owner 一人時應可封存');
+
+deleteWorkspace('u1', id2, db); // 封存後、只剩 Owner 一人時也可刪除
+assert.ok(!listWorkspaces('u1', db).some((w) => w.workspace_id === id2), '刪除後應從列表消失');
 
 console.log('workspace.test.ts OK');

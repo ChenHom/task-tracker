@@ -32,6 +32,13 @@ export function createUser(email: string, password: string, database = db): stri
   return id;
 }
 
+// 依 email 查 user id（給 member 邀請 API 用：以 email 找出既有帳號）。查無回 null。
+export function getUserIdByEmail(email: string, database = db): string | null {
+  const norm = email.trim().toLowerCase();
+  const row = database.prepare('SELECT id FROM users WHERE email = ?').get(norm) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
 // ── Session ────────────────────────────────────────────────────────
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const SESSION_COOKIE = 'session';
@@ -125,7 +132,7 @@ export function attemptLogin(
 // SHA-256 hex digest（快速、確定性雜湊，可直接等值查找）。這跟密碼故意
 // 用慢速+per-row salt 的 scrypt 是不同考量：密碼是低熵、需要防離線暴力
 // 破解逐次嘗試；這裡的 token 已經夠隨機，只需要防「資料庫外洩後 token
-// 明碼可直接使用」，SHA-256 digest 就足夠且能索引查找。
+// 明碼可直接使用」，SHA-256 digest 就足夠且能索引查詢。
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 小時
 
 function hashToken(token: string): string {

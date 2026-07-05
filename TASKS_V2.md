@@ -32,15 +32,26 @@
 
 ---
 
-## Phase 10 — Member 邀請 API 　`RBAC`
+## Phase 10 — Member 邀請 API 　`RBAC` ✅
 
-- [ ] `POST /api/workspaces/:id/members`（邀請，需 Admin+；email 查 `users` 找 user id，找不到回錯誤）
-- [ ] `GET /api/workspaces/:id/members`（列出成員+角色）
-- [ ] `PATCH /api/workspaces/:id/members/:userId`（改角色，需 Admin+；擋 Admin 任命/邀請 Owner）
-- [ ] `DELETE /api/workspaces/:id/members/:userId`（移除，需 Admin+；IDOR 檢查：確認 `:userId` 真的是該 workspace 成員）
-- [ ] `POST /api/workspaces/:id/members/join`（`joinWorkspace`，讓被邀請者自己接受邀請）
-- [ ] `archiveWorkspace` / `deleteWorkspace` 加守門：查 `workspace_members_read_model` active 成員數必須 == 1
-- [ ] 同守門邏輯套用到 Owner 自我移除/降級（非唯一成員時擋）
+- [x] `POST /api/workspaces/:id/members`（邀請，需 Admin+；email 查 `users` 找 user id，找不到回錯誤）
+- [x] `GET /api/workspaces/:id/members`（列出成員+角色）
+- [x] `PATCH /api/workspaces/:id/members/:userId`（改角色，需 Admin+；擋 Admin 任命/邀請 Owner）
+- [x] `DELETE /api/workspaces/:id/members/:userId`（移除，需 Admin+；IDOR 檢查：確認 `:userId` 真的是該 workspace 成員）
+- [x] `POST /api/workspaces/:id/members/join`（`joinWorkspace`，讓被邀請者自己接受邀請）
+- [x] `archiveWorkspace` / `deleteWorkspace` 加守門：查 `workspace_members_read_model` active 成員數必須 == 1
+- [x] 同守門邏輯套用到 Owner 自我移除/降級（非唯一成員時擋）
+
+> 實測：以 `npm run seed` 的 user01/user02/user03 對真實 dev server 跑過完整流程——user01 建立 workspace 後自動為 Owner；
+> `POST .../members` 邀請 user02 為 Member，`GET .../members` 只列出已 join 的人（user02 join 前不出現）；
+> `POST .../members/join` 讓 user02 真的加入、之後才出現在列表；Member（user02）打 `POST .../members` 邀請別人回 403；
+> owner 把 user02 升為 Admin 後，Admin 邀請/任命 Owner 一律回 400「只有 Owner 能任命 Owner」，但 Admin 邀一般角色成功；
+> `PATCH`/`DELETE .../members/:userId` 對不是該 workspace 成員的 `:userId` 回 404（IDOR 檢查）；
+> Owner 在還有其他成員時嘗試自我移除回 400，移除到只剩自己一人後 `archiveWorkspace`（直接呼叫函式驗證，此 phase 未加 HTTP 路由）才成功；
+> 邀請不存在的 email 回 400「找不到該 email 對應的使用者」，不會靜默成功；`POST .../members/join` 與 `PATCH/DELETE .../members/:userId`
+> 這組容易撞在一起的路由分開驗證過，join 不會被當成 `:userId` 吃掉。單元測試涵蓋權限升級（Admin 任命/受任 Owner）、
+> Admin 動既有 Owner 被擋、Owner 自我降級/移除需唯一成員、`countActiveMembers` 本身（[member.test.ts](src/member.test.ts)），
+> 以及 `archiveWorkspace`/`deleteWorkspace` 在非唯一成員時被拒絕（[workspace.test.ts](src/workspace.test.ts)）。
 
 ---
 
@@ -61,6 +72,6 @@
 
 ## 橫切關注 — OWASP checklist（v2 新增部分）
 
-- [ ] 忘記密碼 token：`randomBytes` 產生、存 hash、單次使用、有過期時間
-- [ ] Member 邀請：權限升級檢查（Admin 不能任命 Owner）、IDOR 檢查、最後一個 Owner 防呆
+- [x] 忘記密碼 token：`randomBytes` 產生、存 hash、單次使用、有過期時間
+- [x] Member 邀請：權限升級檢查（Admin 不能任命 Owner）、IDOR 檢查、最後一個 Owner 防呆
 - [ ] 前端 XSS：使用者輸入一律 `textContent`

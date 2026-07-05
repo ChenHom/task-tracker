@@ -50,9 +50,16 @@ function load(workspaceId: string, userId: string, database: DatabaseSync): { st
   return { state, version };
 }
 
-// ── Command handlers（權限檢查在 HTTP middleware，command 只管狀態機）──
+// ── Command handlers（RBAC middleware 擋一般權限；下面是「權限升級」等業務規則，
+// 屬於 domain invariant，跟 workspace.ts 的狀態機驗證一樣要放在 command 裡，不能只靠 HTTP 層）──
 export function inviteMember(actorId: string, workspaceId: string, userId: string, role: unknown, database = db): void {
   const r = validateRole(role);
+  // 只有 Owner 能任命 Owner；workspace 剛建立、還沒有任何 active 成員時例外（seedOwner bootstrap，
+  // 此時查不到任何 Owner 可比對，這條路徑無法從 HTTP 觸發——requirePermission 對 0 成員的 workspace
+  // 一定回 403，能走到這裡的只有 seedOwner 的直接呼叫）。
+  if (r === 'Owner' && countActiveMembers(workspaceId, database) > 0 && getMemberRole(workspaceId, actorId, database) !== 'Owner') {
+    throw new CommandError('只有 Owner 能任命 Owner');
+  }
   const { state, version } = load(workspaceId, userId, database);
   if (state.status !== 'none') throw new CommandError('該使用者已被邀請或已是成員');
   appendEvent('Member', mid(workspaceId, userId), version, 'member.invited', { workspaceId, userId, role: r }, meta(actorId), database);
@@ -68,12 +75,29 @@ export function changeMemberRole(actorId: string, workspaceId: string, userId: s
   const r = validateRole(role);
   const { state, version } = load(workspaceId, userId, database);
   if (state.status !== 'active') throw new CommandError('對象不是使用中的成員');
+  const actorRole = getMemberRole(workspaceId, actorId, database);
+  // 權限升級：只有 Owner 能任命 Owner。
+  if (r === 'Owner' && actorRole !== 'Owner') throw new CommandError('只有 Owner 能任命 Owner');
+  // 對象目前就是 Owner：Admin 不能動 Owner 的角色（不論改成什麼）。
+  if (state.role === 'Owner' && actorRole !== 'Owner') throw new CommandError('只有 Owner 能變更 Owner 的角色');
+  // Owner 自我降級：只有在自己是唯一 active 成員時才能卸任，否則會出現「有其他成員但沒有 Owner」。
+  if (actorId === userId && state.role === 'Owner' && r !== 'Owner' && countActiveMembers(workspaceId, database) !== 1) {
+    throw new CommandError('workspace 還有其他成員，Owner 需先移交或移除其他成員才能卸任');
+  }
   appendEvent('Member', mid(workspaceId, userId), version, 'member.role_changed', { workspaceId, userId, role: r }, meta(actorId), database);
 }
 
 export function removeMember(actorId: string, workspaceId: string, userId: string, database = db): void {
   const { state, version } = load(workspaceId, userId, database);
   if (state.status !== 'invited' && state.status !== 'active') throw new CommandError('對象不是成員');
+  if (state.role === 'Owner') {
+    // 對象目前是 Owner：Admin 不能移除 Owner。
+    if (getMemberRole(workspaceId, actorId, database) !== 'Owner') throw new CommandError('只有 Owner 能移除 Owner');
+    // Owner 自我移除：同自我降級規則，只有唯一 active 成員時才能離開。
+    if (actorId === userId && countActiveMembers(workspaceId, database) !== 1) {
+      throw new CommandError('workspace 還有其他成員，Owner 需先移交或移除其他成員才能離開');
+    }
+  }
   appendEvent('Member', mid(workspaceId, userId), version, 'member.removed', { workspaceId, userId }, meta(actorId), database);
 }
 
@@ -106,6 +130,34 @@ export function registerMemberProjections(): void {
       .prepare('DELETE FROM workspace_members_read_model WHERE workspace_id = ? AND user_id = ?')
       .run(p.workspaceId, p.userId);
   });
+}
+
+// ── 查詢：成員列表 + 計數（workspace.ts 的關站守門也依賴 countActiveMembers）──
+export interface MemberRow {
+  user_id: string;
+  role: Role;
+  joined_at: string;
+  email: string;
+}
+export function listMembers(workspaceId: string, database = db): MemberRow[] {
+  return database
+    .prepare(
+      `SELECT m.user_id, m.role, m.joined_at, u.email
+         FROM workspace_members_read_model m
+         JOIN users u ON u.id = m.user_id
+        WHERE m.workspace_id = ?
+        ORDER BY m.joined_at`,
+    )
+    .all(workspaceId) as unknown as MemberRow[];
+}
+
+// active 成員數（read model 只放已 joined 的成員）。workspace archive/delete 與 Owner
+// 自我卸任/離開都靠這個數字判斷「是不是只剩自己」。
+export function countActiveMembers(workspaceId: string, database = db): number {
+  const row = database
+    .prepare('SELECT count(*) AS c FROM workspace_members_read_model WHERE workspace_id = ?')
+    .get(workspaceId) as { c: number };
+  return row.c;
 }
 
 // ── 權限查詢 + middleware ──────────────────────────────────────────
