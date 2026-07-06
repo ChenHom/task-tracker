@@ -15,9 +15,9 @@
   --highlight-done: rgba(16, 185, 129, 0.25);    /* Emerald */
   --highlight-archived: rgba(100, 116, 139, 0.25); /* Slate gray */
 
-  --priority-low: rgba(5, 150, 105, 0.15);
-  --priority-medium: rgba(217, 119, 6, 0.15);
-  --priority-high: rgba(220, 38, 38, 0.15);
+  --priority-low: #ffffff;
+  --priority-medium: #fef08a;
+  --priority-high: #fecaca;
 }
 
 * {
