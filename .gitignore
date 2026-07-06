@@ -3,3 +3,4 @@ dist/
 data/
 sim-logs/
 sim-work/
+.playwright-mcp/

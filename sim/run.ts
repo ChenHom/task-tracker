@@ -71,8 +71,7 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
 const BACKLOG = (byName: Record<string, string>) => [
   { assignee: byName['小美'], title: 'session cookie 加 Secure flag', desc: 'src/auth.ts 的 sessionCookie()/clearSessionCookie() 目前沒有 Secure 屬性（見 ponytail 註記）。加環境變數開關（如 COOKIE_SECURE=1 時附加 Secure），本機 http dev 預設不開。驗收：auth.test.ts 補一條開關行為的 assert，npx tsc --noEmit 與 npm test 全過。' },
   { assignee: byName['小美'], title: 'session 過期資料清理', desc: 'sessions 表的過期 row 目前只在 getSessionUser 查到時懶清（src/auth.ts）。在 server 啟動時（src/server.ts）加一次 DELETE FROM sessions WHERE expires_at <= now 的清理（src/auth.ts 加 cleanupExpiredSessions() 供呼叫與測試）。驗收：auth.test.ts 補測試，tsc/test 全過。' },
-  { assignee: byName['阿凱'], title: 'rate limiter Map 加上限防無限成長', desc: 'src/rateLimit.ts 的 in-memory Map 沒有上限（見檔頭 ponytail 註記）。加 maxKeys 上限（預設 10000），超過時清除已過期的 entry，仍超過就拒收新 key 或清最舊。維持現有介面與測試不變。驗收：rateLimit.test.ts 補上限行為測試，tsc/test 全過。' },
-  { assignee: byName['阿凱'], title: 'search LIKE 特殊字元跳脫', desc: 'src/search.ts 用 LIKE 查詢，使用者輸入含 % 或 _ 會變萬用字元。用 ESCAPE 子句跳脫 %、_、跳脫字元本身。驗收：search.test.ts 補「查詢含 % 與 _ 字面值」的測試，tsc/test 全過。' },
+  { assignee: byName['阿凱'], title: '實作 sim/run.ts 強化計畫（prompt artifact + review packet + sprint report + scenario 選擇）', desc: '倉庫裡 docs/superpowers/plans/2026-07-07-sim-run-amplification.md 是一份已核准、寫死步驟的 TDD 實作計畫，目標是強化 sim/run.ts 這支 AI 模擬 sprint driver：Task1 把每個 session 的 prompt 存成檔案（sim-logs/<run-id>/prompts/）；Task2 把 verifyBranches() 擴充成含 commits/diffstat/changedFiles/tsc/test 輸出的 review packet 檔案；Task3 產生 report.md 與 report.json；Task4 加 --scenario 參數與 SCENARIOS map（technical-debt / product-ideation）。請先用 Read 工具讀完整份計畫文件（裡面每個 Task 都附了具體程式碼片段與驗收指令），完全照文件的 4 個 Task 順序（Task1→2→3→4）逐一實作，每個 Task 做完照文件指示跑測試、commit 一次。若時間內做不完全部 4 個 Task，做到哪個 Task 就完整做完該 Task（測試通過、已 commit）再收工，不要留下半成品；留言說明目前進度與下一步建議。' },
   { assignee: byName['婷婷'], title: 'attachment 讀寫路徑 symlink 硬化', desc: 'src/attachment.ts 讀/刪附件時用 stored_name 組路徑，未做 realpath 檢查——若 ATTACH_DIR 內出現 symlink 可逃出目錄。在 readAttachment/deleteAttachment 實際碰檔案前用 realpathSync 確認解析後路徑仍在 ATTACH_DIR 內，否則丟 CommandError。驗收：attachment.test.ts 補 symlink 逃逸被擋的測試，tsc/test 全過。' },
   { assignee: byName['大熊'], title: 'clientIp 支援 X-Forwarded-For', desc: 'src/server.ts 的 clientIp() 直取 socket（見 ponytail 註記），過 reverse proxy 後 rate limit 會全部算在 proxy IP 上。加 TRUST_PROXY=1 環境變數開關：開啟時取 X-Forwarded-For 最左邊的 IP，未開啟維持現狀。驗收：把 clientIp 抽成可測函式並補測試，tsc/test 全過。' },
 ];
@@ -186,6 +185,7 @@ ${API_RULES(jar)}
 工程規則：
 - 只在目前目錄內改檔案；只改完成 task 需要的檔案，不順手重構
 - 完成的定義：npx tsc --noEmit 乾淨 + npm test 全過（含你補的測試），兩者都要實際跑
+- 絕對不要執行 npm run sim（含 --smoke）：那會遞迴啟動一整場新的真實 AI sprint（呼叫 claude/codex CLI），只能用 npx tsc --noEmit、npm test、npx tsx sim/run.test.ts 這類驗證指令
 ${m.runner === 'claude'
   ? '- 完成後 git add -A && git commit -m "<描述>"，取得 commit hash（git log -1 --format=%h）'
   : '- 你不需要（也無法）自己 git commit——這個工作環境的 .git 是唯讀的，團隊 CI 會在你下線後自動把你的變更提交到 branch ' + branch(m) + '。你只要把檔案改好、驗證通過即可'}
