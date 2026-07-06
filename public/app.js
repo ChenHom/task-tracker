@@ -1277,21 +1277,25 @@ function renderMembers() {
 
   const inviteEmailInput = document.getElementById('invite-email');
   const suggestionsDatalist = document.getElementById('email-suggestions');
-  inviteEmailInput.addEventListener('input', async () => {
-    const val = inviteEmailInput.value.trim();
-    if (val.length < 1) {
-      suggestionsDatalist.innerHTML = '';
-      return;
-    }
-    try {
-      const list = await api(`/api/users/search?q=${encodeURIComponent(val)}`);
-      suggestionsDatalist.innerHTML = '';
-      for (const email of list) {
-        suggestionsDatalist.appendChild(el('option', { value: email }));
+  let searchTimer = null;
+  inviteEmailInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(async () => {
+      const val = inviteEmailInput.value.trim();
+      if (val.length < 1) {
+        suggestionsDatalist.innerHTML = '';
+        return;
       }
-    } catch (err) {
-      // 靜態忽略
-    }
+      try {
+        const list = await api(`/api/users/search?q=${encodeURIComponent(val)}`);
+        suggestionsDatalist.innerHTML = '';
+        for (const email of list) {
+          suggestionsDatalist.appendChild(el('option', { value: email }));
+        }
+      } catch (err) {
+        // 靜態忽略
+      }
+    }, 250);
   });
 
   load();
