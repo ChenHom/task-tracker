@@ -46,11 +46,13 @@ import { createAttachment, listAttachments, readAttachment, deleteAttachment, ge
 import { searchWorkspace } from './search';
 import { getAggregateWorkspace, getAuditTrail } from './audit';
 import { createRateLimiter } from './rateLimit';
+import { clientIp } from './clientIp';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
 // 忘記密碼 rate limit：同樣每 IP 15 分鐘最多 10 次，擋惡意大量發信/枚舉。
 const forgotPasswordLimiter = createRateLimiter(15 * 60 * 1000, 10);
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 
 // ponytail: 上傳檔案上限 10MB，超過丟 413。正式環境可改成 nginx / cloudflare 直接擋。
 const uploadMaxBytes = 10 * 1024 * 1024; // 10MB
@@ -99,11 +101,6 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   return raw ? JSON.parse(raw) : {};
 }
 
-function clientIp(req: IncomingMessage): string | null {
-  // ponytail: 直取 socket；正式環境過 reverse proxy 要改信任 X-Forwarded-For。
-  return req.socket.remoteAddress ?? null;
-}
-
 // 讀原始位元組（attachment 上傳）。超過上限丟錯 → 413。
 // ponytail: 用 raw body + X-Filename header，避開自刻 multipart parser；正式環境改用表單/multipart。
 async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
@@ -132,7 +129,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (req.url === '/api/auth/login' && req.method === 'POST') {
-    const ip = clientIp(req) ?? 'unknown';
+    const ip = clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY) ?? 'unknown';
     if (!loginLimiter.check(ip)) {
       res.writeHead(429, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '登入嘗試過於頻繁，請稍後再試' }));
@@ -169,7 +166,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (req.url === '/api/auth/forgot-password' && req.method === 'POST') {
-    const ip = clientIp(req) ?? 'unknown';
+    const ip = clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY) ?? 'unknown';
     if (!forgotPasswordLimiter.check(ip)) {
       res.writeHead(429, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '請求過於頻繁，請稍後再試' }));
@@ -671,7 +668,7 @@ const server = createServer((req, res) => {
   const requestId = randomUUID();
   res.setHeader('X-Request-Id', requestId);
   runWithRequestContext(
-    { ip: clientIp(req), userAgent: req.headers['user-agent'] ?? null, requestId },
+    { ip: clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY), userAgent: req.headers['user-agent'] ?? null, requestId },
     () => handle(req, res),
   );
 });
