@@ -311,16 +311,35 @@ function renderWorkspaces() {
         const title = el('h3', { style: 'margin: 0 0 0.8rem 0; font-size:1.4rem;' }, row.name);
         card.appendChild(title);
 
-        const status = el('div', { style: 'font-size:0.9rem; margin-bottom: 0.8rem;' });
-        const statusBadge = el('span', { class: 'badge' }, row.status);
-        statusBadge.style.backgroundColor = row.status === 'Active' ? 'var(--highlight-done)' : 'var(--highlight-archived)';
-        status.appendChild(statusBadge);
+        const status = el('div', { style: 'display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; margin-bottom: 0.8rem;' });
+        const dot = el('span', { title: row.status });
+        dot.style.display = 'inline-block';
+        dot.style.width = '10px';
+        dot.style.height = '10px';
+        dot.style.borderRadius = '50%';
+        dot.style.flexShrink = '0';
+        if (row.status === 'Active') {
+          dot.style.backgroundColor = '#22c55e';
+          dot.style.border = '1px solid #22c55e';
+        } else if (row.status === 'Archived') {
+          dot.style.backgroundColor = '#9ca3af';
+          dot.style.border = '1px solid #9ca3af';
+        } else { // Deleted
+          dot.style.backgroundColor = 'transparent';
+          dot.style.border = '1.5px solid #9ca3af';
+        }
+        status.appendChild(dot);
+        status.appendChild(el('span', { style: 'font-size: 0.85rem; color: #555;' }, row.status));
         card.appendChild(status);
 
         const footer = el('div', { class: 'muted', style: 'font-size:0.8rem; border-top:1px dashed #ccc; padding-top:0.5rem; text-align:right;' }, formatTime(row.created_at));
         card.appendChild(footer);
 
         card.addEventListener('click', () => {
+          if (row.status === 'Deleted') {
+            alert('此工作區已被刪除，無法進入。');
+            return;
+          }
           state.workspaceId = row.workspace_id;
           state.workspaceName = row.name;
           navigate('#/tasks');

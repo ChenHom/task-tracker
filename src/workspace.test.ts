@@ -37,9 +37,8 @@ assert.strictEqual(listWorkspaces('u1', db)[0].status, 'archived', 'archive 後 
 assert.throws(() => renameWorkspace('u1', id, 'X', db), CommandError, 'archived 不可改名');
 assert.throws(() => archiveWorkspace('u1', id, db), CommandError, '重複 archive 應拒絕');
 
-// ── 狀態機：archived → deleted（可），deleted 從列表消失 ──
 deleteWorkspace('u1', id, db);
-assert.strictEqual(listWorkspaces('u1', db).length, 0, 'deleted 不應出現在列表');
+assert.strictEqual(listWorkspaces('u1', db)[0].status, 'deleted', 'deleted 應標記為 deleted 狀態並存在於列表');
 
 // ── 狀態機：deleted 是終態，任何操作都拒絕 ──
 assert.throws(() => deleteWorkspace('u1', id, db), CommandError, '重複 delete 應拒絕');
@@ -75,6 +74,8 @@ archiveWorkspace('u1', id2, db); // 現在可以封存
 assert.strictEqual(listWorkspaces('u1', db).find((w) => w.workspace_id === id2)?.status, 'archived', '只剩 Owner 一人時應可封存');
 
 deleteWorkspace('u1', id2, db); // 封存後、只剩 Owner 一人時也可刪除
-assert.ok(!listWorkspaces('u1', db).some((w) => w.workspace_id === id2), '刪除後應從列表消失');
+const list = listWorkspaces('u1', db);
+const found = list.find((w) => w.workspace_id === id2);
+assert.strictEqual(found?.status, 'deleted', '刪除後應標記為 deleted 狀態並存在於列表');
 
 console.log('workspace.test.ts OK');

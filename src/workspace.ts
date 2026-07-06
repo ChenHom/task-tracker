@@ -86,27 +86,28 @@ export function registerWorkspaceProjections(): void {
   registerProjection('workspace.created', (e, database) => {
     const p = e.payload as { name: string };
     database
-      .prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, created_at) VALUES (?, ?, ?, ?)')
-      .run(e.aggregate_id, p.name, 'active', e.occurred_at);
+      .prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(e.aggregate_id, p.name, 'active', e.occurred_at, e.occurred_at);
   });
   registerProjection('workspace.renamed', (e, database) => {
     const p = e.payload as { name: string };
-    database.prepare('UPDATE workspaces_read_model SET name = ? WHERE workspace_id = ?').run(p.name, e.aggregate_id);
+    database.prepare('UPDATE workspaces_read_model SET name = ?, updated_at = ? WHERE workspace_id = ?').run(p.name, e.occurred_at, e.aggregate_id);
   });
   registerProjection('workspace.archived', (e, database) => {
-    database.prepare('UPDATE workspaces_read_model SET status = ? WHERE workspace_id = ?').run('archived', e.aggregate_id);
+    database.prepare('UPDATE workspaces_read_model SET status = ?, updated_at = ? WHERE workspace_id = ?').run('archived', e.occurred_at, e.aggregate_id);
   });
   registerProjection('workspace.deleted', (e, database) => {
-    database.prepare('UPDATE workspaces_read_model SET status = ? WHERE workspace_id = ?').run('deleted', e.aggregate_id);
+    database.prepare('UPDATE workspaces_read_model SET status = ?, updated_at = ? WHERE workspace_id = ?').run('deleted', e.occurred_at, e.aggregate_id);
   });
 }
 
-// ── Query：只列出「我有 membership」的 workspace（已刪除的不列出）──
+// ── Query：只列出「我有 membership」的 workspace（含已刪除的，但已刪除排在最後）──
 export interface WorkspaceRow {
   workspace_id: string;
   name: string;
   status: WorkspaceStatus;
   created_at: string;
+  updated_at: string;
 }
 // 資源歸屬檢查用：查 workspace 現況狀態。null = 不存在。
 export function getWorkspaceStatus(workspaceId: string, database = db): WorkspaceStatus | null {
@@ -119,11 +120,11 @@ export function getWorkspaceStatus(workspaceId: string, database = db): Workspac
 export function listWorkspaces(userId: string, database = db): WorkspaceRow[] {
   return database
     .prepare(
-      `SELECT w.workspace_id, w.name, w.status, w.created_at
+      `SELECT w.workspace_id, w.name, w.status, w.created_at, COALESCE(w.updated_at, w.created_at) AS updated_at
          FROM workspaces_read_model w
          JOIN workspace_members_read_model m ON m.workspace_id = w.workspace_id
-        WHERE m.user_id = ? AND w.status != 'deleted'
-        ORDER BY w.created_at`,
+        WHERE m.user_id = ?
+        ORDER BY (w.status = 'deleted') ASC, COALESCE(w.updated_at, w.created_at) DESC`,
     )
     .all(userId) as unknown as WorkspaceRow[];
 }

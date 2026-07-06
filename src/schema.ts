@@ -51,7 +51,8 @@ export function runMigrations(db: DatabaseSync): void {
       workspace_id TEXT PRIMARY KEY,
       name         TEXT NOT NULL,
       status       TEXT NOT NULL,
-      created_at   TEXT NOT NULL
+      created_at   TEXT NOT NULL,
+      updated_at   TEXT
     );
 
     -- 權限來源：所有角色檢查都查這張。只放「已 joined」的成員（invited 未接受不進來）。
@@ -131,6 +132,12 @@ export function runMigrations(db: DatabaseSync): void {
 
   try {
     db.prepare("ALTER TABLE users ADD COLUMN name TEXT NOT NULL DEFAULT '未命名'").run();
+  } catch {
+    // 忽略如果欄位已存在
+  }
+
+  try {
+    db.prepare('ALTER TABLE workspaces_read_model ADD COLUMN updated_at TEXT').run();
   } catch {
     // 忽略如果欄位已存在
   }
