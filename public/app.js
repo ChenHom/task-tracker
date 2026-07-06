@@ -1281,7 +1281,7 @@ function renderSearch() {
   if (!requireWorkspace()) return;
   app.innerHTML = `
     <div class="sketch-box" style="padding: 1.5rem; background: #fff; margin-bottom: 2rem;">
-      <h2 style="margin-top:0;">全局搜尋</h2>
+      <h2 style="margin-top:0;">搜尋</h2>
       <form id="search-form" style="display: flex; gap: 0.5rem;">
         <input type="text" id="search-input" placeholder="輸入關鍵字搜尋任務、專案或留言..." required style="flex-grow: 1;">
         <button type="submit">搜尋</button>
