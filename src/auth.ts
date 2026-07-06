@@ -197,11 +197,17 @@ export function requireAuth(req: IncomingMessage, res: ServerResponse): string |
   return userId;
 }
 
-export function searchUserEmails(query: string, database = db): string[] {
+export interface SearchUserResult {
+  email: string;
+  name: string;
+}
+
+export function searchUserEmails(query: string, database = db): SearchUserResult[] {
   const clean = query.trim();
   if (!clean) return [];
+  const prefix = clean + '%';
   const rows = database
-    .prepare('SELECT email FROM users WHERE email LIKE ? ORDER BY email LIMIT 10')
-    .all(clean + '%') as { email: string }[];
-  return rows.map(r => r.email);
+    .prepare('SELECT email, name FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY name LIMIT 10')
+    .all(prefix, prefix) as unknown as SearchUserResult[];
+  return rows;
 }

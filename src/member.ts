@@ -138,11 +138,12 @@ export interface MemberRow {
   role: Role;
   joined_at: string;
   email: string;
+  name: string;
 }
 export function listMembers(workspaceId: string, database = db): MemberRow[] {
   return database
     .prepare(
-      `SELECT m.user_id, m.role, m.joined_at, u.email
+      `SELECT m.user_id, m.role, m.joined_at, u.email, u.name
          FROM workspace_members_read_model m
          JOIN users u ON u.id = m.user_id
         WHERE m.workspace_id = ?

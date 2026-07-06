@@ -469,6 +469,7 @@ function renderTasks(openTaskId = null) {
   let cachedMembers = [];
   let projectMap = new Map();
   let memberMap = new Map();
+  let memberEmailMap = new Map();
 
   async function loadAllData() {
     try {
@@ -481,7 +482,8 @@ function renderTasks(openTaskId = null) {
       cachedProjects = projects;
       cachedMembers = members;
       projectMap = new Map(projects.map(p => [p.project_id, p.name]));
-      memberMap = new Map(members.map(m => [m.user_id, m.email]));
+      memberMap = new Map(members.map(m => [m.user_id, m.name || m.email]));
+      memberEmailMap = new Map(members.map(m => [m.user_id, m.email]));
 
       // 填充篩選選單
       const filterSelect = document.getElementById('project-filter-select');
@@ -505,7 +507,7 @@ function renderTasks(openTaskId = null) {
       const formAssigneeSelect = document.getElementById('task-assignee-select');
       formAssigneeSelect.innerHTML = '<option value="">-- 無負責人 --</option>';
       for (const m of members) {
-        formAssigneeSelect.appendChild(el('option', { value: m.user_id }, m.email));
+        formAssigneeSelect.appendChild(el('option', { value: m.user_id }, m.name || m.email));
       }
 
       renderKanbanCards(cachedTasks, projectMap, memberMap);
@@ -589,8 +591,8 @@ function renderTasks(openTaskId = null) {
 
       // Assignee mapping
       if (task.assignee_id) {
-        const email = memberMap.get(task.assignee_id) || '未知成員';
-        midEl.appendChild(el('div', { class: 'task-card-assignee' }, `Assignee: ${email}`));
+        const name = memberMap.get(task.assignee_id) || '未知成員';
+        midEl.appendChild(el('div', { class: 'task-card-assignee' }, `Assignee: ${name}`));
       }
 
       // Due date & Last updated time
@@ -822,10 +824,12 @@ function renderTasks(openTaskId = null) {
         for (const c of rows) {
           const item = el('li', { class: 'comment-item' });
           const header = el('div', { class: 'comment-header' });
-          const authorEmail = memberMap.get(c.user_id) || `成員 (${c.user_id.slice(0, 8)})`;
-          header.appendChild(el('span', { class: 'comment-author' }, authorEmail));
+          const authorEmail = memberEmailMap.get(c.user_id) || '';
+          const authorName = memberMap.get(c.user_id) || `成員 (${c.user_id.slice(0, 8)})`;
+          const displayText = authorEmail ? `${authorName} (${authorEmail})` : authorName;
+          header.appendChild(el('span', { class: 'comment-author' }, displayText));
 
-          if (currentEmail && authorEmail === currentEmail) {
+          if (currentEmail && authorEmail && authorEmail === currentEmail) {
             header.appendChild(el('span', { class: 'badge', style: 'font-size:0.7rem; background:rgba(99,102,241,0.1); border-color:#6366f1; color:#6366f1; margin-left: 0.3rem;' }, '我'));
           }
 
@@ -988,7 +992,7 @@ function renderTasks(openTaskId = null) {
     const assigneeSelect = el('select', { style: 'width:100%;' });
     assigneeSelect.appendChild(el('option', { value: '' }, '-- 無負責人 --'));
     for (const m of cachedMembers) {
-      const opt = el('option', { value: m.user_id }, m.email);
+      const opt = el('option', { value: m.user_id }, m.name || m.email);
       if (m.user_id === currentTask.assignee_id) opt.selected = true;
       assigneeSelect.appendChild(opt);
     }
@@ -1185,6 +1189,7 @@ function renderMembers() {
     <table>
       <thead>
         <tr>
+          <th>名稱 (Name)</th>
           <th>電子信箱 (Email)</th>
           <th>角色權限 (Role)</th>
           <th>加入時間 (Joined)</th>
@@ -1205,12 +1210,13 @@ function renderMembers() {
     try {
       const rows = await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members`);
       if (rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="muted" style="text-align:center;">（尚無成員）</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center;">（尚無成員）</td></tr>';
         return;
       }
       for (const m of rows) {
         const tr = el('tr');
-        tr.appendChild(el('td', { style: 'font-weight: bold;' }, m.email));
+        tr.appendChild(el('td', { style: 'font-weight: bold;' }, m.name || ''));
+        tr.appendChild(el('td', {}, m.email));
 
         const roleTd = el('td');
         const select = el('select', { style: 'padding: 0.25rem;' });
@@ -1289,8 +1295,8 @@ function renderMembers() {
       try {
         const list = await api(`/api/users/search?q=${encodeURIComponent(val)}`);
         suggestionsDatalist.innerHTML = '';
-        for (const email of list) {
-          suggestionsDatalist.appendChild(el('option', { value: email }));
+        for (const item of list) {
+          suggestionsDatalist.appendChild(el('option', { value: item.email }, `${item.name} (${item.email})`));
         }
       } catch (err) {
         // 靜態忽略
