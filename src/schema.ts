@@ -8,6 +8,7 @@ export function runMigrations(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS users (
       id            TEXT PRIMARY KEY,
       email         TEXT NOT NULL UNIQUE,
+      name          TEXT NOT NULL CHECK (trim(name) <> ''),
       password_hash TEXT NOT NULL,
       created_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -124,6 +125,12 @@ export function runMigrations(db: DatabaseSync): void {
 
   try {
     db.prepare("ALTER TABLE comments ADD COLUMN created_at TEXT NOT NULL DEFAULT ''").run();
+  } catch {
+    // 忽略如果欄位已存在
+  }
+
+  try {
+    db.prepare("ALTER TABLE users ADD COLUMN name TEXT NOT NULL DEFAULT '未命名'").run();
   } catch {
     // 忽略如果欄位已存在
   }

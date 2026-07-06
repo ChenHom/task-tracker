@@ -20,11 +20,15 @@ export function verifyPassword(plain: string, stored: string): boolean {
 }
 
 // ── 建立使用者（無公開註冊，僅供 seeder / 內部呼叫）───────────────────
-export function createUser(email: string, password: string, database = db): string {
+export function createUser(email: string, name: string, password: string, database = db): string {
   const norm = email.trim().toLowerCase();
+  const displayName = name.trim();
+  if (!displayName) throw new CommandError('name 必填');
   const id = randomUUID();
   try {
-    database.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run(id, norm, hashPassword(password));
+    database
+      .prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)')
+      .run(id, norm, displayName, hashPassword(password));
   } catch (e) {
     if (e instanceof Error && e.message.includes('UNIQUE')) throw new CommandError(`email 已被使用：${norm}`);
     throw e;

@@ -31,14 +31,16 @@ assert.notStrictEqual(hashPassword('a'), hashPassword('a'), '同密碼不同 sal
 // ── createUser ──
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
-const newId = createUser('New@Example.com', 'whatever123', db);
+assert.throws(() => createUser('blank@example.com', '   ', 'whatever123', db), CommandError, '空白 name 應丟 CommandError');
+const newId = createUser('New@Example.com', '新使用者', 'whatever123', db);
 assert.ok(newId, 'createUser 應回傳新 id');
-const row = db.prepare('SELECT email FROM users WHERE id = ?').get(newId) as { email: string };
+const row = db.prepare('SELECT email, name FROM users WHERE id = ?').get(newId) as { email: string; name: string };
 assert.strictEqual(row.email, 'new@example.com', 'email 應正規化為小寫');
-assert.throws(() => createUser('new@example.com', 'other', db), CommandError, '重複 email 應丟 CommandError');
+assert.strictEqual(row.name, '新使用者', 'name 應被儲存');
+assert.throws(() => createUser('new@example.com', '另一位', 'other', db), CommandError, '重複 email 應丟 CommandError');
 
 // ── Session（沿用上面的 db，不污染 dev.db）──
-db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('u1', 'a@b.com', stored);
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('u1', 'a@b.com', '測試者', stored);
 
 const token = createSession('u1', db);
 assert.strictEqual(getSessionUser(token, db), 'u1', '有效 session 應回 user_id');
@@ -72,7 +74,7 @@ assert.ok(clearSessionCookie().includes('Max-Age=0'), '登出 cookie 應 Max-Age
 // ── 登入嘗試 + login_events（獨立 db，前面已把 u1 刪掉）──
 const db2 = new DatabaseSync(':memory:');
 runMigrations(db2);
-db2.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('u1', 'a@b.com', hashPassword('correct horse'));
+db2.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('u1', 'a@b.com', '登入者', hashPassword('correct horse'));
 
 assert.strictEqual(attemptLogin('a@b.com', 'correct horse', '1.2.3.4', 'ua', db2), 'u1', '正確帳密回 user_id');
 assert.strictEqual(attemptLogin(' A@B.com ', 'correct horse', null, null, db2), 'u1', 'email 大小寫/空白正規化');
@@ -101,7 +103,7 @@ assert.strictEqual(status, 401, '未登入 → requireAuth 寫 401');
 // ── 忘記密碼 / 重設密碼（獨立 db）──
 const db3 = new DatabaseSync(':memory:');
 runMigrations(db3);
-const resetUserId = createUser('reset@example.com', 'old-password', db3);
+const resetUserId = createUser('reset@example.com', '重設者', 'old-password', db3);
 
 // 存在的 email → 回 token；不存在的 email → 回 null（不洩漏帳號存在與否）
 const resetToken = createPasswordResetToken('Reset@Example.com', db3); // 大小寫/空白正規化應仍找得到
@@ -131,7 +133,7 @@ assert.ok(verifyPassword('new-password', updatedHash), '重設後新密碼應生
 assert.ok(!resetPassword(resetToken!, 'another-password', db3), '用過的 token 不應再次成功');
 
 // 過期 token：直接塞一筆過期的 password_resets（沿用 expired-session 測試的手法）
-const expiredUserId = createUser('expired-reset@example.com', 'old-password', db3);
+const expiredUserId = createUser('expired-reset@example.com', '過期者', 'old-password', db3);
 db3
   .prepare('INSERT INTO password_resets (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)')
   .run('expired-reset-row', expiredUserId, createHash('sha256').update('deadbeef').digest('hex'), '2000-01-01T00:00:00.000Z');
@@ -145,8 +147,8 @@ import { cleanupExpiredSessions } from './auth';
 
 const db4 = new DatabaseSync(':memory:');
 runMigrations(db4);
-const u1 = createUser('user1@example.com', 'pass', db4);
-const u2 = createUser('user2@example.com', 'pass', db4);
+const u1 = createUser('user1@example.com', '使用者一', 'pass', db4);
+const u2 = createUser('user2@example.com', '使用者二', 'pass', db4);
 
 // 建立有效 session
 const validToken = createSession(u1, db4);

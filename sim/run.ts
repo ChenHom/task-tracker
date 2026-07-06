@@ -26,15 +26,46 @@ interface Member {
   userId?: string;
 }
 
+interface MemberRunnerConfig {
+  email: string;
+  runner: 'claude' | 'codex';
+  model: string;
+}
+
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
-const MEMBERS: Member[] = [
-  { email: 'user02@test.local', name: '小美', user: 'user02', runner: 'claude', model: 'claude-haiku-4-5-20251001' },
-  { email: 'user03@test.local', name: '阿凱', user: 'user03', runner: 'claude', model: 'claude-haiku-4-5-20251001' },
-  { email: 'user04@test.local', name: '婷婷', user: 'user04', runner: 'codex', model: 'gpt-5.4-mini' },
-  { email: 'user05@test.local', name: '大熊', user: 'user05', runner: 'codex', model: 'gpt-5.4-mini' },
+const MEMBER_RUNNERS: MemberRunnerConfig[] = [
+  { email: 'user02@test.local', runner: 'claude', model: 'claude-haiku-4-5-20251001' },
+  { email: 'user03@test.local', runner: 'claude', model: 'claude-haiku-4-5-20251001' },
+  { email: 'user04@test.local', runner: 'codex', model: 'gpt-5.4-mini' },
+  { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.4-mini' },
 ];
+let MEMBERS: Member[] = [];
 const wt = (m: Member) => join(WORK_DIR, m.user);
 const branch = (m: Member) => `sim/${m.user}`;
+
+export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): Member[] {
+  if (!existsSync(databasePath)) throw new Error(`找不到 users database：${databasePath}。請先執行 npm run seed`);
+
+  const database = new DatabaseSync(databasePath);
+  try {
+    const select = database.prepare('SELECT email, name FROM users WHERE email = ?');
+    return MEMBER_RUNNERS.map((config) => {
+      const row = select.get(config.email) as { email: string; name: string } | undefined;
+      if (!row) throw new Error(`users 表缺少 sim member：${config.email}。請先執行 npm run seed`);
+      const name = row.name.trim();
+      if (!name) throw new Error(`users 表的 ${config.email} 缺少 name`);
+      return {
+        email: row.email,
+        name,
+        user: config.email.split('@')[0],
+        runner: config.runner,
+        model: config.model,
+      };
+    });
+  } finally {
+    database.close();
+  }
+}
 
 // 6 個真技術債（same-file 給同人避免 merge 衝突）；owner 開場照表建 task
 const BACKLOG = (byName: Record<string, string>) => [
@@ -299,6 +330,7 @@ function verifyBranches(): Record<string, { tsc: boolean; test: boolean; ahead: 
 
 async function main(): Promise<void> {
   mkdirSync(LOG_DIR, { recursive: true });
+  MEMBERS = loadMembersFromUsers();
   const since = new Date().toISOString();
   const { wsId, tag } = await bootstrap();
 
@@ -340,4 +372,6 @@ async function main(): Promise<void> {
   printStats(wsId, since, tag);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+if (require.main === module) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}

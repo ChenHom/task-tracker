@@ -22,8 +22,8 @@ runMigrations(db);
 resetProjections();
 registerMemberProjections();
 // requirePermission 會查 session → 需要 users/sessions 有資料
-db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('owner', 'o@x.com', 'x');
-db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('bob', 'b@x.com', 'x');
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('owner', 'o@x.com', 'Owner', 'x');
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('bob', 'b@x.com', 'Bob', 'x');
 
 const WS = 'ws-1';
 
@@ -86,9 +86,9 @@ assert.strictEqual(requirePermission(fakeReq(ownerTok), cap.res, 'ws-2', 'Viewer
 assert.strictEqual(cap.get(), 403, '跨 workspace 應寫 403');
 
 // ── Phase 10：權限升級 + 最後一個 Owner 防呆 ─────────────────────────
-db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('carol', 'c@x.com', 'x');
-db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('dave', 'd@x.com', 'x');
-db.prepare('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)').run('erin', 'e@x.com', 'x');
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('carol', 'c@x.com', 'Carol', 'x');
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('dave', 'd@x.com', 'Dave', 'x');
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('erin', 'e@x.com', 'Erin', 'x');
 
 const WS2 = 'ws-2b';
 seedOwner(WS2, 'owner', db);
