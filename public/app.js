@@ -595,7 +595,6 @@ function renderTasks(openTaskId = null) {
       renderButton();
     }
   }
-  `;
 
   let cachedTasks = [];
   let cachedProjects = [];
