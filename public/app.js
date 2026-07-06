@@ -308,10 +308,7 @@ function renderWorkspaces() {
       for (const row of rows) {
         const card = el('div', { class: 'sketch-box task-card', style: 'padding: 1.2rem; background: #fff; cursor: pointer;' });
         
-        const title = el('h3', { style: 'margin: 0 0 0.8rem 0; font-size:1.4rem;' }, row.name);
-        card.appendChild(title);
-
-        const status = el('div', { style: 'display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; margin-bottom: 0.8rem;' });
+        const title = el('h3', { style: 'margin: 0 0 0.8rem 0; font-size:1.4rem; display: flex; align-items: center; gap: 0.5rem;' });
         const dot = el('span', { title: row.status });
         dot.style.display = 'inline-block';
         dot.style.width = '10px';
@@ -328,8 +325,11 @@ function renderWorkspaces() {
           dot.style.backgroundColor = 'transparent';
           dot.style.border = '1.5px solid #9ca3af';
         }
-        status.appendChild(dot);
-        status.appendChild(el('span', { style: 'font-size: 0.85rem; color: #555;' }, row.status));
+        title.appendChild(dot);
+        title.appendChild(document.createTextNode(row.name));
+        card.appendChild(title);
+
+        const status = el('div', { style: 'font-size: 0.85rem; color: #555; margin-bottom: 0.8rem;' }, row.status);
         card.appendChild(status);
 
         const footer = el('div', { class: 'muted', style: 'font-size:0.8rem; border-top:1px dashed #ccc; padding-top:0.5rem; text-align:right;' }, formatTime(row.created_at));
