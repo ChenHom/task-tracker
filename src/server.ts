@@ -167,6 +167,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
+  if (req.url === '/api/auth/me' && req.method === 'GET') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    const user = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(userId) as { id: string; email: string; name: string };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(user));
+    return;
+  }
+
   if (req.url === '/api/auth/forgot-password' && req.method === 'POST') {
     const ip = clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY) ?? 'unknown';
     if (!forgotPasswordLimiter.check(ip)) {

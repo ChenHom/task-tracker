@@ -101,7 +101,8 @@ function updateSidebar() {
   const wsNameEl = document.getElementById('sidebar-ws-name');
 
   if (userEmail) {
-    userEmailEl.textContent = userEmail;
+    const userName = sessionStorage.getItem('user_name');
+    userEmailEl.textContent = userName ? `${userName} (${userEmail})` : userEmail;
     logoutBtn.style.display = 'inline-flex';
   } else {
     userEmailEl.textContent = '';
@@ -147,7 +148,7 @@ function route() {
 }
 
 window.addEventListener('hashchange', route);
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('logout-btn').addEventListener('click', async () => {
     try {
       await api('/api/auth/logout', { method: 'POST' });
@@ -158,8 +159,23 @@ window.addEventListener('DOMContentLoaded', () => {
     state.workspaceName = null;
     state.taskId = null;
     sessionStorage.removeItem('user_email');
+    sessionStorage.removeItem('user_name');
     navigate('#/login');
   });
+
+  try {
+    const user = await api('/api/auth/me');
+    if (user && user.email) {
+      sessionStorage.setItem('user_email', user.email);
+      if (user.name) {
+        sessionStorage.setItem('user_name', user.name);
+      }
+    }
+  } catch (err) {
+    sessionStorage.removeItem('user_email');
+    sessionStorage.removeItem('user_name');
+  }
+
   route();
 });
 
@@ -193,6 +209,14 @@ function renderLogin() {
     try {
       await api('/api/auth/login', { method: 'POST', body: { email, password } });
       sessionStorage.setItem('user_email', email);
+      try {
+        const user = await api('/api/auth/me');
+        if (user && user.name) {
+          sessionStorage.setItem('user_name', user.name);
+        }
+      } catch (meErr) {
+        // ignore
+      }
       navigate('#/workspaces');
     } catch (err) {
       showError('login-error', err);
