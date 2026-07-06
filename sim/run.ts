@@ -15,7 +15,7 @@ const WORK_DIR = join(ROOT, 'sim-work');
 const SMOKE = process.argv.includes('--smoke');
 const PASSWORD = 'test1234';
 const MEMBER_TIMEOUT = 12 * 60 * 1000;
-const OWNER_TIMEOUT = 15 * 60 * 1000;
+const OWNER_TIMEOUT = 25 * 60 * 1000; // opus 審查/協調較久；driver 已把機械工作（跑測試）分擔掉，這是安全上限
 
 interface Member {
   email: string;
@@ -205,25 +205,28 @@ ${API_RULES(jar)}
 結束時輸出審查總結（幾件過、幾件退、退的原因、幾件上報）。`;
 }
 
-function ownerClosePrompt(wsId: string, tag: string): string {
+function ownerClosePrompt(wsId: string, tag: string, verified: Record<string, { tsc: boolean; test: boolean; ahead: number }>): string {
   const jar = join(LOG_DIR, 'jar-owner-close.txt');
-  const map = MEMBERS.map((m) => `- ${m.name} → ${branch(m)}`).join('\n');
+  const map = MEMBERS.map((m) => {
+    const v = verified[branch(m)];
+    const status = !v || v.ahead === 0 ? '（無 commit）' : `tsc ${v.tsc ? '✓' : '✗'} / test ${v.test ? '✓' : '✗'}（${v.ahead} commit）`;
+    return `- ${m.name} → ${branch(m)}：${status}`;
+  }).join('\n');
   return `你是「${OWNER.name}」（${OWNER.email}），Owner。sprint 收尾：審查通過的合併進 master，總結全場。
-workspace：${wsId}。目前目錄是主 repo（master）。成員 branch：
+workspace：${wsId}。目前目錄是主 repo（master）。
+CI（driver）已幫你把每個 branch 對 master 獨立跑過 tsc + test，結果如下——你不用自己重跑各 branch 的測試：
 ${map}
 ${API_RULES(jar)}
-本次流程：
+本次流程（省時要點：信任上面 CI 預跑結果，不要逐 branch 重跑測試）：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks
-2. 對每個 status=Review 的 task，依其 branch 逐一（一次一個 branch）：
-   a. git diff master...<branch> 最後確認
-   b. git merge --no-ff <branch> -m "merge: <task 標題>"
-   c. npx tsc --noEmit && npm test —— 兩者都過才算
-   d. 過 → task 留言「已合併進 master（附 merge commit hash）」→ PATCH {"status":"Done"}
-   e. 爆 → 衝突用 git merge --abort、測試失敗用 git reset --hard ORIG_HEAD 還原 → task 留言貼失敗原因 → PATCH {"status":"Doing"} 退回
-3. 還在 Todo/Doing 的 task：留言說明未完成原因與後續安排
-4. 每個 [BUG] task：留言 triage 結論、視嚴重度 PATCH priority；留言含 [ESCALATE] 且你解不了的：留言「已上報 harness 上層處理」
-5. 挑一個活動最多的 task，GET ${BASE}/api/audit?aggregate_id=<task_id>，在總結描述它的完整生命週期
-6. 輸出 sprint 總結（5 行內：合了幾件、退了幾件、[BUG] 幾件、學到什麼）
+2. 對每個 status=Review 且 CI 顯示 tsc/test 皆 ✓ 的 task，依其 branch 逐一 merge（一次一個）：
+   a. git diff master...<branch> 快速看 code（審查重點，不用跑測試）
+   b. git merge --no-ff <branch> -m "merge: <task 標題>"；若衝突 git merge --abort 並在 task 留言請該成員 rebase
+   c. task 留言「已合併進 master（附 merge commit hash）」→ PATCH {"status":"Done"}
+3. 全部 merge 完成後，跑「一次」npx tsc --noEmit && npm test 做整合驗證（不是每 branch 一次）；若整合失敗，git log 找出問題 merge、git reset --hard <該 merge 前> 退回它、在對應 task 留言退回原因 + PATCH {"status":"Doing"}
+4. CI 顯示 tsc 或 test ✗ 的 branch：不要 merge，直接在 task 留言具體問題 + PATCH {"status":"Doing"} 退回
+5. 還在 Todo/Doing 的 task：留言說明未完成原因；[BUG]/[ESCALATE] task：triage 留言、解不了的標「已上報 harness 上層處理」
+6. 輸出 sprint 總結（5 行內：合了幾件、退了幾件、學到什麼）
 （回退錨點 tag：${tag}，僅供你知道，不要動它）`;
 }
 
@@ -275,6 +278,25 @@ function commitCodexWork(m: Member, round: number): boolean {
   return true;
 }
 
+// owner 收尾前，driver 對每個 branch 獨立預跑 tsc+test（機械工作交給 code，不佔 owner 的 LLM session）。
+// 在各自 worktree 跑（主 repo 尚未 merge）。結果注入 ownerClosePrompt，owner 只做判斷與 merge。
+function verifyBranches(): Record<string, { tsc: boolean; test: boolean; ahead: number }> {
+  const out: Record<string, { tsc: boolean; test: boolean; ahead: number }> = {};
+  for (const m of MEMBERS) {
+    if (!existsSync(wt(m))) { out[branch(m)] = { tsc: false, test: false, ahead: 0 }; continue; }
+    const ahead = Number(git(['rev-list', '--count', `master..${branch(m)}`]));
+    if (!ahead) { out[branch(m)] = { tsc: false, test: false, ahead: 0 }; continue; }
+    const run = (cmd: string, args: string[]) => {
+      try { execFileSync(cmd, args, { cwd: wt(m), stdio: 'ignore', timeout: 3 * 60 * 1000 }); return true; } catch { return false; }
+    };
+    const tsc = run('npx', ['tsc', '--noEmit']);
+    const test = run('npm', ['test']);
+    out[branch(m)] = { tsc, test, ahead };
+    console.log(`[CI預跑] ${branch(m)}: tsc ${tsc ? '✓' : '✗'} / test ${test ? '✓' : '✗'}（${ahead} commit）`);
+  }
+  return out;
+}
+
 async function main(): Promise<void> {
   mkdirSync(LOG_DIR, { recursive: true });
   const since = new Date().toISOString();
@@ -313,7 +335,8 @@ async function main(): Promise<void> {
     }
   }));
 
-  await runSession('owner-收尾合併', 'claude', 'claude-opus-4-8', ownerClosePrompt(wsId, tag), ownerOpts);
+  const verified = verifyBranches(); // driver 預跑，把測試機械工作從 owner session 移出
+  await runSession('owner-收尾合併', 'claude', 'claude-opus-4-8', ownerClosePrompt(wsId, tag, verified), ownerOpts);
   printStats(wsId, since, tag);
 }
 
