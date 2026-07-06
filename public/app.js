@@ -568,7 +568,7 @@ function renderTasks(openTaskId = null) {
         descEl.onclick = () => navigate(`#/task/${task.task_id}`);
         card.appendChild(descEl);
       } else {
-        card.appendChild(el('p', { class: 'task-card-desc', style: 'visibility: hidden;' }, 'placeholder'));
+        card.appendChild(el('p', { class: 'task-card-desc', style: 'visibility: hidden; height: 3.6rem; margin: 0.3rem 0;' }, 'placeholder'));
       }
 
       // Meta (Priority, Project)
@@ -1099,7 +1099,9 @@ function renderTasks(openTaskId = null) {
     rightEl.appendChild(attachSec);
     detailContainer.appendChild(rightEl);
 
-    container.appendChild(detailContainer);
+    const scrollArea = el('div', { class: 'modal-scroll-area' });
+    scrollArea.appendChild(detailContainer);
+    container.appendChild(scrollArea);
     overlay.appendChild(container);
     document.body.appendChild(overlay);
 
