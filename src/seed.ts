@@ -39,6 +39,12 @@ function randomName(): string {
   return RANDOM_NAME_POOL[Math.floor(Math.random() * RANDOM_NAME_POOL.length)];
 }
 
+function backfillDefaultName(email: string, name: string, database = db): void {
+  database
+    .prepare("UPDATE users SET name = ? WHERE email = ? AND (trim(name) = '' OR name = '未命名')")
+    .run(name, email);
+}
+
 // idempotent：email 固定可預期，重複執行時 createUser 對已存在的 email 丟 CommandError，直接跳過。
 export function seedUsers(database = db): void {
   for (let i = 1; i <= COUNT; i++) {
@@ -48,6 +54,7 @@ export function seedUsers(database = db): void {
       createUser(email, name, PASSWORD, database);
     } catch (e) {
       if (!(e instanceof CommandError)) throw e;
+      backfillDefaultName(email, name, database);
     }
   }
 }

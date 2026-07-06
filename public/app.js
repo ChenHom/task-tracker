@@ -280,7 +280,7 @@ function renderResetPassword(token) {
 // ── 畫面：Workspace 列表 ──────────────────────────────────────────
 function renderWorkspaces() {
   app.innerHTML = `
-    <div class="sketch-box" style="padding: 1.5rem; background: #fff; margin-bottom: 2rem;">
+    <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 2rem;">
       <h2 style="margin-top: 0;">建立工作區 (Workspace)</h2>
       <form id="create-ws-form" style="display: flex; gap: 0.5rem; max-width: 500px;">
         <input type="text" id="ws-name-input" placeholder="例如: 個人專案 / 團隊工作區" required style="flex-grow: 1;">
@@ -1173,7 +1173,7 @@ function renderTasks(openTaskId = null) {
 function renderMembers() {
   if (!requireWorkspace()) return;
   app.innerHTML = `
-    <div class="sketch-box" style="padding: 1.5rem; background: #fff; margin-bottom: 2rem;">
+    <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 2rem;">
       <h2 style="margin-top: 0;">邀請新成員</h2>
       <form id="invite-form" style="display: flex; gap: 0.5rem; flex-wrap: wrap; max-width: 600px;">
         <input type="email" id="invite-email" list="email-suggestions" placeholder="成員 Email 帳號" required style="flex-grow: 1;">
@@ -1310,7 +1310,7 @@ function renderMembers() {
 function renderSearch() {
   if (!requireWorkspace()) return;
   app.innerHTML = `
-    <div class="sketch-box" style="padding: 1.5rem; background: #fff; margin-bottom: 2rem;">
+    <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 2rem;">
       <h2 style="margin-top:0;">搜尋</h2>
       <form id="search-form" style="display: flex; gap: 0.5rem;">
         <input type="text" id="search-input" placeholder="輸入關鍵字搜尋任務、專案或留言..." required style="flex-grow: 1;">
@@ -1387,7 +1387,7 @@ function renderSearch() {
 // ── 畫面：審計日誌 (Audit Trail) ──────────────────────────────────
 function renderAudit() {
   app.innerHTML = `
-    <div class="sketch-box" style="padding: 1.5rem; background: #fff; margin-bottom: 2rem;">
+    <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 2rem;">
       <h2 style="margin-top: 0;">工作區審計日誌</h2>
       <p class="muted" style="font-size:0.95rem; margin-bottom: 1.2rem;">輸入要查詢的聚合實體 ID (Aggregate ID) 進行完整事件流追蹤 (例如 Workspace UUID 或 Task UUID)。</p>
       <form id="audit-form" style="display: flex; gap: 0.5rem; max-width: 600px;">
