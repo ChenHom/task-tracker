@@ -80,10 +80,18 @@ async function bootstrap(): Promise<{ wsId: string; tag: string }> {
   const tag = `sim-run-${Date.now()}`;
   git(['tag', tag]);
 
-  // worktrees（已存在就報錯，附清理指令——不自動刪上一場成果）
+  // 工作區（已存在就報錯，附清理指令——不自動刪上一場成果）
+  // claude member 用 worktree；codex member 用 local clone——codex sandbox 只能寫
+  // workspace 目錄，worktree 的 git 元資料在主 repo .git/ 裡會被擋（實測：commit 失敗），
+  // clone 的 .git 完整在 workspace 內就沒這問題。owner 審查前 driver 會 fetch 回主 repo。
   for (const m of MEMBERS) {
-    if (existsSync(wt(m))) throw new Error(`worktree ${wt(m)} 已存在。清理：git worktree remove sim-work/${m.user} --force && git branch -D sim/${m.user}`);
-    git(['worktree', 'add', wt(m), '-b', branch(m), 'master']);
+    if (existsSync(wt(m))) throw new Error(`${wt(m)} 已存在。清理：${m.runner === 'codex' ? `rm -rf sim-work/${m.user}` : `git worktree remove sim-work/${m.user} --force`} && git branch -D sim/${m.user} 2>/dev/null`);
+    if (m.runner === 'codex') {
+      git(['clone', '--quiet', ROOT, wt(m)]);
+      git(['checkout', '-q', '-b', branch(m)], wt(m));
+    } else {
+      git(['worktree', 'add', wt(m), '-b', branch(m), 'master']);
+    }
     symlinkSync(join(ROOT, 'node_modules'), join(wt(m), 'node_modules'));
   }
 
@@ -139,7 +147,8 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 - 登入：curl -s -c ${jar} -X POST ${BASE}/api/auth/login -H 'Content-Type: application/json' -d '{"email":"<你的email>","password":"${PASSWORD}"}'，之後帶 -b ${jar}
 - 狀態機：Todo→Doing→Review→Done 相鄰前進或一步回退；PATCH /api/tasks/<id> 一次只能改一個欄位（如 {"status":"Doing"}）；400/409 就重新 GET 再決定
 - 留言 POST /api/tasks/<id>/comments {"content":"..."}：正體中文、像真的工程師、具體（做法/卡點/驗證結果）
-- 遇疑似系統 bug：自查重試一次，可重現就建 [BUG] task（POST /api/workspaces/<ws>/tasks，title 以 [BUG] 開頭，description 含重現步驟/預期 vs 實際/原始回應，priority High）`;
+- 遇疑似系統 bug：自查重試一次，可重現就建 [BUG] task（POST /api/workspaces/<ws>/tasks，title 以 [BUG] 開頭，description 含重現步驟/預期 vs 實際/原始回應，priority High）
+- 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層`;
 
 function memberPrompt(m: Member, wsId: string, round: number): string {
   const jar = join(LOG_DIR, `jar-${m.user}.txt`);
@@ -194,7 +203,8 @@ ${API_RULES(jar)}
    c. 合格 → 留言具體肯定＋「中場審查通過，收尾時合併」（狀態保持 Review）
    d. 不合格 → 留言具體問題（引用檔案與行為）→ PATCH {"status":"Doing"} 退回
 3. 對還在 Todo/Doing 沒動靜的 task 留一則催辦或協助留言
-結束時輸出審查總結（幾件過、幾件退、退的原因）。`;
+4. 留言含 [ESCALATE] 的 task：能給指導就留言具體指導；屬於環境/基礎設施問題你也解不了的 → 留言「已上報 harness 上層處理」並保持該 task 現狀
+結束時輸出審查總結（幾件過、幾件退、退的原因、幾件上報）。`;
 }
 
 function ownerClosePrompt(wsId: string, tag: string): string {
@@ -213,7 +223,7 @@ ${API_RULES(jar)}
    d. 過 → task 留言「已合併進 master（附 merge commit hash）」→ PATCH {"status":"Done"}
    e. 爆 → 衝突用 git merge --abort、測試失敗用 git reset --hard ORIG_HEAD 還原 → task 留言貼失敗原因 → PATCH {"status":"Doing"} 退回
 3. 還在 Todo/Doing 的 task：留言說明未完成原因與後續安排
-4. 每個 [BUG] task：留言 triage 結論、視嚴重度 PATCH priority
+4. 每個 [BUG] task：留言 triage 結論、視嚴重度 PATCH priority；留言含 [ESCALATE] 且你解不了的：留言「已上報 harness 上層處理」
 5. 挑一個活動最多的 task，GET ${BASE}/api/audit?aggregate_id=<task_id>，在總結描述它的完整生命週期
 6. 輸出 sprint 總結（5 行內：合了幾件、退了幾件、[BUG] 幾件、學到什麼）
 （回退錨點 tag：${tag}，僅供你知道，不要動它）`;
@@ -233,6 +243,12 @@ function printStats(wsId: string, since: string, tag: string): void {
   const bugs = tasks.filter((t) => String(t.title).startsWith('[BUG]'));
   console.log(`[BUG] tasks: ${bugs.length}`);
   for (const b of bugs) console.log(`  - [${b.status}/${b.priority}] ${b.title}`);
+  const esc = db.prepare(
+    `SELECT c.content, t.title FROM comments c JOIN tasks_read_model t ON t.task_id = c.task_id
+      WHERE t.workspace_id = ? AND c.content LIKE '%[ESCALATE]%'`,
+  ).all(wsId) as any[];
+  console.log(`[ESCALATE] 上報留言: ${esc.length}（owner 解不了的環境問題，需要上層/使用者處理）`);
+  for (const e of esc) console.log(`  - ${e.title}: ${String(e.content).slice(0, 100)}`);
   try {
     const merged = git(['log', '--oneline', `${tag}..master`]);
     console.log(`\nmaster 自 ${tag} 以來：\n${merged || '（無新 commit）'}`);
@@ -247,6 +263,18 @@ function printStats(wsId: string, since: string, tag: string): void {
 // ── 主流程 ──────────────────────────────────────────────────────────
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const jitter = (minS: number, maxS: number) => (minS + Math.random() * (maxS - minS)) * 1000;
+
+// codex member 在 local clone 工作，owner 在主 repo 審——審查前把 clone 的 branch 拉回來
+function fetchCodexBranches(): void {
+  for (const m of MEMBERS.filter((x) => x.runner === 'codex')) {
+    try {
+      git(['fetch', wt(m), `${branch(m)}:${branch(m)}`]);
+      console.log(`[fetch] ${branch(m)} 已同步回主 repo`);
+    } catch (e) {
+      console.log(`[fetch] ${branch(m)} 無新 commit 可拉`);
+    }
+  }
+}
 
 async function main(): Promise<void> {
   mkdirSync(LOG_DIR, { recursive: true });
@@ -270,6 +298,7 @@ async function main(): Promise<void> {
     await runSession(`${m.name}-r1`, m.runner, m.model, memberPrompt(m, wsId, 1), memberOpts(m));
   }));
 
+  fetchCodexBranches();
   await runSession('owner-中場審查', 'claude', 'claude-opus-4-8', ownerMidPrompt(wsId), ownerOpts);
 
   await Promise.all(MEMBERS.map(async (m) => {
@@ -280,6 +309,7 @@ async function main(): Promise<void> {
     }
   }));
 
+  fetchCodexBranches();
   await runSession('owner-收尾合併', 'claude', 'claude-opus-4-8', ownerClosePrompt(wsId, tag), ownerOpts);
   printStats(wsId, since, tag);
 }
