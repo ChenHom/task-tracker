@@ -72,6 +72,12 @@ export function destroySessionsForUser(userId: string, database = db): void {
   database.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
 }
 
+// 清理所有過期的 session（server 啟動時自動呼叫）。
+export function cleanupExpiredSessions(database = db): void {
+  const now = new Date().toISOString();
+  database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now);
+}
+
 // ── Cookie ─────────────────────────────────────────────────────────
 export function parseCookies(header: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};

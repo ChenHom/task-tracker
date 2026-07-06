@@ -17,6 +17,7 @@ import {
   resetPassword,
   getUserIdByEmail,
   SESSION_COOKIE,
+  cleanupExpiredSessions,
 } from './auth';
 import { CommandError } from './eventStore';
 import { createWorkspace, renameWorkspace, listWorkspaces, registerWorkspaceProjections } from './workspace';
@@ -672,6 +673,8 @@ const server = createServer((req, res) => {
     () => handle(req, res),
   );
 });
+
+cleanupExpiredSessions();
 
 const PORT = 3000;
 server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
