@@ -73,7 +73,8 @@ export function runMigrations(db: DatabaseSync): void {
       priority    TEXT NOT NULL,
       assignee_id TEXT,
       due_at      TEXT,
-      version     INTEGER NOT NULL
+      version     INTEGER NOT NULL,
+      updated_at  TEXT
     );
 
     -- Project：DESIGN 指定不走 ES，這張就是主表（傳統 CRUD 直接讀寫，無 event_store / projection）。
@@ -88,7 +89,8 @@ export function runMigrations(db: DatabaseSync): void {
       comment_id TEXT PRIMARY KEY,
       task_id    TEXT NOT NULL,
       user_id    TEXT NOT NULL,
-      content    TEXT NOT NULL
+      content    TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT ''
     );
 
     -- Attachment：metadata 進 DB，實體檔在 data/attachments/。original_name 只供顯示（不信任、不當路徑）；
@@ -113,4 +115,16 @@ export function runMigrations(db: DatabaseSync): void {
       used_at    TEXT
     );
   `);
+
+  try {
+    db.prepare('ALTER TABLE tasks_read_model ADD COLUMN updated_at TEXT').run();
+  } catch {
+    // 忽略如果欄位已存在
+  }
+
+  try {
+    db.prepare("ALTER TABLE comments ADD COLUMN created_at TEXT NOT NULL DEFAULT ''").run();
+  } catch {
+    // 忽略如果欄位已存在
+  }
 }

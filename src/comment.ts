@@ -19,19 +19,21 @@ export interface CommentRow {
   task_id: string;
   user_id: string;
   content: string;
+  created_at: string;
 }
 
 export function createComment(taskId: string, userId: string, content: unknown, database = db): string {
   if (getTaskWorkspaceId(taskId, database) === null) throw new CommandError('task 不存在'); // 不對孤兒 task 留言
   const clean = validateContent(content);
   const id = randomUUID();
-  database.prepare('INSERT INTO comments (comment_id, task_id, user_id, content) VALUES (?, ?, ?, ?)').run(id, taskId, userId, clean);
+  const now = new Date().toISOString();
+  database.prepare('INSERT INTO comments (comment_id, task_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)').run(id, taskId, userId, clean, now);
   return id;
 }
 
 export function listComments(taskId: string, database = db): CommentRow[] {
   return database
-    .prepare('SELECT comment_id, task_id, user_id, content FROM comments WHERE task_id = ? ORDER BY rowid')
+    .prepare('SELECT comment_id, task_id, user_id, content, created_at FROM comments WHERE task_id = ? ORDER BY rowid')
     .all(taskId) as unknown as CommentRow[];
 }
 

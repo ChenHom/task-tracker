@@ -16,6 +16,17 @@ function navigate(hash) {
   location.hash = hash;
 }
 
+function formatTime(isoStr) {
+  if (!isoStr) return '未知時間';
+  const date = new Date(isoStr);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d} ${hh}:${mm}`;
+}
+
 // ── fetch 包裝 ──────────────────────────────────────────────────────
 async function api(path, { method = 'GET', body } = {}) {
   const opts = { method, headers: {} };
@@ -556,6 +567,8 @@ function renderTasks(openTaskId = null) {
         const descEl = el('p', { class: 'task-card-desc', style: 'cursor: pointer;' }, task.description);
         descEl.onclick = () => navigate(`#/task/${task.task_id}`);
         card.appendChild(descEl);
+      } else {
+        card.appendChild(el('p', { class: 'task-card-desc', style: 'visibility: hidden;' }, 'placeholder'));
       }
 
       // Meta (Priority, Project)
@@ -573,13 +586,25 @@ function renderTasks(openTaskId = null) {
       if (task.assignee_id) {
         const email = memberMap.get(task.assignee_id) || '未知成員';
         card.appendChild(el('div', { class: 'task-card-assignee' }, `Assignee: ${email}`));
+      } else {
+        // Placeholder to align vertical spacing
+        card.appendChild(el('div', { class: 'task-card-assignee', style: 'visibility: hidden;' }, 'placeholder'));
       }
 
-      // Due date mapping
+      // Due date & Last updated time
+      const timeContainer = el('div', { style: 'display: flex; flex-direction: column; gap: 0.1rem;' });
       if (task.due_at) {
         const d = new Date(task.due_at).toISOString().split('T')[0];
-        card.appendChild(el('div', { class: 'muted', style: 'font-size:0.8rem;' }, `Due: ${d}`));
+        timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;' }, `Due: ${d}`));
+      } else {
+        timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem; visibility: hidden;' }, 'placeholder'));
       }
+      if (task.updated_at) {
+        timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;' }, `更新: ${formatTime(task.updated_at)}`));
+      } else {
+        timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem; visibility: hidden;' }, 'placeholder'));
+      }
+      card.appendChild(timeContainer);
 
       // Transitions & Action buttons
       const actionsEl = el('div', { class: 'task-card-actions' });
@@ -675,13 +700,45 @@ function renderTasks(openTaskId = null) {
       return;
     }
 
+    let titleInput, descInput;
+    const originalTitle = currentTask.title;
+    const originalDesc = currentTask.description || '';
+
+    const isModified = () => {
+      const curTitle = (titleInput ? titleInput.value.trim() : originalTitle);
+      const curDesc = (descInput ? descInput.value : originalDesc);
+      return curTitle !== originalTitle || curDesc !== originalDesc;
+    };
+
+    const closeModalOrShake = () => {
+      if (isModified()) {
+        closeBtn.classList.add('shake-anim');
+        closeBtn.addEventListener('animationend', () => {
+          closeBtn.classList.remove('shake-anim');
+        }, { once: true });
+      } else {
+        cleanupAndClose();
+      }
+    };
+
+    const cleanupAndClose = () => {
+      document.removeEventListener('keydown', escHandler);
+      overlay.remove();
+      navigate('#/tasks');
+    };
+
+    const escHandler = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeModalOrShake();
+      }
+    };
+    document.addEventListener('keydown', escHandler);
+
     const overlay = el('div', { id: 'task-detail-modal', class: 'modal-overlay' });
-    
-    // 點擊背景關閉並返回看板
     overlay.onclick = (e) => {
       if (e.target === overlay) {
-        overlay.remove();
-        navigate('#/tasks');
+        closeModalOrShake();
       }
     };
 
@@ -689,10 +746,7 @@ function renderTasks(openTaskId = null) {
     
     // 關閉按鈕 [X]
     const closeBtn = el('button', { type: 'button', class: 'modal-close-btn' }, '×');
-    closeBtn.onclick = () => {
-      overlay.remove();
-      navigate('#/tasks');
-    };
+    closeBtn.onclick = closeModalOrShake;
     container.appendChild(closeBtn);
 
     // Modal Content Grid
@@ -705,11 +759,11 @@ function renderTasks(openTaskId = null) {
     const contentSec = el('div', { class: 'detail-section sketch-box' });
     
     contentSec.appendChild(el('label', { style: 'font-size:1.15rem; font-weight:bold; display:block; margin-bottom:0.3rem;' }, '任務名稱 *'));
-    const titleInput = el('input', { type: 'text', value: currentTask.title, required: true, style: 'width:100%; margin-bottom:1rem;' });
+    titleInput = el('input', { type: 'text', value: currentTask.title, required: true, style: 'width:100%; margin-bottom:1rem;' });
     contentSec.appendChild(titleInput);
     
     contentSec.appendChild(el('label', { style: 'font-size:1.15rem; font-weight:bold; display:block; margin-bottom:0.3rem;' }, '任務詳細描述'));
-    const descInput = el('textarea', { rows: '5', placeholder: '無描述。輸入些什麼以建立任務說明...', style: 'width:100%; margin-bottom:1rem;' });
+    descInput = el('textarea', { rows: '5', placeholder: '無描述。輸入些什麼以建立任務說明...', style: 'width:100%; margin-bottom:1rem;' });
     descInput.value = currentTask.description || '';
     contentSec.appendChild(descInput);
     
@@ -742,7 +796,7 @@ function renderTasks(openTaskId = null) {
 
     // Comments Section
     const commSec = el('div', { class: 'detail-section sketch-box' });
-    commSec.appendChild(el('h3', {}, '留言板 (Comments)'));
+    commSec.appendChild(el('h3', {}, '留言板'));
     const commList = el('ul', { class: 'comments-timeline' });
     const commForm = el('form', { style: 'margin-top:1rem; display:flex; gap:0.5rem;' });
     const commInput = el('input', { type: 'text', placeholder: '撰寫您的留言...', required: true, style: 'flex-grow:1;' });
@@ -771,24 +825,64 @@ function renderTasks(openTaskId = null) {
           header.appendChild(el('span', { class: 'comment-author' }, authorEmail));
 
           if (currentEmail && authorEmail === currentEmail) {
-            header.appendChild(el('span', { class: 'badge', style: 'font-size:0.7rem; background:rgba(99,102,241,0.1); border-color:#6366f1; color:#6366f1;' }, '我'));
+            header.appendChild(el('span', { class: 'badge', style: 'font-size:0.7rem; background:rgba(99,102,241,0.1); border-color:#6366f1; color:#6366f1; margin-left: 0.3rem;' }, '我'));
           }
+
+          if (c.created_at) {
+            header.appendChild(el('span', { class: 'muted', style: 'font-size:0.75rem; margin-left: auto;' }, formatTime(c.created_at)));
+          }
+
           item.appendChild(header);
-          item.appendChild(el('div', { class: 'comment-body' }, c.content));
+
+          const bodyContainer = el('div', { class: 'comment-body' });
+          const contentText = el('span', { class: 'comment-content-text' }, c.content);
+          bodyContainer.appendChild(contentText);
+          item.appendChild(bodyContainer);
 
           if (currentEmail && authorEmail === currentEmail) {
-            const actions = el('div', { class: 'comment-actions' });
-            const delBtn = el('button', { type: 'button', class: 'btn-danger' }, '刪除');
-            delBtn.onclick = async () => {
-              if (!confirm('確定要刪除留言嗎？')) return;
+            const actions = el('div', { class: 'comment-actions', style: 'margin-top:0.3rem;' });
+            const editBtn = el('button', { type: 'button', class: 'btn-secondary', style: 'font-size:0.7rem; padding:0.15rem 0.4rem;' }, '編輯');
+            
+            editBtn.onclick = () => {
+              if (editBtn.textContent === '編輯') {
+                const input = el('input', { type: 'text', value: c.content, style: 'width: 100%; font-size: 0.85rem;' });
+                bodyContainer.textContent = '';
+                bodyContainer.appendChild(input);
+                input.focus();
+                editBtn.textContent = '儲存';
+                
+                input.onkeydown = async (ev) => {
+                  if (ev.key === 'Enter') {
+                    ev.preventDefault();
+                    await saveEdit(input.value);
+                  } else if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    await loadComments();
+                  }
+                };
+              } else {
+                const input = bodyContainer.querySelector('input');
+                if (input) {
+                  saveEdit(input.value);
+                }
+              }
+            };
+
+            async function saveEdit(newVal) {
+              const val = newVal.trim();
+              if (!val) {
+                alert('留言內容不可為空！');
+                return;
+              }
               try {
-                await api(`/api/comments/${c.comment_id}`, { method: 'DELETE' });
+                await api(`/api/comments/${c.comment_id}`, { method: 'PATCH', body: { content: val } });
                 await loadComments();
               } catch (err) {
                 alert(err.message);
               }
-            };
-            actions.appendChild(delBtn);
+            }
+
+            actions.appendChild(editBtn);
             item.appendChild(actions);
           }
           commList.appendChild(item);
@@ -823,13 +917,17 @@ function renderTasks(openTaskId = null) {
     
     // Status
     attrSec.appendChild(el('label', {}, '看板狀態'));
-    const statusBadge = el('div', { class: 'badge', style: 'display:block; text-align:center; font-size:1.1rem; padding:0.3rem;' }, currentTask.status);
+    const statusLine = el('div', { class: 'status-line-container' });
+    const leftSlot = el('div', { class: 'status-btn-slot left-slot' });
+    const badgeSlot = el('div', { class: 'status-badge-slot' });
+    const rightSlot = el('div', { class: 'status-btn-slot right-slot' });
+
+    const statusBadge = el('div', { class: 'badge', style: 'display:block; text-align:center; font-size:1.1rem; padding:0.3rem; margin:0;' }, currentTask.status);
     statusBadge.style.backgroundColor = `var(--highlight-${currentTask.status.toLowerCase()})`;
-    attrSec.appendChild(statusBadge);
-    
-    const flowBtns = el('div', { style: 'display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.6rem; justify-content:center;' });
+    badgeSlot.appendChild(statusBadge);
+
     function createTransitionBtn(text, status) {
-      const btn = el('button', { type: 'button', style: 'font-size:0.8rem; padding:0.2rem 0.5rem;' }, text);
+      const btn = el('button', { type: 'button', style: 'width:100%; font-size:0.8rem; padding:0.25rem 0.4rem; white-space:nowrap; text-overflow:ellipsis; overflow:hidden;' }, text);
       btn.onclick = async () => {
         // 限制：切換至 Doing 時，必須有負責人
         if (status === 'Doing') {
@@ -848,19 +946,23 @@ function renderTasks(openTaskId = null) {
       };
       return btn;
     }
-    
+
     if (currentTask.status === 'Todo') {
-      flowBtns.appendChild(createTransitionBtn('→ Doing', 'Doing'));
+      rightSlot.appendChild(createTransitionBtn('→ Doing', 'Doing'));
     } else if (currentTask.status === 'Doing') {
-      flowBtns.appendChild(createTransitionBtn('← Todo', 'Todo'));
-      flowBtns.appendChild(createTransitionBtn('Review →', 'Review'));
+      leftSlot.appendChild(createTransitionBtn('← Todo', 'Todo'));
+      rightSlot.appendChild(createTransitionBtn('Review →', 'Review'));
     } else if (currentTask.status === 'Review') {
-      flowBtns.appendChild(createTransitionBtn('← Doing', 'Doing'));
-      flowBtns.appendChild(createTransitionBtn('Done →', 'Done'));
+      leftSlot.appendChild(createTransitionBtn('← Doing', 'Doing'));
+      rightSlot.appendChild(createTransitionBtn('Done →', 'Done'));
     } else if (currentTask.status === 'Done') {
-      flowBtns.appendChild(createTransitionBtn('← Review', 'Review'));
+      leftSlot.appendChild(createTransitionBtn('← Review', 'Review'));
     }
-    attrSec.appendChild(flowBtns);
+
+    statusLine.appendChild(leftSlot);
+    statusLine.appendChild(badgeSlot);
+    statusLine.appendChild(rightSlot);
+    attrSec.appendChild(statusLine);
 
     // Priority
     attrSec.appendChild(el('label', { style: 'margin-top:1rem; display:block;' }, '優先度'));
@@ -881,7 +983,7 @@ function renderTasks(openTaskId = null) {
     attrSec.appendChild(prioritySelect);
 
     // Assignee
-    attrSec.appendChild(el('label', { style: 'margin-top:1rem; display:block;' }, '指派負責人'));
+    attrSec.appendChild(el('label', { style: 'margin-top:1rem; display:block;' }, '指派'));
     const assigneeSelect = el('select', { style: 'width:100%;' });
     assigneeSelect.appendChild(el('option', { value: '' }, '-- 無負責人 --'));
     for (const m of cachedMembers) {
@@ -920,7 +1022,7 @@ function renderTasks(openTaskId = null) {
 
     // Attachments
     const attachSec = el('div', { class: 'detail-section sketch-box' });
-    attachSec.appendChild(el('h3', {}, '附件管理 (Attachments)'));
+    attachSec.appendChild(el('h3', {}, '附件'));
     const attachList = el('ul', { class: 'attachments-list' });
     const attachForm = el('form', { style: 'margin-top:1rem; display:flex; flex-direction:column; gap:0.5rem;' });
     const attachInput = el('input', { type: 'file', required: true, style: 'width:100%;' });

@@ -219,16 +219,16 @@ export function registerTaskProjections(): void {
     database
       .prepare(
         `INSERT INTO tasks_read_model
-           (task_id, workspace_id, project_id, title, description, status, priority, assignee_id, due_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (task_id, workspace_id, project_id, title, description, status, priority, assignee_id, due_at, version, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(e.aggregate_id, p.workspaceId, p.projectId, p.title, p.description, p.status, p.priority, p.assigneeId, p.dueAt, e.aggregate_version);
+      .run(e.aggregate_id, p.workspaceId, p.projectId, p.title, p.description, p.status, p.priority, p.assigneeId, p.dueAt, e.aggregate_version, e.occurred_at);
   });
 
   const setCol = (col: string) => (e: StoredEvent, database: DatabaseSync, value: unknown) => {
     database
-      .prepare(`UPDATE tasks_read_model SET ${col} = ?, version = ? WHERE task_id = ?`)
-      .run(value as never, e.aggregate_version, e.aggregate_id);
+      .prepare(`UPDATE tasks_read_model SET ${col} = ?, version = ?, updated_at = ? WHERE task_id = ?`)
+      .run(value as never, e.aggregate_version, e.occurred_at, e.aggregate_id);
   };
   registerProjection('task.title_changed', (e, database) => setCol('title')(e, database, (e.payload as { title: string }).title));
   registerProjection('task.description_changed', (e, database) => setCol('description')(e, database, (e.payload as { description: string }).description));
@@ -254,6 +254,7 @@ export interface TaskRow {
   assignee_id: string | null;
   due_at: string | null;
   version: number;
+  updated_at: string | null;
 }
 export function listTasks(workspaceId: string, database = db): TaskRow[] {
   return database
