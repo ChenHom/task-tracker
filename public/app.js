@@ -84,6 +84,65 @@ function el(tag, attrs, text) {
   return node;
 }
 
+let globalWorkspaces = [];
+
+async function syncGlobalWorkspaces() {
+  const userEmail = sessionStorage.getItem('user_email');
+  if (!userEmail) {
+    globalWorkspaces = [];
+    renderWorkspaceSwitcher();
+    return;
+  }
+  try {
+    globalWorkspaces = await api('/api/workspaces');
+  } catch {
+    globalWorkspaces = [];
+  }
+  renderWorkspaceSwitcher();
+}
+
+function renderWorkspaceSwitcher() {
+  const select = document.getElementById('sidebar-ws-select');
+  if (!select) return;
+  select.textContent = '';
+  
+  const defaultOpt = el('option', { value: '' }, '-- 切換工作區 --');
+  select.appendChild(defaultOpt);
+
+  for (const w of globalWorkspaces) {
+    // 排除已刪除的工作區
+    if (w.status === 'deleted') continue;
+    const opt = el('option', { value: w.workspace_id }, w.name);
+    if (w.workspace_id === state.workspaceId) opt.selected = true;
+    select.appendChild(opt);
+  }
+
+  const manageOpt = el('option', { value: '__manage__' }, '管理工作區清單...');
+  select.appendChild(manageOpt);
+}
+
+let switcherInitialized = false;
+function initSwitcherListener() {
+  if (switcherInitialized) return;
+  const select = document.getElementById('sidebar-ws-select');
+  if (!select) return;
+  select.addEventListener('change', (e) => {
+    const val = e.target.value;
+    if (val === '__manage__') {
+      navigate('#/workspaces');
+      e.target.value = state.workspaceId || '';
+    } else if (val) {
+      const targetWS = globalWorkspaces.find(w => w.workspace_id === val);
+      if (targetWS) {
+        state.workspaceId = targetWS.workspace_id;
+        state.workspaceName = targetWS.name;
+        navigate('#/tasks');
+      }
+    }
+  });
+  switcherInitialized = true;
+}
+
 // ── Sidebar 動態更新 ───────────────────────────────────────────────
 function updateSidebar() {
   const { prefix } = currentRoute();
@@ -98,25 +157,24 @@ function updateSidebar() {
   const logoutBtn = document.getElementById('logout-btn');
   const wsNav = document.getElementById('workspace-nav');
   const wsSection = document.getElementById('workspace-section');
-  const wsNameEl = document.getElementById('sidebar-ws-name');
 
   if (userEmail) {
     const userName = sessionStorage.getItem('user_name');
     userEmailEl.textContent = userName ? `${userName} (${userEmail})` : userEmail;
     logoutBtn.style.display = 'inline-flex';
+    wsSection.style.display = 'block';
+    initSwitcherListener();
+    renderWorkspaceSwitcher();
   } else {
     userEmailEl.textContent = '';
     logoutBtn.style.display = 'none';
+    wsSection.style.display = 'none';
   }
 
   if (state.workspaceId) {
     wsNav.style.display = 'flex';
-    wsSection.style.display = 'block';
-    wsNameEl.textContent = state.workspaceName || '未命名';
   } else {
     wsNav.style.display = 'none';
-    wsSection.style.display = 'none';
-    wsNameEl.textContent = '未選擇';
   }
 }
 
@@ -176,6 +234,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     sessionStorage.removeItem('user_name');
   }
 
+  await syncGlobalWorkspaces();
   route();
 });
 
@@ -217,6 +276,7 @@ function renderLogin() {
       } catch (meErr) {
         // ignore
       }
+      await syncGlobalWorkspaces();
       navigate('#/workspaces');
     } catch (err) {
       showError('login-error', err);
@@ -378,6 +438,7 @@ function renderWorkspaces() {
     try {
       await api('/api/workspaces', { method: 'POST', body: { name } });
       document.getElementById('ws-name-input').value = '';
+      await syncGlobalWorkspaces();
       await load();
     } catch (err) {
       showError('ws-error', err);
@@ -413,12 +474,7 @@ function renderTasks(openTaskId = null) {
       
       <!-- Project Filter and Manage Inline -->
       <div class="kanban-filters">
-        <form id="create-project-form" style="display:inline-flex; gap:0.4rem; align-items:center;">
-          <input type="text" id="project-name-input" placeholder="新專案名稱" required style="font-size:0.85rem; padding:0.25rem 0.5rem; width:130px;">
-          <button type="submit" style="font-size:0.8rem; padding:0.25rem 0.5rem;">+ 專案</button>
-        </form>
-        
-        <label style="margin-left: 1rem; font-weight: bold;">
+        <label style="font-weight: bold;">
           專案篩選:
           <select id="project-filter-select" style="font-size: 0.9rem; padding: 0.25rem 0.5rem;">
             <option value="all">所有專案</option>
@@ -438,69 +494,107 @@ function renderTasks(openTaskId = null) {
     <div class="kanban-board" id="kanban-board-el">
       <div class="kanban-column col-todo">
         <div class="kanban-column-title">Todo</div>
+        <div class="inline-add-container" id="add-Todo-container"></div>
         <div class="kanban-cards" id="cards-Todo"></div>
       </div>
       <div class="kanban-column col-doing">
         <div class="kanban-column-title">Doing</div>
+        <div class="inline-add-container" id="add-Doing-container"></div>
         <div class="kanban-cards" id="cards-Doing"></div>
       </div>
       <div class="kanban-column col-review">
         <div class="kanban-column-title">Review</div>
+        <div class="inline-add-container" id="add-Review-container"></div>
         <div class="kanban-cards" id="cards-Review"></div>
       </div>
       <div class="kanban-column col-done">
         <div class="kanban-column-title">Done</div>
+        <div class="inline-add-container" id="add-Done-container"></div>
         <div class="kanban-cards" id="cards-Done"></div>
       </div>
       <div class="kanban-column col-archived" id="col-Archived-el" style="display: none;">
         <div class="kanban-column-title">Archived</div>
+        <div class="inline-add-container" id="add-Archived-container"></div>
         <div class="kanban-cards" id="cards-Archived"></div>
       </div>
     </div>
+  `;
 
-    <!-- Quick Add Task Card -->
-    <div class="quick-add-task sketch-box">
-      <h3 style="margin-top:0;">+ 建立新任務</h3>
-      <form id="create-task-form">
-        <div class="quick-add-grid">
-          <div>
-            <label>任務名稱 *</label>
-            <input type="text" id="task-title-input" placeholder="輸入任務主旨" required>
-          </div>
-          <div>
-            <label>描述</label>
-            <input type="text" id="task-desc-input" placeholder="簡短任務說明（選填）">
-          </div>
-          <div>
-            <label>優先度</label>
-            <select id="task-priority-select">
-              <option value="Low">Low</option>
-              <option value="Medium" selected>Medium</option>
-              <option value="High">High</option>
-            </select>
-          </div>
-          <div>
-            <label>專案</label>
-            <select id="task-project-select">
-              <option value="">所有專案</option>
-            </select>
-          </div>
-          <div>
-            <label>指派人員</label>
-            <select id="task-assignee-select">
-              <option value="">-- 無負責人 --</option>
-            </select>
-          </div>
-          <div>
-            <label>截止日期</label>
-            <input type="date" id="task-due-date-input">
-          </div>
-        </div>
-        <div class="quick-add-btn-container">
-          <button type="submit">+ 新增任務卡片</button>
-        </div>
-      </form>
-    </div>
+  function setupInlineAdders() {
+    const colStatuses = ['Todo', 'Doing', 'Review', 'Done', 'Archived'];
+    for (const colStatus of colStatuses) {
+      const container = document.getElementById(`add-${colStatus}-container`);
+      if (!container) continue;
+      
+      const renderButton = () => {
+        container.textContent = '';
+        const btn = el('button', {
+          class: 'btn-secondary',
+          style: 'width: 100%; font-size: 0.8rem; padding: 0.3rem 0.5rem; border: 1px dashed #9ca3af; text-align: left; background: transparent; cursor: pointer; margin-bottom: 0.5rem; border-radius: 4px;'
+        }, '+ 新增任務');
+        
+        btn.onclick = () => {
+          container.textContent = '';
+          const form = el('form', { style: 'display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.5rem; padding: 0.4rem; background: #fdfdfd; border: 1px solid #9ca3af; border-radius: 4px;' });
+          const input = el('input', {
+            type: 'text',
+            placeholder: '輸入任務主旨...',
+            required: 'true',
+            style: 'width: 100%; font-size: 0.85rem; padding: 0.25rem; font-family: inherit; border: 1px solid #ccc; box-sizing: border-box;'
+          });
+          form.appendChild(input);
+          
+          const actions = el('div', { style: 'display: flex; gap: 0.3rem;' });
+          const addBtn = el('button', { type: 'submit', style: 'font-size: 0.75rem; padding: 0.15rem 0.4rem; cursor: pointer;' }, '新增');
+          const cancelBtn = el('button', {
+            type: 'button',
+            class: 'btn-secondary',
+            style: 'font-size: 0.75rem; padding: 0.15rem 0.4rem; background: transparent; cursor: pointer;'
+          }, '取消');
+          
+          cancelBtn.onclick = renderButton;
+          
+          actions.appendChild(addBtn);
+          actions.appendChild(cancelBtn);
+          form.appendChild(actions);
+          
+          form.onsubmit = async (e) => {
+            e.preventDefault();
+            const title = input.value.trim();
+            if (!title) return;
+            
+            const filterVal = document.getElementById('project-filter-select').value;
+            const projectId = (filterVal && filterVal !== 'all' && filterVal !== 'none') ? filterVal : null;
+            
+            try {
+              await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/tasks`, {
+                method: 'POST',
+                body: {
+                  title,
+                  description: '',
+                  priority: 'Medium',
+                  status: colStatus,
+                  projectId,
+                  assigneeId: null,
+                  dueAt: null
+                }
+              });
+              await loadAllData();
+            } catch (err) {
+              alert('建立任務失敗：' + err.message);
+            }
+          };
+          
+          container.appendChild(form);
+          input.focus();
+        };
+        
+        container.appendChild(btn);
+      };
+      
+      renderButton();
+    }
+  }
   `;
 
   let cachedTasks = [];
@@ -534,20 +628,8 @@ function renderTasks(openTaskId = null) {
       for (const p of projects) {
         filterSelect.appendChild(el('option', { value: p.project_id }, p.name));
       }
+      filterSelect.appendChild(el('option', { value: '__create_new__', style: 'border-top: 1px dashed #ccc; font-weight: bold;' }, '+ 建立新專案...'));
       filterSelect.value = prevFilterVal;
-
-      // 填充表單下拉
-      const formProjectSelect = document.getElementById('task-project-select');
-      formProjectSelect.innerHTML = '<option value="">所有專案</option>';
-      for (const p of projects) {
-        formProjectSelect.appendChild(el('option', { value: p.project_id }, p.name));
-      }
-
-      const formAssigneeSelect = document.getElementById('task-assignee-select');
-      formAssigneeSelect.innerHTML = '<option value="">-- 無負責人 --</option>';
-      for (const m of members) {
-        formAssigneeSelect.appendChild(el('option', { value: m.user_id }, m.name || m.email));
-      }
 
       renderKanbanCards(cachedTasks, projectMap, memberMap);
 
@@ -1153,57 +1235,41 @@ function renderTasks(openTaskId = null) {
   }
 
   // 事件綁定：專案篩選與封存切換
-  document.getElementById('project-filter-select').addEventListener('change', () => {
-    renderKanbanCards(cachedTasks, projectMap, memberMap);
+  const filterSelect = document.getElementById('project-filter-select');
+  let lastSelectedProject = filterSelect.value;
+
+  filterSelect.addEventListener('change', async () => {
+    const val = filterSelect.value;
+    if (val === '__create_new__') {
+      const name = prompt('請輸入新專案名稱：');
+      if (name && name.trim()) {
+        try {
+          const res = await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/projects`, {
+            method: 'POST',
+            body: { name: name.trim() }
+          });
+          await loadAllData();
+          filterSelect.value = res.id;
+          lastSelectedProject = res.id;
+          renderKanbanCards(cachedTasks, projectMap, memberMap);
+        } catch (err) {
+          alert('建立專案失敗：' + err.message);
+          filterSelect.value = lastSelectedProject;
+        }
+      } else {
+        filterSelect.value = lastSelectedProject;
+      }
+    } else {
+      lastSelectedProject = val;
+      renderKanbanCards(cachedTasks, projectMap, memberMap);
+    }
   });
+
   document.getElementById('toggle-archived-checkbox').addEventListener('change', () => {
     renderKanbanCards(cachedTasks, projectMap, memberMap);
   });
 
-  // 專案建立
-  document.getElementById('create-project-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const input = document.getElementById('project-name-input');
-    const name = input.value;
-    try {
-      await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/projects`, {
-        method: 'POST',
-        body: { name }
-      });
-      input.value = '';
-      await loadAllData();
-    } catch (err) {
-      showError('task-error', err);
-    }
-  });
-
-  // 任務建立
-  document.getElementById('create-task-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const title = document.getElementById('task-title-input').value;
-    const description = document.getElementById('task-desc-input').value;
-    const priority = document.getElementById('task-priority-select').value;
-    const projectId = document.getElementById('task-project-select').value || null;
-    const assigneeId = document.getElementById('task-assignee-select').value || null;
-    const dueAtVal = document.getElementById('task-due-date-input').value;
-    const dueAt = dueAtVal ? new Date(dueAtVal).toISOString() : null;
-
-    try {
-      await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/tasks`, {
-        method: 'POST',
-        body: { title, description, priority, projectId, assigneeId, dueAt }
-      });
-      document.getElementById('task-title-input').value = '';
-      document.getElementById('task-desc-input').value = '';
-      document.getElementById('task-priority-select').value = 'Medium';
-      document.getElementById('task-project-select').value = '';
-      document.getElementById('task-assignee-select').value = '';
-      document.getElementById('task-due-date-input').value = '';
-      await loadAllData();
-    } catch (err) {
-      showError('task-error', err);
-    }
-  });
+  setupInlineAdders();
 
   loadAllData();
 }
