@@ -35,7 +35,7 @@ interface MemberRunnerConfig {
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
 const MEMBER_RUNNERS: MemberRunnerConfig[] = [
   { email: 'user02@test.local', runner: 'claude', model: 'claude-haiku-4-5-20251001' },
-  { email: 'user03@test.local', runner: 'claude', model: 'claude-haiku-4-5-20251001' },
+  { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.4' },
   { email: 'user04@test.local', runner: 'codex', model: 'gpt-5.4-mini' },
   { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.4-mini' },
 ];

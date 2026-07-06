@@ -25,7 +25,7 @@ assert.deepStrictEqual(
   members.map((member) => ({ email: member.email, name: member.name, user: member.user, runner: member.runner })),
   [
     { email: 'user02@test.local', name: '小美', user: 'user02', runner: 'claude' },
-    { email: 'user03@test.local', name: '阿凱', user: 'user03', runner: 'claude' },
+    { email: 'user03@test.local', name: '阿凱', user: 'user03', runner: 'codex' },
     { email: 'user04@test.local', name: '婷婷', user: 'user04', runner: 'codex' },
     { email: 'user05@test.local', name: '大熊', user: 'user05', runner: 'codex' },
   ],
