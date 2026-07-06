@@ -826,8 +826,7 @@ function renderTasks(openTaskId = null) {
           const header = el('div', { class: 'comment-header' });
           const authorEmail = memberEmailMap.get(c.user_id) || '';
           const authorName = memberMap.get(c.user_id) || `成員 (${c.user_id.slice(0, 8)})`;
-          const displayText = authorEmail ? `${authorName} (${authorEmail})` : authorName;
-          header.appendChild(el('span', { class: 'comment-author' }, displayText));
+          header.appendChild(el('span', { class: 'comment-author' }, authorName));
 
           if (currentEmail && authorEmail && authorEmail === currentEmail) {
             header.appendChild(el('span', { class: 'badge', style: 'font-size:0.7rem; background:rgba(99,102,241,0.1); border-color:#6366f1; color:#6366f1; margin-left: 0.3rem;' }, '我'));
