@@ -101,10 +101,11 @@ export function deleteAttachment(attachmentId: string, database = db): void {
     | { stored_name: string }
     | undefined;
   if (!row) throw new CommandError('attachment 不存在');
+  const path = resolveInside(row.stored_name);
   try {
-    unlinkSync(resolveInside(row.stored_name));
+    unlinkSync(path);
   } catch {
-    // 檔案可能已不在（或守門判越界）；DB 記錄仍要清掉，不讓孤兒 metadata 殘留
+    // 檔案可能已不在；DB 記錄仍要清掉，不讓孤兒 metadata 殘留
   }
   database.prepare('DELETE FROM attachments WHERE attachment_id = ?').run(attachmentId);
 }
