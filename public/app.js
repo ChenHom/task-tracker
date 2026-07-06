@@ -312,7 +312,6 @@ function renderWorkspaces() {
         card.appendChild(title);
 
         const status = el('div', { style: 'font-size:0.9rem; margin-bottom: 0.8rem;' });
-        status.appendChild(document.createTextNode('狀態: '));
         const statusBadge = el('span', { class: 'badge' }, row.status);
         statusBadge.style.backgroundColor = row.status === 'Active' ? 'var(--highlight-done)' : 'var(--highlight-archived)';
         status.appendChild(statusBadge);
