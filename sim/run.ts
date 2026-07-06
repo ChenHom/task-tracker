@@ -80,18 +80,13 @@ async function bootstrap(): Promise<{ wsId: string; tag: string }> {
   const tag = `sim-run-${Date.now()}`;
   git(['tag', tag]);
 
-  // 工作區（已存在就報錯，附清理指令——不自動刪上一場成果）
-  // claude member 用 worktree；codex member 用 local clone——codex sandbox 只能寫
-  // workspace 目錄，worktree 的 git 元資料在主 repo .git/ 裡會被擋（實測：commit 失敗），
-  // clone 的 .git 完整在 workspace 內就沒這問題。owner 審查前 driver 會 fetch 回主 repo。
+  // 全員用 git worktree（branch 直接在主 repo，owner 免 fetch 即可審/merge）。
+  // 注意：codex 的 workspace-write sandbox 刻意保護 .git 唯讀（防竄改歷史），worktree
+  // 或 clone 都一樣擋——所以 codex member 不自己 commit，改由 driver 在 session 後代 commit
+  // （commitCodexWork）；claude member 工具權限能自己 commit。
   for (const m of MEMBERS) {
-    if (existsSync(wt(m))) throw new Error(`${wt(m)} 已存在。清理：${m.runner === 'codex' ? `rm -rf sim-work/${m.user}` : `git worktree remove sim-work/${m.user} --force`} && git branch -D sim/${m.user} 2>/dev/null`);
-    if (m.runner === 'codex') {
-      git(['clone', '--quiet', ROOT, wt(m)]);
-      git(['checkout', '-q', '-b', branch(m)], wt(m));
-    } else {
-      git(['worktree', 'add', wt(m), '-b', branch(m), 'master']);
-    }
+    if (existsSync(wt(m))) throw new Error(`${wt(m)} 已存在。清理：git worktree remove sim-work/${m.user} --force && git branch -D sim/${m.user} 2>/dev/null`);
+    git(['worktree', 'add', wt(m), '-b', branch(m), 'master']);
     symlinkSync(join(ROOT, 'node_modules'), join(wt(m), 'node_modules'));
   }
 
@@ -160,13 +155,15 @@ ${API_RULES(jar)}
 工程規則：
 - 只在目前目錄內改檔案；只改完成 task 需要的檔案，不順手重構
 - 完成的定義：npx tsc --noEmit 乾淨 + npm test 全過（含你補的測試），兩者都要實際跑
-- 完成後 git add -A && git commit -m "<描述>"，取得 commit hash（git log -1 --format=%h）
+${m.runner === 'claude'
+  ? '- 完成後 git add -A && git commit -m "<描述>"，取得 commit hash（git log -1 --format=%h）'
+  : '- 你不需要（也無法）自己 git commit——這個工作環境的 .git 是唯讀的，團隊 CI 會在你下線後自動把你的變更提交到 branch ' + branch(m) + '。你只要把檔案改好、驗證通過即可'}
 本次流程：
 1. 登入後 GET ${BASE}/api/workspaces/${wsId}/tasks，看 assignee_id=${m.userId} 的 task
 2. 優先序：status=Doing 且有 owner 審查意見的（先 GET 該 task 的 comments 讀意見，回覆你的理解，照意見修正）＞ status=Todo 的新題
 3. 開工前：PATCH {"status":"Doing"}（若還在 Todo），留言說明你的實作計畫（改哪個檔、怎麼驗）
-4. 實作 → 跑驗證 → commit
-5. 完成留言：做法摘要、tsc/test 實際結果、commit hash（branch ${branch(m)}）→ PATCH {"status":"Review"}
+4. 實作 → 跑驗證${m.runner === 'claude' ? ' → commit' : '（改檔+驗證即可，不用 commit）'}
+5. 完成留言：做法摘要、tsc/test 實際結果${m.runner === 'claude' ? '、commit hash' : '（CI 會補上 commit）'}（branch ${branch(m)}）→ PATCH {"status":"Review"}
 6. 若沒有可做的 task：讀一個隊友 task 的留言串，留一則有實質內容的意見，然後總結下線
 結束時輸出一行總結。`;
 }
@@ -254,14 +251,8 @@ function printStats(wsId: string, since: string, tag: string): void {
     const merged = git(['log', '--oneline', `${tag}..master`]);
     console.log(`\nmaster 自 ${tag} 以來：\n${merged || '（無新 commit）'}`);
     for (const m of MEMBERS) {
-      // codex branch 在其 clone 裡；主 repo 有（已 fetch）就從主 repo 查，否則直接查 clone。
-      const hasInMain = (() => { try { git(['rev-parse', '--verify', branch(m)]); return true; } catch { return false; } })();
-      try {
-        const n = hasInMain
-          ? git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean).length
-          : git(['log', '--oneline', 'master..HEAD'], wt(m)).split('\n').filter(Boolean).length;
-        console.log(`${branch(m)}: ${n} 個未合併 commit`);
-      } catch { /* branch/worktree 可能已不存在 */ }
+      // 全員 worktree，branch 直接在主 repo。
+      try { console.log(`${branch(m)}: ${git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean).length} 個未合併 commit`); } catch { /* branch 可能已不存在 */ }
     }
   } catch (e) { console.log(`git 統計失敗: ${e}`); }
   console.log(`\n檢視看板：${BASE} 登入 ${OWNER.email} / ${PASSWORD}`);
@@ -272,16 +263,16 @@ function printStats(wsId: string, since: string, tag: string): void {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const jitter = (minS: number, maxS: number) => (minS + Math.random() * (maxS - minS)) * 1000;
 
-// codex member 在 local clone 工作，owner 在主 repo 審——審查前把 clone 的 branch 拉回來
-function fetchCodexBranches(): void {
-  for (const m of MEMBERS.filter((x) => x.runner === 'codex')) {
-    try {
-      git(['fetch', wt(m), `${branch(m)}:${branch(m)}`]);
-      console.log(`[fetch] ${branch(m)} 已同步回主 repo`);
-    } catch (e) {
-      console.log(`[fetch] ${branch(m)} 無新 commit 可拉`);
-    }
-  }
+// codex sandbox 不能寫 .git，session 後由 driver 代 commit（在 sandbox 外，能寫）。
+// worktree dirty 就 add -A + commit 到該 member 的 branch。回傳是否有 commit。
+function commitCodexWork(m: Member, round: number): boolean {
+  const dirty = git(['status', '--porcelain'], wt(m));
+  if (!dirty) return false;
+  git(['add', '-A'], wt(m));
+  git(['commit', '-m', `feat(${m.name}/${m.model}): r${round} 產出（driver 代 commit——codex sandbox .git 唯讀）`], wt(m));
+  const hash = git(['log', '-1', '--format=%h'], wt(m));
+  console.log(`[代commit] ${branch(m)} r${round} → ${hash}`);
+  return true;
 }
 
 async function main(): Promise<void> {
@@ -292,9 +283,15 @@ async function main(): Promise<void> {
   const memberOpts = (m: Member) => ({ cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: MEMBER_TIMEOUT });
   const ownerOpts = { cwd: ROOT, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT };
 
+  // 一個 member session：跑 + 若是 codex 則 driver 代 commit
+  const memberSession = async (m: Member, round: number) => {
+    await runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round), memberOpts(m));
+    if (m.runner === 'codex') commitCodexWork(m, round);
+  };
+
   if (SMOKE) {
-    await runSession('smoke-haiku-小美', 'claude', MEMBERS[0].model, memberPrompt(MEMBERS[0], wsId, 1), memberOpts(MEMBERS[0]));
-    await runSession('smoke-codex-婷婷', 'codex', MEMBERS[2].model, memberPrompt(MEMBERS[2], wsId, 1), memberOpts(MEMBERS[2]));
+    await memberSession(MEMBERS[0], 1); // haiku
+    await memberSession(MEMBERS[2], 1); // codex（驗證 driver 代 commit）
     printStats(wsId, since, tag);
     return;
   }
@@ -303,21 +300,19 @@ async function main(): Promise<void> {
 
   await Promise.all(MEMBERS.map(async (m) => {
     await sleep(jitter(5, 30));
-    await runSession(`${m.name}-r1`, m.runner, m.model, memberPrompt(m, wsId, 1), memberOpts(m));
+    await memberSession(m, 1);
   }));
 
-  fetchCodexBranches();
   await runSession('owner-中場審查', 'claude', 'claude-opus-4-8', ownerMidPrompt(wsId), ownerOpts);
 
   await Promise.all(MEMBERS.map(async (m) => {
     await sleep(jitter(5, 60));
     for (let r = 2; r <= 3; r++) {
-      await runSession(`${m.name}-r${r}`, m.runner, m.model, memberPrompt(m, wsId, r), memberOpts(m));
+      await memberSession(m, r);
       if (r < 3) await sleep(jitter(60, 300));
     }
   }));
 
-  fetchCodexBranches();
   await runSession('owner-收尾合併', 'claude', 'claude-opus-4-8', ownerClosePrompt(wsId, tag), ownerOpts);
   printStats(wsId, since, tag);
 }
