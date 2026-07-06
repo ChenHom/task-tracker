@@ -285,6 +285,21 @@ form label {
   box-shadow: 3px 6px 10px rgba(0,0,0,0.08);
 }
 
+.task-card-top {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex-shrink: 0;
+  width: 100%;
+}
+.task-card-mid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex-shrink: 0;
+  width: 100%;
+}
+
 .task-card-title {
   margin: 0;
   font-size: 1.15rem;

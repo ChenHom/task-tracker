@@ -556,20 +556,25 @@ function renderTasks(openTaskId = null) {
     for (const task of filtered) {
       const card = el('div', { class: 'task-card' });
 
-      // Title (Link to detail)
+      // Top Section: Title & Description
+      const topEl = el('div', { class: 'task-card-top' });
       const titleEl = el('h4', { class: 'task-card-title' });
       const titleLink = el('a', { href: `#/task/${task.task_id}` }, task.title);
       titleEl.appendChild(titleLink);
-      card.appendChild(titleEl);
+      topEl.appendChild(titleEl);
 
       // Description snippet - Clickable to open modal
       if (task.description) {
         const descEl = el('p', { class: 'task-card-desc', style: 'cursor: pointer;' }, task.description);
         descEl.onclick = () => navigate(`#/task/${task.task_id}`);
-        card.appendChild(descEl);
+        topEl.appendChild(descEl);
       } else {
-        card.appendChild(el('p', { class: 'task-card-desc', style: 'visibility: hidden; height: 3.6rem; margin: 0.3rem 0;' }, 'placeholder'));
+        topEl.appendChild(el('p', { class: 'task-card-desc', style: 'visibility: hidden; height: 3.6rem; margin: 0.3rem 0;' }, 'placeholder'));
       }
+      card.appendChild(topEl);
+
+      // Mid Section: Meta, Assignee, Time
+      const midEl = el('div', { class: 'task-card-mid' });
 
       // Meta (Priority, Project)
       const metaEl = el('div', { class: 'task-card-meta' });
@@ -580,15 +585,15 @@ function renderTasks(openTaskId = null) {
         const projName = projectMap.get(task.project_id) || '未知專案';
         metaEl.appendChild(el('span', { class: 'badge badge-project' }, projName));
       }
-      card.appendChild(metaEl);
+      midEl.appendChild(metaEl);
 
       // Assignee mapping
       if (task.assignee_id) {
         const email = memberMap.get(task.assignee_id) || '未知成員';
-        card.appendChild(el('div', { class: 'task-card-assignee' }, `Assignee: ${email}`));
+        midEl.appendChild(el('div', { class: 'task-card-assignee' }, `Assignee: ${email}`));
       } else {
         // Placeholder to align vertical spacing
-        card.appendChild(el('div', { class: 'task-card-assignee', style: 'visibility: hidden;' }, 'placeholder'));
+        midEl.appendChild(el('div', { class: 'task-card-assignee', style: 'visibility: hidden;' }, 'placeholder'));
       }
 
       // Due date & Last updated time
@@ -604,7 +609,8 @@ function renderTasks(openTaskId = null) {
       } else {
         timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem; visibility: hidden;' }, 'placeholder'));
       }
-      card.appendChild(timeContainer);
+      midEl.appendChild(timeContainer);
+      card.appendChild(midEl);
 
       // Transitions & Action buttons
       const actionsEl = el('div', { class: 'task-card-actions' });
