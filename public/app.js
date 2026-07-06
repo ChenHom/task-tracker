@@ -568,8 +568,6 @@ function renderTasks(openTaskId = null) {
         const descEl = el('p', { class: 'task-card-desc', style: 'cursor: pointer;' }, task.description);
         descEl.onclick = () => navigate(`#/task/${task.task_id}`);
         topEl.appendChild(descEl);
-      } else {
-        topEl.appendChild(el('p', { class: 'task-card-desc', style: 'visibility: hidden; height: 3.6rem; margin: 0.3rem 0;' }, 'placeholder'));
       }
       card.appendChild(topEl);
 
@@ -591,9 +589,6 @@ function renderTasks(openTaskId = null) {
       if (task.assignee_id) {
         const email = memberMap.get(task.assignee_id) || '未知成員';
         midEl.appendChild(el('div', { class: 'task-card-assignee' }, `Assignee: ${email}`));
-      } else {
-        // Placeholder to align vertical spacing
-        midEl.appendChild(el('div', { class: 'task-card-assignee', style: 'visibility: hidden;' }, 'placeholder'));
       }
 
       // Due date & Last updated time
@@ -601,15 +596,13 @@ function renderTasks(openTaskId = null) {
       if (task.due_at) {
         const d = new Date(task.due_at).toISOString().split('T')[0];
         timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;' }, `Due: ${d}`));
-      } else {
-        timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem; visibility: hidden;' }, 'placeholder'));
       }
       if (task.updated_at) {
         timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;' }, `更新: ${formatTime(task.updated_at)}`));
-      } else {
-        timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem; visibility: hidden;' }, 'placeholder'));
       }
-      midEl.appendChild(timeContainer);
+      if (timeContainer.hasChildNodes()) {
+        midEl.appendChild(timeContainer);
+      }
       card.appendChild(midEl);
 
       // Transitions & Action buttons
