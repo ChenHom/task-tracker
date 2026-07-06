@@ -291,6 +291,7 @@ form label {
   gap: 0.15rem;
   flex-shrink: 0;
   width: 100%;
+  cursor: pointer;
 }
 .task-card-mid {
   display: flex;
@@ -298,6 +299,7 @@ form label {
   gap: 0.15rem;
   flex-shrink: 0;
   width: 100%;
+  cursor: pointer;
 }
 
 .task-card-title {

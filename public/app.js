@@ -558,21 +558,23 @@ function renderTasks(openTaskId = null) {
 
       // Top Section: Title & Description
       const topEl = el('div', { class: 'task-card-top' });
+      topEl.onclick = () => navigate(`#/task/${task.task_id}`);
+
       const titleEl = el('h4', { class: 'task-card-title' });
       const titleLink = el('a', { href: `#/task/${task.task_id}` }, task.title);
       titleEl.appendChild(titleLink);
       topEl.appendChild(titleEl);
 
-      // Description snippet - Clickable to open modal
+      // Description snippet
       if (task.description) {
-        const descEl = el('p', { class: 'task-card-desc', style: 'cursor: pointer;' }, task.description);
-        descEl.onclick = () => navigate(`#/task/${task.task_id}`);
+        const descEl = el('p', { class: 'task-card-desc' }, task.description);
         topEl.appendChild(descEl);
       }
       card.appendChild(topEl);
 
       // Mid Section: Meta, Assignee, Time
       const midEl = el('div', { class: 'task-card-mid' });
+      midEl.onclick = () => navigate(`#/task/${task.task_id}`);
 
       // Meta (Priority, Project)
       const metaEl = el('div', { class: 'task-card-meta' });
