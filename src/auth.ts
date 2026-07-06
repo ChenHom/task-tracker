@@ -94,13 +94,14 @@ export function parseCookies(header: string | undefined): Record<string, string>
 }
 
 export function sessionCookie(token: string): string {
-  // ponytail: 正式環境（HTTPS）要再加 `Secure`；本機 http dev 加了瀏覽器不會回送。
   const maxAge = Math.floor(TTL_MS / 1000);
-  return `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${maxAge}`;
+  const secure = process.env.COOKIE_SECURE === '1' ? '; Secure' : '';
+  return `${SESSION_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${maxAge}${secure}`;
 }
 
 export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0`;
+  const secure = process.env.COOKIE_SECURE === '1' ? '; Secure' : '';
+  return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0${secure}`;
 }
 
 // ── 登入 ───────────────────────────────────────────────────────────
