@@ -16,8 +16,9 @@ import {
   createPasswordResetToken,
   resetPassword,
   getUserIdByEmail,
-  SESSION_COOKIE,
   cleanupExpiredSessions,
+  searchUserEmails,
+  SESSION_COOKIE,
 } from './auth';
 import { CommandError } from './eventStore';
 import { createWorkspace, renameWorkspace, listWorkspaces, registerWorkspaceProjections } from './workspace';
@@ -204,6 +205,19 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     } catch (e) {
       sendCommandError(res, e);
     }
+    return;
+  }
+
+  // GET /api/users/search?q=...
+  const userSearchMatch = req.url?.match(/^\/api\/users\/search\?(.*)$/);
+  if (userSearchMatch && req.method === 'GET') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    const params = new URLSearchParams(userSearchMatch[1]);
+    const q = params.get('q') || '';
+    const emails = searchUserEmails(q);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(emails));
     return;
   }
 

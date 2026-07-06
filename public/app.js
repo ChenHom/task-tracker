@@ -1173,7 +1173,8 @@ function renderMembers() {
     <div class="sketch-box" style="padding: 1.5rem; background: #fff; margin-bottom: 2rem;">
       <h2 style="margin-top: 0;">邀請新成員</h2>
       <form id="invite-form" style="display: flex; gap: 0.5rem; flex-wrap: wrap; max-width: 600px;">
-        <input type="email" id="invite-email" placeholder="成員 Email 帳號" required style="flex-grow: 1;">
+        <input type="email" id="invite-email" list="email-suggestions" placeholder="成員 Email 帳號" required style="flex-grow: 1;">
+        <datalist id="email-suggestions"></datalist>
         <select id="invite-role"></select>
         <button type="submit">邀請加入</button>
       </form>
@@ -1271,6 +1272,25 @@ function renderMembers() {
       await load();
     } catch (err) {
       showError('member-error', err);
+    }
+  });
+
+  const inviteEmailInput = document.getElementById('invite-email');
+  const suggestionsDatalist = document.getElementById('email-suggestions');
+  inviteEmailInput.addEventListener('input', async () => {
+    const val = inviteEmailInput.value.trim();
+    if (val.length < 1) {
+      suggestionsDatalist.innerHTML = '';
+      return;
+    }
+    try {
+      const list = await api(`/api/users/search?q=${encodeURIComponent(val)}`);
+      suggestionsDatalist.innerHTML = '';
+      for (const email of list) {
+        suggestionsDatalist.appendChild(el('option', { value: email }));
+      }
+    } catch (err) {
+      // 靜態忽略
     }
   });
 

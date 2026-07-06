@@ -192,3 +192,12 @@ export function requireAuth(req: IncomingMessage, res: ServerResponse): string |
   }
   return userId;
 }
+
+export function searchUserEmails(query: string, database = db): string[] {
+  const clean = query.trim();
+  if (!clean) return [];
+  const rows = database
+    .prepare('SELECT email FROM users WHERE email LIKE ? ORDER BY email LIMIT 10')
+    .all(clean + '%') as { email: string }[];
+  return rows.map(r => r.email);
+}
