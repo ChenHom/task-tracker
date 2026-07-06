@@ -117,8 +117,9 @@ async function bootstrap(): Promise<{ wsId: string; tag: string }> {
 }
 
 // ── 子行程 spawn ────────────────────────────────────────────────────
-const MEMBER_TOOLS = 'Bash(curl *),Bash(npx *),Bash(npm *),Bash(git *),Read,Write,Edit,Glob,Grep';
-const OWNER_TOOLS = 'Bash(curl *),Bash(npx *),Bash(npm *),Bash(git *),Read,Glob,Grep';
+// Claude Code 的 Bash 權限用冒號前綴語法 Bash(<cmd>:*)（實測：空格版 Bash(curl *) 會卡在權限批准）
+const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Write,Edit,Glob,Grep';
+const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
 
 function runSession(label: string, runner: 'claude' | 'codex', model: string, prompt: string, opts: { cwd: string; tools: string; timeoutMs: number }): Promise<void> {
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${label}.log`);
@@ -253,7 +254,14 @@ function printStats(wsId: string, since: string, tag: string): void {
     const merged = git(['log', '--oneline', `${tag}..master`]);
     console.log(`\nmaster 自 ${tag} 以來：\n${merged || '（無新 commit）'}`);
     for (const m of MEMBERS) {
-      try { console.log(`${branch(m)}: ${git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean).length} 個未合併 commit`); } catch { /* branch 可能已不存在 */ }
+      // codex branch 在其 clone 裡；主 repo 有（已 fetch）就從主 repo 查，否則直接查 clone。
+      const hasInMain = (() => { try { git(['rev-parse', '--verify', branch(m)]); return true; } catch { return false; } })();
+      try {
+        const n = hasInMain
+          ? git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean).length
+          : git(['log', '--oneline', 'master..HEAD'], wt(m)).split('\n').filter(Boolean).length;
+        console.log(`${branch(m)}: ${n} 個未合併 commit`);
+      } catch { /* branch/worktree 可能已不存在 */ }
     }
   } catch (e) { console.log(`git 統計失敗: ${e}`); }
   console.log(`\n檢視看板：${BASE} 登入 ${OWNER.email} / ${PASSWORD}`);
