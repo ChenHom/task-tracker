@@ -57,6 +57,7 @@ symlinkSync(outside, join(ATTACH_DIR, evilStored));
 db.prepare('INSERT INTO attachments (attachment_id, task_id, original_name, stored_name, mime_type, size) VALUES (?, ?, ?, ?, ?, ?)')
   .run('evil-att', 't1', 'innocent.txt', evilStored, 'text/plain', 9);
 assert.throws(() => readAttachment('evil-att', db), CommandError, 'symlink 指向目錄外應被 realpath 守門擋下');
+assert.throws(() => deleteAttachment('evil-att', db), CommandError, 'symlink 指向目錄外刪除時也應被 realpath 守門擋下');
 unlinkSync(join(ATTACH_DIR, evilStored));
 unlinkSync(outside);
 db.prepare('DELETE FROM attachments WHERE attachment_id = ?').run('evil-att'); // 清掉 symlink 測試的 fixture
