@@ -4,7 +4,7 @@
 // 前置：task-tracker 跑在 localhost:3000、`npm run seed` 已建立 user01-30、工作樹乾淨（會打 tag）
 // 回退：git reset --hard <本場 tag>；git worktree remove sim-work/<u> --force；git branch -D sim/<u>
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -32,6 +32,61 @@ interface MemberRunnerConfig {
   model: string;
 }
 
+export interface PromptArtifact {
+  label: string;
+  path: string;
+  bytes: number;
+}
+
+interface CommandCheck {
+  ok: boolean;
+  outputPath: string;
+}
+
+export interface BranchReviewPacket {
+  branch: string;
+  memberName: string;
+  memberEmail: string;
+  ahead: number;
+  commits: string[];
+  changedFiles: string[];
+  diffstat: string;
+  tsc: CommandCheck;
+  test: CommandCheck;
+  packetPath: string;
+}
+
+interface SprintMemberSummary {
+  email: string;
+  name: string;
+  branch: string;
+}
+
+interface SprintTaskSummary {
+  taskId: string;
+  title: string;
+  status: string;
+  priority: string;
+}
+
+export interface SprintReport {
+  runId: string;
+  scenarioKey: string;
+  workspaceId: string;
+  tag: string;
+  startedAt: string;
+  finishedAt: string;
+  members: SprintMemberSummary[];
+  tasks: SprintTaskSummary[];
+  branches: BranchReviewPacket[];
+  promptArtifacts: PromptArtifact[];
+  bugTasks: number;
+  escalateComments: number;
+  totalPromptBytes: number;
+  commentCount: number;
+  eventCount: number;
+}
+
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
 const MEMBER_RUNNERS: MemberRunnerConfig[] = [
   { email: 'user02@test.local', runner: 'claude', model: 'claude-haiku-4-5-20251001' },
@@ -39,6 +94,23 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
   { email: 'user04@test.local', runner: 'codex', model: 'gpt-5.4-mini' },
   { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.4-mini' },
 ];
+
+const SCENARIOS = {
+  'technical-debt': {
+    key: 'technical-debt',
+    title: '技術債清償 Sprint',
+    taskCreationMode: 'current-backlog',
+  },
+  'product-ideation': {
+    key: 'product-ideation',
+    title: '產品發想 Sprint',
+    taskCreationMode: 'owner-prompt',
+  },
+} as const;
+
+type ScenarioKey = keyof typeof SCENARIOS;
+type Scenario = (typeof SCENARIOS)[ScenarioKey];
+
 let MEMBERS: Member[] = [];
 const wt = (m: Member) => join(WORK_DIR, m.user);
 const branch = (m: Member) => `sim/${m.user}`;
@@ -75,6 +147,21 @@ const BACKLOG = (byName: Record<string, string>) => [
   { assignee: byName['婷婷'], title: 'attachment 讀寫路徑 symlink 硬化', desc: 'src/attachment.ts 讀/刪附件時用 stored_name 組路徑，未做 realpath 檢查——若 ATTACH_DIR 內出現 symlink 可逃出目錄。在 readAttachment/deleteAttachment 實際碰檔案前用 realpathSync 確認解析後路徑仍在 ATTACH_DIR 內，否則丟 CommandError。驗收：attachment.test.ts 補 symlink 逃逸被擋的測試，tsc/test 全過。' },
   { assignee: byName['大熊'], title: 'clientIp 支援 X-Forwarded-For', desc: 'src/server.ts 的 clientIp() 直取 socket（見 ponytail 註記），過 reverse proxy 後 rate limit 會全部算在 proxy IP 上。加 TRUST_PROXY=1 環境變數開關：開啟時取 X-Forwarded-For 最左邊的 IP，未開啟維持現狀。驗收：把 clientIp 抽成可測函式並補測試，tsc/test 全過。' },
 ];
+
+const PRODUCT_DISCOVERY_BACKLOG = (byName: Record<string, string>) => [
+  { assignee: byName['小美'], title: '定義目標用戶與核心痛點', desc: '整理 1 份 problem framing：目標用戶、痛點、既有替代方案、為什麼現在要做。驗收：在 task 留言列出至少 3 個高優先痛點與待驗證假設，不要求改 code。' },
+  { assignee: byName['阿凱'], title: '盤點競品與差異化方向', desc: '研究同類產品或替代流程，整理競品比較與可切入差異。驗收：在 task 留言整理至少 3 個競品/替代方案與我們可主打的差異，不要求改 code。' },
+  { assignee: byName['婷婷'], title: '設計產品探索訪談/驗證計畫', desc: '提出最小可行的訪談或驗證實驗：對象、問題、成功/失敗訊號。驗收：在 task 留言交付一份可直接執行的訪談/驗證清單，不要求改 code。' },
+  { assignee: byName['大熊'], title: '整理 MVP 假設與成功指標', desc: '把前面探索結果收斂成 MVP 範圍、關鍵假設、成功指標與風險。驗收：在 task 留言列出 MVP 範圍、3 個成功指標與主要風險，不要求改 code。' },
+];
+
+export function parseScenario(argv: string[]): Scenario {
+  const index = argv.indexOf('--scenario');
+  if (index === -1) return SCENARIOS['technical-debt'];
+  const key = argv[index + 1] as ScenarioKey | undefined;
+  if (!key || !(key in SCENARIOS)) throw new Error(`Unknown scenario: ${key ?? '(missing)'}`);
+  return SCENARIOS[key];
+}
 
 // ── HTTP helpers（bootstrap 用，不經 LLM）────────────────────────────
 async function api(path: string, init: RequestInit = {}, cookie?: string): Promise<{ status: number; body: any }> {
@@ -146,8 +233,33 @@ async function bootstrap(): Promise<{ wsId: string; tag: string }> {
 const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Write,Edit,Glob,Grep';
 const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
 
-function runSession(label: string, runner: 'claude' | 'codex', model: string, prompt: string, opts: { cwd: string; tools: string; timeoutMs: number }): Promise<void> {
+export function createRunDir(root: string, runId: string): string {
+  const dir = join(root, runId);
+  mkdirSync(join(dir, 'prompts'), { recursive: true });
+  mkdirSync(join(dir, 'review-packets'), { recursive: true });
+  return dir;
+}
+
+export function writePromptArtifact(runDir: string, label: string, prompt: string): PromptArtifact {
+  const safe = label.replace(/[^a-zA-Z0-9_-]+/g, '-');
+  const existing = readdirSync(join(runDir, 'prompts')).filter((name) => name.endsWith('.md')).length;
+  const path = join(runDir, 'prompts', `${String(existing + 1).padStart(3, '0')}-${safe}.md`);
+  writeFileSync(path, prompt);
+  return { label, path, bytes: Buffer.byteLength(prompt, 'utf8') };
+}
+
+function runSession(
+  label: string,
+  runner: 'claude' | 'codex',
+  model: string,
+  prompt: string,
+  opts: { cwd: string; tools: string; timeoutMs: number; runDir?: string; promptArtifacts?: PromptArtifact[]; promptLabel?: string },
+): Promise<void> {
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${label}.log`);
+  if (opts.runDir) {
+    const artifact = writePromptArtifact(opts.runDir, opts.promptLabel ?? label, prompt);
+    opts.promptArtifacts?.push(artifact);
+  }
   const args = runner === 'claude'
     ? ['-p', prompt, '--model', model, '--allowedTools', opts.tools]
     : ['exec', '--ephemeral', '--skip-git-repo-check', '-C', opts.cwd,
@@ -199,16 +311,29 @@ ${m.runner === 'claude'
 結束時輸出一行總結。`;
 }
 
-function ownerOpenPrompt(wsId: string): string {
+function ownerOpenPrompt(wsId: string, scenario: Scenario): string {
   const jar = join(LOG_DIR, 'jar-owner.txt');
   const byName: Record<string, string> = {};
   for (const m of MEMBERS) byName[m.name] = m.userId!;
-  const items = BACKLOG(byName).map((t, i) => `${i + 1}. title:「${t.title}」 assignee:${t.assignee}\n   說明素材：${t.desc}`).join('\n');
-  return `你是「${OWNER.name}」（${OWNER.email}），task-tracker 的 Owner。開一個真實的 sprint：團隊要真的修掉這些技術債。
+  if (scenario.key === 'product-ideation') {
+    const items = PRODUCT_DISCOVERY_BACKLOG(byName).map((task, index) => `${index + 1}. title:「${task.title}」 assignee:${task.assignee}\n   說明素材：${task.desc}`).join('\n');
+    return `你是「${OWNER.name}」（${OWNER.email}），task-tracker 的 Owner。開一個真實的 ${scenario.title}：這輪只做產品探索，不要求成員改 repo code。
 workspace：${wsId}。
 ${API_RULES(jar)}
 本次要做的事（只用 curl，不改 code）：
-1. POST ${BASE}/api/workspaces/${wsId}/projects {"name":"技術債清償 Sprint"}
+1. POST ${BASE}/api/workspaces/${wsId}/projects {"name":"${scenario.title}"}
+2. 照下表建產品探索 task（POST ${BASE}/api/workspaces/${wsId}/tasks，欄位 title/description/priority/assignee/projectId）。
+   description 請基於「說明素材」潤飾，明確寫出期望的研究產出與留言驗收方式；priority 自行判斷；assignee 必須照表填 user_id：
+${items}
+3. 每個 task 留一則說明留言：說明這題要回答的產品問題、判斷標準、以及不要直接跳成 code implementation
+結束時輸出一行總結。`;
+  }
+  const items = BACKLOG(byName).map((task, index) => `${index + 1}. title:「${task.title}」 assignee:${task.assignee}\n   說明素材：${task.desc}`).join('\n');
+  return `你是「${OWNER.name}」（${OWNER.email}），task-tracker 的 Owner。開一個真實的 ${scenario.title}：團隊要真的修掉這些技術債。
+workspace：${wsId}。
+${API_RULES(jar)}
+本次要做的事（只用 curl，不改 code）：
+1. POST ${BASE}/api/workspaces/${wsId}/projects {"name":"${scenario.title}"}
 2. 照下表建 6 個 task（POST ${BASE}/api/workspaces/${wsId}/tasks，欄位 title/description/priority/assignee/projectId）。
    description 請基於「說明素材」潤飾，保留檔案路徑與驗收方式；priority 自行判斷；assignee 必須照表填 user_id：
 ${items}
@@ -236,12 +361,13 @@ ${API_RULES(jar)}
 結束時輸出審查總結（幾件過、幾件退、退的原因、幾件上報）。`;
 }
 
-function ownerClosePrompt(wsId: string, tag: string, verified: Record<string, { tsc: boolean; test: boolean; ahead: number }>): string {
+function ownerClosePrompt(wsId: string, tag: string, verified: BranchReviewPacket[]): string {
   const jar = join(LOG_DIR, 'jar-owner-close.txt');
+  const packetByBranch = new Map(verified.map((packet) => [packet.branch, packet]));
   const map = MEMBERS.map((m) => {
-    const v = verified[branch(m)];
-    const status = !v || v.ahead === 0 ? '（無 commit）' : `tsc ${v.tsc ? '✓' : '✗'} / test ${v.test ? '✓' : '✗'}（${v.ahead} commit）`;
-    return `- ${m.name} → ${branch(m)}：${status}`;
+    const packet = packetByBranch.get(branch(m));
+    if (!packet || packet.ahead === 0) return `- ${m.name} / ${branch(m)}: 無 commit`;
+    return `- ${m.name} / ${packet.branch}: tsc ${packet.tsc.ok ? 'PASS' : 'FAIL'}, test ${packet.test.ok ? 'PASS' : 'FAIL'}, ${packet.ahead} commits, ${packet.changedFiles.length} files changed, packet: ${packet.packetPath}`;
   }).join('\n');
   return `你是「${OWNER.name}」（${OWNER.email}），Owner。sprint 收尾：審查通過的合併進 master，總結全場。
 workspace：${wsId}。目前目錄是主 repo（master）。
@@ -262,25 +388,104 @@ ${API_RULES(jar)}
 }
 
 // ── 統計 ────────────────────────────────────────────────────────────
-function printStats(wsId: string, since: string, tag: string): void {
+export function formatReportMarkdown(report: SprintReport): string {
+  return [
+    `# Sprint Report ${report.runId}`,
+    '',
+    `scenario: ${report.scenarioKey}`,
+    `workspace: ${report.workspaceId}`,
+    `tag: ${report.tag}`,
+    `started: ${report.startedAt}`,
+    `finished: ${report.finishedAt}`,
+    `total prompt bytes: ${report.totalPromptBytes}`,
+    '',
+    '## Members',
+    ...report.members.map((member) => `- ${member.name} <${member.email}> (${member.branch})`),
+    ...(report.members.length ? [] : ['- (none)']),
+    '',
+    '## Tasks',
+    ...report.tasks.map((task) => `- [${task.status}/${task.priority}] ${task.title} (${task.taskId})`),
+    ...(report.tasks.length ? [] : ['- (none)']),
+    '',
+    '## Branches',
+    ...report.branches.map((packet) => `- ${packet.branch}: tsc ${packet.tsc.ok ? 'PASS' : 'FAIL'}, test ${packet.test.ok ? 'PASS' : 'FAIL'}, commits ${packet.commits.length}, files ${packet.changedFiles.length}`),
+    ...(report.branches.length ? [] : ['- (none)']),
+    '',
+    '## Prompt Artifacts',
+    ...report.promptArtifacts.map((artifact) => `- ${artifact.label}: ${artifact.bytes} bytes (${artifact.path})`),
+    ...(report.promptArtifacts.length ? [] : ['- (none)']),
+    '',
+    '## Counts',
+    `- bug tasks: ${report.bugTasks}`,
+    `- escalate comments: ${report.escalateComments}`,
+    `- comments: ${report.commentCount}`,
+    `- events: ${report.eventCount}`,
+    '',
+  ].join('\n');
+}
+
+function writeReport(runDir: string, report: SprintReport): void {
+  writeFileSync(join(runDir, 'report.json'), JSON.stringify(report, null, 2));
+  writeFileSync(join(runDir, 'report.md'), formatReportMarkdown(report));
+}
+
+function buildSprintReport(
+  wsId: string,
+  since: string,
+  tag: string,
+  runId: string,
+  scenarioKey: string,
+  promptArtifacts: PromptArtifact[],
+  branches: BranchReviewPacket[],
+): SprintReport {
   const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
-  const tasks = db.prepare('SELECT task_id, title, status, priority FROM tasks_read_model WHERE workspace_id = ?').all(wsId) as any[];
-  const byStatus: Record<string, number> = {};
-  for (const t of tasks) byStatus[t.status] = (byStatus[t.status] ?? 0) + 1;
-  const comments = db.prepare('SELECT count(*) AS n FROM comments WHERE task_id IN (SELECT task_id FROM tasks_read_model WHERE workspace_id = ?)').get(wsId) as any;
-  const events = db.prepare('SELECT count(*) AS n FROM event_store WHERE occurred_at >= ?').get(since) as any;
-  console.log('\n===== 本場統計 =====');
-  console.log(`tasks: ${tasks.length}（${Object.entries(byStatus).map(([k, v]) => `${k}:${v}`).join('、')}）`);
-  console.log(`comments: ${comments.n}，event_store 新增事件: ${events.n}`);
-  const bugs = tasks.filter((t) => String(t.title).startsWith('[BUG]'));
-  console.log(`[BUG] tasks: ${bugs.length}`);
-  for (const b of bugs) console.log(`  - [${b.status}/${b.priority}] ${b.title}`);
+  const tasks = db.prepare('SELECT task_id, title, status, priority FROM tasks_read_model WHERE workspace_id = ?').all(wsId) as Array<{ task_id: string; title: string; status: string; priority: string }>;
+  const comments = db.prepare('SELECT count(*) AS n FROM comments WHERE task_id IN (SELECT task_id FROM tasks_read_model WHERE workspace_id = ?)').get(wsId) as { n: number };
+  const events = db.prepare('SELECT count(*) AS n FROM event_store WHERE occurred_at >= ?').get(since) as { n: number };
   const esc = db.prepare(
     `SELECT c.content, t.title FROM comments c JOIN tasks_read_model t ON t.task_id = c.task_id
       WHERE t.workspace_id = ? AND c.content LIKE '%[ESCALATE]%'`,
-  ).all(wsId) as any[];
-  console.log(`[ESCALATE] 上報留言: ${esc.length}（owner 解不了的環境問題，需要上層/使用者處理）`);
-  for (const e of esc) console.log(`  - ${e.title}: ${String(e.content).slice(0, 100)}`);
+  ).all(wsId) as Array<{ content: string; title: string }>;
+  db.close();
+  return {
+    runId,
+    scenarioKey,
+    workspaceId: wsId,
+    tag,
+    startedAt: since,
+    finishedAt: new Date().toISOString(),
+    members: MEMBERS.map((member) => ({ email: member.email, name: member.name, branch: branch(member) })),
+    tasks: tasks.map((task) => ({ taskId: task.task_id, title: task.title, status: task.status, priority: task.priority })),
+    branches,
+    promptArtifacts,
+    bugTasks: tasks.filter((task) => String(task.title).startsWith('[BUG]')).length,
+    escalateComments: esc.length,
+    totalPromptBytes: promptArtifacts.reduce((sum, artifact) => sum + artifact.bytes, 0),
+    commentCount: comments.n,
+    eventCount: events.n,
+  };
+}
+
+function printStats(
+  runDir: string,
+  wsId: string,
+  since: string,
+  tag: string,
+  scenarioKey: string,
+  promptArtifacts: PromptArtifact[],
+  branches: BranchReviewPacket[],
+): void {
+  const report = buildSprintReport(wsId, since, tag, tag, scenarioKey, promptArtifacts, branches);
+  const byStatus: Record<string, number> = {};
+  for (const task of report.tasks) byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
+  writeReport(runDir, report);
+  console.log('\n===== 本場統計 =====');
+  console.log(`tasks: ${report.tasks.length}（${Object.entries(byStatus).map(([k, v]) => `${k}:${v}`).join('、')}）`);
+  console.log(`comments: ${report.commentCount}，event_store 新增事件: ${report.eventCount}`);
+  const bugs = report.tasks.filter((task) => String(task.title).startsWith('[BUG]'));
+  console.log(`[BUG] tasks: ${report.bugTasks}`);
+  for (const bug of bugs) console.log(`  - [${bug.status}/${bug.priority}] ${bug.title}`);
+  console.log(`[ESCALATE] 上報留言: ${report.escalateComments}（owner 解不了的環境問題，需要上層/使用者處理）`);
   try {
     const merged = git(['log', '--oneline', `${tag}..master`]);
     console.log(`\nmaster 自 ${tag} 以來：\n${merged || '（無新 commit）'}`);
@@ -309,21 +514,99 @@ function commitCodexWork(m: Member, round: number): boolean {
   return true;
 }
 
+export function formatReviewPacket(packet: BranchReviewPacket): string {
+  return [
+    `# ${packet.branch}`,
+    '',
+    `member: ${packet.memberName} <${packet.memberEmail}>`,
+    `ahead: ${packet.ahead}`,
+    `tsc: ${packet.tsc.ok ? 'PASS' : 'FAIL'} (${packet.tsc.outputPath})`,
+    `test: ${packet.test.ok ? 'PASS' : 'FAIL'} (${packet.test.outputPath})`,
+    '',
+    '## Commits',
+    ...packet.commits.map((commit) => `- ${commit}`),
+    ...(packet.commits.length ? [] : ['- (none)']),
+    '',
+    '## Changed Files',
+    ...packet.changedFiles.map((file) => `- ${file}`),
+    ...(packet.changedFiles.length ? [] : ['- (none)']),
+    '',
+    '## Diffstat',
+    '```text',
+    packet.diffstat || '(empty)',
+    '```',
+    '',
+  ].join('\n');
+}
+
+function runCheck(cwd: string, command: string, args: string[], outputPath: string): CommandCheck {
+  try {
+    const stdout = execFileSync(command, args, {
+      cwd,
+      encoding: 'utf8',
+      timeout: 3 * 60 * 1000,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    writeFileSync(outputPath, stdout);
+    return { ok: true, outputPath };
+  } catch (error) {
+    const failure = error as Error & { stdout?: Buffer | string; stderr?: Buffer | string };
+    const stdout = typeof failure.stdout === 'string' ? failure.stdout : failure.stdout?.toString() ?? '';
+    const stderr = typeof failure.stderr === 'string' ? failure.stderr : failure.stderr?.toString() ?? '';
+    writeFileSync(outputPath, [`$ ${command} ${args.join(' ')}`, stdout && `STDOUT:\n${stdout}`, stderr && `STDERR:\n${stderr}`, `ERR:${String(error)}`].filter(Boolean).join('\n\n'));
+    return { ok: false, outputPath };
+  }
+}
+
 // owner 收尾前，driver 對每個 branch 獨立預跑 tsc+test（機械工作交給 code，不佔 owner 的 LLM session）。
 // 在各自 worktree 跑（主 repo 尚未 merge）。結果注入 ownerClosePrompt，owner 只做判斷與 merge。
-function verifyBranches(): Record<string, { tsc: boolean; test: boolean; ahead: number }> {
-  const out: Record<string, { tsc: boolean; test: boolean; ahead: number }> = {};
+function verifyBranches(runDir: string): BranchReviewPacket[] {
+  const out: BranchReviewPacket[] = [];
   for (const m of MEMBERS) {
-    if (!existsSync(wt(m))) { out[branch(m)] = { tsc: false, test: false, ahead: 0 }; continue; }
+    const packetBase = branch(m).replace(/[^a-zA-Z0-9_-]+/g, '-');
+    const packetPath = join(runDir, 'review-packets', `${packetBase}.md`);
+    const tscPath = join(runDir, 'review-packets', `${packetBase}-tsc.txt`);
+    const testPath = join(runDir, 'review-packets', `${packetBase}-test.txt`);
+    if (!existsSync(wt(m))) {
+      out.push({
+        branch: branch(m),
+        memberName: m.name,
+        memberEmail: m.email,
+        ahead: 0,
+        commits: [],
+        changedFiles: [],
+        diffstat: '',
+        tsc: { ok: false, outputPath: tscPath },
+        test: { ok: false, outputPath: testPath },
+        packetPath,
+      });
+      continue;
+    }
     const ahead = Number(git(['rev-list', '--count', `master..${branch(m)}`]));
-    if (!ahead) { out[branch(m)] = { tsc: false, test: false, ahead: 0 }; continue; }
-    const run = (cmd: string, args: string[]) => {
-      try { execFileSync(cmd, args, { cwd: wt(m), stdio: 'ignore', timeout: 3 * 60 * 1000 }); return true; } catch { return false; }
+    const packet: BranchReviewPacket = {
+      branch: branch(m),
+      memberName: m.name,
+      memberEmail: m.email,
+      ahead,
+      commits: [],
+      changedFiles: [],
+      diffstat: '',
+      tsc: { ok: false, outputPath: tscPath },
+      test: { ok: false, outputPath: testPath },
+      packetPath,
     };
-    const tsc = run('npx', ['tsc', '--noEmit']);
-    const test = run('npm', ['test']);
-    out[branch(m)] = { tsc, test, ahead };
-    console.log(`[CI預跑] ${branch(m)}: tsc ${tsc ? '✓' : '✗'} / test ${test ? '✓' : '✗'}（${ahead} commit）`);
+    if (!ahead) {
+      out.push(packet);
+      continue;
+    }
+    packet.commits = git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean);
+    packet.changedFiles = git(['diff', '--name-only', `master...${branch(m)}`]).split('\n').filter(Boolean);
+    packet.diffstat = git(['diff', '--stat', `master...${branch(m)}`]);
+    packet.tsc = runCheck(wt(m), 'npx', ['tsc', '--noEmit'], tscPath);
+    packet.test = runCheck(wt(m), 'npm', ['test'], testPath);
+    writeFileSync(packetPath, formatReviewPacket(packet));
+    out.push(packet);
+    console.log(`[CI預跑] ${branch(m)}: tsc ${packet.tsc.ok ? '✓' : '✗'} / test ${packet.test.ok ? '✓' : '✗'}（${ahead} commit）`);
   }
   return out;
 }
@@ -331,33 +614,36 @@ function verifyBranches(): Record<string, { tsc: boolean; test: boolean; ahead: 
 async function main(): Promise<void> {
   mkdirSync(LOG_DIR, { recursive: true });
   MEMBERS = loadMembersFromUsers();
+  const scenario = parseScenario(process.argv);
   const since = new Date().toISOString();
   const { wsId, tag } = await bootstrap();
+  const runDir = createRunDir(LOG_DIR, tag);
+  const promptArtifacts: PromptArtifact[] = [];
 
-  const memberOpts = (m: Member) => ({ cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: MEMBER_TIMEOUT });
-  const ownerOpts = { cwd: ROOT, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT };
+  const memberOpts = (m: Member) => ({ cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: MEMBER_TIMEOUT, runDir, promptArtifacts });
+  const ownerOpts = { cwd: ROOT, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT, runDir, promptArtifacts };
 
   // 一個 member session：跑 + 若是 codex 則 driver 代 commit
   const memberSession = async (m: Member, round: number) => {
-    await runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round), memberOpts(m));
+    await runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` });
     if (m.runner === 'codex') commitCodexWork(m, round);
   };
 
   if (SMOKE) {
     await memberSession(MEMBERS[0], 1); // haiku
     await memberSession(MEMBERS[2], 1); // codex（驗證 driver 代 commit）
-    printStats(wsId, since, tag);
+    printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, []);
     return;
   }
 
-  await runSession('owner-開場', 'claude', 'claude-opus-4-8', ownerOpenPrompt(wsId), ownerOpts);
+  await runSession('owner-開場', 'claude', 'claude-opus-4-8', ownerOpenPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-open' });
 
   await Promise.all(MEMBERS.map(async (m) => {
     await sleep(jitter(5, 30));
     await memberSession(m, 1);
   }));
 
-  await runSession('owner-中場審查', 'claude', 'claude-opus-4-8', ownerMidPrompt(wsId), ownerOpts);
+  await runSession('owner-中場審查', 'claude', 'claude-opus-4-8', ownerMidPrompt(wsId), { ...ownerOpts, promptLabel: 'owner-mid' });
 
   await Promise.all(MEMBERS.map(async (m) => {
     await sleep(jitter(5, 60));
@@ -367,9 +653,9 @@ async function main(): Promise<void> {
     }
   }));
 
-  const verified = verifyBranches(); // driver 預跑，把測試機械工作從 owner session 移出
-  await runSession('owner-收尾合併', 'claude', 'claude-opus-4-8', ownerClosePrompt(wsId, tag, verified), ownerOpts);
-  printStats(wsId, since, tag);
+  const verified = verifyBranches(runDir); // driver 預跑，把測試機械工作從 owner session 移出
+  await runSession('owner-收尾合併', 'claude', 'claude-opus-4-8', ownerClosePrompt(wsId, tag, verified), { ...ownerOpts, promptLabel: 'owner-close' });
+  printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, verified);
 }
 
 if (require.main === module) {
