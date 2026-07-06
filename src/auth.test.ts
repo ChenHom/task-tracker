@@ -71,6 +71,21 @@ const cookie = sessionCookie('tok123');
 assert.ok(cookie.includes('HttpOnly') && cookie.includes('SameSite=Strict'), 'cookie 應含 HttpOnly + SameSite');
 assert.ok(clearSessionCookie().includes('Max-Age=0'), '登出 cookie 應 Max-Age=0');
 
+// ── COOKIE_SECURE 開關──
+const oldSecure = process.env.COOKIE_SECURE;
+try {
+  process.env.COOKIE_SECURE = '1';
+  assert.ok(sessionCookie('test').includes('Secure'), 'COOKIE_SECURE=1 時 sessionCookie 應含 Secure');
+  assert.ok(clearSessionCookie().includes('Secure'), 'COOKIE_SECURE=1 時 clearSessionCookie 應含 Secure');
+
+  delete process.env.COOKIE_SECURE;
+  assert.ok(!sessionCookie('test').includes('Secure'), 'COOKIE_SECURE 未設時 sessionCookie 不應含 Secure');
+  assert.ok(!clearSessionCookie().includes('Secure'), 'COOKIE_SECURE 未設時 clearSessionCookie 不應含 Secure');
+} finally {
+  if (oldSecure !== undefined) process.env.COOKIE_SECURE = oldSecure;
+  else delete process.env.COOKIE_SECURE;
+}
+
 // ── 登入嘗試 + login_events（獨立 db，前面已把 u1 刪掉）──
 const db2 = new DatabaseSync(':memory:');
 runMigrations(db2);
