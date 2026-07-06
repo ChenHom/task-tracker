@@ -472,15 +472,42 @@ function renderTasks(openTaskId = null) {
 
   async function loadAllData() {
     try {
-      const [tasks, projects, members] = await Promise.all([
+      const [tasks, members, workspaces] = await Promise.all([
         api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/tasks`),
-        api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/projects`),
-        api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members`)
+        api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members`),
+        api('/api/workspaces')
       ]);
+
+      const allProjectsArrays = await Promise.all(
+        workspaces.map(w => 
+          api(`/api/workspaces/${encodeURIComponent(w.workspace_id)}/projects`)
+            .catch(() => [])
+        )
+      );
+
+      const allProjects = [];
+      const workspaceMap = new Map(workspaces.map(w => [w.workspace_id, w.name]));
+      
+      allProjectsArrays.forEach((projList, index) => {
+        const wsId = workspaces[index].workspace_id;
+        const wsName = workspaceMap.get(wsId) || '';
+        projList.forEach(p => {
+          allProjects.push({
+            project_id: p.project_id,
+            workspace_id: p.workspace_id,
+            name: `${p.name} (${wsName})`,
+            rawName: p.name
+          });
+        });
+      });
+
+      const currentWorkspaceProjects = allProjects.filter(p => p.workspace_id === state.workspaceId);
+
       cachedTasks = tasks;
-      cachedProjects = projects;
+      cachedProjects = currentWorkspaceProjects;
       cachedMembers = members;
-      projectMap = new Map(projects.map(p => [p.project_id, p.name]));
+      
+      projectMap = new Map(allProjects.map(p => [p.project_id, p.rawName]));
       memberMap = new Map(members.map(m => [m.user_id, m.email]));
 
       // 填充篩選選單
@@ -490,15 +517,15 @@ function renderTasks(openTaskId = null) {
         <option value="all">所有專案</option>
         <option value="none">無專案</option>
       `;
-      for (const p of projects) {
-        filterSelect.appendChild(el('option', { value: p.project_id }, p.name));
+      for (const p of currentWorkspaceProjects) {
+        filterSelect.appendChild(el('option', { value: p.project_id }, p.rawName));
       }
       filterSelect.value = prevFilterVal;
 
-      // 填充表單下拉
+      // 填充表單下拉 (顯示所有工作區的專案)
       const formProjectSelect = document.getElementById('task-project-select');
       formProjectSelect.innerHTML = '<option value="">-- 無專案 --</option>';
-      for (const p of projects) {
+      for (const p of allProjects) {
         formProjectSelect.appendChild(el('option', { value: p.project_id }, p.name));
       }
 
