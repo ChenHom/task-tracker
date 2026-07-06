@@ -2,30 +2,48 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Task Tracker</title>
-  <style>
-    body { font-family: monospace; margin: 1.5rem; max-width: 900px; }
-    header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; border-bottom: 1px solid #888; padding-bottom: 0.5rem; }
-    nav a, nav button { margin-right: 0.75rem; }
-    table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; }
-    th, td { border: 1px solid #999; padding: 0.3rem 0.5rem; text-align: left; vertical-align: top; }
-    form div { margin: 0.3rem 0; }
-    .error { color: #c00; white-space: pre-wrap; }
-    .message { color: #060; }
-    pre { background: #f0f0f0; padding: 0.5rem; overflow-x: auto; }
-    ul { padding-left: 1.2rem; }
-    .muted { color: #666; }
-  </style>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <strong>Task Tracker</strong>
-    <nav>
-      <a href="#/workspaces">Workspaces</a>
-      <button id="logout-btn" type="button">登出</button>
-    </nav>
-  </header>
-  <main id="app"></main>
+  <div id="layout-container">
+    <aside id="sidebar" class="sketch-box">
+      <div class="logo">
+        <h1>Task Tracker</h1>
+      </div>
+      
+      <!-- Current Workspace Info -->
+      <div id="workspace-section" style="display: none;">
+        <h3>WORKSPACE</h3>
+        <div id="workspace-meta">
+          <div class="meta-field"><strong>NAME:</strong> <span id="sidebar-ws-name">未選擇</span></div>
+        </div>
+      </div>
+
+      <!-- Navigation Menu -->
+      <nav id="nav-menu">
+        <a href="#/workspaces" id="nav-workspaces" class="nav-btn">Workspaces</a>
+        <!-- Workspace Specific Links -->
+        <div id="workspace-nav" style="display: none; flex-direction: column; gap: 0.8rem; margin-top: 0.5rem; border-top: 2px dashed #333; padding-top: 0.8rem;">
+          <a href="#/tasks" id="nav-tasks" class="nav-btn">Kanban Board</a>
+          <a href="#/members" id="nav-members" class="nav-btn">Members</a>
+          <a href="#/search" id="nav-search" class="nav-btn">Search</a>
+          <a href="#/audit" id="nav-audit" class="nav-btn">Audit Log</a>
+        </div>
+      </nav>
+
+      <!-- Sidebar Footer -->
+      <div class="sidebar-footer">
+        <div id="sidebar-user-email" class="muted" style="margin-bottom: 0.5rem; font-size: 0.9rem; word-break: break-all;"></div>
+        <button id="logout-btn" type="button" class="btn-danger" style="display: none; width: 100%;">登出</button>
+      </div>
+    </aside>
+    
+    <main id="main-content">
+      <div id="app"></div>
+    </main>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>
