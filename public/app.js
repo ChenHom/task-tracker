@@ -17,13 +17,16 @@ function navigate(hash) {
 }
 
 // ── fetch 包裝：JSON in/out，401 一律導回登入頁 ─────────────────────
+// path 一律用相對路徑（去掉開頭 /），讓瀏覽器依目前頁面網址解析——
+// 這樣不管這支 app 是掛在網站根目錄還是 nginx 的某個 path prefix 下都正確，
+// 不用寫死 prefix。呼叫端仍可寫 '/api/...'，這裡統一去掉開頭斜線。
 async function api(path, { method = 'GET', body } = {}) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const res = await fetch(path, opts);
+  const res = await fetch(path.replace(/^\//, ''), opts);
   if (res.status === 401) {
     navigate('#/login');
     throw new Error('尚未登入，請重新登入');
@@ -422,7 +425,7 @@ function renderTaskDetail(taskId) {
       const rows = await api(`/api/tasks/${taskId}/attachments`);
       for (const a of rows) {
         const li = el('li');
-        const link = el('a', { href: `/api/attachments/${a.attachment_id}` }, `${a.original_name} (${a.size} bytes)`);
+        const link = el('a', { href: `api/attachments/${a.attachment_id}` }, `${a.original_name} (${a.size} bytes)`);
         li.appendChild(link);
         const delBtn = el('button', { type: 'button' }, '刪除');
         delBtn.addEventListener('click', async () => {
@@ -461,7 +464,7 @@ function renderTaskDetail(taskId) {
     if (!file) return;
     try {
       const buf = await file.arrayBuffer();
-      const res = await fetch(`/api/tasks/${taskId}/attachments`, {
+      const res = await fetch(`api/tasks/${taskId}/attachments`, {
         method: 'POST',
         headers: {
           'Content-Type': file.type || 'application/octet-stream',

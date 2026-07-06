@@ -83,6 +83,21 @@
 
 ---
 
+## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex 混合車隊）
+
+- [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-05、join）→ spawn headless 子行程
+- [x] 混合車隊：Owner=user01（`claude -p` opus，開場建 task/收尾巡場）；Member user02/03（`claude -p` haiku）、user04/05（`codex exec` gpt-5.4-mini，走 ChatGPT 額度）
+- [x] 主題 Dogfooding：owner prompt 內嵌本專案真實技術債清單（ponytail: 註記）出題
+- [x] 全員 QA 規則：可重現的系統問題建 `[BUG]` task（重現步驟/預期 vs 實際/原始回應），owner 收尾 triage
+- [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
+- [ ] 跑完整一場（`npm run sim`，約 15-25 分鐘：opus×2 + haiku×6 + gpt-5.4-mini×6）
+
+> 實測（smoke）：bootstrap 5 人就位；haiku member 正確走「無指派→建詢問 task」分支（3/12 curl）；
+> codex member 同樣完成（曾卡在 `codex exec` 等 piped stdin EOF，已修：spawn 後立即 `child.stdin.end()`）。
+> `tsc`（standalone flags 檢查 sim/run.ts）與 `npm test` 均乾淨；sim/ 不在 tsconfig include，不影響 build。
+
+---
+
 ## 橫切關注 — OWASP checklist（v2 新增部分）
 
 - [x] 忘記密碼 token：`randomBytes` 產生、存 hash、單次使用、有過期時間
