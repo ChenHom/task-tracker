@@ -1295,7 +1295,7 @@ function renderMembers() {
       } catch (err) {
         // 靜態忽略
       }
-    }, 250);
+    }, 500);
   });
 
   load();
