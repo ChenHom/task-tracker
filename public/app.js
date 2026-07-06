@@ -318,7 +318,7 @@ function renderWorkspaces() {
         status.appendChild(statusBadge);
         card.appendChild(status);
 
-        const footer = el('div', { class: 'muted', style: 'font-size:0.8rem; border-top:1px dashed #ccc; padding-top:0.5rem; text-align:right;' }, `建立於: ${new Date(row.created_at).toLocaleDateString()}`);
+        const footer = el('div', { class: 'muted', style: 'font-size:0.8rem; border-top:1px dashed #ccc; padding-top:0.5rem; text-align:right;' }, formatTime(row.created_at));
         card.appendChild(footer);
 
         card.addEventListener('click', () => {
