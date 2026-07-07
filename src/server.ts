@@ -703,6 +703,10 @@ const server = createServer((req, res) => {
 });
 
 cleanupExpiredSessions();
+process.on('SIGHUP', () => {
+  cleanupExpiredSessions();
+  console.log('task-tracker reloaded');
+});
 
 const PORT = 3000;
 server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
