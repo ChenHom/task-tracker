@@ -32,6 +32,20 @@ assert.strictEqual(rows[0].original_name, 'passwd.png', '原始檔名應只取 b
 assert.strictEqual(rows[0].mime_type, 'image/png');
 assert.strictEqual(rows[0].size, PNG.length);
 
+// ── ATTACHMENT_MAX_BYTES：設定後上限要真的跟著變 ──
+const oldMaxBytes = process.env.ATTACHMENT_MAX_BYTES;
+try {
+  process.env.ATTACHMENT_MAX_BYTES = '16';
+  assert.throws(
+    () => createAttachment('t1', 'tiny.png', 'image/png', PNG, db),
+    CommandError,
+    'ATTACHMENT_MAX_BYTES 應能調小上限',
+  );
+} finally {
+  if (oldMaxBytes === undefined) delete process.env.ATTACHMENT_MAX_BYTES;
+  else process.env.ATTACHMENT_MAX_BYTES = oldMaxBytes;
+}
+
 // ── 下載：內容與 metadata 相符 ──
 const file = readAttachment(id, db)!;
 assert.ok(file.data.equals(PNG), '下載內容應與上傳一致');
