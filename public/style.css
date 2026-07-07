@@ -24,6 +24,48 @@
   box-sizing: border-box;
 }
 
+.sketch-box, .task-card, button, input[type="text"], input[type="email"], input[type="password"], select, textarea, .badge {
+  filter: url(#hand-drawn-displacement);
+}
+
+/* Red pen hand-drawn circle highlight (like teacher's circle pen mark) */
+.red-pen-circle {
+  position: relative;
+  border-color: transparent !important;
+  background: transparent !important;
+}
+.red-pen-circle::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  right: -4px;
+  bottom: -4px;
+  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 100 40' preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'><path d='M 5, 20 C 5, 5, 25, 4, 50, 4 C 75, 4, 95, 6, 95, 20 C 95, 34, 75, 36, 50, 36 C 25, 36, 4, 34, 4, 20 C 4, 8, 20, 6, 48, 5 C 76, 4, 96, 8, 94, 22 C 92, 34, 70, 35, 45, 34' stroke='%23ef4444' stroke-width='2' fill='none' stroke-linecap='round'/></svg>");
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* Red pen hand-drawn underline */
+.red-pen-underline {
+  position: relative;
+  display: inline-block;
+}
+.red-pen-underline::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -6px;
+  height: 8px;
+  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 100 10' preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'><path d='M 5, 5 Q 30, 8 50, 4 T 95, 6 M 15, 7 Q 45, 5 85, 8' stroke='%23ef4444' stroke-width='2' fill='none' stroke-linecap='round'/></svg>");
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+
 body {
   background-color: var(--bg-paper);
   background-image: 
@@ -121,8 +163,23 @@ body {
   background: transparent;
 }
 .nav-btn:hover, .nav-btn.active {
-  background-color: var(--btn-hover-bg);
+  position: relative;
+  border-color: transparent !important;
+  background: transparent !important;
   transform: rotate(-1deg) scale(1.02);
+}
+.nav-btn:hover::after, .nav-btn.active::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  right: -4px;
+  bottom: -4px;
+  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 100 40' preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'><path d='M 5, 20 C 5, 5, 25, 4, 50, 4 C 75, 4, 95, 6, 95, 20 C 95, 34, 75, 36, 50, 36 C 25, 36, 4, 34, 4, 20 C 4, 8, 20, 6, 48, 5 C 76, 4, 96, 8, 94, 22 C 92, 34, 70, 35, 45, 34' stroke='%23ef4444' stroke-width='2' fill='none' stroke-linecap='round'/></svg>");
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  pointer-events: none;
+  z-index: 10;
 }
 
 .sidebar-footer {
@@ -362,7 +419,24 @@ form label {
 }
 .badge-low { background-color: var(--priority-low); }
 .badge-medium { background-color: var(--priority-medium); }
-.badge-high { background-color: var(--priority-high); }
+.badge-high {
+  position: relative;
+  border-color: transparent !important;
+  background: transparent !important;
+  color: #ef4444 !important;
+}
+.badge-high::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: -5px;
+  right: -5px;
+  bottom: -3px;
+  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 100 40' preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'><path d='M 5, 20 C 5, 5, 25, 4, 50, 4 C 75, 4, 95, 6, 95, 20 C 95, 34, 75, 36, 50, 36 C 25, 36, 4, 34, 4, 20 C 4, 8, 20, 6, 48, 5 C 76, 4, 96, 8, 94, 22 C 92, 34, 70, 35, 45, 34' stroke='%23ef4444' stroke-width='3.2' fill='none' stroke-linecap='round'/></svg>");
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
 .badge-project { background-color: rgba(139, 92, 246, 0.15); border-color: #8b5cf6; }
 
 .task-card-assignee {

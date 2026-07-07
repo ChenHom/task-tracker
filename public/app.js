@@ -411,7 +411,7 @@ function renderWorkspaces() {
       <p id="ws-error" class="error" style="display: none; margin-top: 1rem;"></p>
     </div>
 
-    <h2 style="margin-bottom: 1rem;">我的工作區列表</h2>
+    <h2 class="red-pen-underline" style="margin-bottom: 1.2rem;">我的工作區列表</h2>
     <div id="ws-list-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.5rem;">
       <!-- 卡片列表動態載入 -->
     </div>
@@ -508,7 +508,7 @@ function renderTasks(openTaskId = null) {
   app.innerHTML = `
     <!-- Kanban Top Header -->
     <div class="kanban-header-bar">
-      <h2>Kanban Board</h2>
+      <h2 class="red-pen-underline" style="margin-bottom: 0.8rem;">Kanban Board</h2>
       
       <!-- Project Filter and Manage Inline -->
       <div class="kanban-filters">
@@ -1327,7 +1327,7 @@ function renderMembers() {
       <p id="member-error" class="error" style="display: none; margin-top: 1rem;"></p>
     </div>
 
-    <h2>成員清單 (Members)</h2>
+    <h2 class="red-pen-underline" style="margin-bottom: 1.2rem;">成員清單 (Members)</h2>
     <table>
       <thead>
         <tr>
@@ -1454,7 +1454,7 @@ function renderSearch() {
   if (!requireWorkspace()) return;
   app.innerHTML = `
     <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 1rem;">
-      <h2 style="margin-top:0;">搜尋</h2>
+      <h2 class="red-pen-underline" style="margin-top:0; margin-bottom:1rem;">搜尋</h2>
       <form id="search-form" style="display: flex; gap: 0.5rem;">
         <input type="text" id="search-input" placeholder="輸入關鍵字搜尋任務、專案或留言..." required style="flex-grow: 1;">
         <button type="submit">搜尋</button>
@@ -1531,7 +1531,7 @@ function renderSearch() {
 function renderAudit() {
   app.innerHTML = `
     <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 1rem;">
-      <h2 style="margin-top: 0;">工作區審計日誌</h2>
+      <h2 class="red-pen-underline" style="margin-top: 0; margin-bottom:1.2rem;">工作區審計日誌</h2>
       <p class="muted" style="font-size:0.95rem; margin-bottom: 1.2rem;">輸入要查詢的聚合實體 ID (Aggregate ID) 進行完整事件流追蹤 (例如 Workspace UUID 或 Task UUID)。</p>
       <form id="audit-form" style="display: flex; gap: 0.5rem; max-width: 600px;">
         <input type="text" id="audit-aggregate-input" placeholder="輸入 aggregate_id" required style="flex-grow: 1;">

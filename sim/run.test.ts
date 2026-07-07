@@ -76,7 +76,7 @@ assert.ok(reportMarkdown.includes('sim-run-test'));
 assert.ok(reportMarkdown.includes('Example'));
 assert.ok(reportMarkdown.includes('total prompt bytes: 10'));
 
-assert.strictEqual(parseScenario(['node', 'run.ts']).key, 'technical-debt');
+assert.strictEqual(parseScenario(['node', 'run.ts']).key, 'self-directed');
 assert.strictEqual(parseScenario(['node', 'run.ts', '--scenario', 'product-ideation']).key, 'product-ideation');
 assert.throws(() => parseScenario(['node', 'run.ts', '--scenario', 'missing']), /Unknown scenario/);
 

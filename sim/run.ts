@@ -1,21 +1,27 @@
 // AI 團隊真實 sprint sim（Claude + Codex 混合車隊，真討論/真實作/真審查）
-// 用法：npm run sim            — 完整一場（owner 開場 → member 輪1 → owner 中場審查 → member 輪2-3 → owner 收尾 merge → 統計）
-//       npm run sim -- --smoke — 只跑 bootstrap + 1 haiku + 1 codex session，驗證管線
-// 前置：task-tracker 跑在 localhost:3000、`npm run seed` 已建立 user01-30、工作樹乾淨（會打 tag）
+// owner 自主探勘發想主題、開無主 task；成員依專長認領；審過的 branch merge 進該 scenario 的 repo。
+// 用法：npm run sim                       — 深度一場（開場→r1→中場審查→r2-3→收尾 merge→repair→統計）
+//       npm run sim -- --fast             — 壓縮一場（開場→r1→收尾 merge→repair→統計），目標 ~15-20 分
+//       npm run sim -- --scenario brain   — 改在 /home/hom/code/brain 開創/延續主題專案（與 --fast 可組合）
+//       npm run sim -- --smoke            — 只跑 bootstrap + 2 個 member session，驗證管線
+// 前置：task-tracker 跑在 localhost:3000、`npm run seed` 已建立 user01-30、目標 repo 工作樹乾淨（會打 tag）
 // 回退：git reset --hard <本場 tag>；git worktree remove sim-work/<u> --force；git branch -D sim/<u>
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 const BASE = 'http://localhost:3000';
 const ROOT = join(__dirname, '..');
-const LOG_DIR = join(ROOT, 'sim-logs');
-const WORK_DIR = join(ROOT, 'sim-work');
+const LOG_DIR = join(ROOT, 'sim-logs'); // 產物一律留在 task-tracker 底下，方便統一查看
+// 成員實作/CI/worktree 針對的 repo 與其 sim-work 目錄；main() 依 scenario.repoRoot 設定（brain 場改指向 /home/hom/code/brain）
+let REPO_ROOT = ROOT;
+let WORK_DIR = join(ROOT, 'sim-work');
 const SMOKE = process.argv.includes('--smoke');
+const FAST = process.argv.includes('--fast');
 const PASSWORD = 'test1234';
-const MEMBER_TIMEOUT = 12 * 60 * 1000;
-const OWNER_TIMEOUT = 25 * 60 * 1000; // opus 審查/協調較久；driver 已把機械工作（跑測試）分擔掉，這是安全上限
+const MEMBER_TIMEOUT = (FAST ? 7 : 12) * 60 * 1000;
+const OWNER_TIMEOUT = (FAST ? 12 : 25) * 60 * 1000; // opus 審查/協調較久；driver 已把機械工作（跑測試）分擔掉，這是安全上限
 
 interface Member {
   email: string;
@@ -23,6 +29,7 @@ interface Member {
   user: string; // email 前綴，branch/worktree 命名用
   runner: 'claude' | 'codex';
   model: string;
+  profile: string; // 專長描述，注入 prompt 供成員自我認知與 owner 設計難度組合參考
   userId?: string;
 }
 
@@ -30,6 +37,7 @@ interface MemberRunnerConfig {
   email: string;
   runner: 'claude' | 'codex';
   model: string;
+  profile: string;
 }
 
 export interface PromptArtifact {
@@ -89,22 +97,37 @@ export interface SprintReport {
 
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
 const MEMBER_RUNNERS: MemberRunnerConfig[] = [
-  { email: 'user02@test.local', runner: 'claude', model: 'claude-haiku-4-5-20251001' },
-  { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.4' },
-  { email: 'user04@test.local', runner: 'codex', model: 'gpt-5.4-mini' },
-  { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.4-mini' },
+  { email: 'user02@test.local', runner: 'claude', model: 'claude-haiku-4-5-20251001',
+    profile: '細心，擅長小範圍 auth/安全類修補與補測試，適合範圍明確的小題' },
+  { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.4',
+    profile: '主力工程師，可承接跨檔案/架構性大題（曾獨力完成 sim harness 四階段強化）' },
+  { email: 'user04@test.local', runner: 'codex', model: 'gpt-5.4-mini',
+    profile: '中小題穩定，擅長檔案 IO/防護類修補（曾完成 attachment symlink 硬化）' },
+  { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.4-mini',
+    profile: '中小題，動手前先查核現況避免重工' },
 ];
 
+const BRAIN_ROOT = '/home/hom/code/brain';
+
+// repoRoot：成員實作/CI/worktree 針對的 repo；self-directed/product-ideation 是本 task-tracker，brain 是獨立沙盒
 const SCENARIOS = {
-  'technical-debt': {
-    key: 'technical-debt',
-    title: '技術債清償 Sprint',
-    taskCreationMode: 'current-backlog',
+  'self-directed': {
+    key: 'self-directed',
+    title: '自主 Sprint',
+    taskCreationMode: 'owner-explored',
+    repoRoot: ROOT,
   },
   'product-ideation': {
     key: 'product-ideation',
     title: '產品發想 Sprint',
     taskCreationMode: 'owner-prompt',
+    repoRoot: ROOT,
+  },
+  'brain': {
+    key: 'brain',
+    title: 'Brain 主題 Sprint',
+    taskCreationMode: 'brain-explored',
+    repoRoot: BRAIN_ROOT,
   },
 } as const;
 
@@ -132,6 +155,7 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
         user: config.email.split('@')[0],
         runner: config.runner,
         model: config.model,
+        profile: config.profile,
       };
     });
   } finally {
@@ -139,14 +163,10 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
   }
 }
 
-// 6 個真技術債（same-file 給同人避免 merge 衝突）；owner 開場照表建 task
-const BACKLOG = (byName: Record<string, string>) => [
-  { assignee: byName['小美'], title: 'session cookie 加 Secure flag', desc: 'src/auth.ts 的 sessionCookie()/clearSessionCookie() 目前沒有 Secure 屬性（見 ponytail 註記）。加環境變數開關（如 COOKIE_SECURE=1 時附加 Secure），本機 http dev 預設不開。驗收：auth.test.ts 補一條開關行為的 assert，npx tsc --noEmit 與 npm test 全過。' },
-  { assignee: byName['小美'], title: 'session 過期資料清理', desc: 'sessions 表的過期 row 目前只在 getSessionUser 查到時懶清（src/auth.ts）。在 server 啟動時（src/server.ts）加一次 DELETE FROM sessions WHERE expires_at <= now 的清理（src/auth.ts 加 cleanupExpiredSessions() 供呼叫與測試）。驗收：auth.test.ts 補測試，tsc/test 全過。' },
-  { assignee: byName['阿凱'], title: '實作 sim/run.ts 強化計畫（prompt artifact + review packet + sprint report + scenario 選擇）', desc: '倉庫裡 docs/superpowers/plans/2026-07-07-sim-run-amplification.md 是一份已核准、寫死步驟的 TDD 實作計畫，目標是強化 sim/run.ts 這支 AI 模擬 sprint driver：Task1 把每個 session 的 prompt 存成檔案（sim-logs/<run-id>/prompts/）；Task2 把 verifyBranches() 擴充成含 commits/diffstat/changedFiles/tsc/test 輸出的 review packet 檔案；Task3 產生 report.md 與 report.json；Task4 加 --scenario 參數與 SCENARIOS map（technical-debt / product-ideation）。請先用 Read 工具讀完整份計畫文件（裡面每個 Task 都附了具體程式碼片段與驗收指令），完全照文件的 4 個 Task 順序（Task1→2→3→4）逐一實作，每個 Task 做完照文件指示跑測試、commit 一次。若時間內做不完全部 4 個 Task，做到哪個 Task 就完整做完該 Task（測試通過、已 commit）再收工，不要留下半成品；留言說明目前進度與下一步建議。' },
-  { assignee: byName['婷婷'], title: 'attachment 讀寫路徑 symlink 硬化', desc: 'src/attachment.ts 讀/刪附件時用 stored_name 組路徑，未做 realpath 檢查——若 ATTACH_DIR 內出現 symlink 可逃出目錄。在 readAttachment/deleteAttachment 實際碰檔案前用 realpathSync 確認解析後路徑仍在 ATTACH_DIR 內，否則丟 CommandError。驗收：attachment.test.ts 補 symlink 逃逸被擋的測試，tsc/test 全過。' },
-  { assignee: byName['大熊'], title: 'clientIp 支援 X-Forwarded-For', desc: 'src/server.ts 的 clientIp() 直取 socket（見 ponytail 註記），過 reverse proxy 後 rate limit 會全部算在 proxy IP 上。加 TRUST_PROXY=1 環境變數開關：開啟時取 X-Forwarded-For 最左邊的 IP，未開啟維持現狀。驗收：把 clientIp 抽成可測函式並補測試，tsc/test 全過。' },
-];
+// 一則舊技術債題目文字，當 owner 開題的「格式範例」（保留範例價值，不再寫死指派——改認領制）
+const TASK_FORMAT_EXAMPLE =
+  'title:「session cookie 加 Secure flag」【小】\n' +
+  'description:「src/auth.ts 的 sessionCookie()/clearSessionCookie() 目前沒有 Secure 屬性（見 ponytail 註記）。加環境變數開關（COOKIE_SECURE=1 時附加 Secure），本機 http dev 預設不開。驗收：auth.test.ts 補一條開關行為的 assert，npx tsc --noEmit + npx tsx src/auth.test.ts 通過。」';
 
 const PRODUCT_DISCOVERY_BACKLOG = (byName: Record<string, string>) => [
   { assignee: byName['小美'], title: '定義目標用戶與核心痛點', desc: '整理 1 份 problem framing：目標用戶、痛點、既有替代方案、為什麼現在要做。驗收：在 task 留言列出至少 3 個高優先痛點與待驗證假設，不要求改 code。' },
@@ -157,7 +177,7 @@ const PRODUCT_DISCOVERY_BACKLOG = (byName: Record<string, string>) => [
 
 export function parseScenario(argv: string[]): Scenario {
   const index = argv.indexOf('--scenario');
-  if (index === -1) return SCENARIOS['technical-debt'];
+  if (index === -1) return SCENARIOS['self-directed'];
   const key = argv[index + 1] as ScenarioKey | undefined;
   if (!key || !(key in SCENARIOS)) throw new Error(`Unknown scenario: ${key ?? '(missing)'}`);
   return SCENARIOS[key];
@@ -186,29 +206,45 @@ async function login(email: string): Promise<string> {
   return m[0];
 }
 
-const git = (args: string[], cwd = ROOT) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+const git = (args: string[], cwd = REPO_ROOT) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+
+// brain scenario：repo 可能還不存在。無 .git 就初始化（worktree add 需要至少一個 commit）。
+function ensureBrainRepo(): void {
+  mkdirSync(BRAIN_ROOT, { recursive: true });
+  if (existsSync(join(BRAIN_ROOT, '.git'))) return;
+  git(['init', '-b', 'master'], BRAIN_ROOT);
+  git(['config', 'user.email', 'sim-brain@local'], BRAIN_ROOT);
+  git(['config', 'user.name', 'sim-brain'], BRAIN_ROOT);
+  writeFileSync(join(BRAIN_ROOT, 'README.md'), '# brain\n\nAI 團隊自主孵化的主題專案沙盒。每個子目錄是一個專案，由 sim sprint 逐場迭代。\n');
+  writeFileSync(join(BRAIN_ROOT, '.gitignore'), 'node_modules\nsim-work/\ndist/\n');
+  git(['add', '-A'], BRAIN_ROOT);
+  git(['commit', '-m', 'chore: brain repo 初始化（sim driver）'], BRAIN_ROOT);
+  console.log('[bootstrap] brain repo 已初始化於 ' + BRAIN_ROOT);
+}
 
 // ── Bootstrap：tag、workspace、worktrees ────────────────────────────
-async function bootstrap(): Promise<{ wsId: string; tag: string }> {
+async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: string }> {
   const health = await api('/api/health');
   if (health.status !== 200) throw new Error('server 不在 localhost:3000，先啟動 task-tracker');
-  if (git(['status', '--porcelain'])) throw new Error('工作樹不乾淨，先 commit 再跑 sim');
+  if (scenario.repoRoot === BRAIN_ROOT) ensureBrainRepo();
+  if (git(['status', '--porcelain'])) throw new Error(`工作樹不乾淨（${REPO_ROOT}），先 commit 再跑 sim`);
 
   const tag = `sim-run-${Date.now()}`;
   git(['tag', tag]);
 
-  // 全員用 git worktree（branch 直接在主 repo，owner 免 fetch 即可審/merge）。
+  // 全員用 git worktree（branch 直接在目標 repo，owner 免 fetch 即可審/merge）。
   // 注意：codex 的 workspace-write sandbox 刻意保護 .git 唯讀（防竄改歷史），worktree
   // 或 clone 都一樣擋——所以 codex member 不自己 commit，改由 driver 在 session 後代 commit
   // （commitCodexWork）；claude member 工具權限能自己 commit。
   for (const m of MEMBERS) {
     if (existsSync(wt(m))) throw new Error(`${wt(m)} 已存在。清理：git worktree remove sim-work/${m.user} --force && git branch -D sim/${m.user} 2>/dev/null`);
     git(['worktree', 'add', wt(m), '-b', branch(m), 'master']);
-    symlinkSync(join(ROOT, 'node_modules'), join(wt(m), 'node_modules'));
+    // task-tracker 場：symlink 主 repo node_modules（測試現成）；brain 場各子專案自帶依賴，不 symlink
+    if (scenario.repoRoot === ROOT) symlinkSync(join(ROOT, 'node_modules'), join(wt(m), 'node_modules'));
   }
 
   const ownerCookie = await login(OWNER.email);
-  const ws = await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: `真實 Sprint ${new Date().toISOString().slice(0, 16)}` }) }, ownerCookie);
+  const ws = await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: scenario.title }) }, ownerCookie);
   if (ws.status !== 201) throw new Error(`建 workspace 失敗: ${JSON.stringify(ws.body)}`);
   const wsId: string = ws.body.id;
 
@@ -277,6 +313,34 @@ function runSession(
       });
     child.stdin?.end(); // codex exec 看到 piped stdin 會等 EOF
   });
+}
+
+// ── Owner 開場的探勘材料（driver 預蒐，機械工作交給 code，不佔 owner session）──
+// best-effort：任一指令失敗不中斷，回退為說明字串。owner 只讀材料做判斷，不自己跑指令。
+function shell(cmd: string, args: string[], cwd = REPO_ROOT): string {
+  try { return execFileSync(cmd, args, { cwd, encoding: 'utf8', timeout: 30 * 1000, maxBuffer: 4 * 1024 * 1024 }).trim(); }
+  catch (e) { const out = (e as { stdout?: string }).stdout; return typeof out === 'string' ? out.trim() : ''; }
+}
+
+function exploreMaterial(scenario: Scenario): string {
+  if (scenario.repoRoot === BRAIN_ROOT) {
+    const subs = readdirSync(BRAIN_ROOT).filter((n) => !n.startsWith('.') && n !== 'sim-work' && n !== 'README.md');
+    if (!subs.length) {
+      return `brain repo（${BRAIN_ROOT}）目前是空的——本場要開創第一個主題專案。\n近期 commit：\n${shell('git', ['log', '--oneline', '-10']) || '（僅初始 commit）'}`;
+    }
+    const projects = subs.map((sub) => {
+      const readmePath = join(BRAIN_ROOT, sub, 'README.md');
+      const head = existsSync(readmePath) ? readFileSync(readmePath, 'utf8').split('\n').slice(0, 8).join('\n') : '（無 README）';
+      return `### 子專案 ${sub}\n${head}`;
+    }).join('\n\n');
+    return `brain 現有子專案（優先延續，其次才開新專案）：\n${projects}\n\n近期 commit：\n${shell('git', ['log', '--oneline', '-20'])}`;
+  }
+  // self-directed / product-ideation：探 task-tracker 本體
+  const log = shell('git', ['log', '--oneline', '-30']);
+  const ponytail = shell('grep', ['-rn', 'ponytail:', 'src/', 'public/']).split('\n').slice(0, 40).join('\n');
+  const docs = shell('ls', ['-1', 'docs/']) || '（無 docs/）';
+  const tests = shell('sh', ['-c', 'ls src/*.test.ts sim/*.test.ts 2>/dev/null']);
+  return `近 30 筆 commit：\n${log}\n\nponytail 註記（已知簡化點/技術債候選，最多 40 條）：\n${ponytail || '（無）'}\n\ndocs/ 檔案：\n${docs}\n\n現有測試檔：\n${tests || '（無）'}`;
 }
 
 // ── Prompts ─────────────────────────────────────────────────────────
