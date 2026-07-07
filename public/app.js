@@ -508,20 +508,25 @@ function renderTasks(openTaskId = null) {
   app.innerHTML = `
     <!-- Kanban Top Header -->
     <div class="kanban-header-bar">
-      <h2 class="red-pen-underline" style="margin-bottom: 0.8rem;">Kanban Board</h2>
+      <h2 class="red-pen-underline" style="margin-bottom: 0.8rem;">
+        <span class="desktop-text">Kanban Board</span>
+        <span class="mobile-text">Kanban</span>
+      </h2>
       
       <!-- Project Filter and Manage Inline -->
       <div class="kanban-filters">
         <label style="font-weight: bold;">
-          專案篩選:
-          <select id="project-filter-select" style="font-size: 0.9rem; padding: 0.25rem 0.5rem;">
+          <span class="filter-label">專案篩選:</span>
+          <select id="project-filter-select" style="font-size: 0.9rem; padding: 0.25rem 0.5rem; font-family: inherit;">
             <option value="all">所有專案</option>
             <option value="none">無專案</option>
           </select>
         </label>
         
-        <label style="margin-left: 1rem; font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 0.3rem;">
-          <input type="checkbox" id="toggle-archived-checkbox"> 顯示已歸檔
+        <label style="margin-left: clamp(0.3rem, 2vw, 1rem); font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 0.3rem;">
+          <input type="checkbox" id="toggle-archived-checkbox">
+          <span class="desktop-text">顯示已歸檔</span>
+          <span class="mobile-text">已歸檔</span>
         </label>
       </div>
     </div>
