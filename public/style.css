@@ -40,16 +40,17 @@ body {
 /* layout structure */
 #layout-container {
   display: flex;
-  gap: 2rem;
+  gap: clamp(0.5rem, 2vw, 2rem);
   width: 100%;
   max-width: 1700px;
   margin: 1.5rem auto;
+  padding: 0 clamp(0px, 3vw, 2rem);
 }
 
 #sidebar {
   width: 280px;
   flex-shrink: 0;
-  padding: 1.5rem;
+  padding: clamp(0.8rem, 2vw, 1.5rem);
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
@@ -705,10 +706,13 @@ tr:last-child td {
   }
   #layout-container {
     flex-direction: column;
+    padding: 0 clamp(0px, 2vw, 1rem);
+    margin: 0.5rem auto;
   }
   #sidebar {
     width: 100%;
     min-height: auto;
+    padding: clamp(0.5rem, 2vw, 1rem);
   }
   .task-detail-container {
     grid-template-columns: 1fr;
