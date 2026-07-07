@@ -24,4 +24,16 @@ assert.ok(!rl.check('b', 0), 'b 達上限');
 rl.reset('b');
 assert.ok(rl.check('b', 0), 'reset 後放行');
 
+// ── 窗口過期後 Map 自動清理過期 entry（避免記憶體洩漏）──
+const rl2 = createRateLimiter(1000, 5);
+const now = 0;
+for (let i = 0; i < 50; i++) {
+  rl2.fail(`key-${i}`, now); // 建立 50 個不同的 key
+}
+assert.strictEqual(rl2.getSize?.(), 50, '50 個 key 應在 Map 中');
+for (let i = 0; i < 50; i++) {
+  rl2.check(`new-${i}`, now + 1001); // 檢查新 key（此時舊 key 都過期了），應 cleanup 舊的
+}
+assert.ok(rl2.getSize?.() <= 50, '過期後 Map 應清理舊 entry，size 不應無限增長');
+
 console.log('rateLimit.test.ts OK');
