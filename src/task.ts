@@ -262,6 +262,11 @@ export function listTasks(workspaceId: string, database = db): TaskRow[] {
     .all(workspaceId) as unknown as TaskRow[];
 }
 
+export function getTask(taskId: string, database = db): TaskRow | null {
+  const row = database.prepare('SELECT * FROM tasks_read_model WHERE task_id = ?').get(taskId) as TaskRow | undefined;
+  return row ?? null;
+}
+
 // PATCH / archive / delete 用：查資源歸屬的 workspace 以做權限檢查。null = task 不存在（或已刪）。
 export function getTaskWorkspaceId(taskId: string, database = db): string | null {
   const row = database.prepare('SELECT workspace_id FROM tasks_read_model WHERE task_id = ?').get(taskId) as

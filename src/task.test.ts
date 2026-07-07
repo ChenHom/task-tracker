@@ -14,6 +14,7 @@ import {
   deleteTask,
   applyTaskPatch,
   listTasks,
+  getTask,
   getTaskWorkspaceId,
   registerTaskProjections,
 } from './task';
@@ -126,5 +127,12 @@ assert.deepStrictEqual(evs.map((e) => e.aggregate_version), evs.map((_, i) => i 
 // ── listTasks 只回該 workspace ──
 createTask('u1', 'ws-other', { title: 'elsewhere' }, db);
 assert.ok(listTasks(WS, db).every((x) => x.workspace_id === WS), 'listTasks 只回指定 workspace');
+
+// ── getTask：單一 task 查詢 ──
+const t3 = getTask(id2, db);
+assert.ok(t3, 'getTask 返回存在的 task');
+assert.strictEqual(t3?.task_id, id2);
+assert.strictEqual(t3?.title, 'Patched', 'getTask 返回最新資料');
+assert.strictEqual(getTask('nonexistent', db), null, 'getTask 不存在的 id 返回 null');
 
 console.log('task.test.ts OK');
