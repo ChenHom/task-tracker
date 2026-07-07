@@ -245,10 +245,18 @@ form label {
 .kanban-column-title {
   font-size: 1.2rem;
   font-weight: bold;
-  text-align: center;
-  margin: 0 0 0.8rem 0;
-  padding-bottom: 0.4rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 0.5rem 0;
+  padding: 0.2rem 0.4rem 0.4rem;
   border-bottom: 2px solid var(--pencil-color);
+}
+.inline-add-btn-slot button:hover {
+  opacity: 0.6;
+}
+.inline-add-form-slot:empty {
+  display: none;
 }
 .col-todo .kanban-column-title { background: var(--highlight-todo); }
 .col-doing .kanban-column-title { background: var(--highlight-doing); }

@@ -493,28 +493,28 @@ function renderTasks(openTaskId = null) {
     <!-- 4/5 Column Kanban Board -->
     <div class="kanban-board" id="kanban-board-el">
       <div class="kanban-column col-todo">
-        <div class="kanban-column-title">Todo</div>
-        <div class="inline-add-container" id="add-Todo-container"></div>
+        <div class="kanban-column-title"><span>Todo</span><span class="inline-add-btn-slot" id="add-btn-Todo"></span></div>
+        <div class="inline-add-form-slot" id="add-form-Todo"></div>
         <div class="kanban-cards" id="cards-Todo"></div>
       </div>
       <div class="kanban-column col-doing">
-        <div class="kanban-column-title">Doing</div>
-        <div class="inline-add-container" id="add-Doing-container"></div>
+        <div class="kanban-column-title"><span>Doing</span><span class="inline-add-btn-slot" id="add-btn-Doing"></span></div>
+        <div class="inline-add-form-slot" id="add-form-Doing"></div>
         <div class="kanban-cards" id="cards-Doing"></div>
       </div>
       <div class="kanban-column col-review">
-        <div class="kanban-column-title">Review</div>
-        <div class="inline-add-container" id="add-Review-container"></div>
+        <div class="kanban-column-title"><span>Review</span><span class="inline-add-btn-slot" id="add-btn-Review"></span></div>
+        <div class="inline-add-form-slot" id="add-form-Review"></div>
         <div class="kanban-cards" id="cards-Review"></div>
       </div>
       <div class="kanban-column col-done">
-        <div class="kanban-column-title">Done</div>
-        <div class="inline-add-container" id="add-Done-container"></div>
+        <div class="kanban-column-title"><span>Done</span><span class="inline-add-btn-slot" id="add-btn-Done"></span></div>
+        <div class="inline-add-form-slot" id="add-form-Done"></div>
         <div class="kanban-cards" id="cards-Done"></div>
       </div>
       <div class="kanban-column col-archived" id="col-Archived-el" style="display: none;">
-        <div class="kanban-column-title">Archived</div>
-        <div class="inline-add-container" id="add-Archived-container"></div>
+        <div class="kanban-column-title"><span>Archived</span><span class="inline-add-btn-slot" id="add-btn-Archived"></span></div>
+        <div class="inline-add-form-slot" id="add-form-Archived"></div>
         <div class="kanban-cards" id="cards-Archived"></div>
       </div>
     </div>
@@ -523,76 +523,77 @@ function renderTasks(openTaskId = null) {
   function setupInlineAdders() {
     const colStatuses = ['Todo', 'Doing', 'Review', 'Done', 'Archived'];
     for (const colStatus of colStatuses) {
-      const container = document.getElementById(`add-${colStatus}-container`);
-      if (!container) continue;
-      
-      const renderButton = () => {
-        container.textContent = '';
-        const btn = el('button', {
-          class: 'btn-secondary',
-          style: 'width: 100%; font-size: 0.8rem; padding: 0.3rem 0.5rem; border: 1px dashed #9ca3af; text-align: left; background: transparent; cursor: pointer; margin-bottom: 0.5rem; border-radius: 4px;'
-        }, '+ 新增任務');
-        
-        btn.onclick = () => {
-          container.textContent = '';
-          const form = el('form', { style: 'display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.5rem; padding: 0.4rem; background: #fdfdfd; border: 1px solid #9ca3af; border-radius: 4px;' });
-          const input = el('input', {
-            type: 'text',
-            placeholder: '輸入任務主旨...',
-            required: 'true',
-            style: 'width: 100%; font-size: 0.85rem; padding: 0.25rem; font-family: inherit; border: 1px solid #ccc; box-sizing: border-box;'
-          });
-          form.appendChild(input);
-          
-          const actions = el('div', { style: 'display: flex; gap: 0.3rem;' });
-          const addBtn = el('button', { type: 'submit', style: 'font-size: 0.75rem; padding: 0.15rem 0.4rem; cursor: pointer;' }, '新增');
-          const cancelBtn = el('button', {
-            type: 'button',
-            class: 'btn-secondary',
-            style: 'font-size: 0.75rem; padding: 0.15rem 0.4rem; background: transparent; cursor: pointer;'
-          }, '取消');
-          
-          cancelBtn.onclick = renderButton;
-          
-          actions.appendChild(addBtn);
-          actions.appendChild(cancelBtn);
-          form.appendChild(actions);
-          
-          form.onsubmit = async (e) => {
-            e.preventDefault();
-            const title = input.value.trim();
-            if (!title) return;
-            
-            const filterVal = document.getElementById('project-filter-select').value;
-            const projectId = (filterVal && filterVal !== 'all' && filterVal !== 'none') ? filterVal : null;
-            
-            try {
-              await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/tasks`, {
-                method: 'POST',
-                body: {
-                  title,
-                  description: '',
-                  priority: 'Medium',
-                  status: colStatus,
-                  projectId,
-                  assigneeId: null,
-                  dueAt: null
-                }
-              });
-              await loadAllData();
-            } catch (err) {
-              alert('建立任務失敗：' + err.message);
-            }
-          };
-          
-          container.appendChild(form);
-          input.focus();
+      const btnSlot = document.getElementById(`add-btn-${colStatus}`);
+      const formSlot = document.getElementById(`add-form-${colStatus}`);
+      if (!btnSlot || !formSlot) continue;
+
+      // Render the small "+" button inside the title bar
+      const addBtn = el('button', {
+        type: 'button',
+        style: 'background: transparent; border: none; font-size: 1.1rem; cursor: pointer; padding: 0 0.2rem; line-height: 1; color: inherit; font-weight: bold;',
+        title: '新增任務'
+      }, '+');
+
+      addBtn.onclick = () => {
+        if (formSlot.querySelector('form')) {
+          // Already open, close it
+          formSlot.textContent = '';
+          return;
+        }
+        formSlot.textContent = '';
+        const form = el('form', { style: 'display: flex; gap: 0.3rem; margin-bottom: 0.5rem; padding: 0.3rem; background: #fdfdfd; border: 1px solid #ccc; border-radius: 4px; align-items: center;' });
+        const input = el('input', {
+          type: 'text',
+          placeholder: '任務名稱...',
+          required: 'true',
+          style: 'flex: 1; font-size: 0.8rem; padding: 0.2rem 0.3rem; font-family: inherit; border: 1px solid #ccc; border-radius: 3px; min-width: 0;'
+        });
+        const submitBtn = el('button', { type: 'submit', style: 'font-size: 0.75rem; padding: 0.15rem 0.35rem; cursor: pointer; white-space: nowrap;' }, '確認');
+        const cancelBtn = el('button', {
+          type: 'button',
+          style: 'font-size: 0.75rem; padding: 0.15rem 0.35rem; background: transparent; cursor: pointer; border: 1px solid #ccc; border-radius: 3px;'
+        }, '✕');
+
+        cancelBtn.onclick = () => { formSlot.textContent = ''; };
+
+        form.appendChild(input);
+        form.appendChild(submitBtn);
+        form.appendChild(cancelBtn);
+
+        form.onsubmit = async (e) => {
+          e.preventDefault();
+          const title = input.value.trim();
+          if (!title) return;
+
+          const filterVal = document.getElementById('project-filter-select').value;
+          const projectId = (filterVal && filterVal !== 'all' && filterVal !== 'none') ? filterVal : null;
+
+          try {
+            await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/tasks`, {
+              method: 'POST',
+              body: {
+                title,
+                description: '',
+                priority: 'Medium',
+                status: colStatus,
+                projectId,
+                assigneeId: null,
+                dueAt: null
+              }
+            });
+            formSlot.textContent = '';
+            await loadAllData();
+          } catch (err) {
+            alert('建立任務失敗：' + err.message);
+          }
         };
-        
-        container.appendChild(btn);
+
+        formSlot.appendChild(form);
+        input.focus();
       };
-      
-      renderButton();
+
+      btnSlot.textContent = '';
+      btnSlot.appendChild(addBtn);
     }
   }
 
