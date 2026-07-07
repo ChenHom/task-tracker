@@ -273,6 +273,20 @@ window.addEventListener('DOMContentLoaded', async () => {
     link.addEventListener('click', closeSidebar);
   });
 
+  // ── 滾動時 sidebar-toggle 變半透明 ──────────────────────────
+  let scrollTimeout = null;
+  window.addEventListener('scroll', () => {
+    if (toggleBtn) {
+      toggleBtn.classList.add('scrolling');
+    }
+    if (scrollTimeout) clearTimeout(scrollTimeout);
+    scrollTimeout = setTimeout(() => {
+      if (toggleBtn) {
+        toggleBtn.classList.remove('scrolling');
+      }
+    }, 250);
+  }, { passive: true });
+
   route();
 });
 

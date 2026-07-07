@@ -771,19 +771,20 @@ tr:last-child td {
     align-items: center;
     justify-content: center;
     position: fixed;
-    top: 10.6rem;
-    right: 1rem;
+    top: 0.1rem;
+    right: 0.6rem;
     z-index: 1100;
-    width: 44px;
-    height: 44px;
+    width: 30px;
+    height: 30px;
     border: none;
     background: transparent;
-    font-size: 1.3rem;
+    font-size: 1.05rem;
     cursor: pointer;
     color: var(--pencil-color);
     font-family: var(--font-cursive);
     padding: 0;
     line-height: 1;
+    transition: transform 0.25s ease, opacity 0.15s ease;
   }
   #sidebar-toggle::after {
     content: "";
@@ -796,6 +797,9 @@ tr:last-child td {
     background-size: 100% 100%;
     background-repeat: no-repeat;
     pointer-events: none;
+  }
+  #sidebar-toggle.scrolling {
+    opacity: 0.35;
   }
   #sidebar-toggle:active {
     transform: scale(0.92);
