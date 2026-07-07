@@ -163,23 +163,8 @@ body {
   background: transparent;
 }
 .nav-btn:hover, .nav-btn.active {
-  position: relative;
-  border-color: transparent !important;
-  background: transparent !important;
+  background-color: var(--btn-hover-bg);
   transform: rotate(-1deg) scale(1.02);
-}
-.nav-btn:hover::after, .nav-btn.active::after {
-  content: "";
-  position: absolute;
-  top: -4px;
-  left: -4px;
-  right: -4px;
-  bottom: -4px;
-  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 100 40' preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'><path d='M 5, 20 C 5, 5, 25, 4, 50, 4 C 75, 4, 95, 6, 95, 20 C 95, 34, 75, 36, 50, 36 C 25, 36, 4, 34, 4, 20 C 4, 8, 20, 6, 48, 5 C 76, 4, 96, 8, 94, 22 C 92, 34, 70, 35, 45, 34' stroke='%23ef4444' stroke-width='2' fill='none' stroke-linecap='round'/></svg>");
-  background-size: 100% 100%;
-  background-repeat: no-repeat;
-  pointer-events: none;
-  z-index: 10;
 }
 
 .sidebar-footer {
@@ -419,24 +404,7 @@ form label {
 }
 .badge-low { background-color: var(--priority-low); }
 .badge-medium { background-color: var(--priority-medium); }
-.badge-high {
-  position: relative;
-  border-color: transparent !important;
-  background: transparent !important;
-  color: #ef4444 !important;
-}
-.badge-high::after {
-  content: "";
-  position: absolute;
-  top: -3px;
-  left: -5px;
-  right: -5px;
-  bottom: -3px;
-  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 100 40' preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'><path d='M 5, 20 C 5, 5, 25, 4, 50, 4 C 75, 4, 95, 6, 95, 20 C 95, 34, 75, 36, 50, 36 C 25, 36, 4, 34, 4, 20 C 4, 8, 20, 6, 48, 5 C 76, 4, 96, 8, 94, 22 C 92, 34, 70, 35, 45, 34' stroke='%23ef4444' stroke-width='3.2' fill='none' stroke-linecap='round'/></svg>");
-  background-size: 100% 100%;
-  background-repeat: no-repeat;
-  pointer-events: none;
-}
+.badge-high { background-color: var(--priority-high); }
 .badge-project { background-color: rgba(139, 92, 246, 0.15); border-color: #8b5cf6; }
 
 .task-card-assignee {
@@ -806,18 +774,28 @@ tr:last-child td {
     top: 0.6rem;
     right: 1rem;
     z-index: 1100;
-    width: 40px;
-    height: 40px;
-    border: 2.5px solid var(--pencil-color);
-    border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
-    background: var(--card-bg);
+    width: 44px;
+    height: 44px;
+    border: none;
+    background: transparent;
     font-size: 1.3rem;
     cursor: pointer;
-    box-shadow: 2px 3px 8px rgba(0,0,0,0.12);
     color: var(--pencil-color);
     font-family: var(--font-cursive);
     padding: 0;
     line-height: 1;
+  }
+  #sidebar-toggle::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'><path d='M 20, 4 C 11, 4, 4, 11, 4, 20 C 4, 29, 11, 36, 20, 36 C 29, 36, 36, 29, 36, 20 C 36, 11, 29, 4, 19, 4.5 C 10, 5, 5.5, 12, 5, 21 C 4.5, 30, 12, 35.5, 21, 35 C 30, 34.5, 35, 27, 34, 18' stroke='%23222222' stroke-width='2.5' fill='none' stroke-linecap='round'/></svg>");
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    pointer-events: none;
   }
   #sidebar-toggle:active {
     transform: scale(0.92);

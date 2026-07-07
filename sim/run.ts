@@ -268,6 +268,9 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
 // Claude Code 的 Bash 權限用冒號前綴語法 Bash(<cmd>:*)（實測：空格版 Bash(curl *) 會卡在權限批准）
 const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Write,Edit,Glob,Grep';
 const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
+// owner 開場是生成型工作（發想＋開題），交給較快的 sonnet；中場/收尾/repair 是審查判斷，用 opus
+const OWNER_OPEN_MODEL = 'claude-sonnet-5';
+const OWNER_REVIEW_MODEL = 'claude-opus-4-8';
 
 export function createRunDir(root: string, runId: string): string {
   const dir = join(root, runId);
@@ -352,33 +355,50 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 - 遇疑似系統 bug：自查重試一次，可重現就建 [BUG] task（POST /api/workspaces/<ws>/tasks，title 以 [BUG] 開頭，description 含重現步驟/預期 vs 實際/原始回應，priority High）
 - 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層`;
 
-function memberPrompt(m: Member, wsId: string, round: number): string {
+function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario): string {
   const jar = join(LOG_DIR, `jar-${m.user}.txt`);
-  return `你是「${m.name}」（${m.email}），task-tracker 團隊的工程師。第 ${round} 次上線工作。
+  const isBrain = scenario.repoRoot === BRAIN_ROOT;
+  const workdirDesc = isBrain
+    ? '你的工作目錄（已是 git worktree，branch ' + branch(m) + '）就是目前目錄，是團隊共用的主題專案沙盒 repo；task 會指明要動哪個子專案。'
+    : '你的工作目錄（已是 git worktree，branch ' + branch(m) + '）就是目前目錄，task-tracker 的完整原始碼在這裡。';
+  const doneDef = isBrain
+    ? '- 完成的定義：task 驗收欄位寫的檢查通過（若子專案有 package.json/test script 就跑它；有 tsconfig 就 npx tsc --noEmit）；至少留一個可重跑的檢查'
+    : '- 完成的定義：npx tsc --noEmit 乾淨 + 跑「與你改動相關的測試檔」通過（例如改 auth 就 npx tsx src/auth.test.ts）。完整測試套件由團隊 CI 在你下線後統一跑，你不必自己跑整套 npm test（省時：本地快測、CI 全測）';
+  return `你是「${m.name}」（${m.email}），團隊工程師。第 ${round} 次上線工作。你的專長：${m.profile}。
 你的 user_id：${m.userId}。workspace：${wsId}。
-你的工作目錄（已是 git worktree，branch ${branch(m)}）就是目前目錄，task-tracker 的完整原始碼在這裡。
+${workdirDesc}
 ${API_RULES(jar)}
 工程規則：
 - 只在目前目錄內改檔案；只改完成 task 需要的檔案，不順手重構
-- 完成的定義：npx tsc --noEmit 乾淨 + npm test 全過（含你補的測試），兩者都要實際跑
-- 絕對不要執行 npm run sim（含 --smoke）：那會遞迴啟動一整場新的真實 AI sprint（呼叫 claude/codex CLI），只能用 npx tsc --noEmit、npm test、npx tsx sim/run.test.ts 這類驗證指令
+${doneDef}
+- 絕對不要執行 npm run sim（含 --smoke / --fast）：那會遞迴啟動一整場新的真實 AI sprint（呼叫 claude/codex CLI）
 ${m.runner === 'claude'
   ? '- 完成後 git add -A && git commit -m "<描述>"，取得 commit hash（git log -1 --format=%h）'
   : '- 你不需要（也無法）自己 git commit——這個工作環境的 .git 是唯讀的，團隊 CI 會在你下線後自動把你的變更提交到 branch ' + branch(m) + '。你只要把檔案改好、驗證通過即可'}
-本次流程：
-1. 登入後 GET ${BASE}/api/workspaces/${wsId}/tasks，看 assignee_id=${m.userId} 的 task
-2. 優先序：status=Doing 且有 owner 審查意見的（先 GET 該 task 的 comments 讀意見，回覆你的理解，照意見修正）＞ status=Todo 的新題
-3. 開工前：PATCH {"status":"Doing"}（若還在 Todo），留言說明你的實作計畫（改哪個檔、怎麼驗）
-4. 實作 → 跑驗證${m.runner === 'claude' ? ' → commit' : '（改檔+驗證即可，不用 commit）'}
-5. 完成留言：做法摘要、tsc/test 實際結果${m.runner === 'claude' ? '、commit hash' : '（CI 會補上 commit）'}（branch ${branch(m)}）→ PATCH {"status":"Review"}
-6. 若沒有可做的 task：讀一個隊友 task 的留言串，留一則有實質內容的意見，然後總結下線
+本次流程（這是認領制看板：task 開出來時沒有指派，誰適合誰認領）：
+1. 登入後 GET ${BASE}/api/workspaces/${wsId}/tasks
+2. 決定要做哪一題，優先序：
+   a.（最優先）assignee_id=${m.userId} 且 status=Doing、有 owner 審查意見的 → 先 GET 該 task 的 comments 讀意見，回覆你的理解，照意見修正
+   b. assignee_id=${m.userId} 且 status 還在 Todo/Doing 的（你先前認領未完成的）
+   c.（認領新題）assignee_id 為 null 且 status=Todo 的無主題，挑一個「最合你專長」的
+3. 認領協議（只在 2c 走這步，避免和隊友撞題）：
+   - 先 GET /api/tasks/<id> 確認 assignee_id 仍是 null
+   - PATCH /api/tasks/<id> {"assignee":"${m.userId}"} 認領
+   - 再 GET 一次確認 assignee_id 現在是你；若不是（被隊友搶先），放棄這題、回步驟 2 重新挑
+   - 認領後留言：為什麼你選這題（扣連你的專長）、實作計畫
+4. PATCH {"status":"Doing"}（若還在 Todo）
+5. 實作 → 跑驗證${m.runner === 'claude' ? ' → commit' : '（改檔+驗證即可，不用 commit）'}
+6. 完成留言：做法摘要、驗證實際結果${m.runner === 'claude' ? '、commit hash' : '（CI 會補上 commit）'}（branch ${branch(m)}）→ PATCH {"status":"Review"}
+7. 一次只做一題；做完進 Review 才可回步驟 2 認領下一題。若沒有可做也沒有可認領的題：讀一個隊友 task 的留言串，留一則有實質內容的意見，然後總結下線
 結束時輸出一行總結。`;
 }
 
-function ownerOpenPrompt(wsId: string, scenario: Scenario): string {
+function ownerOpenPrompt(wsId: string, scenario: Scenario, material: string): string {
   const jar = join(LOG_DIR, 'jar-owner.txt');
   const byName: Record<string, string> = {};
   for (const m of MEMBERS) byName[m.name] = m.userId!;
+  const roster = MEMBERS.map((m) => `- ${m.name}（user_id ${m.userId}）：${m.profile}`).join('\n');
+
   if (scenario.key === 'product-ideation') {
     const items = PRODUCT_DISCOVERY_BACKLOG(byName).map((task, index) => `${index + 1}. title:「${task.title}」 assignee:${task.assignee}\n   說明素材：${task.desc}`).join('\n');
     return `你是「${OWNER.name}」（${OWNER.email}），task-tracker 的 Owner。開一個真實的 ${scenario.title}：這輪只做產品探索，不要求成員改 repo code。
@@ -392,17 +412,45 @@ ${items}
 3. 每個 task 留一則說明留言：說明這題要回答的產品問題、判斷標準、以及不要直接跳成 code implementation
 結束時輸出一行總結。`;
   }
-  const items = BACKLOG(byName).map((task, index) => `${index + 1}. title:「${task.title}」 assignee:${task.assignee}\n   說明素材：${task.desc}`).join('\n');
-  return `你是「${OWNER.name}」（${OWNER.email}），task-tracker 的 Owner。開一個真實的 ${scenario.title}：團隊要真的修掉這些技術債。
-workspace：${wsId}。
+
+  const isBrain = scenario.key === 'brain';
+  const missionLine = isBrain
+    ? `你要為 AI 團隊發想/延續一個「主題專案」sprint。程式碼寫在獨立沙盒 repo（${BRAIN_ROOT}），題材不限、盡情發揮，但唯一硬約束＝可持續發展（能一場一場長大，不是一次性玩具）。`
+    : `你要為團隊發想一個真實的 sprint：先讀下面 driver 已幫你蒐好的探勘材料，歸納一個「有主軸的主題」（技術債清償／健壯性強化／測試補強／前端體驗擇一），再把主題拆成 3-5 個可獨立完成的 task。`;
+  const topicRules = isBrain
+    ? `題目規則：
+- 優先延續既有子專案（材料裡有的）；要開新專案，必須在 project 說明留言寫出「後續 2-3 場 sprint 的發展方向」證明可持續
+- 每個 task 範圍明確、可獨立驗收；建議用 Node/TypeScript（環境工具鏈現成），選其他技術棧須在 task 描述自帶驗證指令
+- task 描述要寫清楚：改哪個子目錄、要做什麼、怎麼驗收（可重跑的檢查）`
+    : `題目規則（很重要，直接決定這場成敗）：
+- 每題必須引用探勘材料中「實際看到」的具體檔案與具體問題，不可臆測不存在的東西
+- 每題範圍限 1-2 個檔案；不同題不可重疊同一檔案（成員平行開發，重疊＝merge 衝突）
+- 驗收＝npx tsc --noEmit + 跑相關測試檔通過，並寫明確的行為驗證
+- 避開大工程（FTS5 全文檢索、multipart 上傳、DB migration 工具這類），難度以【小】為主、最多一題【中】
+- 每題標難度【小/中/大】`;
+
+  return `你是「${OWNER.name}」（${OWNER.email}），Owner。開一個真實的 sprint（認領制：你只開題、不指派，成員自己認領）。
+workspace：${wsId}（目前名稱是暫定的「${scenario.title}」）。目前目錄是主 repo。
+${missionLine}
+
+=== driver 預蒐的探勘材料（你不用自己再跑指令，直接讀這個做判斷）===
+${material}
+=== 材料結束 ===
+
+團隊成員（僅供你設計難度組合的參考，${isBrain ? '' : '注意各人擅長領域，'}不要指派任何 task 給特定人）：
+${roster}
+
 ${API_RULES(jar)}
-本次要做的事（只用 curl，不改 code）：
-1. POST ${BASE}/api/workspaces/${wsId}/projects {"name":"${scenario.title}"}
-2. 照下表建 6 個 task（POST ${BASE}/api/workspaces/${wsId}/tasks，欄位 title/description/priority/assignee/projectId）。
-   description 請基於「說明素材」潤飾，保留檔案路徑與驗收方式；priority 自行判斷；assignee 必須照表填 user_id：
-${items}
-3. 每個 task 留一則說明留言：為什麼這題重要、實作時要注意什麼（你是資深工程師，給出有價值的提醒）
-結束時輸出一行總結。`;
+本次要做的事（只用 curl／git 讀取，不改 code）：
+1. 歸納主題後，PATCH ${BASE}/api/workspaces/${wsId} {"name":"<你定的主題名稱，寫清楚主題，例如『前端錯誤處理一致性』>"} 把 workspace 改名為主題
+2. POST ${BASE}/api/workspaces/${wsId}/projects {"name":"<同主題名稱>"}，取得 project id
+3. 建 3-5 個 task（POST ${BASE}/api/workspaces/${wsId}/tasks，欄位 title/description/priority/projectId）：
+   ${topicRules}
+   ⚠️ 認領制：建 task 時 assignee 一律「留空/不填」，讓成員自己認領
+   task 格式範例（可參考語氣與詳細度）：
+   ${TASK_FORMAT_EXAMPLE}
+4. 每個 task 留一則說明留言：為什麼這題重要、實作提示、預期會踩到的陷阱（你是資深工程師，給有價值的提醒）
+結束時輸出一行總結（主題是什麼、開了幾題、難度分佈）。`;
 }
 
 function ownerMidPrompt(wsId: string): string {
@@ -415,17 +463,17 @@ ${map}
 ${API_RULES(jar)}
 本次流程：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks
-2. 對每個 status=Review 的 task：
+2. 對每個 status=Review 的 task（認領制：從 task 的 assignee_id 對照上表看是誰做的、對應哪條 branch）：
    a. GET 它的 comments 了解實作者說了什麼
    b. 用 git diff master...<該成員的 branch> -- 看實際改動（也可 Read 檔案），認真審：正確性、測試是否真的驗到行為、有沒有多餘改動
    c. 合格 → 留言具體肯定＋「中場審查通過，收尾時合併」（狀態保持 Review）
    d. 不合格 → 留言具體問題（引用檔案與行為）→ PATCH {"status":"Doing"} 退回
-3. 對還在 Todo/Doing 沒動靜的 task 留一則催辦或協助留言
+3. 對「還沒被任何人認領」（assignee_id 為 null、還在 Todo）的 task：留言分析為什麼沒人領（題目太大？說明不清楚？），補充說明讓它更好認領，或點名建議哪位成員的專長適合（只是建議，不要強制指派）
 4. 留言含 [ESCALATE] 的 task：能給指導就留言具體指導；屬於環境/基礎設施問題你也解不了的 → 留言「已上報 harness 上層處理」並保持該 task 現狀
-結束時輸出審查總結（幾件過、幾件退、退的原因、幾件上報）。`;
+結束時輸出審查總結（幾件過、幾件退、退的原因、幾件無人認領、幾件上報）。`;
 }
 
-function ownerClosePrompt(wsId: string, tag: string, verified: BranchReviewPacket[]): string {
+function ownerClosePrompt(wsId: string, tag: string, verified: BranchReviewPacket[], scenario: Scenario): string {
   const jar = join(LOG_DIR, 'jar-owner-close.txt');
   const packetByBranch = new Map(verified.map((packet) => [packet.branch, packet]));
   const map = MEMBERS.map((m) => {
@@ -433,20 +481,23 @@ function ownerClosePrompt(wsId: string, tag: string, verified: BranchReviewPacke
     if (!packet || packet.ahead === 0) return `- ${m.name} / ${branch(m)}: 無 commit`;
     return `- ${m.name} / ${packet.branch}: tsc ${packet.tsc.ok ? 'PASS' : 'FAIL'}, test ${packet.test.ok ? 'PASS' : 'FAIL'}, ${packet.ahead} commits, ${packet.changedFiles.length} files changed, packet: ${packet.packetPath}`;
   }).join('\n');
+  const integrationStep = scenario.repoRoot === BRAIN_ROOT
+    ? '3. 全部 merge 完成後，對「有被改動的子專案」各跑一次它自己的驗證（有 package.json+test script 就在該目錄 npm test；有 tsconfig 就 npx tsc --noEmit）做整合驗證；若失敗，git log 找出問題 merge、git reset --hard <該 merge 前> 退回它、在對應 task 留言退回原因 + PATCH {"status":"Doing"}'
+    : '3. 全部 merge 完成後，跑「一次」npx tsc --noEmit && npm test 做整合驗證（不是每 branch 一次）；若整合失敗，git log 找出問題 merge、git reset --hard <該 merge 前> 退回它、在對應 task 留言退回原因 + PATCH {"status":"Doing"}';
   return `你是「${OWNER.name}」（${OWNER.email}），Owner。sprint 收尾：審查通過的合併進 master，總結全場。
-workspace：${wsId}。目前目錄是主 repo（master）。
-CI（driver）已幫你把每個 branch 對 master 獨立跑過 tsc + test，結果如下——你不用自己重跑各 branch 的測試：
+workspace：${wsId}。目前目錄是主 repo（master，${REPO_ROOT}）。
+CI（driver）已幫你把每個 branch 對 master 獨立跑過驗證，結果如下——你不用自己重跑各 branch 的測試：
 ${map}
 ${API_RULES(jar)}
 本次流程（省時要點：信任上面 CI 預跑結果，不要逐 branch 重跑測試）：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks
-2. 對每個 status=Review 且 CI 顯示 tsc/test 皆 ✓ 的 task，依其 branch 逐一 merge（一次一個）：
+2. 對每個 status=Review 且 CI 顯示驗證皆 PASS 的 task，依其 branch 逐一 merge（一次一個）：
    a. git diff master...<branch> 快速看 code（審查重點，不用跑測試）
    b. git merge --no-ff <branch> -m "merge: <task 標題>"；若衝突 git merge --abort 並在 task 留言請該成員 rebase
    c. task 留言「已合併進 master（附 merge commit hash）」→ PATCH {"status":"Done"}
-3. 全部 merge 完成後，跑「一次」npx tsc --noEmit && npm test 做整合驗證（不是每 branch 一次）；若整合失敗，git log 找出問題 merge、git reset --hard <該 merge 前> 退回它、在對應 task 留言退回原因 + PATCH {"status":"Doing"}
-4. CI 顯示 tsc 或 test ✗ 的 branch：不要 merge，直接在 task 留言具體問題 + PATCH {"status":"Doing"} 退回
-5. 還在 Todo/Doing 的 task：留言說明未完成原因；[BUG]/[ESCALATE] task：triage 留言、解不了的標「已上報 harness 上層處理」
+${integrationStep}
+4. CI 顯示驗證 FAIL 的 branch：不要 merge，直接在 task 留言「具體」問題（引用檔案/行為，讓成員知道要修什麼）+ PATCH {"status":"Doing"} 退回——這題會進入重修
+5. 還在 Todo/Doing 或無人認領的 task：留言說明現況；[BUG]/[ESCALATE] task：triage 留言、解不了的標「已上報 harness 上層處理」
 6. 輸出 sprint 總結（5 行內：合了幾件、退了幾件、學到什麼）
 （回退錨點 tag：${tag}，僅供你知道，不要動它）`;
 }
@@ -622,76 +673,99 @@ function runCheck(cwd: string, command: string, args: string[], outputPath: stri
   }
 }
 
-// owner 收尾前，driver 對每個 branch 獨立預跑 tsc+test（機械工作交給 code，不佔 owner 的 LLM session）。
-// 在各自 worktree 跑（主 repo 尚未 merge）。結果注入 ownerClosePrompt，owner 只做判斷與 merge。
-function verifyBranches(runDir: string): BranchReviewPacket[] {
-  const out: BranchReviewPacket[] = [];
-  for (const m of MEMBERS) {
+// brain 場 best-effort CI：依變動檔的子專案有無 tooling 決定跑什麼。無 tooling → 標記通過但註明需人工審 diff。
+function brainChecks(worktree: string, changedFiles: string[], tscPath: string, testPath: string): { tsc: CommandCheck; test: CommandCheck } {
+  const subs = [...new Set(changedFiles.map((f) => f.split('/')[0]).filter((s) => s && existsSync(join(worktree, s, 'package.json')) || s && existsSync(join(worktree, s, 'tsconfig.json'))))];
+  const tscDir = subs.find((s) => existsSync(join(worktree, s, 'tsconfig.json')));
+  const testDir = subs.find((s) => {
+    const pkgPath = join(worktree, s, 'package.json');
+    if (!existsSync(pkgPath)) return false;
+    try { return !!(JSON.parse(readFileSync(pkgPath, 'utf8')).scripts?.test); } catch { return false; }
+  });
+  const noteOk = (path: string): CommandCheck => { writeFileSync(path, '無自動驗證（子專案未附 tooling）——owner 請人工審 diff\n'); return { ok: true, outputPath: path }; };
+  const installIfNeeded = (dir: string) => { if (!existsSync(join(worktree, dir, 'node_modules'))) runCheck(join(worktree, dir), 'npm', ['install'], join(worktree, dir, '.sim-install.log')); };
+  return {
+    tsc: tscDir ? (installIfNeeded(tscDir), runCheck(join(worktree, tscDir), 'npx', ['tsc', '--noEmit'], tscPath)) : noteOk(tscPath),
+    test: testDir ? (installIfNeeded(testDir), runCheck(join(worktree, testDir), 'npm', ['test'], testPath)) : noteOk(testPath),
+  };
+}
+
+// owner 收尾前，driver 對每個 branch 獨立預跑驗證（機械工作交給 code，不佔 owner 的 LLM session）。
+// 在各自 worktree 跑（主 repo 尚未 merge），彼此獨立故平行。結果注入 ownerClosePrompt，owner 只做判斷與 merge。
+async function verifyBranches(runDir: string, scenario: Scenario): Promise<BranchReviewPacket[]> {
+  const isBrain = scenario.repoRoot === BRAIN_ROOT;
+  return Promise.all(MEMBERS.map(async (m) => {
     const packetBase = branch(m).replace(/[^a-zA-Z0-9_-]+/g, '-');
     const packetPath = join(runDir, 'review-packets', `${packetBase}.md`);
     const tscPath = join(runDir, 'review-packets', `${packetBase}-tsc.txt`);
     const testPath = join(runDir, 'review-packets', `${packetBase}-test.txt`);
-    if (!existsSync(wt(m))) {
-      out.push({
-        branch: branch(m),
-        memberName: m.name,
-        memberEmail: m.email,
-        ahead: 0,
-        commits: [],
-        changedFiles: [],
-        diffstat: '',
-        tsc: { ok: false, outputPath: tscPath },
-        test: { ok: false, outputPath: testPath },
-        packetPath,
-      });
-      continue;
-    }
+    const base = (ahead: number): BranchReviewPacket => ({
+      branch: branch(m), memberName: m.name, memberEmail: m.email, ahead,
+      commits: [], changedFiles: [], diffstat: '',
+      tsc: { ok: false, outputPath: tscPath }, test: { ok: false, outputPath: testPath }, packetPath,
+    });
+    if (!existsSync(wt(m))) return base(0);
     const ahead = Number(git(['rev-list', '--count', `master..${branch(m)}`]));
-    const packet: BranchReviewPacket = {
-      branch: branch(m),
-      memberName: m.name,
-      memberEmail: m.email,
-      ahead,
-      commits: [],
-      changedFiles: [],
-      diffstat: '',
-      tsc: { ok: false, outputPath: tscPath },
-      test: { ok: false, outputPath: testPath },
-      packetPath,
-    };
-    if (!ahead) {
-      out.push(packet);
-      continue;
-    }
+    const packet = base(ahead);
+    if (!ahead) return packet;
     packet.commits = git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean);
     packet.changedFiles = git(['diff', '--name-only', `master...${branch(m)}`]).split('\n').filter(Boolean);
     packet.diffstat = git(['diff', '--stat', `master...${branch(m)}`]);
-    packet.tsc = runCheck(wt(m), 'npx', ['tsc', '--noEmit'], tscPath);
-    packet.test = runCheck(wt(m), 'npm', ['test'], testPath);
+    if (isBrain) {
+      const checks = brainChecks(wt(m), packet.changedFiles, tscPath, testPath);
+      packet.tsc = checks.tsc; packet.test = checks.test;
+    } else {
+      packet.tsc = runCheck(wt(m), 'npx', ['tsc', '--noEmit'], tscPath);
+      packet.test = runCheck(wt(m), 'npm', ['test'], testPath);
+    }
     writeFileSync(packetPath, formatReviewPacket(packet));
-    out.push(packet);
     console.log(`[CI預跑] ${branch(m)}: tsc ${packet.tsc.ok ? '✓' : '✗'} / test ${packet.test.ok ? '✓' : '✗'}（${ahead} commit）`);
-  }
-  return out;
+    return packet;
+  }));
+}
+
+// 看板永遠在 task-tracker DB（不論 scenario 的 code repo 是哪個）
+function queryTasks(wsId: string): Array<{ assignee_id: string | null; status: string }> {
+  const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
+  try { return db.prepare('SELECT assignee_id, status FROM tasks_read_model WHERE workspace_id = ?').all(wsId) as Array<{ assignee_id: string | null; status: string }>; }
+  finally { db.close(); }
+}
+
+// 條件輪：只讓「有無主題可認領」或「名下還有 Todo/Doing」的成員上線，消滅儀式性空轉 session
+function membersToRun(wsId: string): Member[] {
+  const tasks = queryTasks(wsId);
+  const unclaimed = tasks.some((t) => !t.assignee_id && t.status === 'Todo');
+  return MEMBERS.filter((m) => unclaimed || tasks.some((t) => t.assignee_id === m.userId && (t.status === 'Todo' || t.status === 'Doing')));
+}
+
+// repair：owner 收尾把不合格題退回 Doing，找出名下有被退回題的成員來重修
+function membersWithRejects(wsId: string): Member[] {
+  const tasks = queryTasks(wsId);
+  return MEMBERS.filter((m) => tasks.some((t) => t.assignee_id === m.userId && t.status === 'Doing'));
 }
 
 async function main(): Promise<void> {
   mkdirSync(LOG_DIR, { recursive: true });
   MEMBERS = loadMembersFromUsers();
   const scenario = parseScenario(process.argv);
+  REPO_ROOT = scenario.repoRoot;
+  WORK_DIR = join(REPO_ROOT, 'sim-work');
   const since = new Date().toISOString();
-  const { wsId, tag } = await bootstrap();
+  const { wsId, tag } = await bootstrap(scenario);
   const runDir = createRunDir(LOG_DIR, tag);
   const promptArtifacts: PromptArtifact[] = [];
 
   const memberOpts = (m: Member) => ({ cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: MEMBER_TIMEOUT, runDir, promptArtifacts });
-  const ownerOpts = { cwd: ROOT, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT, runDir, promptArtifacts };
+  const ownerOpts = { cwd: REPO_ROOT, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT, runDir, promptArtifacts };
 
   // 一個 member session：跑 + 若是 codex 則 driver 代 commit
   const memberSession = async (m: Member, round: number) => {
-    await runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` });
+    await runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` });
     if (m.runner === 'codex') commitCodexWork(m, round);
   };
+  // 一輪：成員並行，登入用小 jitter 錯開避免同秒撞認領
+  const runRound = async (members: Member[], round: number, minJit: number, maxJit: number) =>
+    Promise.all(members.map(async (m) => { await sleep(jitter(minJit, maxJit)); await memberSession(m, round); }));
 
   if (SMOKE) {
     await memberSession(MEMBERS[0], 1); // haiku
@@ -700,25 +774,36 @@ async function main(): Promise<void> {
     return;
   }
 
-  await runSession('owner-開場', 'claude', 'claude-opus-4-8', ownerOpenPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-open' });
+  // owner 開場（sonnet + driver 預蒐材料）→ 發想主題、改名 workspace、開無主 task
+  const material = exploreMaterial(scenario);
+  await runSession('owner-開場', 'claude', OWNER_OPEN_MODEL, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' });
 
-  await Promise.all(MEMBERS.map(async (m) => {
-    await sleep(jitter(5, 30));
-    await memberSession(m, 1);
-  }));
+  // 第 1 輪：全員上線認領
+  await runRound(MEMBERS, 1, 1, 5);
 
-  await runSession('owner-中場審查', 'claude', 'claude-opus-4-8', ownerMidPrompt(wsId), { ...ownerOpts, promptLabel: 'owner-mid' });
-
-  await Promise.all(MEMBERS.map(async (m) => {
-    await sleep(jitter(5, 60));
+  if (!FAST) {
+    // 深度模式：中場審查（opus）＋條件式 r2-3
+    await runSession('owner-中場審查', 'claude', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId), { ...ownerOpts, promptLabel: 'owner-mid' });
     for (let r = 2; r <= 3; r++) {
-      await memberSession(m, r);
-      if (r < 3) await sleep(jitter(60, 300));
+      const active = membersToRun(wsId);
+      if (!active.length) { console.log(`[r${r}] 無成員需上線（都已進 Review/Done），跳過`); break; }
+      await runRound(active, r, 5, 15);
     }
-  }));
+  }
 
-  const verified = verifyBranches(runDir); // driver 預跑，把測試機械工作從 owner session 移出
-  await runSession('owner-收尾合併', 'claude', 'claude-opus-4-8', ownerClosePrompt(wsId, tag, verified), { ...ownerOpts, promptLabel: 'owner-close' });
+  // 收尾 merge（opus）＋ repair 迴圈（收尾退回的題重修至合格，上限 2 輪）
+  let verified = await verifyBranches(runDir, scenario);
+  await runSession('owner-收尾合併', 'claude', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' });
+
+  for (let repair = 1; repair <= 2; repair++) {
+    const toFix = membersWithRejects(wsId);
+    if (!toFix.length) break;
+    console.log(`[repair] 第 ${repair} 輪重修：${toFix.map((m) => m.name).join('、')}`);
+    await runRound(toFix, 3 + repair, 1, 5);
+    verified = await verifyBranches(runDir, scenario);
+    await runSession(`owner-repair${repair}`, 'claude', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` });
+  }
+
   printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, verified);
 }
 

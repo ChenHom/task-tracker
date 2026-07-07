@@ -31,6 +31,7 @@ assert.deepStrictEqual(
   ],
   'sim members 應從 users 表讀取 email/name，runner 設定仍由 sim 保留',
 );
+assert.ok(members.every((member) => member.profile.trim().length > 0), '每個 member 都應有 profile 供認領/難度組合參考');
 
 const runRoot = mkdtempSync(join(tmpdir(), 'task-tracker-sim-run-'));
 const runDir = createRunDir(runRoot, 'sim-run-test');
