@@ -565,20 +565,18 @@ function renderTasks(openTaskId = null) {
         <div class="kanban-cards" id="cards-Review"></div>
       </div>
       <div class="kanban-column col-done">
-        <div class="kanban-column-title"><span>Done</span><span class="inline-add-btn-slot" id="add-btn-Done"></span></div>
-        <div class="inline-add-form-slot" id="add-form-Done"></div>
+        <div class="kanban-column-title"><span>Done</span></div>
         <div class="kanban-cards" id="cards-Done"></div>
       </div>
       <div class="kanban-column col-archived" id="col-Archived-el" style="display: none;">
-        <div class="kanban-column-title"><span>Archived</span><span class="inline-add-btn-slot" id="add-btn-Archived"></span></div>
-        <div class="inline-add-form-slot" id="add-form-Archived"></div>
+        <div class="kanban-column-title"><span>Archived</span></div>
         <div class="kanban-cards" id="cards-Archived"></div>
       </div>
     </div>
   `;
 
   function setupInlineAdders() {
-    const colStatuses = ['Todo', 'Doing', 'Review', 'Done', 'Archived'];
+    const colStatuses = ['Todo', 'Doing', 'Review'];
     for (const colStatus of colStatuses) {
       const btnSlot = document.getElementById(`add-btn-${colStatus}`);
       const formSlot = document.getElementById(`add-form-${colStatus}`);
