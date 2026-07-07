@@ -696,6 +696,14 @@ tr:last-child td {
   color: #666;
 }
 
+/* Sidebar toggle button & backdrop - hidden on desktop */
+#sidebar-toggle {
+  display: none;
+}
+#sidebar-backdrop {
+  display: none;
+}
+
 /* Responsive adjustments */
 @media (max-width: 1024px) {
   .kanban-board, .kanban-board.show-archived-col {
@@ -709,13 +717,83 @@ tr:last-child td {
     padding: 0 clamp(0px, 2vw, 1rem);
     margin: 0.5rem auto;
   }
-  #sidebar {
-    width: 100%;
-    min-height: auto;
-    padding: clamp(0.5rem, 2vw, 1rem);
-  }
   .task-detail-container {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Toggle button - fixed top-right */
+  #sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 0.6rem;
+    right: 0.6rem;
+    z-index: 1100;
+    width: 40px;
+    height: 40px;
+    border: 2px solid var(--pencil-color);
+    border-radius: 8px;
+    background: var(--card-bg);
+    font-size: 1.3rem;
+    cursor: pointer;
+    box-shadow: 2px 3px 8px rgba(0,0,0,0.12);
+    color: var(--pencil-color);
+    font-family: var(--font-cursive);
+    padding: 0;
+    line-height: 1;
+  }
+  #sidebar-toggle:active {
+    transform: scale(0.92);
+  }
+
+  /* Backdrop overlay */
+  #sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 1049;
+  }
+  #sidebar-backdrop.visible {
+    display: block;
+  }
+
+  /* Sidebar - slide in from right */
+  #sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 280px;
+    max-width: 85vw;
+    height: 100vh;
+    z-index: 1050;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    overflow-y: auto;
+    border-radius: 0;
+    border-right: none;
+    box-shadow: -4px 0 16px rgba(0,0,0,0.15);
+    padding: clamp(0.8rem, 3vw, 1.2rem);
+    min-height: 100vh;
+  }
+  #sidebar.open {
+    transform: translateX(0);
+  }
+
+  /* Adjust layout to not reserve sidebar space */
+  #layout-container {
+    flex-direction: column;
+    padding: 0 clamp(0px, 2vw, 1rem);
+    margin: 0.5rem auto;
+    /* Leave space for toggle button */
+    padding-top: 0.2rem;
+  }
+
+  #main-content {
+    width: 100%;
   }
 }
 

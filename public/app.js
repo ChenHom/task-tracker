@@ -139,6 +139,13 @@ function initSwitcherListener() {
         navigate('#/tasks');
       }
     }
+    // 自動收折 mobile sidebar
+    const sb = document.getElementById('sidebar');
+    const bd = document.getElementById('sidebar-backdrop');
+    const tb = document.getElementById('sidebar-toggle');
+    if (sb) sb.classList.remove('open');
+    if (bd) bd.classList.remove('visible');
+    if (tb) tb.textContent = '☰';
   });
   switcherInitialized = true;
 }
@@ -235,6 +242,37 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   await syncGlobalWorkspaces();
+
+  // ── Sidebar 收折 (mobile) ──────────────────────────────────
+  const sidebarEl = document.getElementById('sidebar');
+  const toggleBtn = document.getElementById('sidebar-toggle');
+  const backdrop = document.getElementById('sidebar-backdrop');
+
+  function openSidebar() {
+    sidebarEl.classList.add('open');
+    backdrop.classList.add('visible');
+    toggleBtn.textContent = '✕';
+  }
+  function closeSidebar() {
+    sidebarEl.classList.remove('open');
+    backdrop.classList.remove('visible');
+    toggleBtn.textContent = '☰';
+  }
+
+  toggleBtn.addEventListener('click', () => {
+    if (sidebarEl.classList.contains('open')) {
+      closeSidebar();
+    } else {
+      openSidebar();
+    }
+  });
+  backdrop.addEventListener('click', closeSidebar);
+
+  // 點擊 nav 連結後自動收折
+  document.querySelectorAll('#nav-menu a.nav-btn').forEach(link => {
+    link.addEventListener('click', closeSidebar);
+  });
+
   route();
 });
 
