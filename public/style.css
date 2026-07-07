@@ -730,12 +730,12 @@ tr:last-child td {
     justify-content: center;
     position: fixed;
     top: 0.6rem;
-    right: 0.6rem;
+    right: 1rem;
     z-index: 1100;
     width: 40px;
     height: 40px;
-    border: 2px solid var(--pencil-color);
-    border-radius: 8px;
+    border: 2.5px solid var(--pencil-color);
+    border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
     background: var(--card-bg);
     font-size: 1.3rem;
     cursor: pointer;
