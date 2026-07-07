@@ -97,6 +97,14 @@ seedWs('ws-arch', 'archived');
 assert.throws(() => createTask('u1', 'ws-arch', { title: 'x' }, db), CommandError, 'archived workspace 不可建 task');
 assert.throws(() => createTask('u1', 'ws-missing', { title: 'x' }, db), CommandError, '不存在的 workspace 不可建 task');
 
+// ── 已存在 task 若其 workspace 後來 archived，patch / archive / delete 都應被凍結 ──
+seedWs('ws-frozen');
+const frozenId = createTask('u1', 'ws-frozen', { title: 'freeze me' }, db);
+db.prepare('UPDATE workspaces_read_model SET status = ? WHERE workspace_id = ?').run('archived', 'ws-frozen');
+assert.throws(() => applyTaskPatch('u1', frozenId, { title: 'still editable?' }, db), CommandError, 'archived workspace 下 patch task 應拒');
+assert.throws(() => archiveTask('u1', frozenId, db), CommandError, 'archived workspace 下 archive task 應拒');
+assert.throws(() => deleteTask('u1', frozenId, db), CommandError, 'archived workspace 下 delete task 應拒');
+
 // ── archive：active → Archived，之後唯讀 ──
 archiveTask('u1', id, db);
 assert.strictEqual(one(id).status, 'Archived');
