@@ -93,6 +93,20 @@ function requireEditable(state: TaskState): void {
   if (state.status === 'Archived') throw new CommandError('task 已歸檔，不可修改');
 }
 
+function requireTaskWorkspaceActive(taskId: string, database: DatabaseSync): void {
+  const workspaceId = getTaskWorkspaceId(taskId, database);
+  const status = workspaceId ? getWorkspaceStatus(workspaceId, database) : null;
+  if (status === null) throw new CommandError('workspace 不存在');
+  if (status !== 'active') throw new CommandError(`workspace 目前為 ${status}，不可修改 task`);
+}
+
+function loadEditableTask(taskId: string, database: DatabaseSync): { state: TaskState; version: number } {
+  const task = load(taskId, database);
+  requireEditable(task.state);
+  requireTaskWorkspaceActive(taskId, database);
+  return task;
+}
+
 // ── Command handlers：load → 驗證 → append（絕不直接改 read model）──
 export interface CreateTaskInput {
   title?: unknown;
@@ -134,21 +148,18 @@ export function createTask(actorId: string, workspaceId: string, input: CreateTa
 
 export function changeTaskTitle(actorId: string, taskId: string, title: unknown, database = db): void {
   const clean = validateTitle(title);
-  const { state, version } = load(taskId, database);
-  requireEditable(state);
+  const { version } = loadEditableTask(taskId, database);
   appendEvent('Task', taskId, version, 'task.title_changed', { title: clean }, meta(actorId), database);
 }
 
 export function changeTaskDescription(actorId: string, taskId: string, description: unknown, database = db): void {
   const clean = validateDescription(description);
-  const { state, version } = load(taskId, database);
-  requireEditable(state);
+  const { version } = loadEditableTask(taskId, database);
   appendEvent('Task', taskId, version, 'task.description_changed', { description: clean }, meta(actorId), database);
 }
 
 export function changeTaskStatus(actorId: string, taskId: string, status: unknown, database = db): void {
-  const { state, version } = load(taskId, database);
-  requireEditable(state);
+  const { state, version } = loadEditableTask(taskId, database);
   const target = validateTargetStatus(status);
   const allowed = TRANSITIONS[state.status as ActiveStatus];
   if (!allowed.includes(target)) throw new CommandError(`不允許的狀態轉換：${state.status} → ${target}`);
@@ -157,34 +168,31 @@ export function changeTaskStatus(actorId: string, taskId: string, status: unknow
 
 export function changeTaskPriority(actorId: string, taskId: string, priority: unknown, database = db): void {
   const clean = validatePriority(priority);
-  const { state, version } = load(taskId, database);
-  requireEditable(state);
+  const { version } = loadEditableTask(taskId, database);
   appendEvent('Task', taskId, version, 'task.priority_changed', { priority: clean }, meta(actorId), database);
 }
 
 export function changeTaskAssignee(actorId: string, taskId: string, assignee: unknown, database = db): void {
   const clean = validateAssignee(assignee);
-  const { state, version } = load(taskId, database);
-  requireEditable(state);
+  const { version } = loadEditableTask(taskId, database);
   appendEvent('Task', taskId, version, 'task.assignee_changed', { assigneeId: clean }, meta(actorId), database);
 }
 
 export function changeTaskDueDate(actorId: string, taskId: string, dueAt: unknown, database = db): void {
   const clean = validateDueAt(dueAt);
-  const { state, version } = load(taskId, database);
-  requireEditable(state);
+  const { version } = loadEditableTask(taskId, database);
   appendEvent('Task', taskId, version, 'task.due_date_changed', { dueAt: clean }, meta(actorId), database);
 }
 
 export function archiveTask(actorId: string, taskId: string, database = db): void {
-  const { state, version } = load(taskId, database);
-  requireEditable(state); // 已 archived / deleted 都會被擋
+  const { version } = loadEditableTask(taskId, database); // 已 archived / deleted 都會被擋
   appendEvent('Task', taskId, version, 'task.archived', {}, meta(actorId), database);
 }
 
 export function deleteTask(actorId: string, taskId: string, database = db): void {
   const { state, version } = load(taskId, database);
   if (!state.exists || state.deleted) throw new CommandError('task 不存在');
+  requireTaskWorkspaceActive(taskId, database);
   appendEvent('Task', taskId, version, 'task.deleted', {}, meta(actorId), database);
 }
 
