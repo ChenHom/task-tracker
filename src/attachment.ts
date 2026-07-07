@@ -10,7 +10,13 @@ export const ATTACH_DIR = join(__dirname, '../data/attachments');
 mkdirSync(ATTACH_DIR, { recursive: true });
 const ATTACH_REAL = realpathSync(ATTACH_DIR); // 解析一次當基準，之後拿它比對
 
-const MAX_BYTES = 10 * 1024 * 1024; // ponytail: 10MB 上限，需要調再說
+const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
+export function attachmentMaxBytes(): number {
+  const raw = process.env.ATTACHMENT_MAX_BYTES;
+  if (!raw) return DEFAULT_MAX_BYTES;
+  const maxBytes = Number(raw);
+  return Number.isFinite(maxBytes) && maxBytes > 0 ? Math.floor(maxBytes) : DEFAULT_MAX_BYTES;
+}
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // MIME 白名單 + magic bytes：client 宣告的 Content-Type 不可信，必須與內容簽章相符。
@@ -66,7 +72,8 @@ export interface AttachmentRow {
 export function createAttachment(taskId: string, originalName: unknown, declaredMime: unknown, data: Buffer, database = db): string {
   if (getTaskWorkspaceId(taskId, database) === null) throw new CommandError('task 不存在');
   if (data.length === 0) throw new CommandError('檔案為空');
-  if (data.length > MAX_BYTES) throw new CommandError('檔案過大（上限 10MB）');
+  const maxBytes = attachmentMaxBytes();
+  if (data.length > maxBytes) throw new CommandError('檔案過大');
   const mime = validateMime(declaredMime, data);
   const original = sanitizeFilename(originalName);
   const id = randomUUID();
