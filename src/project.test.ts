@@ -1,11 +1,14 @@
 import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
-import { CommandError } from './eventStore';
+import { resetProjections, CommandError } from './eventStore';
 import { createProject, listProjects, renameProject, deleteProject, getProjectWorkspaceId } from './project';
+import { createTask, listTasks, registerTaskProjections } from './task';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
+resetProjections();
+registerTaskProjections();
 
 const seedWs = (id: string, status = 'active') =>
   db.prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, created_at) VALUES (?, ?, ?, ?)').run(id, id, status, 't');
@@ -45,5 +48,14 @@ assert.strictEqual(listProjects('ws-2', db).length, 1);
 deleteProject(id, db);
 assert.strictEqual(listProjects('ws-1', db).length, 0, 'delete 後應從表移除');
 assert.strictEqual(getProjectWorkspaceId(id, db), null, 'deleted project 查不到 workspace（→ 404）');
+
+// ── delete project 應級聯清 task 的 projectId ──
+const pid = createProject('ws-1', 'TestProj', db);
+const taskId = createTask('u1', 'ws-1', { title: 'Task with project', projectId: pid }, db);
+let task = listTasks('ws-1', db).find((t) => t.task_id === taskId)!;
+assert.strictEqual(task.project_id, pid, '建 task 時 projectId 應被設');
+deleteProject(pid, db);
+task = listTasks('ws-1', db).find((t) => t.task_id === taskId)!;
+assert.strictEqual(task.project_id, null, 'delete project 後 task 的 projectId 應變成 null');
 
 console.log('project.test.ts OK');
