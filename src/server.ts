@@ -38,6 +38,7 @@ import {
   archiveTask,
   deleteTask,
   listTasks,
+  getTask,
   getTaskWorkspaceId,
   registerTaskProjections,
   type CreateTaskInput,
@@ -378,7 +379,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   // 單一 task 操作：先查資源歸屬的 workspace 再驗權限（資源同 workspace 檢查 → 跨 workspace 403/404）。
   const taskMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)$/);
-  if (taskMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+  if (taskMatch && (req.method === 'GET' || req.method === 'PATCH' || req.method === 'DELETE')) {
     const taskId = taskMatch[1];
     const workspaceId = getTaskWorkspaceId(taskId);
     if (!workspaceId) {
@@ -389,14 +390,20 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const userId = requirePermission(req, res, workspaceId, 'Member');
     if (!userId) return;
     try {
-      if (req.method === 'DELETE') {
+      if (req.method === 'GET') {
+        const task = getTask(taskId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(task));
+      } else if (req.method === 'DELETE') {
         deleteTask(userId, taskId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
       } else {
         const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
         applyTaskPatch(userId, taskId, body ?? {});
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
       }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
     } catch (e) {
       sendCommandError(res, e);
     }

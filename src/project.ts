@@ -45,8 +45,7 @@ export function renameProject(projectId: string, name: unknown, database = db): 
 }
 
 export function deleteProject(projectId: string, database = db): void {
-  // ponytail: 硬刪，不級聯清 tasks_read_model.project_id（既有 task 會留下孤兒參照）。
-  //   要級聯就在這裡多一句 UPDATE tasks_read_model SET project_id = NULL WHERE project_id = ?；等有需求再上。
+  database.prepare('UPDATE tasks_read_model SET project_id = NULL WHERE project_id = ?').run(projectId);
   const info = database.prepare('DELETE FROM projects_read_model WHERE project_id = ?').run(projectId);
   if (info.changes === 0) throw new CommandError('project 不存在');
 }
