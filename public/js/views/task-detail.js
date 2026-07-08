@@ -33,6 +33,9 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   }
 
   let titleInput, descInput, unsavedBadge;
+  let overlay, container, closeBtn;
+  let escHandler, hashChangeHandler;
+
   const originalTitle = currentTask.title;
   const originalDesc = currentTask.description || '';
 
@@ -87,49 +90,64 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   const closeModalOrShake = () => {
     if (isModified()) {
       showUnsavedBadge();
-      closeBtn.classList.add('shake-anim');
-      closeBtn.addEventListener('animationend', () => {
-        closeBtn.classList.remove('shake-anim');
-      }, { once: true });
+      if (closeBtn) {
+        closeBtn.classList.add('shake-anim');
+        closeBtn.addEventListener('animationend', () => {
+          closeBtn.classList.remove('shake-anim');
+        }, { once: true });
+      }
     } else {
       cleanupAndClose();
     }
   };
 
   /**
-   * Removes keypress event listeners and detaches the overlay node from the document.
+   * Detaches modal elements and removes global window/document event listeners.
    * @returns {void}
    */
-  const cleanupAndClose = () => {
-    document.removeEventListener('keydown', escHandler);
-    overlay.remove();
-    location.hash = '#/tasks';
+  const cleanup = () => {
+    if (escHandler) document.removeEventListener('keydown', escHandler);
+    if (hashChangeHandler) window.removeEventListener('hashchange', hashChangeHandler);
+    if (overlay) overlay.remove();
   };
 
   /**
-   * Escape keypress listener handler to intercept and handle modal cancellation.
-   * @param {KeyboardEvent} e - The keydown KeyboardEvent.
+   * Triggers navigation back to the main Kanban board URL hash.
    * @returns {void}
    */
-  const escHandler = (e) => {
-    if (e.key === 'Escape') {
+  const cleanupAndClose = () => {
+    location.hash = '#/tasks';
+  };
+
+  // Define global event handlers
+  escHandler = (e) => {
+    if (e.key === 'Escape' || e.keyCode === 27) {
       e.preventDefault();
       closeModalOrShake();
     }
   };
-  document.addEventListener('keydown', escHandler);
 
-  const overlay = el('div', { id: 'task-detail-modal', class: 'modal-overlay' });
+  hashChangeHandler = () => {
+    if (!location.hash.startsWith(`#/task/${taskId}`)) {
+      cleanup();
+    }
+  };
+
+  // Register event listeners
+  document.addEventListener('keydown', escHandler);
+  window.addEventListener('hashchange', hashChangeHandler);
+
+  overlay = el('div', { id: 'task-detail-modal', class: 'modal-overlay' });
   overlay.onclick = (e) => {
     if (e.target === overlay) {
       closeModalOrShake();
     }
   };
 
-  const container = el('div', { class: 'modal-container sketch-box' });
+  container = el('div', { class: 'modal-container sketch-box' });
   
   // 關閉按鈕 [X]
-  const closeBtn = el('button', { type: 'button', class: 'modal-close-btn' }, '×');
+  closeBtn = el('button', { type: 'button', class: 'modal-close-btn' }, '×');
   closeBtn.onclick = closeModalOrShake;
   container.appendChild(closeBtn);
 
