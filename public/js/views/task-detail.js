@@ -64,13 +64,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     const curDesc = normalizeText(descInput ? descInput.value : originalDesc);
     const oTitle = normalizeText(originalTitle);
     const oDesc = normalizeText(originalDesc);
-    const modified = curTitle !== oTitle || curDesc !== oDesc;
-    console.log('[DEBUG] isModified check:', {
-      curTitle, oTitle, titleMatch: curTitle === oTitle,
-      curDesc, oDesc, descMatch: curDesc === oDesc,
-      modified
-    });
-    return modified;
+    return curTitle !== oTitle || curDesc !== oDesc;
   };
 
   /**
@@ -136,7 +130,6 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
 
   // Define global event handlers
   escHandler = (e) => {
-    console.log('[DEBUG] escHandler key:', e.key, 'keyCode:', e.keyCode);
     if (e.key === 'Escape' || e.keyCode === 27) {
       e.preventDefault();
       closeModalOrShake();
