@@ -41,21 +41,27 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
    * @returns {boolean} True if modified, false otherwise.
    */
   const isModified = () => {
-    const curTitle = (titleInput ? titleInput.value.trim() : originalTitle);
-    const curDesc = (descInput ? descInput.value : originalDesc);
-    return curTitle !== originalTitle || curDesc !== originalDesc;
+    const curTitle = (titleInput ? titleInput.value.trim() : originalTitle).trim();
+    const curDesc = (descInput ? descInput.value.trim() : originalDesc).trim();
+    const oTitle = originalTitle.trim();
+    const oDesc = originalDesc.trim();
+    return curTitle !== oTitle || curDesc !== oDesc;
   };
 
   /**
-   * Attempts to close the modal viewport. If modifications were performed, shakes the close button as feedback.
+   * Attempts to close the modal viewport. If modifications were performed, prompts the user to confirm discard, or shakes the close button.
    * @returns {void}
    */
   const closeModalOrShake = () => {
     if (isModified()) {
-      closeBtn.classList.add('shake-anim');
-      closeBtn.addEventListener('animationend', () => {
-        closeBtn.classList.remove('shake-anim');
-      }, { once: true });
+      if (confirm('您有未儲存的修改，確定要捨棄變更並關閉視窗嗎？')) {
+        cleanupAndClose();
+      } else {
+        closeBtn.classList.add('shake-anim');
+        closeBtn.addEventListener('animationend', () => {
+          closeBtn.classList.remove('shake-anim');
+        }, { once: true });
+      }
     } else {
       cleanupAndClose();
     }
@@ -211,6 +217,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
                   await saveEdit(input.value);
                 } else if (ev.key === 'Escape') {
                   ev.preventDefault();
+                  ev.stopPropagation();
                   await loadComments();
                 }
               };
