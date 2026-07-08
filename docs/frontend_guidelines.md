@@ -27,7 +27,7 @@ public/
 
 ### 規範細則：
 - **`state.js`**：禁止直接操作 DOM。全域狀態的變更（如登入資訊、當前工作區）應封裝在 `state` 物件中，並利用 Getter/Setter 來處理持久化（如 `sessionStorage`）。
-- **`api.js`**：所有網路請求必須使用封裝後的 `api()` 函式，禁止直接調用原生 `fetch`。
+- **`api.js`**：所有網路請求必須使用封裝後的 `api()` 函式，並支援 `AbortSignal` 來實現連線中斷。
 - **`router.js` 與 `routes.js`**：路由核心邏輯（解析 Hash、觸發渲染）與路由映射配置（哪個路徑對應哪個 View）必須分離，實現**開放/封閉原則 (OCP)**。
 - **`views/`**：每個 View 都是一個獨立的模組，應實現統一的生命週期介面，並以參數或依賴注入的形式接收外部資料。
 
@@ -70,6 +70,9 @@ export const ExampleView = {
   // 推薦做法
   const titleLink = el('a', { href: `#/task/${task.task_id}` }, task.title); // 安全
   ```
+- **手繪框體與濾鏡優化**：為配合手繪濾鏡（`#hand-drawn-displacement`）的像素偏移特性：
+  - 容器與按鈕邊框寬度必須設定為至少 **`2.5px`**，避免濾鏡拉扯導致邊線斷裂或空行缺格。
+  - 濾鏡使用 `type="turbulence"`（流暢波紋）搭配較平緩的 `baseFrequency="0.015"` 與 `scale="2"`，以呈現自然精緻的手繪鉛筆線。
 - **附件下載安全**：所有使用者上傳的附件，前端在開啟時一律引導「下載」而非 `<iframe>` 內嵌渲染，搭配後端發送的 `X-Content-Type-Options: nosniff` 響應頭。
 
 ---
@@ -113,7 +116,7 @@ export async function fetchMembers(workspaceId) {
 ## 6. 記憶體洩漏與事件監聽清理 (Event Listener Cleanups)
 
 由於本專案為單頁式應用程式 (SPA)，頁面視圖會被反覆切換並掛載到同一個容器 DOM 節點上：
-- **全域監聽器清理**：凡是在 `window`、`document`、或掛載容器之外的 DOM 節點上註冊的事件（例如 `window.addEventListener('scroll', ...)`、對鍵盤事件 `keydown` 的 Escape 鍵監聽等），**必須**在該視圖被銷毀（或 Modal 被關閉）時執行 `removeEventListener` 清理，避免造成累積性的記憶體洩漏與背景指令衝突。
+- **自我清理生命週期 (Self-Cleaning Lifecycle)**：凡是在全域（`window` 或 `document`）註冊監聽器，或是建立手動掛載於 `body` 下的浮動元件（如 Modal）時，**必須**註冊一個 `hashchange` 監聽器。當偵測到路由改變且不再匹配該視圖時，主動調用清理函數，卸載所有相關的事件監聽器（如 `removeEventListener`），以絕後患。
 - **定時器與輪詢清理**：視圖內若調用了 `setTimeout` 或 `setInterval`，在視圖切換前必須將其 `clearTimeout` 或 `clearInterval`。
 
 ---
@@ -140,7 +143,9 @@ export async function fetchMembers(workspaceId) {
 為提供良好的使用者體驗與確保程式健壯性：
 - **異步攔截**：視圖中所有 API 呼叫必須包裹於 `try...catch` 區塊中。
 - **加載提示**：在進行網路請求期間，DOM 容器應先顯示「載入中... (Loading...)」的佔位狀態，防止使用者重複點擊或誤以為介面卡死。
-- **錯誤呈現**：若請求失敗，須利用 `showError` 呈現錯誤訊息給使用者，切忌在 console 無聲報錯（Silent Failure）導致頁面殘缺。
+- **錯誤呈現與提示標籤**：
+  - 網路請求失敗時，利用 `showError` 呈現錯誤訊息給使用者。
+  - 當視窗或表單存在「未存檔變更」而觸發關閉或取消動作時，**不使用**瀏覽器阻斷式 Prompt（如 `confirm`），而是利用 UI 左側滑出的**手繪「還未」提示標籤**，並搭配關閉按鈕震動（`shake-anim`），在使用者聚焦回輸入框時再自動向右滑入下層收合，以求最流暢的非阻斷式使用者體驗。
 
 ---
 
