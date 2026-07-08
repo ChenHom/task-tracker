@@ -19,6 +19,7 @@ let REPO_ROOT = ROOT;
 let WORK_DIR = join(ROOT, 'sim-work');
 const SMOKE = process.argv.includes('--smoke');
 const FAST = process.argv.includes('--fast');
+const SWEEP = process.argv.includes('--sweep');
 const PASSWORD = 'test1234';
 const MEMBER_TIMEOUT = (FAST ? 7 : 12) * 60 * 1000;
 const OWNER_TIMEOUT = (FAST ? 12 : 25) * 60 * 1000; // opus 審查/協調較久；driver 已把機械工作（跑測試）分擔掉，這是安全上限
@@ -830,6 +831,177 @@ async function main(): Promise<void> {
   printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, verified);
 }
 
+// ── Sweep：定時巡檢（systemd timer 每小時觸發 --sweep）─────────────────
+// 把看板上未完成的工作收乾淨＋回應老闆留言＋推進無主 Todo。額度死了就直接退出
+// ——timer 下個小時自己會再敲門，這就是「限額到了自動等下次」，零重試機制、零狀態。
+const SWEEP_OWNER_TIMEOUT = 12 * 60 * 1000;
+const SWEEP_MEMBER_TIMEOUT = 7 * 60 * 1000;
+const BOSS_EMAIL = 'user09@test.local';
+
+function probeQuota(): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile('claude', ['-p', '回覆OK兩字即可', '--model', 'claude-haiku-4-5-20251001'],
+      { timeout: 90 * 1000, killSignal: 'SIGKILL' },
+      (err, stdout, stderr) => {
+        const out = `${stdout ?? ''}${stderr ?? ''}`;
+        resolve(!err && !/session limit|rate limit/i.test(out));
+      });
+  });
+}
+
+function branchAhead(m: Member): number {
+  try {
+    if (!git(['branch', '--list', branch(m)])) return 0;
+    return Number(git(['rev-list', '--count', `master..${branch(m)}`]));
+  } catch { return 0; }
+}
+
+// 巡檢的 worktree 可能已被清掉：branch 還有未合併工作就掛回來；branch 已合併/不存在就從 master 重開
+function ensureWorktree(m: Member, scenario: Scenario): void {
+  if (existsSync(wt(m))) return;
+  const hasBranch = !!git(['branch', '--list', branch(m)]);
+  if (hasBranch && branchAhead(m) === 0) git(['branch', '-D', branch(m)]);
+  if (hasBranch && branchAhead(m) > 0) git(['worktree', 'add', wt(m), branch(m)]);
+  else git(['worktree', 'add', wt(m), '-b', branch(m), 'master']);
+  if (scenario.repoRoot === ROOT && !existsSync(join(wt(m), 'node_modules'))) {
+    symlinkSync(join(ROOT, 'node_modules'), join(wt(m), 'node_modules'));
+  }
+}
+
+interface SweepTask { task_id: string; title: string; status: string; assignee_id: string | null }
+
+function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string): string {
+  const jar = join(LOG_DIR, 'jar-owner-sweep.txt');
+  const packetByBranch = new Map(verified.map((p) => [p.branch, p]));
+  const ci = MEMBERS.map((m) => {
+    const p = packetByBranch.get(branch(m));
+    if (!p || p.ahead === 0) return `- ${m.name} / ${branch(m)}: 無未合併 commit`;
+    return `- ${m.name} / ${p.branch}: tsc ${p.tsc.ok ? 'PASS' : 'FAIL'}, test ${p.test.ok ? 'PASS' : 'FAIL'}, ${p.ahead} commits, packet: ${p.packetPath}`;
+  }).join('\n');
+  const memberIds = MEMBERS.map((m) => `- ${m.name}：user_id ${m.userId}`).join('\n');
+  return `你是「${OWNER.name}」（${OWNER.email}），Owner。這是每小時一次的「巡檢」session：把看板收乾淨、回應老闆、讓團隊持續前進。
+workspace：${wsId}。目前目錄是主 repo（master，${REPO_ROOT}）。
+成員 user_id 對照：
+${memberIds}
+CI 摘要（driver 已預跑，信任它，不要自己重跑各 branch 測試）：
+${ci || '（本 tick 無 branch 有新 commit）'}
+${API_RULES(jar)}
+巡檢流程（⚠️ 你有 12 分鐘硬時限，優先序：老闆回覆 > 綠燈合併 > 紅燈退回 > 催辦。時間不夠就少做，下小時還有巡檢）：
+1. GET ${BASE}/api/workspaces/${wsId}/tasks 全覽
+2. [討論] task（title 以「[討論]」開頭）——這是你與老闆（${bossName}，真人）的對話串：
+   - 不存在 → 建一個（title「[討論] 方向與下一步」，priority Low，不指派），留言 3-5 行提案接下來的方向，請老闆回覆
+   - 存在 → 讀留言。最新一則若是老闆說的且你還沒回應：先回覆他；他核准/指示的方向就開成具體 task（認領制：不指派、寫清楚範圍與驗收）
+   - [討論] task 永遠保持 Todo，不要推進狀態
+3. status=Review 的 task 對照 CI 摘要：
+   - CI 全 PASS → git merge --no-ff <branch> -m "merge: <task 標題>" → 留言（附 merge hash）→ PATCH {"status":"Done"}
+     ⚠️ 遇衝突「絕對不要手動解」（上一場 owner 就是手動解衝突逾時被強制中止）：git merge --abort → 留言列出衝突檔案、請成員 rebase → PATCH {"status":"Doing"}
+   - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
+   - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"} 再 PATCH {"status":"Todo"}，並 PATCH {"assignee":null} 讓人重新認領
+4. status=Doing 沒動靜的：催辦留言。無主 Todo 沒人領的：補充說明讓它更好認領
+5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task
+6. 結束輸出 3 行內總結（合了幾件、退了幾件、老闆有無新指示）`;
+}
+
+async function sweep(): Promise<void> {
+  mkdirSync(LOG_DIR, { recursive: true });
+  MEMBERS = loadMembersFromUsers();
+  const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
+  const boss = db.prepare('SELECT id, name FROM users WHERE email = ?').get(BOSS_EMAIL) as { id: string; name: string } | undefined;
+
+  // 候選 workspace 來自歷次 run 的 report.json（零新狀態檔）；同 workspace 取最新 scenarioKey
+  const wsScenario = new Map<string, { key: string; startedAt: string }>();
+  for (const dir of readdirSync(LOG_DIR)) {
+    const reportPath = join(LOG_DIR, dir, 'report.json');
+    if (!existsSync(reportPath)) continue;
+    try {
+      const r = JSON.parse(readFileSync(reportPath, 'utf8')) as { workspaceId: string; scenarioKey: string; startedAt: string };
+      const prev = wsScenario.get(r.workspaceId);
+      if (!prev || r.startedAt > prev.startedAt) wsScenario.set(r.workspaceId, { key: r.scenarioKey, startedAt: r.startedAt });
+    } catch { /* 壞檔跳過 */ }
+  }
+
+  interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; bossPinged: boolean; startedAt: string }
+  const pendings: PendingWs[] = [];
+  for (const [wsId, info] of wsScenario) {
+    const ws = db.prepare('SELECT status FROM workspaces_read_model WHERE workspace_id = ?').get(wsId) as { status: string } | undefined;
+    if (!ws || ws.status !== 'active') continue;
+    const tasks = db.prepare("SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND status IN ('Todo','Doing','Review')").all(wsId) as unknown as SweepTask[];
+    const discussions = tasks.filter((t) => t.title.startsWith('[討論]'));
+    const work = tasks.filter((t) => !t.title.startsWith('[討論]'));
+    const bossPinged = !!boss && discussions.some((d) => {
+      const last = db.prepare('SELECT user_id FROM comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(d.task_id) as { user_id: string } | undefined;
+      return last?.user_id === boss.id;
+    });
+    if (!work.length && !bossPinged) continue;
+    const scenario = SCENARIOS[info.key as ScenarioKey] ?? SCENARIOS['self-directed'];
+    pendings.push({ wsId, scenario, work, bossPinged, startedAt: info.startedAt });
+  }
+  db.close();
+
+  if (!pendings.length) { console.log('[sweep] 看板全收乾淨、老闆無新留言，本 tick 零成本結束'); return; }
+  console.log(`[sweep] ${pendings.length} 個 workspace 有待收工作：${pendings.map((p) => `${p.wsId.slice(0, 8)}(${p.work.length}題${p.bossPinged ? '+老闆留言' : ''})`).join('、')}`);
+
+  if (!(await probeQuota())) { console.log('[sweep] 額度不足，本 tick 放棄，等下個小時 timer 再試'); return; }
+
+  // 每 tick 預算：最多 2 個 owner session + 2 個 member session（做不完留給下個 tick，自癒）
+  let ownerBudget = 2;
+  let memberBudget = 2;
+  pendings.sort((a, b) => b.startedAt.localeCompare(a.startedAt)); // 新的優先
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+
+  for (const p of pendings) {
+    if (ownerBudget <= 0 && memberBudget <= 0) break;
+    REPO_ROOT = p.scenario.repoRoot;
+    WORK_DIR = join(REPO_ROOT, 'sim-work');
+    const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${p.wsId.slice(0, 8)}`);
+    const promptArtifacts: PromptArtifact[] = [];
+
+    // member userId 需要重新對應（跨 workspace 不同）
+    const ownerCookie = await login(OWNER.email);
+    const list = await api(`/api/workspaces/${p.wsId}/members`, {}, ownerCookie);
+    for (const row of (list.body ?? []) as { user_id: string; email: string }[]) {
+      const m = MEMBERS.find((x) => x.email === row.email);
+      if (m) m.userId = row.user_id;
+    }
+
+    const anyAhead = MEMBERS.some((m) => branchAhead(m) > 0);
+    const verified = anyAhead ? await verifyBranches(runDir, p.scenario) : [];
+
+    if (ownerBudget > 0) {
+      await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'claude', OWNER_REVIEW_MODEL,
+        ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
+        { cwd: REPO_ROOT, tools: OWNER_TOOLS, timeoutMs: SWEEP_OWNER_TIMEOUT, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
+      ownerBudget--;
+      abortStaleMerge();
+    }
+
+    if (memberBudget > 0) {
+      // owner 剛動過看板，重查現況再派工：被退回的優先，其次有無主 Todo 時派沒事做的成員去認領
+      const db2 = new DatabaseSync(join(ROOT, 'data/dev.db'));
+      const tasks2 = db2.prepare("SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND status IN ('Todo','Doing','Review')").all(p.wsId) as unknown as SweepTask[];
+      db2.close();
+      const work2 = tasks2.filter((t) => !t.title.startsWith('[討論]'));
+      const rejected = MEMBERS.filter((m) => work2.some((t) => t.assignee_id === m.userId && t.status === 'Doing'));
+      const unclaimed = work2.some((t) => !t.assignee_id && t.status === 'Todo');
+      const idle = MEMBERS.filter((m) => !work2.some((t) => t.assignee_id === m.userId));
+      const toRun = [...rejected, ...(unclaimed ? idle : [])].slice(0, memberBudget);
+      if (toRun.length) {
+        for (const m of toRun) ensureWorktree(m, p.scenario);
+        const hour = new Date().getHours();
+        await Promise.all(toRun.map(async (m) => {
+          await sleep(jitter(1, 5));
+          await runSession(`${m.name}-巡檢`, m.runner, m.model, memberPrompt(m, p.wsId, hour, p.scenario),
+            { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep` });
+          if (m.runner === 'codex') commitCodexWork(m, hour);
+        }));
+        memberBudget -= toRun.length;
+      }
+    }
+    console.log(`[sweep] ${p.wsId.slice(0, 8)} 處理完（剩餘預算 owner:${ownerBudget} member:${memberBudget}）`);
+  }
+  console.log('[sweep] 本 tick 結束；未完部分下個小時繼續');
+}
+
 if (require.main === module) {
-  main().catch((e) => { console.error(e); process.exit(1); });
+  (SWEEP ? sweep() : main()).catch((e) => { console.error(e); process.exit(1); });
 }

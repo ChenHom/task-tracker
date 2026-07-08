@@ -11,6 +11,7 @@ const FIXED_NAMES: Record<string, string> = {
   'user03@test.local': '阿凱',
   'user04@test.local': '婷婷',
   'user05@test.local': '大熊',
+  'user09@test.local': '老闆', // 真人使用者在看板上的身份；sim owner 視其留言為最高指示
 };
 
 const RANDOM_NAME_POOL = [
