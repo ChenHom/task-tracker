@@ -64,7 +64,13 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     const curDesc = normalizeText(descInput ? descInput.value : originalDesc);
     const oTitle = normalizeText(originalTitle);
     const oDesc = normalizeText(originalDesc);
-    return curTitle !== oTitle || curDesc !== oDesc;
+    const modified = curTitle !== oTitle || curDesc !== oDesc;
+    console.log('[DEBUG] isModified check:', {
+      curTitle, oTitle, titleMatch: curTitle === oTitle,
+      curDesc, oDesc, descMatch: curDesc === oDesc,
+      modified
+    });
+    return modified;
   };
 
   /**
@@ -112,7 +118,10 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
    * @returns {void}
    */
   const cleanup = () => {
-    if (escHandler) document.removeEventListener('keydown', escHandler);
+    if (escHandler) {
+      document.removeEventListener('keydown', escHandler);
+      window.removeEventListener('keydown', escHandler);
+    }
     if (hashChangeHandler) window.removeEventListener('hashchange', hashChangeHandler);
     if (overlay) overlay.remove();
   };
@@ -127,6 +136,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
 
   // Define global event handlers
   escHandler = (e) => {
+    console.log('[DEBUG] escHandler key:', e.key, 'keyCode:', e.keyCode);
     if (e.key === 'Escape' || e.keyCode === 27) {
       e.preventDefault();
       closeModalOrShake();
@@ -141,6 +151,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
 
   // Register event listeners
   document.addEventListener('keydown', escHandler);
+  window.addEventListener('keydown', escHandler);
   window.addEventListener('hashchange', hashChangeHandler);
 
   overlay = el('div', { id: 'task-detail-modal', class: 'modal-overlay' });

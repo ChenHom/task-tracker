@@ -51,9 +51,12 @@ const mockDocument: any = {
     if (id === 'task-detail-modal') {
       const el = new MockElement('div', { id: 'task-detail-modal' });
       el.cleanup = () => {
-        // Trigger document cleanup removal of keydown listener
+        // Trigger document and window cleanup removal of keydown listener
         if (mockDocument.listeners['keydown']) {
           mockDocument.listeners['keydown'] = [];
+        }
+        if (mockWindow.listeners['keydown']) {
+          mockWindow.listeners['keydown'] = [];
         }
         if (mockWindow.listeners['hashchange']) {
           mockWindow.listeners['hashchange'] = [];
@@ -129,8 +132,9 @@ vm.runInContext(code, sandbox);
 const openTaskDetailModal = sandbox.globalThis.openTaskDetailModal;
 
 async function runTests() {
-  // Test 1: Opening modal should register keydown listener
+  // Test 1: Opening modal should register keydown listener on document and window
   listeners['keydown'] = [];
+  windowListeners['keydown'] = [];
   windowListeners['hashchange'] = [];
   mockLocation.hash = '#/task/task-1';
 
@@ -142,7 +146,8 @@ async function runTests() {
     onUpdate: async () => {}
   });
 
-  assert.ok(listeners['keydown'] && listeners['keydown'].length === 1, 'Should register keydown listener');
+  assert.ok(listeners['keydown'] && listeners['keydown'].length === 1, 'Should register keydown listener on document');
+  assert.ok(windowListeners['keydown'] && windowListeners['keydown'].length === 1, 'Should register keydown listener on window');
   assert.ok(windowListeners['hashchange'] && windowListeners['hashchange'].length === 1, 'Should register hashchange listener');
 
   // Test 2: Triggering Escape key should trigger cleanup and route back to #/tasks
@@ -159,6 +164,7 @@ async function runTests() {
 
   // Test 3: Opening modal again should run cleanup on existing modal and not leak listeners
   listeners['keydown'] = [() => {}]; // Simulate one existing listener
+  windowListeners['keydown'] = [() => {}];
   mockLocation.hash = '#/task/task-1';
   
   // We mock document.getElementById to return a mock modal with cleanup
@@ -170,8 +176,9 @@ async function runTests() {
     onUpdate: async () => {}
   });
 
-  // After opening, listeners['keydown'] should be cleaned up and set to exactly the new listener (length 1)
-  assert.strictEqual(listeners['keydown'].length, 1, 'Duplicate open should cleanup previous keydown listeners');
+  // After opening, keydown listeners should be cleaned up and set to exactly the new listener (length 1)
+  assert.strictEqual(listeners['keydown'].length, 1, 'Duplicate open should cleanup previous keydown listeners on document');
+  assert.strictEqual(windowListeners['keydown'].length, 1, 'Duplicate open should cleanup previous keydown listeners on window');
 
   console.log('frontend.test.ts OK');
 }
