@@ -37,14 +37,24 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   const originalDesc = currentTask.description || '';
 
   /**
+   * Normalizes text by removing CRLF line endings and trimming whitespace.
+   * @param {string|null|undefined} str - Raw text.
+   * @returns {string} Normalized string.
+   */
+  const normalizeText = (str) => {
+    if (str === null || str === undefined) return '';
+    return str.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  };
+
+  /**
    * Evaluates if changes were made to name/description inputs inside the form viewport.
    * @returns {boolean} True if modified, false otherwise.
    */
   const isModified = () => {
-    const curTitle = (titleInput ? titleInput.value.trim() : originalTitle).trim();
-    const curDesc = (descInput ? descInput.value.trim() : originalDesc).trim();
-    const oTitle = originalTitle.trim();
-    const oDesc = originalDesc.trim();
+    const curTitle = normalizeText(titleInput ? titleInput.value : originalTitle);
+    const curDesc = normalizeText(descInput ? descInput.value : originalDesc);
+    const oTitle = normalizeText(originalTitle);
+    const oDesc = normalizeText(originalDesc);
     return curTitle !== oTitle || curDesc !== oDesc;
   };
 
