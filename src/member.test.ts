@@ -15,6 +15,7 @@ import {
   registerMemberProjections,
   countActiveMembers,
   listMembers,
+  autoAddObserver,
 } from './member';
 
 const db = new DatabaseSync(':memory:');
@@ -131,5 +132,21 @@ seedOwner(WS3, 'owner', db);
 removeMember('owner', WS3, 'owner', db);
 assert.strictEqual(getMemberRole(WS3, 'owner', db), null, '唯一成員時應允許 Owner 自我移除');
 assert.strictEqual(countActiveMembers(WS3, db), 0, '移除後 active 成員數為 0');
+
+// ── autoAddObserver：user01 建 workspace 時自動把老闆 user09 加成成員 ──
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('u01', 'user01@test.local', '阿哲', 'x');
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('u09', 'user09@test.local', '老闆', 'x');
+
+const WS_BOSS = 'ws-boss';
+seedOwner(WS_BOSS, 'u01', db); // user01 建立
+autoAddObserver('u01', WS_BOSS, db);
+assert.strictEqual(getMemberRole(WS_BOSS, 'u09', db), 'Member', 'user01 建立的 workspace 應自動含老闆 user09（Member）');
+assert.doesNotThrow(() => autoAddObserver('u01', WS_BOSS, db), '重複呼叫應 idempotent（吞已存在的 CommandError）');
+assert.strictEqual(getMemberRole(WS_BOSS, 'u09', db), 'Member', '重複呼叫後老闆仍是 Member');
+
+const WS_OTHER = 'ws-other';
+seedOwner(WS_OTHER, 'bob', db); // 非 user01 建立
+autoAddObserver('bob', WS_OTHER, db);
+assert.strictEqual(getMemberRole(WS_OTHER, 'u09', db), null, '非 user01 建立的 workspace 不應自動加老闆');
 
 console.log('member.test.ts OK');

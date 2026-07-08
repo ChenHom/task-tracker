@@ -31,6 +31,7 @@ import {
   removeMember,
   getMemberRole,
   listMembers,
+  autoAddObserver,
 } from './member';
 import {
   createTask,
@@ -242,6 +243,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const body = (await readJson(req).catch(() => null)) as { name?: unknown } | null;
       try {
         const id = createWorkspace(userId, body?.name);
+        autoAddObserver(userId, id); // user01 建立的 workspace 自動把老闆 user09 加成成員
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id }));
       } catch (e) {

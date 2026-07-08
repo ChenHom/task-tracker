@@ -20,6 +20,11 @@ let WORK_DIR = join(ROOT, 'sim-work');
 const SMOKE = process.argv.includes('--smoke');
 const FAST = process.argv.includes('--fast');
 const SWEEP = process.argv.includes('--sweep');
+// --sweep 後可接 role：owner（每 30 分，審查/合併/回老闆）｜team（每小時，成員實作）｜省略=both（手動全掃）
+const SWEEP_ROLE: 'owner' | 'team' | 'both' = (() => {
+  const n = process.argv[process.argv.indexOf('--sweep') + 1];
+  return n === 'owner' || n === 'team' ? n : 'both';
+})();
 const PASSWORD = 'test1234';
 const MEMBER_TIMEOUT = (FAST ? 7 : 12) * 60 * 1000;
 const OWNER_TIMEOUT = (FAST ? 12 : 25) * 60 * 1000; // opus 審查/協調較久；driver 已把機械工作（跑測試）分擔掉，這是安全上限
@@ -831,7 +836,7 @@ async function main(): Promise<void> {
   printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, verified);
 }
 
-// ── Sweep：定時巡檢（systemd timer 每小時觸發 --sweep）─────────────────
+// ── Sweep：定時巡檢（systemd timer 觸發 --sweep owner/team）─────────────
 // 把看板上未完成的工作收乾淨＋回應老闆留言＋推進無主 Todo。額度死了就直接退出
 // ——timer 下個小時自己會再敲門，這就是「限額到了自動等下次」，零重試機制、零狀態。
 const SWEEP_OWNER_TIMEOUT = 12 * 60 * 1000;
@@ -879,14 +884,14 @@ function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchRevi
     return `- ${m.name} / ${p.branch}: tsc ${p.tsc.ok ? 'PASS' : 'FAIL'}, test ${p.test.ok ? 'PASS' : 'FAIL'}, ${p.ahead} commits, packet: ${p.packetPath}`;
   }).join('\n');
   const memberIds = MEMBERS.map((m) => `- ${m.name}：user_id ${m.userId}`).join('\n');
-  return `你是「${OWNER.name}」（${OWNER.email}），Owner。這是每小時一次的「巡檢」session：把看板收乾淨、回應老闆、讓團隊持續前進。
+  return `你是「${OWNER.name}」（${OWNER.email}），Owner。這是定時（每 30 分）的「巡檢」session：把看板收乾淨、回應老闆、讓團隊持續前進。
 workspace：${wsId}。目前目錄是主 repo（master，${REPO_ROOT}）。
 成員 user_id 對照：
 ${memberIds}
 CI 摘要（driver 已預跑，信任它，不要自己重跑各 branch 測試）：
 ${ci || '（本 tick 無 branch 有新 commit）'}
 ${API_RULES(jar)}
-巡檢流程（⚠️ 你有 12 分鐘硬時限，優先序：老闆回覆 > 綠燈合併 > 紅燈退回 > 催辦。時間不夠就少做，下小時還有巡檢）：
+巡檢流程（⚠️ 你有 12 分鐘硬時限，優先序：老闆回覆 > 綠燈合併 > 紅燈退回 > 催辦。時間不夠就少做，下次巡檢還會再來）：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks 全覽
 2. [討論] task（title 以「[討論]」開頭）——這是你與老闆（${bossName}，真人）的對話串：
    - 不存在 → 建一個（title「[討論] 方向與下一步」，priority Low，不指派），留言 3-5 行提案接下來的方向，請老闆回覆
@@ -902,7 +907,7 @@ ${API_RULES(jar)}
 6. 結束輸出 3 行內總結（合了幾件、退了幾件、老闆有無新指示）`;
 }
 
-async function sweep(): Promise<void> {
+async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   mkdirSync(LOG_DIR, { recursive: true });
   MEMBERS = loadMembersFromUsers();
   const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
@@ -938,14 +943,14 @@ async function sweep(): Promise<void> {
   }
   db.close();
 
-  if (!pendings.length) { console.log('[sweep] 看板全收乾淨、老闆無新留言，本 tick 零成本結束'); return; }
-  console.log(`[sweep] ${pendings.length} 個 workspace 有待收工作：${pendings.map((p) => `${p.wsId.slice(0, 8)}(${p.work.length}題${p.bossPinged ? '+老闆留言' : ''})`).join('、')}`);
+  if (!pendings.length) { console.log(`[sweep:${role}] 看板全收乾淨、老闆無新留言，本 tick 零成本結束`); return; }
+  console.log(`[sweep:${role}] ${pendings.length} 個 workspace 有待收工作：${pendings.map((p) => `${p.wsId.slice(0, 8)}(${p.work.length}題${p.bossPinged ? '+老闆留言' : ''})`).join('、')}`);
 
-  if (!(await probeQuota())) { console.log('[sweep] 額度不足，本 tick 放棄，等下個小時 timer 再試'); return; }
+  if (!(await probeQuota())) { console.log(`[sweep:${role}] 額度不足，本 tick 放棄，等下個 tick timer 再試`); return; }
 
-  // 每 tick 預算：最多 2 個 owner session + 2 個 member session（做不完留給下個 tick，自癒）
-  let ownerBudget = 2;
-  let memberBudget = 2;
+  // 預算按 role：owner tick 只跑 owner session、team tick 只跑成員 session（both=手動全掃）。做不完留給下個 tick，自癒
+  let ownerBudget = role === 'team' ? 0 : 2;
+  let memberBudget = role === 'owner' ? 0 : 2;
   pendings.sort((a, b) => b.startedAt.localeCompare(a.startedAt)); // 新的優先
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
 
@@ -964,8 +969,9 @@ async function sweep(): Promise<void> {
       if (m) m.userId = row.user_id;
     }
 
+    // verifyBranches 只給 owner 判斷 CI 用；team tick 免跑（省時）
     const anyAhead = MEMBERS.some((m) => branchAhead(m) > 0);
-    const verified = anyAhead ? await verifyBranches(runDir, p.scenario) : [];
+    const verified = (ownerBudget > 0 && anyAhead) ? await verifyBranches(runDir, p.scenario) : [];
 
     if (ownerBudget > 0) {
       await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'claude', OWNER_REVIEW_MODEL,
@@ -1003,5 +1009,5 @@ async function sweep(): Promise<void> {
 }
 
 if (require.main === module) {
-  (SWEEP ? sweep() : main()).catch((e) => { console.error(e); process.exit(1); });
+  (SWEEP ? sweep(SWEEP_ROLE) : main()).catch((e) => { console.error(e); process.exit(1); });
 }

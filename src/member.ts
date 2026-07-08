@@ -71,6 +71,23 @@ export function joinWorkspace(actorId: string, workspaceId: string, database = d
   appendEvent('Member', mid(workspaceId, actorId), version, 'member.joined', { workspaceId, userId: actorId, role: state.role }, meta(actorId), database);
 }
 
+// demo/sim 政策：user01（sim owner）建立的每個 workspace，自動把老闆 user09 加成成員，
+// 讓老闆能總覽所有看板並在 [討論] task 回覆。由 POST /api/workspaces route 於建立後呼叫。
+// 只認這兩個固定 seed 帳號；查不到就靜默略過（非 sim 環境不受影響）。createWorkspace domain 保持純淨。
+const OWNER_SEED_EMAIL = 'user01@test.local';
+const OBSERVER_SEED_EMAIL = 'user09@test.local';
+export function autoAddObserver(creatorId: string, workspaceId: string, database = db): void {
+  const observer = database.prepare('SELECT id FROM users WHERE email = ?').get(OBSERVER_SEED_EMAIL) as { id: string } | undefined;
+  const owner = database.prepare('SELECT id FROM users WHERE email = ?').get(OWNER_SEED_EMAIL) as { id: string } | undefined;
+  if (!observer || !owner || creatorId !== owner.id || observer.id === creatorId) return;
+  try {
+    inviteMember(creatorId, workspaceId, observer.id, 'Member', database);
+    joinWorkspace(observer.id, workspaceId, database);
+  } catch (e) {
+    if (!(e instanceof CommandError)) throw e; // 全新 workspace 不會撞已存在；防禦性吞 CommandError
+  }
+}
+
 export function changeMemberRole(actorId: string, workspaceId: string, userId: string, role: unknown, database = db): void {
   const r = validateRole(role);
   const { state, version } = load(workspaceId, userId, database);
