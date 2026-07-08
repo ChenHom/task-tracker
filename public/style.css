@@ -1,69 +1,52 @@
-@import url('https://fonts.googleapis.com/css2?family=Architects+Daughter&family=Caveat&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700;800&display=swap');
 
 :root {
-  --font-cursive: 'Architects Daughter', 'Caveat', 'Comic Sans MS', "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
-  --bg-paper: #f6f3e6;
-  --grid-line: #e2dec2;
-  --pencil-color: #222222;
+  --font-cursive: 'Lexend', "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+  --bg-paper: #faf8f2; /* Warm retro beige paper background */
+  --grid-line: #e3dec9; /* Vintage grid line color */
+  --pencil-color: #000000; /* Crisp pure black ink borders and text */
   --card-bg: #ffffff;
-  --btn-hover-bg: #eae7d9;
+  --btn-hover-bg: #fde047; /* Bright primary pop yellow for interactive states */
 
-  /* Marker highlighter accents */
-  --highlight-todo: rgba(148, 163, 184, 0.35);    /* Slate */
-  --highlight-doing: rgba(59, 130, 246, 0.25);   /* Blue */
-  --highlight-review: rgba(245, 158, 11, 0.25);  /* Orange */
-  --highlight-done: rgba(16, 185, 129, 0.25);    /* Emerald */
-  --highlight-archived: rgba(100, 116, 139, 0.25); /* Slate gray */
+  /* Neo-brutalist bold pastel accents */
+  --highlight-todo: #bae6fd;    /* Soft pastel blue */
+  --highlight-doing: #c7d2fe;   /* Soft pastel lavender indigo */
+  --highlight-review: #fed7aa;  /* Soft pastel peach orange */
+  --highlight-done: #bbf7d0;    /* Soft pastel mint green */
+  --highlight-archived: #cbd5e1; /* Soft pastel slate gray */
 
   --priority-low: #ffffff;
-  --priority-medium: #fef08a;
-  --priority-high: #fecaca;
+  --priority-medium: #fef08a; /* Saturated yellow */
+  --priority-high: #fecaca;   /* Saturated red-pink */
 }
 
 * {
   box-sizing: border-box;
 }
 
-.sketch-box, .task-card, button, input[type="text"], input[type="email"], input[type="password"], select, textarea, .badge {
-  filter: url(#hand-drawn-displacement);
-}
-
-/* Red pen hand-drawn circle highlight (like teacher's circle pen mark) */
+/* Red pen circle indicator replacement */
 .red-pen-circle {
   position: relative;
-  border-color: transparent !important;
+  border-color: #ef4444 !important;
   background: transparent !important;
-}
-.red-pen-circle::after {
-  content: "";
-  position: absolute;
-  top: -4px;
-  left: -4px;
-  right: -4px;
-  bottom: -4px;
-  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 100 40' preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'><path d='M 5, 20 C 5, 5, 25, 4, 50, 4 C 75, 4, 95, 6, 95, 20 C 95, 34, 75, 36, 50, 36 C 25, 36, 4, 34, 4, 20 C 4, 8, 20, 6, 48, 5 C 76, 4, 96, 8, 94, 22 C 92, 34, 70, 35, 45, 34' stroke='%23ef4444' stroke-width='2' fill='none' stroke-linecap='round'/></svg>");
-  background-size: 100% 100%;
-  background-repeat: no-repeat;
-  pointer-events: none;
-  z-index: 10;
+  box-shadow: 2px 2px 0px 0px #ef4444 !important;
 }
 
-/* Red pen hand-drawn underline */
+/* Neo-brutalist yellow highlighter underline */
 .red-pen-underline {
   position: relative;
   display: inline-block;
+  z-index: 1;
 }
 .red-pen-underline::after {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
-  bottom: -6px;
-  height: 8px;
-  background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 100 10' preserveAspectRatio='none' xmlns='http://www.w3.org/2000/svg'><path d='M 5, 5 Q 30, 8 50, 4 T 95, 6 M 15, 7 Q 45, 5 85, 8' stroke='%23ef4444' stroke-width='2' fill='none' stroke-linecap='round'/></svg>");
-  background-size: 100% 100%;
-  background-repeat: no-repeat;
-  pointer-events: none;
+  bottom: 0.15em;
+  height: 0.4em;
+  background: var(--btn-hover-bg);
+  z-index: -1;
 }
 
 body {
@@ -106,11 +89,11 @@ body {
   min-width: 0;
 }
 
-/* Sketch Box Style - imperfect borders */
+/* Sketch Box Style - sharp solid boundaries and offset shadows */
 .sketch-box {
-  border: 3px solid var(--pencil-color);
-  border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
-  box-shadow: 3px 5px 12px rgba(0, 0, 0, 0.07);
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
 }
 
 /* Sidebar Styling */
@@ -118,8 +101,8 @@ body {
   font-size: 1.8rem;
   margin: 0;
   text-align: center;
-  font-weight: bold;
-  border-bottom: 3px dashed var(--pencil-color);
+  font-weight: 800;
+  border-bottom: 2px dashed var(--pencil-color);
   padding-bottom: 0.5rem;
 }
 
@@ -127,12 +110,13 @@ body {
   border: 2px dashed var(--pencil-color);
   padding: 0.8rem;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.7);
 }
 #workspace-section h3 {
   margin: 0 0 0.5rem 0;
   font-size: 1rem;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
+  font-weight: 700;
 }
 .meta-field {
   font-size: 0.95rem;
@@ -156,15 +140,17 @@ body {
   font-weight: bold;
   font-size: 1.1rem;
   padding: 0.5rem 1rem;
-  border: 2.5px solid var(--pencil-color);
-  border-radius: 12px 4px 12px 4px / 4px 12px 4px 12px;
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
   text-align: center;
-  transition: all 0.2s ease;
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.15s ease;
   background: transparent;
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
 }
 .nav-btn:hover, .nav-btn.active {
   background-color: var(--btn-hover-bg);
-  transform: rotate(-1deg) scale(1.02);
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
 }
 
 .sidebar-footer {
@@ -174,42 +160,49 @@ body {
   text-align: center;
 }
 
-/* Global button styles */
+/* Global button styles - mechanical press-down active state */
 button {
   font-family: inherit;
   font-size: 0.95rem;
-  font-weight: bold;
+  font-weight: 800;
   color: var(--pencil-color);
-  background: transparent;
-  border: 2.5px solid var(--pencil-color);
-  border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
+  background: #ffffff;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
   padding: 0.4rem 1rem;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.15s ease;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.3rem;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
 }
 button:hover {
   background-color: var(--btn-hover-bg);
-  transform: rotate(-1.5deg) scale(1.03);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
 }
 button:active {
-  transform: scale(0.97);
+  transform: translate(2px, 2px);
+  box-shadow: 0px 0px 0px 0px var(--pencil-color);
 }
 
 button.btn-danger {
-  color: #c00;
-  border-color: #c00;
+  color: #ffffff;
+  background-color: #ef4444;
+  border-color: var(--pencil-color);
 }
 button.btn-danger:hover {
-  background-color: rgba(220, 38, 38, 0.1);
+  background-color: #dc2626;
 }
 
 button.btn-secondary {
-  border-color: #666;
-  color: #555;
+  background-color: #f1f5f9;
+  color: var(--pencil-color);
+}
+button.btn-secondary:hover {
+  background-color: #e2e8f0;
 }
 
 /* Forms & Inputs */
@@ -218,14 +211,14 @@ input[type="text"], input[type="email"], input[type="password"], textarea, selec
   font-size: 0.95rem;
   padding: 0.4rem 0.6rem;
   background: #fff;
-  border: 2.5px solid var(--pencil-color);
-  border-radius: 4px 10px 4px 10px / 10px 4px 10px 4px;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
   outline: none;
   color: var(--pencil-color);
 }
 input:focus, textarea:focus, select:focus {
-  border-color: #3b82f6;
-  box-shadow: 0 0 5px rgba(59, 130, 246, 0.3);
+  border-color: var(--pencil-color);
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
 }
 
 form div {
@@ -249,6 +242,7 @@ form label {
 .kanban-header-bar h2 {
   margin: 0;
   font-size: 2rem;
+  font-weight: 800;
 }
 .kanban-filters {
   display: flex;
@@ -271,41 +265,37 @@ form label {
 
 .kanban-column {
   min-height: 500px;
-  background: rgba(255, 255, 255, 0.45);
-  border: 2px dashed var(--pencil-color);
-  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
   padding: 0.8rem;
   display: flex;
   flex-direction: column;
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
 }
-
-.kanban-column.col-todo { border-color: #64748b; }
-.kanban-column.col-doing { border-color: #3b82f6; }
-.kanban-column.col-review { border-color: #f59e0b; }
-.kanban-column.col-done { border-color: #10b981; }
-.kanban-column.col-archived { border-color: #94a3b8; }
 
 .kanban-column-title {
   font-size: 1.2rem;
-  font-weight: bold;
+  font-weight: 800;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 0 0 0.5rem 0;
-  padding: 0.2rem 0.4rem 0.4rem;
-  border-bottom: 2px solid var(--pencil-color);
+  margin: 0 0 0.8rem 0;
+  padding: 0.4rem;
+  border: 2px solid var(--pencil-color);
+  border-radius: 4px;
 }
 .inline-add-btn-slot button:hover {
-  opacity: 0.6;
+  opacity: 0.8;
 }
 .inline-add-form-slot:empty {
   display: none;
 }
-.col-todo .kanban-column-title { background: var(--highlight-todo); }
-.col-doing .kanban-column-title { background: var(--highlight-doing); }
-.col-review .kanban-column-title { background: var(--highlight-review); }
-.col-done .kanban-column-title { background: var(--highlight-done); }
-.col-archived .kanban-column-title { background: var(--highlight-archived); }
+.col-todo .kanban-column-title { background-color: var(--highlight-todo); }
+.col-doing .kanban-column-title { background-color: var(--highlight-doing); }
+.col-review .kanban-column-title { background-color: var(--highlight-review); }
+.col-done .kanban-column-title { background-color: var(--highlight-done); }
+.col-archived .kanban-column-title { background-color: var(--highlight-archived); }
 
 .kanban-cards {
   display: flex;
@@ -315,13 +305,14 @@ form label {
   min-height: 600px;
 }
 
+/* Task Cards - Flat Neo-brutalism pop styling */
 .task-card {
   background: var(--card-bg);
-  border: 2.5px solid var(--pencil-color);
-  border-radius: 12px 4px 12px 4px / 4px 12px 4px 12px;
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
   padding: 0.8rem;
-  box-shadow: 2px 3px 5px rgba(0,0,0,0.05);
-  transition: all 0.2s ease;
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -334,8 +325,8 @@ form label {
   overflow: hidden;
 }
 .task-card:hover {
-  transform: translateY(-2px) rotate(1deg);
-  box-shadow: 3px 6px 10px rgba(0,0,0,0.08);
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0px 0px var(--pencil-color);
 }
 
 .task-card-top {
@@ -359,7 +350,7 @@ form label {
 .task-card-title {
   margin: 0;
   font-size: 1.15rem;
-  font-weight: bold;
+  font-weight: 800;
   line-height: 1.3;
   word-wrap: break-word;
   word-break: break-word;
@@ -375,7 +366,7 @@ form label {
 
 .task-card-desc {
   font-size: 0.85rem;
-  color: #555;
+  color: #374151;
   margin: 0.3rem 0;
   white-space: normal;
   word-wrap: break-word;
@@ -397,21 +388,21 @@ form label {
 
 .badge {
   display: inline-block;
-  padding: 0.1rem 0.4rem;
+  padding: 0.15rem 0.5rem;
   border-radius: 4px;
-  border: 1px solid var(--pencil-color);
+  border: 2px solid var(--pencil-color);
   font-size: 0.75rem;
-  font-weight: bold;
+  font-weight: 800;
 }
 .badge-low { background-color: var(--priority-low); }
 .badge-medium { background-color: var(--priority-medium); }
 .badge-high { background-color: var(--priority-high); }
-.badge-project { background-color: rgba(139, 92, 246, 0.15); border-color: #8b5cf6; }
+.badge-project { background-color: rgba(139, 92, 246, 0.15); border-color: var(--pencil-color); }
 
 .task-card-assignee {
   font-size: 0.8rem;
-  font-style: italic;
-  color: #555;
+  font-weight: 500;
+  color: #374151;
   word-wrap: break-word;
   word-break: break-all;
 }
@@ -420,7 +411,7 @@ form label {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  border-top: 1px dashed #ccc;
+  border-top: 2px solid var(--pencil-color);
   padding-top: 0.4rem;
   flex-shrink: 0;
 }
@@ -468,8 +459,8 @@ form label {
 }
 
 .task-card-actions button {
-  padding: 0.15rem 0.3rem;
-  font-size: 0.7rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
   border-radius: 4px;
 }
 
@@ -477,12 +468,14 @@ form label {
 .quick-add-task {
   margin-top: 1.5rem;
   padding: 1.2rem;
-  background: rgba(255, 255, 255, 0.6);
-  border: 2px dashed var(--pencil-color);
-  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
 }
 .quick-add-task h3 {
   margin: 0 0 0.8rem 0;
+  font-weight: 800;
 }
 .quick-add-grid {
   display: grid;
@@ -528,14 +521,16 @@ form label {
 .detail-section {
   background: #fff;
   padding: 1.2rem;
-  border-radius: 12px;
+  border-radius: 8px;
   border: 2px solid var(--pencil-color);
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
 }
 
 .detail-section h3 {
   margin-top: 0;
   border-bottom: 2px dashed var(--pencil-color);
   padding-bottom: 0.4rem;
+  font-weight: 800;
 }
 
 .inline-edit-group {
@@ -558,9 +553,10 @@ form label {
 .comment-item {
   background: #fdfdfd;
   border: 2px solid var(--pencil-color);
-  border-radius: 8px 15px 8px 15px / 15px 8px 15px 8px;
+  border-radius: 8px;
   padding: 0.6rem;
   position: relative;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
 }
 .comment-header {
   display: flex;
@@ -584,8 +580,8 @@ form label {
   margin-top: 0.4rem;
 }
 .comment-actions button {
-  padding: 0.1rem 0.3rem;
-  font-size: 0.7rem;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.75rem;
   border-radius: 4px;
 }
 
@@ -601,13 +597,13 @@ form label {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px dotted var(--pencil-color);
+  border-bottom: 2px dotted var(--pencil-color);
   padding-bottom: 0.3rem;
   font-size: 0.9rem;
 }
 .attachment-item a {
   text-decoration: none;
-  color: #3b82f6;
+  color: #4f46e5;
   font-weight: bold;
 }
 .attachment-item a:hover {
@@ -632,7 +628,7 @@ form label {
 .result-list li {
   margin-bottom: 0.5rem;
   padding: 0.4rem;
-  border-left: 3px solid var(--pencil-color);
+  border-left: 4px solid var(--pencil-color);
 }
 .result-list a {
   text-decoration: none;
@@ -658,6 +654,7 @@ form label {
   border: 2px solid var(--pencil-color);
   border-radius: 8px;
   padding: 1rem;
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
 }
 .audit-card::before {
   content: "";
@@ -679,12 +676,12 @@ form label {
 }
 .audit-card-meta {
   font-size: 0.85rem;
-  color: #666;
+  color: #4b5563;
   margin-bottom: 0.5rem;
 }
 .audit-card-payload {
-  background: #f7f7f7;
-  border: 1px solid #ccc;
+  background: #f8fafc;
+  border: 2px solid var(--pencil-color);
   padding: 0.5rem;
   border-radius: 4px;
   font-size: 0.85rem;
@@ -701,16 +698,17 @@ table {
   border: 2px solid var(--pencil-color);
   border-radius: 8px;
   overflow: hidden;
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
 }
 th, td {
   padding: 0.6rem 0.8rem;
   text-align: left;
-  border-bottom: 1px solid var(--pencil-color);
+  border-bottom: 2px solid var(--pencil-color);
 }
 th {
   background-color: var(--btn-hover-bg);
   border-bottom: 2px solid var(--pencil-color);
-  font-weight: bold;
+  font-weight: 800;
 }
 tr:last-child td {
   border-bottom: none;
@@ -719,23 +717,25 @@ tr:last-child td {
 .error {
   color: #b91c1c;
   background: #fee2e2;
-  border: 2px solid #b91c1c;
+  border: 2px solid var(--pencil-color);
   padding: 0.5rem;
   border-radius: 6px;
   font-weight: bold;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
 }
 
 .message {
   color: #047857;
   background: #d1fae5;
-  border: 2px solid #047857;
+  border: 2px solid var(--pencil-color);
   padding: 0.5rem;
   border-radius: 6px;
   font-weight: bold;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
 }
 
 .muted {
-  color: #666;
+  color: #4b5563;
 }
 
 /* Sidebar toggle button & backdrop - hidden on desktop */
@@ -771,38 +771,29 @@ tr:last-child td {
     align-items: center;
     justify-content: center;
     position: fixed;
-    top: 0.1rem;
+    top: 0.2rem;
     right: 0.6rem;
     z-index: 1100;
-    width: 30px;
-    height: 30px;
-    border: none;
-    background: transparent;
+    width: 34px;
+    height: 34px;
+    border: 2px solid var(--pencil-color);
+    background: #ffffff;
     font-size: 1.05rem;
     cursor: pointer;
     color: var(--pencil-color);
     font-family: var(--font-cursive);
     padding: 0;
     line-height: 1;
-    transition: transform 0.25s ease, opacity 0.15s ease;
-  }
-  #sidebar-toggle::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'><path d='M 20, 4 C 11, 4, 4, 11, 4, 20 C 4, 29, 11, 36, 20, 36 C 29, 36, 36, 29, 36, 20 C 36, 11, 29, 4, 19, 4.5 C 10, 5, 5.5, 12, 5, 21 C 4.5, 30, 12, 35.5, 21, 35 C 30, 34.5, 35, 27, 34, 18' stroke='%23222222' stroke-width='1.3' fill='none' stroke-linecap='round'/></svg>");
-    background-size: 100% 100%;
-    background-repeat: no-repeat;
-    pointer-events: none;
-  }
-  #sidebar-toggle.scrolling {
-    opacity: 0.35;
+    border-radius: 4px;
+    box-shadow: 2px 2px 0px 0px var(--pencil-color);
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
   }
   #sidebar-toggle:active {
-    transform: scale(0.92);
+    transform: translate(2px, 2px);
+    box-shadow: 0px 0px 0px 0px var(--pencil-color);
+  }
+  #sidebar-toggle.scrolling {
+    opacity: 0.7;
   }
 
   /* Backdrop overlay */
@@ -810,7 +801,7 @@ tr:last-child td {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.35);
+    background: rgba(0, 0, 0, 0.4);
     z-index: 1049;
   }
   #sidebar-backdrop.visible {
@@ -834,6 +825,7 @@ tr:last-child td {
     box-shadow: -4px 0 16px rgba(0,0,0,0.15);
     padding: clamp(0.8rem, 3vw, 1.2rem);
     min-height: 100vh;
+    border-left: 2px solid var(--pencil-color);
   }
   #sidebar.open {
     transform: translateX(0);
@@ -860,7 +852,7 @@ tr:last-child td {
   left: 0;
   width: 100vw;
   height: 100vh;
-  background-color: rgba(0, 0, 0, 0.4);
+  background-color: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
   display: flex;
   justify-content: center;
@@ -869,9 +861,9 @@ tr:last-child td {
   padding: 1.5rem;
 }
 
-/* Modal content box */
+/* Modal container - Neo-brutalism bold card styling */
 .modal-container {
-  background-color: #f6f3e6;
+  background-color: #faf8f2;
   background-image: 
     linear-gradient(var(--grid-line) 1px, transparent 1px),
     linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
@@ -885,6 +877,9 @@ tr:last-child td {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
+  border: 3px solid var(--pencil-color);
+  border-radius: 12px;
+  box-shadow: 8px 8px 0px 0px var(--pencil-color);
 }
 
 .modal-scroll-area {
@@ -914,17 +909,23 @@ tr:last-child td {
   background: #fff;
   cursor: pointer;
   line-height: 1;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
 }
 .modal-close-btn:hover {
   background-color: #fee2e2;
   color: #dc2626;
-  transform: rotate(90deg);
+  transform: rotate(90deg) translate(-1px, -1px);
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
+}
+.modal-close-btn:active {
+  transform: rotate(90deg) translate(1px, 1px);
+  box-shadow: 0px 0px 0px 0px var(--pencil-color);
 }
 
 @keyframes shake {
   0%, 100% { transform: rotate(0deg) scale(1); }
-  20%, 60% { transform: rotate(-10deg) scale(1.1); }
-  40%, 80% { transform: rotate(10deg) scale(1.1); }
+  20%, 60% { transform: rotate(-5deg) scale(1.05); }
+  40%, 80% { transform: rotate(5deg) scale(1.05); }
 }
 .shake-anim {
   animation: shake 0.3s ease-in-out;

@@ -7,14 +7,7 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <svg style="position: absolute; width: 0; height: 0;" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <filter id="hand-drawn-displacement">
-        <feTurbulence type="turbulence" baseFrequency="0.015" numOctaves="3" result="noise" />
-        <feDisplacementMap in="SourceGraphic" in2="noise" scale="2" xChannelSelector="R" yChannelSelector="G" />
-      </filter>
-    </defs>
-  </svg>
+
   <button id="sidebar-toggle" type="button" aria-label="選單">☰</button>
   <div id="sidebar-backdrop"></div>
   <div id="layout-container">

@@ -178,7 +178,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   });
 
   unsavedBadge = el('div', {
-    style: 'position: absolute; right: 100%; top: 3px; bottom: 3px; margin-right: -2.5px; background: #fff; color: #ef4444; border: 2px solid #ef4444; border-right: none; border-radius: 255px 0 0 255px/25px 0 0 25px; filter: url(#hand-drawn-displacement); display: flex; align-items: center; justify-content: center; padding: 0 0.6rem; font-size: 0.85rem; font-weight: bold; z-index: 1; transform: translateX(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1); white-space: nowrap;'
+    style: 'position: absolute; right: 100%; top: 3px; bottom: 3px; margin-right: -2.5px; background: #fff; color: #ef4444; border: 2px solid #000000; border-right: none; border-radius: 6px 0 0 6px; display: flex; align-items: center; justify-content: center; padding: 0 0.6rem; font-size: 0.85rem; font-weight: bold; z-index: 1; transform: translateX(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1); white-space: nowrap;'
   }, '還未');
 
   const saveBtn = el('button', {
