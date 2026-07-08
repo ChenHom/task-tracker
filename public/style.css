@@ -156,7 +156,7 @@ body {
   font-weight: bold;
   font-size: 1.1rem;
   padding: 0.5rem 1rem;
-  border: 2px solid var(--pencil-color);
+  border: 2.5px solid var(--pencil-color);
   border-radius: 12px 4px 12px 4px / 4px 12px 4px 12px;
   text-align: center;
   transition: all 0.2s ease;
@@ -181,7 +181,7 @@ button {
   font-weight: bold;
   color: var(--pencil-color);
   background: transparent;
-  border: 2px solid var(--pencil-color);
+  border: 2.5px solid var(--pencil-color);
   border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
   padding: 0.4rem 1rem;
   cursor: pointer;
@@ -218,7 +218,7 @@ input[type="text"], input[type="email"], input[type="password"], textarea, selec
   font-size: 0.95rem;
   padding: 0.4rem 0.6rem;
   background: #fff;
-  border: 2px solid var(--pencil-color);
+  border: 2.5px solid var(--pencil-color);
   border-radius: 4px 10px 4px 10px / 10px 4px 10px 4px;
   outline: none;
   color: var(--pencil-color);
@@ -317,7 +317,7 @@ form label {
 
 .task-card {
   background: var(--card-bg);
-  border: 2px solid var(--pencil-color);
+  border: 2.5px solid var(--pencil-color);
   border-radius: 12px 4px 12px 4px / 4px 12px 4px 12px;
   padding: 0.8rem;
   box-shadow: 2px 3px 5px rgba(0,0,0,0.05);
