@@ -119,8 +119,8 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
    */
   const cleanup = () => {
     if (escHandler) {
-      document.removeEventListener('keydown', escHandler);
-      window.removeEventListener('keydown', escHandler);
+      document.removeEventListener('keydown', escHandler, true);
+      window.removeEventListener('keydown', escHandler, true);
     }
     if (hashChangeHandler) window.removeEventListener('hashchange', hashChangeHandler);
     if (overlay) overlay.remove();
@@ -150,8 +150,8 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   };
 
   // Register event listeners
-  document.addEventListener('keydown', escHandler);
-  window.addEventListener('keydown', escHandler);
+  document.addEventListener('keydown', escHandler, true);
+  window.addEventListener('keydown', escHandler, true);
   window.addEventListener('hashchange', hashChangeHandler);
 
   overlay = el('div', { id: 'task-detail-modal', class: 'modal-overlay' });
