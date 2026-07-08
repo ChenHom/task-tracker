@@ -55,7 +55,7 @@ export const KanbanView = {
       <p id="task-error" class="error" style="display: none; margin-bottom: 1.5rem;"></p>
 
       <!-- 4/5 Column Kanban Board -->
-      <div class="kanban-board" id="kanban-board-el">
+      <div class="kanban-board" id="kanban-board-el" style="position: relative;">
         <div class="kanban-column col-todo">
           <div class="kanban-column-title"><span>Todo</span><span class="inline-add-btn-slot" id="add-btn-Todo"></span></div>
           <div class="inline-add-form-slot" id="add-form-Todo"></div>
@@ -176,6 +176,17 @@ export const KanbanView = {
      * @returns {Promise<void>}
      */
     async function loadAllData() {
+      // 顯示載入指示器
+      const boardEl = document.getElementById('kanban-board-el');
+      let loadingOverlay = document.getElementById('kanban-loading-overlay');
+      if (!loadingOverlay && boardEl) {
+        loadingOverlay = el('div', {
+          id: 'kanban-loading-overlay',
+          style: 'position: absolute; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.6); display:flex; justify-content:center; align-items:center; z-index: 100; font-size:1.5rem; font-weight:bold;'
+        }, '載入中...');
+        boardEl.appendChild(loadingOverlay);
+      }
+
       try {
         const [tasks, projects, members] = await Promise.all([
           api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/tasks`),
@@ -220,6 +231,10 @@ export const KanbanView = {
         }
       } catch (err) {
         showError('task-error', err);
+      } finally {
+        if (loadingOverlay) {
+          loadingOverlay.remove();
+        }
       }
     }
 
@@ -270,11 +285,10 @@ export const KanbanView = {
       });
 
       for (const task of filtered) {
-        const card = el('div', { class: 'task-card' });
+        const card = el('div', { class: 'task-card', 'data-task-id': task.task_id });
 
         // Top Section: Title & Description
-        const topEl = el('div', { class: 'task-card-top' });
-        topEl.onclick = () => navigate(`#/task/${task.task_id}`);
+        const topEl = el('div', { class: 'task-card-top clickable-section' });
 
         const titleEl = el('h4', { class: 'task-card-title' });
         const titleLink = el('a', { href: `#/task/${task.task_id}` }, task.title);
@@ -289,8 +303,7 @@ export const KanbanView = {
         card.appendChild(topEl);
 
         // Mid Section: Meta, Assignee, Time
-        const midEl = el('div', { class: 'task-card-mid' });
-        midEl.onclick = () => navigate(`#/task/${task.task_id}`);
+        const midEl = el('div', { class: 'task-card-mid clickable-section' });
 
         // Meta (Priority, Project)
         const metaEl = el('div', { class: 'task-card-meta' });
@@ -331,15 +344,15 @@ export const KanbanView = {
         const flowLeft = el('div', { class: 'flow-left' });
         const flowRight = el('div', { class: 'flow-right' });
         if (task.status === 'Todo') {
-          flowRight.appendChild(createStateBtn('→ Doing', 'Doing', task.task_id));
+          flowRight.appendChild(createStateBtn('→ Doing', 'Doing'));
         } else if (task.status === 'Doing') {
-          flowLeft.appendChild(createStateBtn('← Todo', 'Todo', task.task_id));
-          flowRight.appendChild(createStateBtn('Review →', 'Review', task.task_id));
+          flowLeft.appendChild(createStateBtn('← Todo', 'Todo'));
+          flowRight.appendChild(createStateBtn('Review →', 'Review'));
         } else if (task.status === 'Review') {
-          flowLeft.appendChild(createStateBtn('← Doing', 'Doing', task.task_id));
-          flowRight.appendChild(createStateBtn('Done →', 'Done', task.task_id));
+          flowLeft.appendChild(createStateBtn('← Doing', 'Doing'));
+          flowRight.appendChild(createStateBtn('Done →', 'Done'));
         } else if (task.status === 'Done') {
-          flowLeft.appendChild(createStateBtn('← Review', 'Review', task.task_id));
+          flowLeft.appendChild(createStateBtn('← Review', 'Review'));
         }
         flowEl.appendChild(flowLeft);
         flowEl.appendChild(flowRight);
@@ -348,12 +361,10 @@ export const KanbanView = {
         // Row 2: Utility buttons
         const utilityEl = el('div', { class: 'task-card-utils' });
         if (task.status !== 'Archived') {
-          const archiveBtn = el('button', { type: 'button', class: 'btn-secondary' }, 'Archive');
-          archiveBtn.onclick = () => archiveTask(task.task_id);
+          const archiveBtn = el('button', { type: 'button', class: 'btn-secondary', 'data-action': 'archive' }, 'Archive');
           utilityEl.appendChild(archiveBtn);
         }
-        const deleteBtn = el('button', { type: 'button', class: 'btn-danger' }, 'Delete');
-        deleteBtn.onclick = () => deleteTask(task.task_id);
+        const deleteBtn = el('button', { type: 'button', class: 'btn-danger', 'data-action': 'delete' }, 'Delete');
         utilityEl.appendChild(deleteBtn);
         
         actionsEl.appendChild(utilityEl);
@@ -365,31 +376,17 @@ export const KanbanView = {
     }
 
     /**
-     * Builds state-shifting control buttons with validation checks.
+     * Builds state-shifting control buttons with validation datasets.
      * @param {string} text - Button caption text.
      * @param {string} newStatus - Target workflow status parameter.
-     * @param {string} taskId - The ID of the target task.
      * @returns {HTMLElement} State shifting action button.
      */
-    function createStateBtn(text, newStatus, taskId) {
-      const btn = el('button', { type: 'button' }, text);
-      btn.onclick = async () => {
-        // 限制：切換至 Doing 時，必須有負責人
-        if (newStatus === 'Doing') {
-          const task = cachedTasks.find(t => t.task_id === taskId);
-          if (task && !task.assignee_id) {
-            alert('錯誤：切換至 Doing 狀態前，必須先指派負責人！');
-            return;
-          }
-        }
-        try {
-          await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { status: newStatus } });
-          await loadAllData();
-        } catch (err) {
-          showError('task-error', err);
-        }
-      };
-      return btn;
+    function createStateBtn(text, newStatus) {
+      return el('button', {
+        type: 'button',
+        'data-action': 'transition',
+        'data-status': newStatus
+      }, text);
     }
 
     /**
@@ -419,6 +416,51 @@ export const KanbanView = {
       } catch (err) {
         showError('task-error', err);
       }
+    }
+
+    // 事件委派：綁定在全域的看板元件容器上
+    const boardEl = document.getElementById('kanban-board-el');
+    if (boardEl) {
+      boardEl.addEventListener('click', async (e) => {
+        // 尋找點擊所在的卡片
+        const card = e.target.closest('.task-card');
+        if (!card) return;
+        const taskId = card.getAttribute('data-task-id');
+
+        // 判斷點擊的是否為動作按鈕
+        const actionEl = e.target.closest('[data-action]');
+        if (actionEl) {
+          const action = actionEl.getAttribute('data-action');
+          if (action === 'archive') {
+            await archiveTask(taskId);
+          } else if (action === 'delete') {
+            await deleteTask(taskId);
+          } else if (action === 'transition') {
+            const newStatus = actionEl.getAttribute('data-status');
+            // 限制：切換至 Doing 時，必須有負責人
+            if (newStatus === 'Doing') {
+              const task = cachedTasks.find(t => t.task_id === taskId);
+              if (task && !task.assignee_id) {
+                alert('錯誤：切換至 Doing 狀態前，必須先指派負責人！');
+                return;
+              }
+            }
+            try {
+              await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { status: newStatus } });
+              await loadAllData();
+            } catch (err) {
+              showError('task-error', err);
+            }
+          }
+          return;
+        }
+
+        // 判斷點擊的是否為卡片文字或背景跳轉區域
+        const clickable = e.target.closest('.clickable-section');
+        if (clickable) {
+          navigate(`#/task/${taskId}`);
+        }
+      });
     }
 
     // 事件綁定：專案篩選與封存切換

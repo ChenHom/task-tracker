@@ -138,6 +138,7 @@ export const MembersView = {
     const inviteEmailInput = document.getElementById('invite-email');
     const suggestionsDatalist = document.getElementById('email-suggestions');
     let searchTimer = null;
+    let searchAbortController = null;
     
     if (inviteEmailInput && suggestionsDatalist) {
       inviteEmailInput.addEventListener('input', () => {
@@ -148,14 +149,24 @@ export const MembersView = {
             suggestionsDatalist.innerHTML = '';
             return;
           }
+          if (searchAbortController) {
+            searchAbortController.abort();
+          }
+          searchAbortController = new AbortController();
           try {
-            const list = await api(`/api/users/search?q=${encodeURIComponent(val)}`);
+            const list = await api(`/api/users/search?q=${encodeURIComponent(val)}`, {
+              signal: searchAbortController.signal
+            });
             suggestionsDatalist.innerHTML = '';
             for (const item of list) {
               suggestionsDatalist.appendChild(el('option', { value: item.email }, `${item.name} (${item.email})`));
             }
           } catch (err) {
-            // 靜態忽略
+            if (err.name === 'AbortError') {
+              console.log('Autocomplete search aborted');
+            } else {
+              // 靜態忽略其他錯誤
+            }
           }
         }, 500);
       });

@@ -12,8 +12,8 @@ import { state } from './state.js';
  * @returns {Promise<*>} Evaluates to the parsed JSON response body, or null if response was empty.
  * @throws {Error} Throws an error on non-ok HTTP responses, or upon 401 redirect behavior.
  */
-export async function api(path, { method = 'GET', body } = {}) {
-  const opts = { method, headers: {} };
+export async function api(path, { method = 'GET', body, signal } = {}) {
+  const opts = { method, headers: {}, signal };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);

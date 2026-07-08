@@ -30,6 +30,8 @@ export const SearchView = {
       <div id="search-results" class="search-results-section"></div>
     `;
 
+    let abortController = null;
+
     const searchForm = document.getElementById('search-form');
     if (searchForm) {
       searchForm.addEventListener('submit', async (e) => {
@@ -38,8 +40,16 @@ export const SearchView = {
         const results = document.getElementById('search-results');
         if (!results) return;
         results.textContent = '搜尋中...';
+
+        if (abortController) {
+          abortController.abort();
+        }
+        abortController = new AbortController();
+
         try {
-          const data = await api(`/api/search?workspace=${encodeURIComponent(state.workspaceId)}&q=${encodeURIComponent(q)}`);
+          const data = await api(`/api/search?workspace=${encodeURIComponent(state.workspaceId)}&q=${encodeURIComponent(q)}`, {
+            signal: abortController.signal
+          });
           results.textContent = '';
 
           // Render Tasks
@@ -90,7 +100,11 @@ export const SearchView = {
           commGroup.appendChild(commList);
           results.appendChild(commGroup);
         } catch (err) {
-          showError('search-error', err);
+          if (err.name === 'AbortError') {
+            console.log('Search query aborted');
+          } else {
+            showError('search-error', err);
+          }
         }
       });
     }
