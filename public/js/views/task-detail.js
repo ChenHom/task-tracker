@@ -21,9 +21,15 @@ import { el, formatTime } from '../utils.js';
  * @returns {Promise<void>}
  */
 export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, memberMap, memberEmailMap, onUpdate }) {
-  // 移除舊的 modal
+  // 移除舊的 modal 並執行其清理函數以清除全域監聽器
   const existingModal = document.getElementById('task-detail-modal');
-  if (existingModal) existingModal.remove();
+  if (existingModal) {
+    if (typeof existingModal.cleanup === 'function') {
+      existingModal.cleanup();
+    } else {
+      existingModal.remove();
+    }
+  }
 
   const currentTask = cachedTasks.find(t => t.task_id === taskId);
   if (!currentTask) {
@@ -138,6 +144,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   window.addEventListener('hashchange', hashChangeHandler);
 
   overlay = el('div', { id: 'task-detail-modal', class: 'modal-overlay' });
+  overlay.cleanup = cleanup; // 綁定清理函數以供後續覆蓋時註銷監聽器
   overlay.onclick = (e) => {
     if (e.target === overlay) {
       closeModalOrShake();

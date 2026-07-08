@@ -28,7 +28,7 @@ export const WorkspacesView = {
       </div>
 
       <h2 class="red-pen-underline" style="margin-bottom: 1.2rem;">我的工作區列表</h2>
-      <div id="ws-list-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.5rem;">
+      <div id="ws-list-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1.5rem;">
         <!-- 卡片列表動態載入 -->
       </div>
     `;

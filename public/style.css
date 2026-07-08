@@ -317,7 +317,7 @@ form label {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  min-height: 280px;
+  min-height: 220px;
   box-sizing: border-box;
   word-wrap: break-word;
   word-break: break-word;

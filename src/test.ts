@@ -14,3 +14,4 @@ import './search.test';
 import './audit.test';
 import './rateLimit.test';
 import './server.test';
+import './frontend.test';
