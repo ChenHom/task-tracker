@@ -25,6 +25,10 @@ const SWEEP_ROLE: 'owner' | 'team' | 'both' = (() => {
   const n = process.argv[process.argv.indexOf('--sweep') + 1];
   return n === 'owner' || n === 'team' ? n : 'both';
 })();
+
+// 所有 sim 輸出加 HH:MM:SS 前綴——cron log 才看得出每個 session 何時開始/結束
+const _rawLog = console.log.bind(console);
+console.log = (...args: unknown[]) => _rawLog(`[${new Date().toTimeString().slice(0, 8)}]`, ...args);
 const PASSWORD = 'test1234';
 const MEMBER_TIMEOUT = (FAST ? 7 : 12) * 60 * 1000;
 const OWNER_TIMEOUT = (FAST ? 12 : 25) * 60 * 1000; // opus 審查/協調較久；driver 已把機械工作（跑測試）分擔掉，這是安全上限
@@ -301,13 +305,15 @@ export function writePromptArtifact(runDir: string, label: string, prompt: strin
   return { label, path, bytes: Buffer.byteLength(prompt, 'utf8') };
 }
 
+interface SessionResult { timedOut: boolean; errored: boolean }
+
 function runSession(
   label: string,
   runner: 'claude' | 'codex',
   model: string,
   prompt: string,
   opts: { cwd: string; tools: string; timeoutMs: number; runDir?: string; promptArtifacts?: PromptArtifact[]; promptLabel?: string },
-): Promise<void> {
+): Promise<SessionResult> {
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${label}.log`);
   if (opts.runDir) {
     const artifact = writePromptArtifact(opts.runDir, opts.promptLabel ?? label, prompt);
@@ -323,10 +329,15 @@ function runSession(
     const child = execFile(runner === 'claude' ? 'claude' : 'codex', args,
       { cwd: opts.cwd, timeout: opts.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 20 * 1024 * 1024 },
       (err, stdout, stderr) => {
-        writeFileSync(logFile, `PROMPT:\n${prompt}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\nERR:${err ? String(err) : 'none'}\n`);
+        // execFile 逾時→送 killSignal(SIGKILL)＋err.killed=true；據此明確判定「逾時」而非額度/API 錯誤
+        const e = err as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null;
+        const timedOut = !!e && (e.killed === true || e.signal === 'SIGKILL');
+        const errNote = err ? `${String(err)}${timedOut ? ` [KILLED signal=${e?.signal} → 逾時 timeout=${Math.round(opts.timeoutMs / 60000)}分]` : ''}` : 'none';
+        writeFileSync(logFile, `PROMPT:\n${prompt}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\nERR:${errNote}\n`);
         const tail = (stdout || '').trim().split('\n').slice(-2).join(' / ');
-        console.log(`[${label}] 結束${err ? `（異常: ${String(err).slice(0, 80)}）` : ''} — ${tail.slice(0, 200)}`);
-        resolve(); // 單一 session 失敗不中斷整場
+        const why = timedOut ? `（逾時 ${Math.round(opts.timeoutMs / 60000)} 分被中止）` : err ? `（異常: ${String(err).slice(0, 80)}）` : '';
+        console.log(`[${label}] 結束${why} — ${tail.slice(0, 200)}`);
+        resolve({ timedOut, errored: !!err }); // 單一 session 失敗不中斷整場
       });
     child.stdin?.end(); // codex exec 看到 piped stdin 會等 EOF
   });
@@ -843,6 +854,20 @@ const SWEEP_OWNER_TIMEOUT = 12 * 60 * 1000;
 const SWEEP_MEMBER_TIMEOUT = 7 * 60 * 1000;
 const BOSS_EMAIL = 'user09@test.local';
 
+// owner 逾時自適應：跨 tick 狀態（sim-logs 下，gitignored）。上一輪 owner 逾時 → 這輪每逾時 +6 分（封頂 30）、
+// 少收一個 workspace（封底 1），並把逾時的 workspace 排到最前面優先收（否則減 budget 反而跳過問題 workspace）。
+interface SweepOwnerState { streak: number; timedOutWs: string[] }
+const OWNER_STATE_FILE = join(LOG_DIR, '.sweep-owner-state.json');
+function readOwnerState(): SweepOwnerState {
+  try {
+    const s = JSON.parse(readFileSync(OWNER_STATE_FILE, 'utf8')) as Partial<SweepOwnerState>;
+    return { streak: Number(s.streak) || 0, timedOutWs: Array.isArray(s.timedOutWs) ? s.timedOutWs : [] };
+  } catch { return { streak: 0, timedOutWs: [] }; }
+}
+function writeOwnerState(s: SweepOwnerState): void {
+  try { writeFileSync(OWNER_STATE_FILE, JSON.stringify(s)); } catch { /* 寫不進去不致命，下輪照 base 值 */ }
+}
+
 function probeQuota(): Promise<boolean> {
   return new Promise((resolve) => {
     execFile('claude', ['-p', '回覆OK兩字即可', '--model', 'claude-haiku-4-5-20251001'],
@@ -948,10 +973,23 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
 
   if (!(await probeQuota())) { console.log(`[sweep:${role}] 額度不足，本 tick 放棄，等下個 tick timer 再試`); return; }
 
+  // owner 逾時自適應：上一輪 owner 逾時 streak 越高 → 這輪 timeout 越長、owner 收的 workspace 越少
+  const ownerState = role === 'team' ? { streak: 0, timedOutWs: [] as string[] } : readOwnerState();
+  const ownerTimeoutMs = Math.min(SWEEP_OWNER_TIMEOUT + ownerState.streak * 6 * 60 * 1000, 30 * 60 * 1000);
   // 預算按 role：owner tick 只跑 owner session、team tick 只跑成員 session（both=手動全掃）。做不完留給下個 tick，自癒
-  let ownerBudget = role === 'team' ? 0 : 2;
+  let ownerBudget = role === 'team' ? 0 : Math.max(1, 2 - ownerState.streak);
   let memberBudget = role === 'owner' ? 0 : 2;
-  pendings.sort((a, b) => b.startedAt.localeCompare(a.startedAt)); // 新的優先
+  if (ownerState.streak > 0) {
+    console.log(`[sweep:${role}] 前輪 owner 逾時（streak ${ownerState.streak}）→ 本輪 timeout=${Math.round(ownerTimeoutMs / 60000)}分、owner 收 ${ownerBudget} 個、優先 ${ownerState.timedOutWs.map((x) => x.slice(0, 8)).join(',') || '(無記錄)'}`);
+  }
+  // 逾時過的 workspace 排最前（否則減 budget 會跳過它），其次新的優先
+  pendings.sort((a, b) => {
+    const at = ownerState.timedOutWs.includes(a.wsId) ? 1 : 0;
+    const bt = ownerState.timedOutWs.includes(b.wsId) ? 1 : 0;
+    return at !== bt ? bt - at : b.startedAt.localeCompare(a.startedAt);
+  });
+  let ownerSessionsRun = 0;
+  const timedOutThisTick: string[] = [];
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
 
   for (const p of pendings) {
@@ -974,9 +1012,11 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     const verified = (ownerBudget > 0 && anyAhead) ? await verifyBranches(runDir, p.scenario) : [];
 
     if (ownerBudget > 0) {
-      await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'claude', OWNER_REVIEW_MODEL,
+      const r = await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'claude', OWNER_REVIEW_MODEL,
         ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
-        { cwd: REPO_ROOT, tools: OWNER_TOOLS, timeoutMs: SWEEP_OWNER_TIMEOUT, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
+        { cwd: REPO_ROOT, tools: OWNER_TOOLS, timeoutMs: ownerTimeoutMs, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
+      ownerSessionsRun++;
+      if (r.timedOut) timedOutThisTick.push(p.wsId);
       ownerBudget--;
       abortStaleMerge();
     }
@@ -1005,7 +1045,15 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     }
     console.log(`[sweep] ${p.wsId.slice(0, 8)} 處理完（剩餘預算 owner:${ownerBudget} member:${memberBudget}）`);
   }
-  console.log('[sweep] 本 tick 結束；未完部分下個小時繼續');
+
+  // 只有實際跑過 owner session 才更新逾時狀態：有逾時→streak+1（封頂5）並記下逾時的 workspace；沒逾時→歸零
+  if (ownerSessionsRun > 0) {
+    writeOwnerState(timedOutThisTick.length
+      ? { streak: Math.min(ownerState.streak + 1, 5), timedOutWs: timedOutThisTick }
+      : { streak: 0, timedOutWs: [] });
+    if (timedOutThisTick.length) console.log(`[sweep:${role}] 本輪 ${timedOutThisTick.length} 個 owner session 逾時 → 下輪自動拉長 timeout、少收一個並優先它們`);
+  }
+  console.log('[sweep] 本 tick 結束；未完部分下個 tick 繼續');
 }
 
 if (require.main === module) {
