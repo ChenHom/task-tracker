@@ -72,10 +72,12 @@ const reportMarkdown = formatReportMarkdown({
   totalPromptBytes: 10,
   commentCount: 1,
   eventCount: 2,
+  unmergedGreen: ['sim/user03'],
 });
 assert.ok(reportMarkdown.includes('sim-run-test'));
 assert.ok(reportMarkdown.includes('Example'));
 assert.ok(reportMarkdown.includes('total prompt bytes: 10'));
+assert.ok(reportMarkdown.includes('sim/user03'));
 
 assert.strictEqual(parseScenario(['node', 'run.ts']).key, 'self-directed');
 assert.strictEqual(parseScenario(['node', 'run.ts', '--scenario', 'product-ideation']).key, 'product-ideation');

@@ -93,6 +93,7 @@ export interface SprintReport {
   totalPromptBytes: number;
   commentCount: number;
   eventCount: number;
+  unmergedGreen: string[];
 }
 
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
@@ -207,6 +208,13 @@ async function login(email: string): Promise<string> {
 }
 
 const git = (args: string[], cwd = REPO_ROOT) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+
+// owner session 若違反指示手動解衝突到一半被 timeout SIGKILL，repo 會卡在衝突態；每次 owner-close/repair 後兜底清掉。
+function abortStaleMerge(): void {
+  if (!existsSync(join(REPO_ROOT, '.git', 'MERGE_HEAD'))) return;
+  git(['merge', '--abort']);
+  console.log('[兜底] owner session 留下未完成 merge，已 abort 回乾淨態');
+}
 
 // brain scenario：repo 可能還不存在。無 .git 就初始化（worktree add 需要至少一個 commit）。
 function ensureBrainRepo(): void {
@@ -493,7 +501,7 @@ ${API_RULES(jar)}
 1. GET ${BASE}/api/workspaces/${wsId}/tasks
 2. 對每個 status=Review 且 CI 顯示驗證皆 PASS 的 task，依其 branch 逐一 merge（一次一個）：
    a. git diff master...<branch> 快速看 code（審查重點，不用跑測試）
-   b. git merge --no-ff <branch> -m "merge: <task 標題>"；若衝突 git merge --abort 並在 task 留言請該成員 rebase
+   b. git merge --no-ff <branch> -m "merge: <task 標題>"；⚠️ 絕對不要手動解衝突——你的 session 有硬時限，手動解衝突是上一場 owner 逾時被強制中止的死因。遇衝突一律：git merge --abort → task 留言衝突檔案清單＋請該成員 rebase → PATCH {"status":"Doing"} 退回 → 繼續合下一條乾淨的 branch
    c. task 留言「已合併進 master（附 merge commit hash）」→ PATCH {"status":"Done"}
 ${integrationStep}
 4. CI 顯示驗證 FAIL 的 branch：不要 merge，直接在 task 留言「具體」問題（引用檔案/行為，讓成員知道要修什麼）+ PATCH {"status":"Doing"} 退回——這題會進入重修
@@ -526,6 +534,10 @@ export function formatReportMarkdown(report: SprintReport): string {
     ...report.branches.map((packet) => `- ${packet.branch}: tsc ${packet.tsc.ok ? 'PASS' : 'FAIL'}, test ${packet.test.ok ? 'PASS' : 'FAIL'}, commits ${packet.commits.length}, files ${packet.changedFiles.length}`),
     ...(report.branches.length ? [] : ['- (none)']),
     '',
+    '## ⚠️ CI 綠燈但未合併',
+    ...report.unmergedGreen.map((branchName) => `- ${branchName}`),
+    ...(report.unmergedGreen.length ? [] : ['- (none)']),
+    '',
     '## Prompt Artifacts',
     ...report.promptArtifacts.map((artifact) => `- ${artifact.label}: ${artifact.bytes} bytes (${artifact.path})`),
     ...(report.promptArtifacts.length ? [] : ['- (none)']),
@@ -552,6 +564,7 @@ function buildSprintReport(
   scenarioKey: string,
   promptArtifacts: PromptArtifact[],
   branches: BranchReviewPacket[],
+  unmergedGreen: string[],
 ): SprintReport {
   const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
   const tasks = db.prepare('SELECT task_id, title, status, priority FROM tasks_read_model WHERE workspace_id = ?').all(wsId) as Array<{ task_id: string; title: string; status: string; priority: string }>;
@@ -578,6 +591,7 @@ function buildSprintReport(
     totalPromptBytes: promptArtifacts.reduce((sum, artifact) => sum + artifact.bytes, 0),
     commentCount: comments.n,
     eventCount: events.n,
+    unmergedGreen,
   };
 }
 
@@ -590,7 +604,13 @@ function printStats(
   promptArtifacts: PromptArtifact[],
   branches: BranchReviewPacket[],
 ): void {
-  const report = buildSprintReport(wsId, since, tag, tag, scenarioKey, promptArtifacts, branches);
+  // CI 綠燈（tsc+test 皆過）卻仍領先 master 的 branch＝該合未合，只信 git 事實，不信 task 狀態
+  const greenAhead = branches
+    .filter((packet) => packet.tsc.ok && packet.test.ok)
+    .map((packet) => ({ branch: packet.branch, ahead: Number(git(['rev-list', '--count', `master..${packet.branch}`])) }))
+    .filter((x) => x.ahead > 0);
+  const unmergedGreen = greenAhead.map((x) => x.branch);
+  const report = buildSprintReport(wsId, since, tag, tag, scenarioKey, promptArtifacts, branches, unmergedGreen);
   const byStatus: Record<string, number> = {};
   for (const task of report.tasks) byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
   writeReport(runDir, report);
@@ -601,6 +621,7 @@ function printStats(
   console.log(`[BUG] tasks: ${report.bugTasks}`);
   for (const bug of bugs) console.log(`  - [${bug.status}/${bug.priority}] ${bug.title}`);
   console.log(`[ESCALATE] 上報留言: ${report.escalateComments}（owner 解不了的環境問題，需要上層/使用者處理）`);
+  for (const g of greenAhead) console.log(`⚠️ CI 綠燈但未合併：${g.branch}（${g.ahead} commits）→ 手動：git merge --no-ff ${g.branch}`);
   try {
     const merged = git(['log', '--oneline', `${tag}..master`]);
     console.log(`\nmaster 自 ${tag} 以來：\n${merged || '（無新 commit）'}`);
@@ -794,6 +815,7 @@ async function main(): Promise<void> {
   // 收尾 merge（opus）＋ repair 迴圈（收尾退回的題重修至合格，上限 2 輪）
   let verified = await verifyBranches(runDir, scenario);
   await runSession('owner-收尾合併', 'claude', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' });
+  abortStaleMerge();
 
   for (let repair = 1; repair <= 2; repair++) {
     const toFix = membersWithRejects(wsId);
@@ -802,6 +824,7 @@ async function main(): Promise<void> {
     await runRound(toFix, 3 + repair, 1, 5);
     verified = await verifyBranches(runDir, scenario);
     await runSession(`owner-repair${repair}`, 'claude', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` });
+    abortStaleMerge();
   }
 
   printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, verified);
