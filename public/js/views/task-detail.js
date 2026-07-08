@@ -32,7 +32,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     return;
   }
 
-  let titleInput, descInput;
+  let titleInput, descInput, unsavedBadge;
   const originalTitle = currentTask.title;
   const originalDesc = currentTask.description || '';
 
@@ -49,19 +49,38 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   };
 
   /**
-   * Attempts to close the modal viewport. If modifications were performed, prompts the user to confirm discard, or shakes the close button.
+   * Shows the 'Unsaved' warning badge by sliding it out.
+   * @returns {void}
+   */
+  const showUnsavedBadge = () => {
+    if (unsavedBadge) {
+      unsavedBadge.style.transform = 'translateX(0)';
+      unsavedBadge.style.opacity = '1';
+    }
+  };
+
+  /**
+   * Hides the 'Unsaved' warning badge by sliding it back under the Save button.
+   * @returns {void}
+   */
+  const hideUnsavedBadge = () => {
+    if (unsavedBadge) {
+      unsavedBadge.style.transform = 'translateX(100%)';
+      unsavedBadge.style.opacity = '0';
+    }
+  };
+
+  /**
+   * Attempts to close the modal viewport. If modifications were performed, slides out 'Unsaved' warning and shakes the close button.
    * @returns {void}
    */
   const closeModalOrShake = () => {
     if (isModified()) {
-      if (confirm('您有未儲存的修改，確定要捨棄變更並關閉視窗嗎？')) {
-        cleanupAndClose();
-      } else {
-        closeBtn.classList.add('shake-anim');
-        closeBtn.addEventListener('animationend', () => {
-          closeBtn.classList.remove('shake-anim');
-        }, { once: true });
-      }
+      showUnsavedBadge();
+      closeBtn.classList.add('shake-anim');
+      closeBtn.addEventListener('animationend', () => {
+        closeBtn.classList.remove('shake-anim');
+      }, { once: true });
     } else {
       cleanupAndClose();
     }
@@ -115,15 +134,30 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   
   contentSec.appendChild(el('label', { style: 'font-size:1.15rem; font-weight:bold; display:block; margin-bottom:0.3rem;' }, '任務名稱 *'));
   titleInput = el('input', { type: 'text', value: currentTask.title, required: true, style: 'width:100%; margin-bottom:1rem;' });
+  titleInput.addEventListener('focus', hideUnsavedBadge);
   contentSec.appendChild(titleInput);
   
   contentSec.appendChild(el('label', { style: 'font-size:1.15rem; font-weight:bold; display:block; margin-bottom:0.3rem;' }, '任務詳細描述'));
   descInput = el('textarea', { rows: '5', placeholder: '無描述。輸入些什麼以建立任務說明...', style: 'width:100%; margin-bottom:1rem;' });
   descInput.value = currentTask.description || '';
+  descInput.addEventListener('focus', hideUnsavedBadge);
   contentSec.appendChild(descInput);
   
-  const saveBtnGroup = el('div', { style: 'display:flex; justify-content:flex-end;' });
-  const saveBtn = el('button', { type: 'button' }, '儲存');
+  const saveBtnGroup = el('div', { style: 'display:flex; justify-content:flex-end; margin-top:1rem;' });
+  
+  const saveWrapper = el('div', {
+    style: 'position:relative; display:inline-flex; align-items:stretch; overflow:visible;'
+  });
+
+  unsavedBadge = el('div', {
+    style: 'position: absolute; right: 100%; top: 0; bottom: 0; margin-right: -2.5px; background: #fff; color: #ef4444; border: 1.5px solid #ef4444; border-right: none; border-radius: 6px 0 0 6px; display: flex; align-items: center; justify-content: center; padding: 0 0.6rem; font-size: 0.85rem; font-weight: bold; z-index: 1; transform: translateX(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1); white-space: nowrap;'
+  }, '未存');
+
+  const saveBtn = el('button', {
+    type: 'button',
+    style: 'position: relative; z-index: 2; background: #fff; margin: 0;'
+  }, '儲存');
+
   saveBtn.onclick = async () => {
     const valTitle = titleInput.value.trim();
     const valDesc = descInput.value;
@@ -139,12 +173,16 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
       if (valDesc !== (currentTask.description || '')) {
         await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { description: valDesc } });
       }
+      hideUnsavedBadge();
       await onUpdate();
     } catch (err) {
       alert(err.message);
     }
   };
-  saveBtnGroup.appendChild(saveBtn);
+
+  saveWrapper.appendChild(unsavedBadge);
+  saveWrapper.appendChild(saveBtn);
+  saveBtnGroup.appendChild(saveWrapper);
   contentSec.appendChild(saveBtnGroup);
   
   leftEl.appendChild(contentSec);
