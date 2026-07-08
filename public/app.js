@@ -308,7 +308,7 @@ function renderLogin() {
       </form>
       <p id="login-error" class="error" style="display: none; margin-top: 1rem;"></p>
       <div style="margin-top: 1.5rem; text-align: center; display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.95rem;">
-        <span class="muted">預設帳號: user01@test.local / test1234</span>
+        <span class="muted">預設帳號: user09@test.local / test1234</span>
         <a href="#/forgot-password" class="muted">忘記密碼？</a>
       </div>
     </div>
