@@ -494,7 +494,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
           
           editBtn.onclick = () => {
             if (editBtn.textContent === '編輯') {
-              const input = el('textarea', { class: 'comment-edit-textarea', rows: '4' });
+              const input = el('textarea', { class: 'comment-edit-textarea', rows: '7' });
               input.value = c.content;
               bodyContainer.textContent = '';
               bodyContainer.appendChild(input);

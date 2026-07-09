@@ -1148,7 +1148,7 @@ tr:last-child td {
     margin-top: 0.5rem;
   }
   .comment-form:focus-within .comment-textarea {
-    min-height: 100px;
+    min-height: 160px;
   }
   .comment-actions {
     width: 100%;
@@ -1397,7 +1397,7 @@ p.error {
   padding: 0.4rem;
   border: 2px solid var(--pencil-color);
   border-radius: 6px;
-  min-height: 100px;
+  min-height: 160px;
   box-sizing: border-box;
 }
 
