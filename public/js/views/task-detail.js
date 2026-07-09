@@ -220,8 +220,8 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   // Name & Description Section
   const contentSec = el('div', { class: 'detail-section sketch-box' });
   
-  contentSec.appendChild(el('label', { style: 'font-size:1.15rem; font-weight:bold; display:block; margin-bottom:0.3rem;' }, '任務名稱 *'));
-  titleInput = el('input', { type: 'text', value: currentTask.title, required: true, style: 'width:100%; margin-bottom:1rem;' });
+  contentSec.appendChild(el('label', {}, '任務名稱 *'));
+  titleInput = el('input', { type: 'text', value: currentTask.title, required: true });
   titleInput.addEventListener('focus', () => {
     hideUnsavedBadge();
     setTimeout(() => {
@@ -232,8 +232,8 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   });
   contentSec.appendChild(titleInput);
   
-  contentSec.appendChild(el('label', { style: 'font-size:1.15rem; font-weight:bold; display:block; margin-bottom:0.3rem;' }, '任務詳細描述'));
-  descInput = el('textarea', { rows: '5', placeholder: '無描述。輸入些什麼以建立任務說明...', style: 'width:100%; margin-bottom:1rem;' });
+  contentSec.appendChild(el('label', {}, '任務詳細描述'));
+  descInput = el('textarea', { rows: '5', placeholder: '無描述。輸入些什麼以建立任務說明...' });
   descInput.value = currentTask.description || '';
   descInput.addEventListener('focus', () => {
     hideUnsavedBadge();
@@ -285,19 +285,15 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   });
   contentSec.appendChild(descInput);
   
-  const saveBtnGroup = el('div', { style: 'display:flex; justify-content:flex-end; margin-top:1rem;' });
+  const saveBtnGroup = el('div', { class: 'detail-save-btn-group' });
   
-  const saveWrapper = el('div', {
-    style: 'position:relative; display:inline-flex; align-items:stretch; overflow:visible;'
-  });
+  const saveWrapper = el('div', { class: 'save-badge-wrapper' });
 
-  unsavedBadge = el('div', {
-    style: 'position: absolute; right: 100%; top: 3px; bottom: 3px; margin-right: -2.5px; background: #fff; color: #ef4444; border: 2px solid #000000; border-right: none; border-radius: 6px 0 0 6px; display: flex; align-items: center; justify-content: center; padding: 0 0.6rem; font-size: 0.85rem; font-weight: bold; z-index: 1; transform: translateX(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1); white-space: nowrap;'
-  }, '還未');
+  unsavedBadge = el('div', { class: 'unsaved-badge-popup' }, '還未');
 
   saveBtn = el('button', {
     type: 'button',
-    style: 'position: relative; z-index: 2; background: #fff; margin: 0;'
+    class: 'detail-save-btn'
   }, '儲存');
 
   saveBtn.onclick = async () => {

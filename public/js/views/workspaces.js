@@ -51,7 +51,7 @@ export const WorkspacesView = {
       if (pagination) pagination.textContent = '';
 
       if (workspacesData.length === 0) {
-        list.appendChild(el('p', { class: 'muted', style: 'grid-column: 1/-1; text-align: center; font-size:1.2rem;' }, '（尚無 workspace，請於上方建立新工作區）'));
+        list.appendChild(el('p', { class: 'muted ws-empty-text' }, '（尚無 workspace，請於上方建立新工作區）'));
         return;
       }
 

@@ -1,0 +1,23 @@
+{
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "parserOptions": {
+    "ecmaVersion": "latest",
+    "sourceType": "module"
+  },
+  "rules": {
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "ObjectExpression > Property[key.name='style'][value.type='Literal']",
+        "message": "Avoid inline static style strings in JS. Use CSS classes instead."
+      },
+      {
+        "selector": "AssignmentExpression[left.property.name='style'][right.type='Literal']",
+        "message": "Avoid assigning static style strings directly in JS."
+      }
+    ]
+  }
+}

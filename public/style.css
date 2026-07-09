@@ -1168,3 +1168,136 @@ tr:last-child td {
   cursor: default;
 }
 
+/* Workspaces and Task Detail layout helper classes */
+.ws-empty-text {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 1.2rem;
+}
+
+.detail-section label {
+  font-size: 1.15rem;
+  font-weight: bold;
+  display: block;
+  margin-bottom: 0.3rem;
+}
+
+.detail-section label.attr-label {
+  margin-top: 1rem;
+  display: block;
+}
+
+.detail-section input[type="text"],
+.detail-section input[type="date"],
+.detail-section textarea,
+.detail-section select {
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.detail-save-btn-group {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.save-badge-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  overflow: visible;
+}
+
+.unsaved-badge-popup {
+  position: absolute;
+  right: 100%;
+  top: 3px;
+  bottom: 3px;
+  margin-right: -2.5px;
+  background: #fff;
+  color: #ef4444;
+  border: 2px solid #000000;
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.6rem;
+  font-size: 0.85rem;
+  font-weight: bold;
+  z-index: 1;
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.detail-save-btn {
+  position: relative;
+  z-index: 2;
+  background: #fff;
+  margin: 0;
+}
+
+p.error {
+  display: none;
+}
+
+.detail-empty-item {
+  list-style: none;
+  text-align: center;
+}
+
+.comment-me-badge {
+  font-size: 0.7rem;
+  background: rgba(99, 102, 241, 0.1);
+  border-color: #6366f1;
+  color: #6366f1;
+  margin-left: 0.3rem;
+}
+
+.comment-time {
+  font-size: 0.75rem;
+  margin-left: auto;
+}
+
+.comment-actions {
+  margin-top: 0.3rem;
+}
+
+.comment-actions button {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.4rem;
+}
+
+.comment-edit-input {
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.status-badge-lg {
+  display: block;
+  text-align: center;
+  font-size: 1.1rem;
+  padding: 0.3rem;
+  margin: 0;
+}
+
+.status-change-btn {
+  width: 100%;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.attach-form {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+
