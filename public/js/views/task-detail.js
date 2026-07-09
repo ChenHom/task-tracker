@@ -20,7 +20,7 @@ import { el, formatTime } from '../utils.js';
  * @param {TaskDetailModalOptions} options - Input details for synchronization.
  * @returns {Promise<void>}
  */
-export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, memberMap, memberEmailMap, onUpdate }) {
+export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, memberMap, memberEmailMap, onUpdate, query }) {
   // 移除舊的 modal 並執行其清理函數以清除全域監聽器
   const existingModal = document.getElementById('task-detail-modal');
   if (existingModal) {
@@ -45,6 +45,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   let overlay, container, closeBtn;
   let escHandler, hashChangeHandler;
   let activeReplyBoxClickCloseHandler; // Track reply box click close handler to prevent memory leaks
+  let hasScrolledToComment = false;
 
   let originalTitle = currentTask.title;
   let originalDesc = currentTask.description || '';
@@ -362,7 +363,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
       const currentEmail = state.userEmail;
       
       rows.forEach((c, i) => {
-        const item = el('li', { class: 'comment-item' });
+        const item = el('li', { class: 'comment-item', id: `comment-${c.comment_id}` });
         const header = el('div', { class: 'comment-header' });
         const authorEmail = memberEmailMap.get(c.user_id) || '';
         const authorName = memberMap.get(c.user_id) || `成員 (${c.user_id.slice(0, 8)})`;
@@ -426,7 +427,28 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
             }
           };
 
+          const shareBtn = el('button', {
+            type: 'button',
+            class: 'btn-secondary'
+          }, '分享');
+
+          shareBtn.onclick = async () => {
+            const shareUrl = `${window.location.origin}${window.location.pathname}#/task/${taskId}?comment=${c.comment_id}`;
+            try {
+              await navigator.clipboard.writeText(shareUrl);
+              alert('分享連結已複製到剪貼簿！');
+            } catch (err) {
+              alert(`分享連結：${shareUrl}`);
+            }
+            selectBox.remove();
+            if (activeReplyBoxClickCloseHandler) {
+              document.removeEventListener('click', activeReplyBoxClickCloseHandler);
+              activeReplyBoxClickCloseHandler = null;
+            }
+          };
+
           selectBox.appendChild(replyBtn);
+          selectBox.appendChild(shareBtn);
           document.body.appendChild(selectBox);
 
           // Click anywhere outside to close
@@ -517,6 +539,19 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
         }
         commList.appendChild(item);
       });
+
+      // 檢查是否有指定留言，如果有則捲動至該留言並加入閃爍效果
+      if (!hasScrolledToComment && query && query.get('comment')) {
+        const targetId = `comment-${query.get('comment')}`;
+        setTimeout(() => {
+          const targetEl = document.getElementById(targetId);
+          if (targetEl) {
+            targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            targetEl.classList.add('highlight-flash');
+            hasScrolledToComment = true;
+          }
+        }, 100);
+      }
     } catch (err) {
       commErr.textContent = err.message;
       commErr.style.display = 'block';

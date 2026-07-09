@@ -18,7 +18,7 @@ export const KanbanView = {
    * @param {string[]} [rest] - Optional slash parameters matching active Task IDs.
    * @returns {Promise<void>}
    */
-  async render(container, rest) {
+  async render(container, rest, query) {
     if (!requireWorkspace(container)) return;
 
     // Check if we are opening a specific task via `#/task/:taskId`
@@ -225,7 +225,8 @@ export const KanbanView = {
             cachedMembers,
             memberMap,
             memberEmailMap,
-            onUpdate: loadAllData
+            onUpdate: loadAllData,
+            query
           });
         }
       } catch (err) {

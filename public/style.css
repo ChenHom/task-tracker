@@ -599,6 +599,13 @@ form label {
   display: flex;
   gap: 0.5rem;
   align-items: flex-end;
+  position: sticky;
+  bottom: 0;
+  background-color: #faf8f2;
+  padding-top: 0.8rem;
+  padding-bottom: 0.2rem;
+  z-index: 10;
+  border-top: 2px dashed var(--pencil-color);
 }
 .comment-textarea {
   flex-grow: 1;
@@ -1445,6 +1452,24 @@ p.error {
   border: 1px solid #ccc;
   border-radius: 3px;
 }
+
+@keyframes highlight-flash-anim {
+  0% {
+    background-color: #fef08a;
+    border-color: #eab308;
+    transform: scale(1.02);
+  }
+  100% {
+    background-color: #ffffff;
+    border-color: #000000;
+    transform: scale(1);
+  }
+}
+
+.comment-item.highlight-flash {
+  animation: highlight-flash-anim 2s ease-out 1;
+}
+
 
 
 
