@@ -331,9 +331,9 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     commInput.style.height = `${newHeight}px`;
   });
 
-  // Handle enter key to submit, shift+enter to newline
+  // Handle enter key to submit, shift+enter to newline (Desktop only)
   commInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (window.innerWidth > 768 && e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (typeof commForm.requestSubmit === 'function') {
         commForm.requestSubmit();
