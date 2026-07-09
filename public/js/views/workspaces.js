@@ -19,7 +19,7 @@ export const WorkspacesView = {
   async render(container) {
     container.innerHTML = `
       <div class="sketch-box ws-create-container">
-        <h2 style="margin-top: 0;">建立工作區 (Workspace)</h2>
+        <h2 class="ws-create-title">建立工作區 (Workspace)</h2>
         <form id="create-ws-form" class="ws-create-form">
           <input type="text" id="ws-name-input" placeholder="例如: 個人專案 / 團隊工作區" required>
           <button type="submit">建立工作區</button>

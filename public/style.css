@@ -830,6 +830,24 @@ tr:last-child td {
 }
 
 @media (max-width: 768px) {
+  .ws-create-title {
+    display: none;
+  }
+  .ws-create-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .kanban-header-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.8rem;
+  }
+  .kanban-filters {
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    width: 100%;
+  }
+
   /* Toggle button - fixed top-right */
   #sidebar-toggle {
     display: flex;
@@ -1065,6 +1083,9 @@ tr:last-child td {
   padding: 0.75rem 1.5rem;
   background: #ffffff;
   margin-bottom: 1rem;
+}
+.ws-create-title {
+  margin-top: 0;
 }
 .ws-create-form {
   display: flex;
