@@ -793,6 +793,20 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   const scrollArea = el('div', { class: 'modal-scroll-area' });
   scrollArea.appendChild(detailContainer);
   container.appendChild(scrollArea);
+
+  const backToTopBtn = el('button', { type: 'button', class: 'back-to-top-btn' }, '↑ 回到上方');
+  backToTopBtn.onclick = () => {
+    scrollArea.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  scrollArea.addEventListener('scroll', () => {
+    if (scrollArea.scrollTop > 150) {
+      backToTopBtn.classList.add('visible');
+    } else {
+      backToTopBtn.classList.remove('visible');
+    }
+  });
+  container.appendChild(backToTopBtn);
+
   overlay.appendChild(container);
   document.body.appendChild(overlay);
 
