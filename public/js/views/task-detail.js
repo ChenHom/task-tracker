@@ -47,6 +47,10 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   let activeReplyBoxClickCloseHandler; // Track reply box click close handler to prevent memory leaks
   let hasScrolledToComment = false;
 
+  if (document.body && document.body.classList) {
+    document.body.classList.add('modal-open');
+  }
+
   let originalTitle = currentTask.title;
   let originalDesc = currentTask.description || '';
 
@@ -117,6 +121,9 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
    * @returns {void}
    */
   const cleanup = () => {
+    if (document.body && document.body.classList) {
+      document.body.classList.remove('modal-open');
+    }
     if (escHandler) {
       document.removeEventListener('keydown', escHandler, true);
       window.removeEventListener('keydown', escHandler, true);

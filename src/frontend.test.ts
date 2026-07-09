@@ -73,6 +73,16 @@ class MockElement {
 const mockDocument: any = {
   listeners: listeners,
   body: {
+    classList: {
+      classes: [] as string[],
+      add: function(cls: string) {
+        if (!this.classes.includes(cls)) this.classes.push(cls);
+      },
+      remove: function(cls: string) {
+        const idx = this.classes.indexOf(cls);
+        if (idx !== -1) this.classes.splice(idx, 1);
+      }
+    },
     appendChild: (child: MockElement) => {
       bodyChildren.push(child);
     }

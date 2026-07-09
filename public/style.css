@@ -1160,6 +1160,9 @@ tr:last-child td {
     align-items: center;
     justify-content: center;
   }
+  body.modal-open #sidebar-toggle {
+    display: none !important;
+  }
 }
 
 /* Workspaces view styling */
