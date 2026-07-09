@@ -1101,7 +1101,25 @@ tr:last-child td {
   .kanban-filters .filter-label {
     display: none !important;
   }
-
+  .modal-overlay {
+    padding: 0;
+  }
+  .modal-container {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100vh;
+    padding: 0;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    border-bottom: none;
+    box-shadow: none;
+  }
+  .modal-scroll-area {
+    padding: 1rem 1.2rem;
+  }
 }
 
 /* Workspaces view styling */
