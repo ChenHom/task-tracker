@@ -1379,9 +1379,16 @@ p.error {
   padding: 0.15rem 0.4rem;
 }
 
-.comment-edit-input {
+.comment-edit-textarea {
   width: 100%;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
+  resize: none;
+  font-family: inherit;
+  padding: 0.4rem;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  min-height: 100px;
+  box-sizing: border-box;
 }
 
 .status-badge-lg {

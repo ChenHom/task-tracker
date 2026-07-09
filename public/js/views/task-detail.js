@@ -494,14 +494,15 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
           
           editBtn.onclick = () => {
             if (editBtn.textContent === '編輯') {
-              const input = el('input', { type: 'text', value: c.content, class: 'comment-edit-input' });
+              const input = el('textarea', { class: 'comment-edit-textarea', rows: '4' });
+              input.value = c.content;
               bodyContainer.textContent = '';
               bodyContainer.appendChild(input);
               input.focus();
               editBtn.textContent = '儲存';
               
               input.onkeydown = async (ev) => {
-                if (ev.key === 'Enter') {
+                if (window.innerWidth > 768 && ev.key === 'Enter' && !ev.shiftKey) {
                   ev.preventDefault();
                   await saveEdit(input.value);
                 } else if (ev.key === 'Escape') {
@@ -511,7 +512,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
                 }
               };
             } else {
-              const input = bodyContainer.querySelector('input');
+              const input = bodyContainer.querySelector('.comment-edit-textarea');
               if (input) {
                 saveEdit(input.value);
               }
