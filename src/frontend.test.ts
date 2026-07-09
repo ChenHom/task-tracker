@@ -24,10 +24,29 @@ class MockElement {
   selectionEnd: number = 0;
   offsetHeight: number = 0;
 
+  classList = {
+    classes: [] as string[],
+    add: (cls: string) => {
+      if (!this.classList.classes.includes(cls)) this.classList.classes.push(cls);
+      this.className = this.classList.classes.join(' ');
+    },
+    remove: (cls: string) => {
+      const idx = this.classList.classes.indexOf(cls);
+      if (idx !== -1) this.classList.classes.splice(idx, 1);
+      this.className = this.classList.classes.join(' ');
+    },
+    contains: (cls: string) => {
+      return this.classList.classes.includes(cls);
+    }
+  };
+
   constructor(tag: string, attrs: any = {}) {
     this.tag = tag;
     this.id = attrs.id || '';
     this.className = attrs.class || '';
+    if (this.className) {
+      this.classList.classes = this.className.split(' ');
+    }
     if (attrs.value !== undefined) {
       this.value = attrs.value;
     }
@@ -38,7 +57,11 @@ class MockElement {
   }
 
   remove() {
-    if (this.cleanup) this.cleanup();
+    if (this.cleanup) {
+      const cb = this.cleanup;
+      this.cleanup = null;
+      cb();
+    }
   }
 
   addEventListener(event: string, callback: Function) {
@@ -63,11 +86,6 @@ class MockElement {
 
   blur() {}
   focus() {}
-
-  classList = {
-    add: () => {},
-    remove: () => {}
-  };
 }
 
 const mockDocument: any = {
@@ -130,8 +148,22 @@ const mockWindow: any = {
   }
 };
 
+let currentHash = '#/task/task-1';
 const mockLocation: any = {
-  hash: '#/task/task-1'
+  get hash() {
+    return currentHash;
+  },
+  set hash(val: string) {
+    if (currentHash !== val) {
+      currentHash = val;
+      if (windowListeners['hashchange']) {
+        // Execute a copy to avoid mutation errors during iteration
+        for (const cb of [...windowListeners['hashchange']]) {
+          cb();
+        }
+      }
+    }
+  }
 };
 
 // 2. Read and transform public/js/views/task-detail.js
@@ -320,6 +352,49 @@ async function runTests() {
   // Wait 350ms (300ms delay + 50ms buffer) for focus transition to finish and check if text resets to '還未'
   await new Promise(resolve => setTimeout(resolve, 350));
   assert.strictEqual(unsavedBadge.textContent, '還未', 'Badge text should reset to "還未" after focus transition delay');
+
+  // Test 5: Verify body.classList.classes for modal-open state and backToTopBtn visibility
+  listeners['keydown'] = [];
+  mockLocation.hash = '#/task/task-1';
+  mockDocument.body.classList.classes = []; // Reset classes array
+
+  await openTaskDetailModal('task-1', {
+    cachedTasks: [{ task_id: 'task-1', title: 'Test Task', description: 'Test Desc', status: 'todo' }],
+    cachedMembers: [],
+    memberMap: new Map(),
+    memberEmailMap: new Map(),
+    onUpdate: async () => {}
+  });
+
+  assert.ok(mockDocument.body.classList.classes.includes('modal-open'), 'Body should have "modal-open" class when modal is open');
+
+  const overlay5 = bodyChildren[bodyChildren.length - 1];
+  const backToTopBtn = findElement(overlay5, (el) => el.tag === 'button' && el.textContent === '↑ 回到上方');
+  const scrollArea = findElement(overlay5, (el) => el.tag === 'div' && el.className === 'modal-scroll-area');
+
+  assert.ok(backToTopBtn, 'Back to top button should be present in modal');
+  assert.ok(scrollArea, 'Scroll area should be present in modal');
+  assert.ok(!backToTopBtn.classList.classes.includes('visible'), 'Back to top button should not be visible initially');
+
+  // Trigger scroll event on scrollArea
+  const scrollListeners = scrollArea.eventListeners['scroll'];
+  assert.ok(scrollListeners && scrollListeners.length > 0, 'Scroll area should have scroll event listener');
+
+  scrollArea.scrollTop = 200; // scroll past threshold
+  scrollListeners[0]();
+  assert.ok(backToTopBtn.classList.classes.includes('visible'), 'Back to top button should become visible on scroll past 150px');
+
+  scrollArea.scrollTop = 50; // scroll back below threshold
+  scrollListeners[0]();
+  assert.ok(!backToTopBtn.classList.classes.includes('visible'), 'Back to top button should hide on scroll below 150px');
+
+  // Trigger Escape to close and verify cleanup
+  const mockEvent5 = {
+    key: 'Escape',
+    preventDefault: () => {}
+  };
+  listeners['keydown'][0](mockEvent5);
+  assert.ok(!mockDocument.body.classList.classes.includes('modal-open'), 'Body should lose "modal-open" class after cleanup');
 
   console.log('frontend.test.ts OK');
 }
