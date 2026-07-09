@@ -313,9 +313,12 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   commSec.appendChild(el('h3', {}, '留言板'));
   const commList = el('ul', { class: 'comments-timeline' });
   const commForm = el('form', { class: 'comment-form' });
+  const placeholderText = window.innerWidth <= 768
+    ? '撰寫您的留言...'
+    : '撰寫您的留言... (Shift+Enter 換行)';
   const commInput = el('textarea', {
     class: 'comment-textarea',
-    placeholder: '撰寫您的留言... (Shift+Enter 換行)',
+    placeholder: placeholderText,
     required: true,
     rows: '1'
   });
