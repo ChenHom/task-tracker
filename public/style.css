@@ -618,6 +618,7 @@ form label {
   height: 38px;
   box-sizing: border-box;
   overflow-y: auto;
+  margin: 0;
 }
 .comment-submit-btn {
   height: 38px;
@@ -626,6 +627,9 @@ form label {
   align-items: center;
   white-space: nowrap;
   flex-shrink: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin: 0;
 }
 .reply-select-box {
   position: absolute;
