@@ -584,6 +584,9 @@ form label {
 .comment-header {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.2rem;
   font-size: 0.8rem;
   border-bottom: 1px dashed #ccc;
   padding-bottom: 0.2rem;
@@ -591,10 +594,12 @@ form label {
 }
 .comment-author {
   font-weight: bold;
+  word-break: break-all;
 }
 .comment-body {
   font-size: 0.95rem;
   white-space: pre-wrap;
+  word-break: break-all;
 }
 .comment-actions {
   display: flex;
@@ -642,6 +647,7 @@ form label {
   box-sizing: border-box;
   overflow-y: auto;
   margin: 0;
+  min-width: 0;
 }
 .comment-submit-btn {
   height: 38px;
@@ -688,11 +694,15 @@ form label {
   border-bottom: 2px dotted var(--pencil-color);
   padding-bottom: 0.3rem;
   font-size: 0.9rem;
+  gap: 0.5rem;
 }
 .attachment-item a {
   text-decoration: none;
   color: #4f46e5;
   font-weight: bold;
+  word-break: break-all;
+  min-width: 0;
+  flex-grow: 1;
 }
 .attachment-item a:hover {
   text-decoration: underline;
@@ -1119,6 +1129,7 @@ tr:last-child td {
   }
   .modal-scroll-area {
     padding: 1rem 1.2rem;
+    overflow-x: hidden;
   }
 }
 
@@ -1376,6 +1387,11 @@ p.error {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+.attach-form input[type="file"] {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 /* Audit view layout helper classes */
