@@ -249,6 +249,29 @@ form label {
   align-items: center;
   gap: 1rem;
 }
+.project-filter-label {
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+#project-filter-select {
+  font-size: 0.9rem;
+  padding: 0.25rem 0.5rem;
+  font-family: inherit;
+  max-width: 180px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.toggle-archived-label {
+  margin-left: clamp(0.3rem, 2vw, 1rem);
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
 
 .kanban-board {
   display: grid;
@@ -846,6 +869,9 @@ tr:last-child td {
     flex-wrap: wrap;
     gap: 0.5rem 1rem;
     width: 100%;
+  }
+  .toggle-archived-label {
+    margin-left: 0;
   }
 
   /* Toggle button - fixed top-right */

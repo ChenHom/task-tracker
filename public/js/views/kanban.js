@@ -36,15 +36,15 @@ export const KanbanView = {
         
         <!-- Project Filter and Manage Inline -->
         <div class="kanban-filters">
-          <label style="font-weight: bold;">
+          <label class="project-filter-label">
             <span class="filter-label">專案篩選:</span>
-            <select id="project-filter-select" style="font-size: 0.9rem; padding: 0.25rem 0.5rem; font-family: inherit;">
+            <select id="project-filter-select">
               <option value="all">所有專案</option>
               <option value="none">無專案</option>
             </select>
           </label>
           
-          <label style="margin-left: clamp(0.3rem, 2vw, 1rem); font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 0.3rem;">
+          <label class="toggle-archived-label">
             <input type="checkbox" id="toggle-archived-checkbox">
             <span class="desktop-text">顯示已歸檔</span>
             <span class="mobile-text">已歸檔</span>
