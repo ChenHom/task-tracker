@@ -41,6 +41,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   let titleInput, descInput, unsavedBadge;
   let overlay, container, closeBtn;
   let escHandler, hashChangeHandler;
+  let activeReplyBoxClickCloseHandler; // Track reply box click close handler to prevent memory leaks
 
   const originalTitle = currentTask.title;
   const originalDesc = currentTask.description || '';
@@ -117,6 +118,11 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
       window.removeEventListener('keydown', escHandler, true);
     }
     if (hashChangeHandler) window.removeEventListener('hashchange', hashChangeHandler);
+    if (activeReplyBoxClickCloseHandler) {
+      document.removeEventListener('click', activeReplyBoxClickCloseHandler);
+    }
+    const replySelectBox = document.getElementById('reply-select-box');
+    if (replySelectBox) replySelectBox.remove();
     if (overlay) overlay.remove();
   };
 
@@ -230,9 +236,34 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   const commSec = el('div', { class: 'detail-section sketch-box' });
   commSec.appendChild(el('h3', {}, '留言板'));
   const commList = el('ul', { class: 'comments-timeline' });
-  const commForm = el('form', { style: 'margin-top:1rem; display:flex; gap:0.5rem;' });
-  const commInput = el('input', { type: 'text', placeholder: '撰寫您的留言...', required: true, style: 'flex-grow:1;' });
-  const commSubmit = el('button', { type: 'submit' }, '留言');
+  const commForm = el('form', { class: 'comment-form' });
+  const commInput = el('textarea', {
+    class: 'comment-textarea',
+    placeholder: '撰寫您的留言... (Shift+Enter 換行)',
+    required: true,
+    rows: '1'
+  });
+  const commSubmit = el('button', { type: 'submit', class: 'comment-submit-btn' }, '留言');
+  
+  // Auto-resize textarea height
+  commInput.addEventListener('input', () => {
+    commInput.style.height = 'auto';
+    const newHeight = Math.min(commInput.scrollHeight, 150);
+    commInput.style.height = `${newHeight}px`;
+  });
+
+  // Handle enter key to submit, shift+enter to newline
+  commInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (typeof commForm.requestSubmit === 'function') {
+        commForm.requestSubmit();
+      } else {
+        commForm.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+      }
+    }
+  });
+
   commForm.appendChild(commInput);
   commForm.appendChild(commSubmit);
   commSec.appendChild(commList);
@@ -254,11 +285,92 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
         return;
       }
       const currentEmail = state.userEmail;
-      for (const c of rows) {
+      
+      rows.forEach((c, i) => {
         const item = el('li', { class: 'comment-item' });
         const header = el('div', { class: 'comment-header' });
         const authorEmail = memberEmailMap.get(c.user_id) || '';
         const authorName = memberMap.get(c.user_id) || `成員 (${c.user_id.slice(0, 8)})`;
+        
+        // Dynamic serial number (#流水號)
+        const serialSpan = el('span', {
+          class: 'comment-serial'
+        }, `#${i + 1}`);
+
+        serialSpan.onclick = (e) => {
+          e.stopPropagation();
+          // Remove any existing reply select box first
+          const oldBox = document.getElementById('reply-select-box');
+          if (oldBox) oldBox.remove();
+          if (activeReplyBoxClickCloseHandler) {
+            document.removeEventListener('click', activeReplyBoxClickCloseHandler);
+            activeReplyBoxClickCloseHandler = null;
+          }
+
+          // Create the Neo-brutalism styled selection box
+          const selectBox = el('div', {
+            id: 'reply-select-box',
+            class: 'reply-select-box',
+            style: `left: ${e.pageX}px; top: ${e.pageY}px;`
+          });
+
+          const replyBtn = el('button', {
+            type: 'button',
+            class: 'btn-secondary'
+          }, '回覆');
+
+          replyBtn.onclick = () => {
+            // Get comment summary (first line, max 20 chars)
+            let summary = c.content.trim();
+            if (summary.includes('\n')) {
+              summary = summary.split('\n')[0].trim();
+            }
+            if (summary.length > 20) {
+              summary = summary.substring(0, 20) + '...';
+            }
+
+            const replyText = `>> #${i + 1} @${authorName}: ${summary}\n`;
+
+            // Insert into textarea at cursor position
+            commInput.focus();
+            const start = commInput.selectionStart;
+            const end = commInput.selectionEnd;
+            const val = commInput.value;
+            commInput.value = val.substring(0, start) + replyText + val.substring(end);
+            
+            // Move cursor to end of the inserted reply prefix
+            commInput.selectionStart = commInput.selectionEnd = start + replyText.length;
+            
+            // Trigger auto-resize height adjustment
+            commInput.dispatchEvent(new Event('input'));
+            
+            selectBox.remove();
+            if (activeReplyBoxClickCloseHandler) {
+              document.removeEventListener('click', activeReplyBoxClickCloseHandler);
+              activeReplyBoxClickCloseHandler = null;
+            }
+          };
+
+          selectBox.appendChild(replyBtn);
+          document.body.appendChild(selectBox);
+
+          // Click anywhere outside to close
+          activeReplyBoxClickCloseHandler = (clickEv) => {
+            if (!selectBox.contains(clickEv.target)) {
+              selectBox.remove();
+              document.removeEventListener('click', activeReplyBoxClickCloseHandler);
+              activeReplyBoxClickCloseHandler = null;
+            }
+          };
+          // Add to next event loop tick so this click event doesn't trigger it immediately
+          setTimeout(() => {
+            if (activeReplyBoxClickCloseHandler) {
+              document.addEventListener('click', activeReplyBoxClickCloseHandler);
+            }
+          }, 0);
+        };
+
+        header.appendChild(serialSpan);
         header.appendChild(el('span', { class: 'comment-author' }, authorName));
 
         if (currentEmail && authorEmail && authorEmail === currentEmail) {
@@ -329,7 +441,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
           item.appendChild(actions);
         }
         commList.appendChild(item);
-      }
+      });
     } catch (err) {
       commErr.textContent = err.message;
       commErr.style.display = 'block';
@@ -338,10 +450,15 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
 
   commForm.onsubmit = async (e) => {
     e.preventDefault();
-    const content = commInput.value;
+    const content = commInput.value.trim();
+    if (!content) {
+      alert('請輸入留言內容！');
+      return;
+    }
     try {
       await api(`/api/tasks/${taskId}/comments`, { method: 'POST', body: { content } });
       commInput.value = '';
+      commInput.style.height = '38px'; // Reset height
       await loadComments();
     } catch (err) {
       commErr.textContent = err.message;

@@ -110,7 +110,10 @@ export async function fetchMembers(workspaceId) {
 
 - **零建置工具鏈**：禁止引入任何需要打包（Webpack, Rollup, Vite）的 Node 工具，專案必須拉起 Node 伺服器後即可用瀏覽器直接除錯。
 - **原生 API 優先**：優先使用 modern 原生 Web API（如 `fetch`、`URLSearchParams`、`DOMParser`、`location.hash`）。
-- **樣式與排版**：使用專案既有的 `style.css` (包含 sketch 風格定義)，在元件中若需做動態排版調整，優先使用 flexbox/grid 或動態 toggle class，避免將大量 CSS style 硬編碼在 JavaScript 程式碼中。
+- **樣式與排版**：使用專案既有的 `style.css` (包含 Neo-brutalism 風格定義)，並遵守以下 **CSS/Style 建立原則**：
+  - **拒絕 JS 行內靜態樣式**：所有靜態的外觀（如外距、內距、邊框、陰影、背景色、字型等）**嚴禁**使用 JavaScript 行內 `style` 屬性設定。必須在 `style.css` 中定義對應的 Class，並在 JavaScript 中透過 `class` 屬性或 `classList` 套用。
+  - **動態樣式例外原則**：僅在需要根據運行時變數（Runtime variables）動態計算數值時，才允許使用 JS 行內 `style`，例如：滑鼠點擊座標（`e.pageX`, `e.pageY`）的絕對定位、拖拽位移值，或輸入框高度自適應（`scrollHeight` 計算）等。
+  - **排版排佈優先級**：在元件中若需做動態排版調整，優先使用 flexbox/grid 或動態 toggle class。
 
 ---
 
