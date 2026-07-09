@@ -852,6 +852,9 @@ tr:last-child td {
   .kanban-column {
     min-height: auto;
   }
+  .kanban-cards {
+    min-height: 200px;
+  }
   #layout-container {
     flex-direction: column;
     padding: 0 clamp(0px, 2vw, 1rem);
