@@ -87,27 +87,3 @@ export function el(tag, attrs, text) {
   return node;
 }
 
-/**
- * Dynamically loads a stylesheet.
- * @param {string} id - Unique ID for the link tag.
- * @param {string} href - URL of the stylesheet.
- * @returns {void}
- */
-export function loadStyle(id, href) {
-  if (document.getElementById(id)) return;
-  const link = document.createElement('link');
-  link.id = id;
-  link.rel = 'stylesheet';
-  link.href = href;
-  document.head.appendChild(link);
-}
-
-/**
- * Dynamically removes a stylesheet.
- * @param {string} id - Unique ID of the link tag.
- * @returns {void}
- */
-export function unloadStyle(id) {
-  const link = document.getElementById(id);
-  if (link) link.remove();
-}

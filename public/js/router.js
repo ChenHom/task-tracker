@@ -1,16 +1,4 @@
-import { loadStyle, unloadStyle } from './utils.js';
-
-const ROUTE_CSS = {
-  'login': 'login.css',
-  'forgot-password': 'login.css',
-  'reset-password': 'login.css',
-  'workspaces': 'workspaces.css',
-  'tasks': 'kanban.css',
-  'task': 'kanban.css',
-  'members': 'members.css',
-  'search': 'kanban.css',
-  'audit': 'audit.css'
-};
+'use strict';
 
 /**
  * Registry of routing mappings matching hash prefixes to view rendering modules.
@@ -87,16 +75,6 @@ export function setOnRouteCallback(cb) {
  */
 export async function route() {
   const { prefix, rest, query } = currentRoute();
-
-  const cssFile = ROUTE_CSS[prefix];
-  if (window.currentViewCss && window.currentViewCss !== cssFile) {
-    unloadStyle('view-css');
-    window.currentViewCss = null;
-  }
-  if (cssFile) {
-    loadStyle('view-css', `css/${cssFile}`);
-    window.currentViewCss = cssFile;
-  }
 
   const view = routes.get(prefix) || routes.get('login');
 

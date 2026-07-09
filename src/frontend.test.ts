@@ -200,8 +200,6 @@ const sandbox = {
   },
   showError: () => {},
   formatTime: () => '',
-  loadStyle: () => {},
-  unloadStyle: () => {},
   Promise: Promise,
   setTimeout: setTimeout,
   clearTimeout: clearTimeout,
