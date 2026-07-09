@@ -61,16 +61,16 @@ export const MembersView = {
       try {
         const rows = await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members`);
         if (rows.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="5" class="muted" style="text-align:center;">（尚無成員）</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="5" class="muted text-center">（尚無成員）</td></tr>';
           return;
         }
         for (const m of rows) {
           const tr = el('tr');
-          tr.appendChild(el('td', { style: 'font-weight: bold;' }, m.name || ''));
+          tr.appendChild(el('td', { class: 'member-name' }, m.name || ''));
           tr.appendChild(el('td', {}, m.email));
 
           const roleTd = el('td');
-          const select = el('select', { style: 'padding: 0.25rem;' });
+          const select = el('select', { class: 'member-role-select' });
           for (const r of ROLES) {
             const opt = el('option', { value: r }, r);
             if (r === m.role) opt.selected = true;
@@ -91,9 +91,9 @@ export const MembersView = {
           roleTd.appendChild(select);
           tr.appendChild(roleTd);
 
-          tr.appendChild(el('td', { class: 'muted', style: 'font-size:0.9rem;' }, new Date(m.joined_at).toLocaleString()));
+          tr.appendChild(el('td', { class: 'muted member-joined-time' }, new Date(m.joined_at).toLocaleString()));
 
-          const actionsTd = el('td', { style: 'text-align: right;' });
+          const actionsTd = el('td', { class: 'member-actions-td' });
           const removeBtn = el('button', { type: 'button', class: 'btn-danger' }, '移除');
           removeBtn.addEventListener('click', async () => {
             if (!confirm(`確定要將成員 ${m.email} 移出此工作區嗎？`)) return;

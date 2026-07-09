@@ -89,20 +89,20 @@ export const AuditView = {
           const events = await api(`/api/audit?aggregate_id=${encodeURIComponent(aggregateId)}`);
           list.textContent = '';
           if (events.length === 0) {
-            list.appendChild(el('li', { class: 'muted', style: 'list-style:none; text-align:center; padding: 2rem;' }, '（無相關事件日誌）'));
+            list.appendChild(el('li', { class: 'muted audit-empty-text' }, '（無相關事件日誌）'));
             return;
           }
           for (const ev of events) {
             const card = el('div', { class: 'audit-card sketch-box' });
             
             const header = el('div', { class: 'audit-card-header' });
-            header.appendChild(el('span', { style: 'font-weight:bold; font-size:1.15rem; color:#475569;' }, ev.event_type));
-            header.appendChild(el('span', { class: 'muted', style: 'font-size:0.85rem;' }, new Date(ev.occurred_at).toLocaleString()));
+            header.appendChild(el('span', { class: 'audit-event-type' }, ev.event_type));
+            header.appendChild(el('span', { class: 'muted audit-event-time' }, new Date(ev.occurred_at).toLocaleString()));
             card.appendChild(header);
 
             // Readable payload description
             const readableText = getReadableEventText(ev.event_type, ev.payload);
-            card.appendChild(el('div', { style: 'font-size: 1.15rem; margin: 0.6rem 0; font-weight: bold; color: #1e3a8a;' }, readableText));
+            card.appendChild(el('div', { class: 'audit-event-text' }, readableText));
 
             // Metadata (actor, IP)
             const actor = ev.metadata?.actor_id || '系統 (System)';
@@ -110,17 +110,17 @@ export const AuditView = {
             card.appendChild(el('div', { class: 'audit-card-meta' }, `操作者: ${actor} | IP: ${ip}`));
 
             // JSON block toggle
-            const detailsBtn = el('button', { type: 'button', style: 'padding: 0.1rem 0.4rem; font-size: 0.75rem; margin-top: 0.5rem;' }, '顯示原始資料');
-            const pre = el('pre', { class: 'audit-card-payload', style: 'display:none; margin-top: 0.5rem; max-height: 250px; overflow: auto;' });
+            const detailsBtn = el('button', { type: 'button', class: 'audit-details-btn' }, '顯示原始資料');
+            const pre = el('pre', { class: 'audit-card-payload' });
             pre.textContent = JSON.stringify({ payload: ev.payload, metadata: ev.metadata }, null, 2);
             
             detailsBtn.onclick = () => {
-              if (pre.style.display === 'none') {
-                pre.style.display = 'block';
-                detailsBtn.textContent = '隱藏原始資料';
-              } else {
-                pre.style.display = 'none';
+              if (pre.classList.contains('show')) {
+                pre.classList.remove('show');
                 detailsBtn.textContent = '顯示原始資料';
+              } else {
+                pre.classList.add('show');
+                detailsBtn.textContent = '隱藏原始資料';
               }
             };
 

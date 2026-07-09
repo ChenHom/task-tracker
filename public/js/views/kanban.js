@@ -96,7 +96,7 @@ export const KanbanView = {
         // Render the small "+" button inside the title bar
         const addBtn = el('button', {
           type: 'button',
-          style: 'background: transparent; border: none; font-size: 1.1rem; cursor: pointer; padding: 0 0.2rem; line-height: 1; color: inherit; font-weight: bold;',
+          class: 'column-add-task-btn',
           title: '新增任務'
         }, '+');
 
@@ -107,17 +107,17 @@ export const KanbanView = {
             return;
           }
           formSlot.textContent = '';
-          const form = el('form', { style: 'display: flex; gap: 0.3rem; margin-bottom: 0.5rem; padding: 0.3rem; background: #fdfdfd; border: 1px solid #ccc; border-radius: 4px; align-items: center;' });
+          const form = el('form', { class: 'column-add-task-form' });
           const input = el('input', {
             type: 'text',
             placeholder: '任務名稱...',
             required: 'true',
-            style: 'flex: 1; font-size: 0.8rem; padding: 0.2 0.3rem; font-family: inherit; border: 1px solid #ccc; border-radius: 3px; min-width: 0;'
+            class: 'column-add-task-input'
           });
-          const submitBtn = el('button', { type: 'submit', style: 'font-size: 0.75rem; padding: 0.15rem 0.35rem; cursor: pointer; white-space: nowrap;' }, '確認');
+          const submitBtn = el('button', { type: 'submit', class: 'column-add-task-submit' }, '確認');
           const cancelBtn = el('button', {
             type: 'button',
-            style: 'font-size: 0.75rem; padding: 0.15rem 0.35rem; background: transparent; cursor: pointer; border: 1px solid #ccc; border-radius: 3px;'
+            class: 'column-add-task-cancel'
           }, '✕');
 
           cancelBtn.onclick = () => { formSlot.textContent = ''; };
@@ -181,8 +181,7 @@ export const KanbanView = {
       let loadingOverlay = document.getElementById('kanban-loading-overlay');
       if (!loadingOverlay && boardEl) {
         loadingOverlay = el('div', {
-          id: 'kanban-loading-overlay',
-          style: 'position: absolute; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.6); display:flex; justify-content:center; align-items:center; z-index: 100; font-size:1.5rem; font-weight:bold;'
+          id: 'kanban-loading-overlay'
         }, '載入中...');
         boardEl.appendChild(loadingOverlay);
       }
@@ -211,7 +210,7 @@ export const KanbanView = {
           for (const p of projects) {
             filterSelect.appendChild(el('option', { value: p.project_id }, p.name));
           }
-          filterSelect.appendChild(el('option', { value: '__create_new__', style: 'border-top: 1px dashed #ccc; font-weight: bold;' }, '+ 建立新專案...'));
+          filterSelect.appendChild(el('option', { value: '__create_new__', class: 'select-create-new-option' }, '+ 建立新專案...'));
           if (prevFilterVal && Array.from(filterSelect.options).some(o => o.value === prevFilterVal)) {
             filterSelect.value = prevFilterVal;
           }
@@ -323,13 +322,13 @@ export const KanbanView = {
         }
 
         // Due date & Last updated time
-        const timeContainer = el('div', { style: 'display: flex; flex-direction: column; gap: 0.1rem;' });
+        const timeContainer = el('div', { class: 'card-time-container' });
         if (task.due_at) {
           const d = new Date(task.due_at).toISOString().split('T')[0];
-          timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;' }, `Due: ${d}`));
+          timeContainer.appendChild(el('div', { class: 'muted card-time-item' }, `Due: ${d}`));
         }
         if (task.updated_at) {
-          timeContainer.appendChild(el('div', { class: 'muted', style: 'font-size:0.75rem;' }, `更新: ${formatTime(task.updated_at)}`));
+          timeContainer.appendChild(el('div', { class: 'muted card-time-item' }, `更新: ${formatTime(task.updated_at)}`));
         }
         if (timeContainer.hasChildNodes()) {
           midEl.appendChild(timeContainer);

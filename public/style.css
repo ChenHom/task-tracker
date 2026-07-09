@@ -1300,4 +1300,154 @@ p.error {
   gap: 0.5rem;
 }
 
+/* Audit view layout helper classes */
+.audit-empty-text {
+  list-style: none;
+  text-align: center;
+  padding: 2rem;
+}
+
+.audit-event-type {
+  font-weight: bold;
+  font-size: 1.15rem;
+  color: #475569;
+}
+
+.audit-event-time {
+  font-size: 0.85rem;
+}
+
+.audit-event-text {
+  font-size: 1.15rem;
+  margin: 0.6rem 0;
+  font-weight: bold;
+  color: #1e3a8a;
+}
+
+.audit-details-btn {
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.audit-card-payload {
+  display: none;
+  margin-top: 0.5rem;
+  max-height: 250px;
+  overflow: auto;
+}
+
+.audit-card-payload.show {
+  display: block;
+}
+
+.reset-login-link {
+  margin-top: 0.8rem;
+  display: inline-block;
+}
+
+/* Members view layout helper classes */
+.text-center {
+  text-align: center;
+}
+
+.member-name {
+  font-weight: bold;
+}
+
+.member-role-select {
+  padding: 0.25rem;
+}
+
+.member-joined-time {
+  font-size: 0.9rem;
+}
+
+.member-actions-td {
+  text-align: right;
+}
+
+/* Kanban view layout helper classes */
+#kanban-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.6);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 100;
+  font-size: 1.5rem;
+  font-weight: bold;
+}
+
+.select-create-new-option {
+  border-top: 1px dashed #ccc;
+  font-weight: bold;
+}
+
+.card-time-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.card-time-item {
+  font-size: 0.75rem;
+}
+
+.column-add-task-btn {
+  background: transparent;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0 0.2rem;
+  line-height: 1;
+  color: inherit;
+  font-weight: bold;
+}
+
+.column-add-task-form {
+  display: flex;
+  gap: 0.3rem;
+  margin-bottom: 0.5rem;
+  padding: 0.3rem;
+  background: #fdfdfd;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  align-items: center;
+}
+
+.column-add-task-input {
+  flex: 1;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.3rem;
+  font-family: inherit;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  min-width: 0;
+}
+
+.column-add-task-submit {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.35rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.column-add-task-cancel {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.35rem;
+  background: transparent;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+
+
+
+
 

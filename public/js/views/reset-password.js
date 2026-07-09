@@ -53,7 +53,7 @@ export const ResetPasswordView = {
           msg.className = 'message';
           msg.style.display = 'block';
           msg.appendChild(document.createElement('br'));
-          const link = el('a', { href: '#/login', class: 'nav-btn', style: 'margin-top:0.8rem; display:inline-block;' }, '前往登入');
+          const link = el('a', { href: '#/login', class: 'nav-btn reset-login-link' }, '前往登入');
           msg.appendChild(link);
         }
       } catch (err) {

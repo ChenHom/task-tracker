@@ -343,7 +343,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   commForm.appendChild(commSubmit);
   commSec.appendChild(commList);
   commSec.appendChild(commForm);
-  const commErr = el('p', { class: 'error', style: 'display:none;' });
+  const commErr = el('p', { class: 'error' });
   commSec.appendChild(commErr);
   
   /**
@@ -356,7 +356,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     try {
       const rows = await api(`/api/tasks/${taskId}/comments`);
       if (rows.length === 0) {
-        commList.appendChild(el('li', { class: 'muted', style: 'list-style:none; text-align:center;' }, '（尚無留言）'));
+        commList.appendChild(el('li', { class: 'muted detail-empty-item' }, '（尚無留言）'));
         return;
       }
       const currentEmail = state.userEmail;
@@ -449,11 +449,11 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
         header.appendChild(el('span', { class: 'comment-author' }, authorName));
 
         if (currentEmail && authorEmail && authorEmail === currentEmail) {
-          header.appendChild(el('span', { class: 'badge', style: 'font-size:0.7rem; background:rgba(99,102,241,0.1); border-color:#6366f1; color:#6366f1; margin-left: 0.3rem;' }, '我'));
+          header.appendChild(el('span', { class: 'badge comment-me-badge' }, '我'));
         }
 
         if (c.created_at) {
-          header.appendChild(el('span', { class: 'muted', style: 'font-size:0.75rem; margin-left: auto;' }, formatTime(c.created_at)));
+          header.appendChild(el('span', { class: 'muted comment-time' }, formatTime(c.created_at)));
         }
 
         item.appendChild(header);
@@ -464,12 +464,12 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
         item.appendChild(bodyContainer);
 
         if (currentEmail && authorEmail === currentEmail) {
-          const actions = el('div', { class: 'comment-actions', style: 'margin-top:0.3rem;' });
-          const editBtn = el('button', { type: 'button', class: 'btn-secondary', style: 'font-size:0.7rem; padding:0.15rem 0.4rem;' }, '編輯');
+          const actions = el('div', { class: 'comment-actions' });
+          const editBtn = el('button', { type: 'button', class: 'btn-secondary' }, '編輯');
           
           editBtn.onclick = () => {
             if (editBtn.textContent === '編輯') {
-              const input = el('input', { type: 'text', value: c.content, style: 'width: 100%; font-size: 0.85rem;' });
+              const input = el('input', { type: 'text', value: c.content, class: 'comment-edit-input' });
               bodyContainer.textContent = '';
               bodyContainer.appendChild(input);
               input.focus();
@@ -557,7 +557,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   const badgeSlot = el('div', { class: 'status-badge-slot' });
   const rightSlot = el('div', { class: 'status-btn-slot right-slot' });
 
-  const statusBadge = el('div', { class: 'badge', style: 'display:block; text-align:center; font-size:1.1rem; padding:0.3rem; margin:0;' }, currentTask.status);
+  const statusBadge = el('div', { class: 'badge status-badge-lg' }, currentTask.status);
   statusBadge.style.backgroundColor = `var(--highlight-${currentTask.status.toLowerCase()})`;
   badgeSlot.appendChild(statusBadge);
 
@@ -568,7 +568,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
    * @returns {HTMLElement} State adjustment action button.
    */
   function createTransitionBtn(text, status) {
-    const btn = el('button', { type: 'button', style: 'width:100%; font-size:0.8rem; padding:0.25rem 0.4rem; white-space:nowrap; text-overflow:ellipsis; overflow:hidden;' }, text);
+    const btn = el('button', { type: 'button', class: 'status-change-btn' }, text);
     btn.onclick = async () => {
       // 限制：切換至 Doing 時，必須有負責人
       if (status === 'Doing') {
@@ -606,8 +606,8 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   attrSec.appendChild(statusLine);
 
   // Priority
-  attrSec.appendChild(el('label', { style: 'margin-top:1rem; display:block;' }, '優先度'));
-  const prioritySelect = el('select', { style: 'width:100%;' });
+  attrSec.appendChild(el('label', { class: 'attr-label' }, '優先度'));
+  const prioritySelect = el('select');
   ['Low', 'Medium', 'High'].forEach(p => {
     const opt = el('option', { value: p }, p);
     if (p === currentTask.priority) opt.selected = true;
@@ -624,8 +624,8 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   attrSec.appendChild(prioritySelect);
 
   // Assignee
-  attrSec.appendChild(el('label', { style: 'margin-top:1rem; display:block;' }, '指派'));
-  const assigneeSelect = el('select', { style: 'width:100%;' });
+  attrSec.appendChild(el('label', { class: 'attr-label' }, '指派'));
+  const assigneeSelect = el('select');
   assigneeSelect.appendChild(el('option', { value: '' }, '-- 無負責人 --'));
   for (const m of cachedMembers) {
     const opt = el('option', { value: m.user_id }, m.name || m.email);
@@ -644,8 +644,8 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   attrSec.appendChild(assigneeSelect);
 
   // Due date
-  attrSec.appendChild(el('label', { style: 'margin-top:1rem; display:block;' }, '截止日期'));
-  const dueDateInput = el('input', { type: 'date', style: 'width:100%;' });
+  attrSec.appendChild(el('label', { class: 'attr-label' }, '截止日期'));
+  const dueDateInput = el('input', { type: 'date' });
   if (currentTask.due_at) {
     dueDateInput.value = new Date(currentTask.due_at).toISOString().split('T')[0];
   }
@@ -665,14 +665,14 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   const attachSec = el('div', { class: 'detail-section sketch-box' });
   attachSec.appendChild(el('h3', {}, '附件'));
   const attachList = el('ul', { class: 'attachments-list' });
-  const attachForm = el('form', { style: 'margin-top:1rem; display:flex; flex-direction:column; gap:0.5rem;' });
-  const attachInput = el('input', { type: 'file', required: true, style: 'width:100%;' });
+  const attachForm = el('form', { class: 'attach-form' });
+  const attachInput = el('input', { type: 'file', required: true });
   const attachSubmit = el('button', { type: 'submit' }, '上傳附件');
   attachForm.appendChild(attachInput);
   attachForm.appendChild(attachSubmit);
   attachSec.appendChild(attachList);
   attachSec.appendChild(attachForm);
-  const attachErr = el('p', { class: 'error', style: 'display:none;' });
+  const attachErr = el('p', { class: 'error' });
   attachSec.appendChild(attachErr);
 
   /**
@@ -685,7 +685,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     try {
       const rows = await api(`/api/tasks/${taskId}/attachments`);
       if (rows.length === 0) {
-        attachList.appendChild(el('li', { class: 'muted', style: 'list-style:none; text-align:center;' }, '（尚無附件）'));
+        attachList.appendChild(el('li', { class: 'muted detail-empty-item' }, '（尚無附件）'));
         return;
       }
       for (const a of rows) {
