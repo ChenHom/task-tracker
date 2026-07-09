@@ -24,6 +24,9 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   // 移除舊的 modal 並執行其清理函數以清除全域監聽器
   const existingModal = document.getElementById('task-detail-modal');
   if (existingModal) {
+    if (existingModal.isSaving) {
+      return; // 正在進行儲存轉場時，跳過重新建立 Modal
+    }
     if (typeof existingModal.cleanup === 'function') {
       existingModal.cleanup();
     } else {
@@ -38,13 +41,13 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     return;
   }
 
-  let titleInput, descInput, unsavedBadge;
+  let titleInput, descInput, unsavedBadge, saveBtn;
   let overlay, container, closeBtn;
   let escHandler, hashChangeHandler;
   let activeReplyBoxClickCloseHandler; // Track reply box click close handler to prevent memory leaks
 
-  const originalTitle = currentTask.title;
-  const originalDesc = currentTask.description || '';
+  let originalTitle = currentTask.title;
+  let originalDesc = currentTask.description || '';
 
   /**
    * Normalizes text by removing CRLF line endings and trimming whitespace.
@@ -134,6 +137,46 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     location.hash = '#/tasks';
   };
 
+  /**
+   * Submits task name and description modifications to the API.
+   * @returns {Promise<boolean>} True if saved successfully, false otherwise.
+   */
+  async function saveTask() {
+    const valTitle = titleInput.value.trim();
+    const valDesc = descInput.value;
+    if (!valTitle) {
+      alert('錯誤：任務名稱為必填欄位！');
+      return false;
+    }
+    if (saveBtn) saveBtn.disabled = true;
+    if (overlay) overlay.isSaving = true; // Mark as saving to prevent recreation of this modal
+    try {
+      // 依序發送變更（因後端限制 PATCH 一次只能改一個欄位）
+      if (valTitle !== currentTask.title) {
+        await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { title: valTitle } });
+      }
+      if (valDesc !== (currentTask.description || '')) {
+        await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { description: valDesc } });
+      }
+      hideUnsavedBadge();
+
+      // Update local and cached values on success before onUpdate() runs
+      originalTitle = valTitle;
+      originalDesc = valDesc;
+      currentTask.title = valTitle;
+      currentTask.description = valDesc;
+
+      await onUpdate();
+      return true;
+    } catch (err) {
+      alert(err.message);
+      return false;
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+      if (overlay) overlay.isSaving = false;
+    }
+  }
+
   // Define global event handlers
   escHandler = (e) => {
     if (e.key === 'Escape' || e.keyCode === 27) {
@@ -179,13 +222,67 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   
   contentSec.appendChild(el('label', { style: 'font-size:1.15rem; font-weight:bold; display:block; margin-bottom:0.3rem;' }, '任務名稱 *'));
   titleInput = el('input', { type: 'text', value: currentTask.title, required: true, style: 'width:100%; margin-bottom:1rem;' });
-  titleInput.addEventListener('focus', hideUnsavedBadge);
+  titleInput.addEventListener('focus', () => {
+    hideUnsavedBadge();
+    setTimeout(() => {
+      if (unsavedBadge && unsavedBadge.style.opacity === '0') {
+        unsavedBadge.textContent = '還未';
+      }
+    }, 300);
+  });
   contentSec.appendChild(titleInput);
   
   contentSec.appendChild(el('label', { style: 'font-size:1.15rem; font-weight:bold; display:block; margin-bottom:0.3rem;' }, '任務詳細描述'));
   descInput = el('textarea', { rows: '5', placeholder: '無描述。輸入些什麼以建立任務說明...', style: 'width:100%; margin-bottom:1rem;' });
   descInput.value = currentTask.description || '';
-  descInput.addEventListener('focus', hideUnsavedBadge);
+  descInput.addEventListener('focus', () => {
+    hideUnsavedBadge();
+    setTimeout(() => {
+      if (unsavedBadge && unsavedBadge.style.opacity === '0') {
+        unsavedBadge.textContent = '還未';
+      }
+    }, 300);
+  });
+  descInput.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      descInput.blur();
+      
+      // 1. 顯示「等待」並開始儲存
+      if (unsavedBadge) {
+        unsavedBadge.textContent = '等待';
+        unsavedBadge.offsetHeight; // Force reflow
+        showUnsavedBadge();
+      }
+      
+      // 同時發送儲存請求，並開始計時
+      const savePromise = saveTask();
+      const delayPromise = new Promise(resolve => setTimeout(resolve, 400)); // 保證「等待」滑出動畫執行完畢
+      
+      // 等待儲存與「等待」滑出動畫都結束
+      const [success] = await Promise.all([savePromise, delayPromise]);
+      
+      if (success) {
+        // 2. 滑入收回「等待」提示框
+        hideUnsavedBadge();
+        await new Promise(resolve => setTimeout(resolve, 400)); // 等待收回動畫完畢
+        
+        // 3. 改為「完成」並滑出提示框
+        if (unsavedBadge) {
+          unsavedBadge.textContent = '完成';
+          unsavedBadge.offsetHeight; // 強制瀏覽器重繪，確保動畫能正常觸發
+          showUnsavedBadge();
+        }
+      } else {
+        // 儲存失敗：收回提示框並重置
+        hideUnsavedBadge();
+        await new Promise(resolve => setTimeout(resolve, 400));
+        if (unsavedBadge) {
+          unsavedBadge.textContent = '還未';
+        }
+      }
+    }
+  });
   contentSec.appendChild(descInput);
   
   const saveBtnGroup = el('div', { style: 'display:flex; justify-content:flex-end; margin-top:1rem;' });
@@ -198,31 +295,13 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     style: 'position: absolute; right: 100%; top: 3px; bottom: 3px; margin-right: -2.5px; background: #fff; color: #ef4444; border: 2px solid #000000; border-right: none; border-radius: 6px 0 0 6px; display: flex; align-items: center; justify-content: center; padding: 0 0.6rem; font-size: 0.85rem; font-weight: bold; z-index: 1; transform: translateX(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1); white-space: nowrap;'
   }, '還未');
 
-  const saveBtn = el('button', {
+  saveBtn = el('button', {
     type: 'button',
     style: 'position: relative; z-index: 2; background: #fff; margin: 0;'
   }, '儲存');
 
   saveBtn.onclick = async () => {
-    const valTitle = titleInput.value.trim();
-    const valDesc = descInput.value;
-    if (!valTitle) {
-      alert('錯誤：任務名稱為必填欄位！');
-      return;
-    }
-    try {
-      // 依序發送變更（因後端限制 PATCH 一次只能改一個欄位）
-      if (valTitle !== currentTask.title) {
-        await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { title: valTitle } });
-      }
-      if (valDesc !== (currentTask.description || '')) {
-        await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { description: valDesc } });
-      }
-      hideUnsavedBadge();
-      await onUpdate();
-    } catch (err) {
-      alert(err.message);
-    }
+    await saveTask();
   };
 
   saveWrapper.appendChild(unsavedBadge);

@@ -6,8 +6,10 @@ import vm from 'node:vm';
 // 1. Define mock elements and event registry
 const listeners: { [event: string]: Function[] } = {};
 const windowListeners: { [event: string]: Function[] } = {};
+const bodyChildren: MockElement[] = [];
 
 class MockElement {
+  tag: string;
   id: string;
   className: string;
   style: any = {};
@@ -16,8 +18,14 @@ class MockElement {
   textContent: string = '';
   value: string = '';
   cleanup: Function | null = null;
+  eventListeners: { [event: string]: Function[] } = {};
+  disabled: boolean = false;
+  selectionStart: number = 0;
+  selectionEnd: number = 0;
+  offsetHeight: number = 0;
 
   constructor(tag: string, attrs: any = {}) {
+    this.tag = tag;
     this.id = attrs.id || '';
     this.className = attrs.class || '';
     if (attrs.value !== undefined) {
@@ -33,9 +41,29 @@ class MockElement {
     if (this.cleanup) this.cleanup();
   }
 
-  addEventListener() {}
-  removeEventListener() {}
-  addEventListenerOnce() {}
+  addEventListener(event: string, callback: Function) {
+    this.eventListeners[event] = this.eventListeners[event] || [];
+    this.eventListeners[event].push(callback);
+  }
+
+  removeEventListener(event: string, callback: Function) {
+    if (this.eventListeners[event]) {
+      this.eventListeners[event] = this.eventListeners[event].filter(cb => cb !== callback);
+    }
+  }
+
+  dispatchEvent(event: { type: string } | Event) {
+    const type = event.type;
+    if (this.eventListeners[type]) {
+      for (const listener of this.eventListeners[type]) {
+        listener(event);
+      }
+    }
+  }
+
+  blur() {}
+  focus() {}
+
   classList = {
     add: () => {},
     remove: () => {}
@@ -45,7 +73,9 @@ class MockElement {
 const mockDocument: any = {
   listeners: listeners,
   body: {
-    appendChild: () => {}
+    appendChild: (child: MockElement) => {
+      bodyChildren.push(child);
+    }
   },
   getElementById: (id: string) => {
     if (id === 'task-detail-modal') {
@@ -115,8 +145,16 @@ const sandbox = {
     user: { email: 'test@test.com' }
   },
   navigate: () => {},
-  el: (tag: string, attrs: any = {}) => {
-    return new MockElement(tag, attrs);
+  el: (tag: string, attrs: any = {}, ...children: any[]) => {
+    const element = new MockElement(tag, attrs);
+    for (const child of children) {
+      if (typeof child === 'string') {
+        element.textContent = child;
+      } else if (child instanceof MockElement) {
+        element.appendChild(child);
+      }
+    }
+    return element;
   },
   showError: () => {},
   formatTime: () => '',
@@ -130,6 +168,15 @@ vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
 
 const openTaskDetailModal = sandbox.globalThis.openTaskDetailModal;
+
+function findElement(el: MockElement, predicate: (element: MockElement) => boolean): MockElement | null {
+  if (predicate(el)) return el;
+  for (const child of el.childNodes) {
+    const found = findElement(child, predicate);
+    if (found) return found;
+  }
+  return null;
+}
 
 async function runTests() {
   // Test 1: Opening modal should register keydown listener on document and window
@@ -179,6 +226,90 @@ async function runTests() {
   // After opening, keydown listeners should be cleaned up and set to exactly the new listener (length 1)
   assert.strictEqual(listeners['keydown'].length, 1, 'Duplicate open should cleanup previous keydown listeners on document');
   assert.strictEqual(windowListeners['keydown'].length, 1, 'Duplicate open should cleanup previous keydown listeners on window');
+
+  // Test 4: Description input keydown save and transition flow
+  bodyChildren.length = 0;
+  mockLocation.hash = '#/task/task-1';
+  
+  await openTaskDetailModal('task-1', {
+    cachedTasks: [{ task_id: 'task-1', title: 'Test Task', description: 'Test Desc', status: 'todo' }],
+    cachedMembers: [],
+    memberMap: new Map(),
+    memberEmailMap: new Map(),
+    onUpdate: async () => {}
+  });
+
+  const overlay = bodyChildren[bodyChildren.length - 1];
+  assert.ok(overlay, 'Modal overlay should be appended');
+
+  const descInput = findElement(overlay, (el) => el.tag === 'textarea');
+  const unsavedBadge = findElement(overlay, (el) => el.tag === 'div' && el.textContent === '還未');
+  const saveBtn = findElement(overlay, (el) => el.tag === 'button' && el.textContent === '儲存');
+
+  assert.ok(descInput, 'Description input textarea should exist');
+  assert.ok(unsavedBadge, 'Unsaved warning badge should exist');
+  assert.ok(saveBtn, 'Save button should exist');
+
+  // Trigger Enter key on descInput
+  let preventDefaultCalled4 = false;
+  let blurred = false;
+  descInput.blur = () => { blurred = true; };
+  
+  // We mock the api call inside the sandbox
+  sandbox.api = async () => {
+    // Verify saveBtn is disabled during saving, and badge text is '等待'
+    assert.strictEqual(saveBtn.disabled, true, 'Save button should be disabled during saving');
+    assert.strictEqual(unsavedBadge.textContent, '等待', 'Badge text should be "等待" during saving');
+    return [];
+  };
+
+  const keydownEvent4 = {
+    key: 'Enter',
+    shiftKey: false,
+    preventDefault: () => { preventDefaultCalled4 = true; }
+  };
+
+  // Find keydown handler on descInput
+  const keydownListeners = descInput.eventListeners['keydown'];
+  assert.ok(keydownListeners && keydownListeners.length > 0, 'Should have keydown listener on descInput');
+
+  // Trigger keydown
+  const keydownPromise = keydownListeners[0](keydownEvent4);
+
+  assert.strictEqual(preventDefaultCalled4, true, 'Should call preventDefault on Enter key');
+  assert.strictEqual(blurred, true, 'Should blur descInput');
+
+  // Wait 100ms for saveTask to complete (it should finish immediately since API is mock)
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.strictEqual(saveBtn.disabled, false, 'Save button should be re-enabled after saving');
+  assert.strictEqual(unsavedBadge.textContent, '等待', 'Badge text should still be "等待"');
+
+  // Wait 400ms more (total 500ms). Promise.all (400ms) has resolved, hideUnsavedBadge() has run and is waiting for its 400ms delay.
+  await new Promise(resolve => setTimeout(resolve, 400));
+  assert.strictEqual(unsavedBadge.textContent, '等待', 'Badge text should still be "等待" while hide animation is running');
+
+  // Wait 450ms more (total 950ms). The hide delay (400ms) has resolved, text changed to '完成', showUnsavedBadge() has run.
+  await new Promise(resolve => setTimeout(resolve, 450));
+  assert.strictEqual(unsavedBadge.textContent, '完成', 'Badge text should update to "完成" after hide transition');
+
+  // Now await keydownPromise to wait for the rest of the sequence
+  await keydownPromise;
+
+  // Verify badge text remains '完成' and did not auto-reset
+  assert.strictEqual(unsavedBadge.textContent, '完成', 'Badge text should remain "完成" after keydown resolves');
+
+  // Trigger focus on descInput to hide it and reset text
+  const focusListeners = descInput.eventListeners['focus'];
+  assert.ok(focusListeners && focusListeners.length > 0, 'Should have focus listener on descInput');
+  
+  focusListeners[0](); // Trigger focus
+
+  // Check that the hide transition starts immediately (sets opacity to '0')
+  assert.strictEqual(unsavedBadge.style.opacity, '0', 'Badge opacity should be "0" immediately on focus');
+
+  // Wait 350ms (300ms delay + 50ms buffer) for focus transition to finish and check if text resets to '還未'
+  await new Promise(resolve => setTimeout(resolve, 350));
+  assert.strictEqual(unsavedBadge.textContent, '還未', 'Badge text should reset to "還未" after focus transition delay');
 
   console.log('frontend.test.ts OK');
 }
