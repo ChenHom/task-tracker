@@ -2,6 +2,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { brotliCompress, gzip } from 'node:zlib';
+import { promisify } from 'node:util';
+
+const brotliCompressAsync = promisify(brotliCompress);
+const gzipAsync = promisify(gzip);
 import { db } from './db';
 import { resolveSafePath } from './staticPath';
 import { runWithRequestContext } from './requestContext';
@@ -682,11 +687,26 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   try {
-    const content = await readFile(filePath);
-    res.writeHead(200, {
-      'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream' ,
+    let content = await readFile(filePath);
+    const ext = extname(filePath);
+    const mimeType = MIME[ext] ?? 'application/octet-stream';
+    const acceptEncoding = req.headers['accept-encoding'] ?? '';
+    const headers: Record<string, string> = {
+      'Content-Type': mimeType,
       'x-content-type-options': 'nosniff'
-    });
+    };
+
+    if (['.html', '.js', '.css'].includes(ext)) {
+      if (acceptEncoding.includes('br')) {
+        content = await brotliCompressAsync(content);
+        headers['Content-Encoding'] = 'br';
+      } else if (acceptEncoding.includes('gzip')) {
+        content = await gzipAsync(content);
+        headers['Content-Encoding'] = 'gzip';
+      }
+    }
+
+    res.writeHead(200, headers);
     res.end(content);
   } catch {
     res.writeHead(404);
