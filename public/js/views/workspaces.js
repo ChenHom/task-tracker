@@ -18,74 +18,146 @@ export const WorkspacesView = {
    */
   async render(container) {
     container.innerHTML = `
-      <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 1rem;">
+      <div class="sketch-box ws-create-container">
         <h2 style="margin-top: 0;">建立工作區 (Workspace)</h2>
-        <form id="create-ws-form" style="display: flex; gap: 0.5rem; max-width: 500px;">
-          <input type="text" id="ws-name-input" placeholder="例如: 個人專案 / 團隊工作區" required style="flex-grow: 1;">
+        <form id="create-ws-form" class="ws-create-form">
+          <input type="text" id="ws-name-input" placeholder="例如: 個人專案 / 團隊工作區" required>
           <button type="submit">建立工作區</button>
         </form>
         <p id="ws-error" class="error" style="display: none; margin-top: 1rem;"></p>
       </div>
 
-      <h2 class="red-pen-underline" style="margin-bottom: 1.2rem;">我的工作區列表</h2>
-      <div id="ws-list-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1.5rem;">
+      <h2 class="red-pen-underline ws-list-header">我的工作區列表</h2>
+      <div id="ws-list-container" class="ws-list-grid">
         <!-- 卡片列表動態載入 -->
       </div>
+      <div id="ws-pagination" class="pagination-container"></div>
     `;
 
+    let currentPage = 1;
+    const itemsPerPage = 8;
+    let workspacesData = [];
+
     /**
-     * Internal async helper to load workspaces list and append cards securely.
+     * Internal helper to render the current page of workspaces and pagination controls.
+     * @returns {void}
+     */
+    function renderPage() {
+      const list = document.getElementById('ws-list-container');
+      const pagination = document.getElementById('ws-pagination');
+      if (!list) return;
+
+      list.textContent = '';
+      if (pagination) pagination.textContent = '';
+
+      if (workspacesData.length === 0) {
+        list.appendChild(el('p', { class: 'muted', style: 'grid-column: 1/-1; text-align: center; font-size:1.2rem;' }, '（尚無 workspace，請於上方建立新工作區）'));
+        return;
+      }
+
+      // Calculate pagination indices
+      const startIndex = (currentPage - 1) * itemsPerPage;
+      const endIndex = Math.min(startIndex + itemsPerPage, workspacesData.length);
+      const pageItems = workspacesData.slice(startIndex, endIndex);
+
+      for (const row of pageItems) {
+        const statusLower = row.status ? row.status.toLowerCase() : '';
+        let cardClass = 'sketch-box task-card workspace-card';
+        if (statusLower === 'archived') {
+          cardClass += ' status-archived';
+        } else if (statusLower === 'deleted') {
+          cardClass += ' status-deleted';
+        }
+        const card = el('div', { class: cardClass });
+        
+        const title = el('h3', { class: 'ws-card-title' });
+        
+        // Status dot class mapping
+        let dotClass = 'ws-status-dot';
+        if (statusLower === 'active') {
+          dotClass += ' active';
+        } else if (statusLower === 'archived') {
+          dotClass += ' archived';
+        } else {
+          dotClass += ' deleted';
+        }
+        const dot = el('span', { class: dotClass, title: row.status });
+        
+        title.appendChild(dot);
+        title.appendChild(document.createTextNode(row.name));
+        card.appendChild(title);
+
+        const footer = el('div', { class: 'ws-card-footer muted' }, formatTime(row.created_at));
+        card.appendChild(footer);
+
+        card.addEventListener('click', () => {
+          if (statusLower === 'deleted') {
+            alert('此工作區已被刪除，無法進入。');
+            return;
+          }
+          state.workspaceId = row.workspace_id;
+          state.workspaceName = row.name;
+          navigate('#/tasks');
+        });
+        list.appendChild(card);
+      }
+
+      // Render pagination controls if total items exceed itemsPerPage
+      const totalPages = Math.ceil(workspacesData.length / itemsPerPage);
+      if (totalPages > 1) {
+        // Prev button
+        const prevBtn = el('button', { class: 'pagination-btn', type: 'button' }, '上一頁');
+        if (currentPage === 1) {
+          prevBtn.disabled = true;
+        } else {
+          prevBtn.addEventListener('click', () => {
+            currentPage--;
+            renderPage();
+          });
+        }
+        pagination.appendChild(prevBtn);
+
+        // Page number buttons
+        for (let p = 1; p <= totalPages; p++) {
+          const pageBtn = el('button', { class: 'pagination-btn', type: 'button' }, String(p));
+          if (p === currentPage) {
+            pageBtn.classList.add('active');
+          } else {
+            pageBtn.addEventListener('click', () => {
+              currentPage = p;
+              renderPage();
+            });
+          }
+          pagination.appendChild(pageBtn);
+        }
+
+        // Next button
+        const nextBtn = el('button', { class: 'pagination-btn', type: 'button' }, '下一頁');
+        if (currentPage === totalPages) {
+          nextBtn.disabled = true;
+        } else {
+          nextBtn.addEventListener('click', () => {
+            currentPage++;
+            renderPage();
+          });
+        }
+        pagination.appendChild(nextBtn);
+      }
+    }
+
+    /**
+     * Internal async helper to load workspaces list from the API.
      * @returns {Promise<void>}
      */
     async function load() {
       const list = document.getElementById('ws-list-container');
+      const pagination = document.getElementById('ws-pagination');
       if (!list) return;
       list.textContent = '載入中...';
+      if (pagination) pagination.textContent = '';
       try {
-        const rows = await api('/api/workspaces');
-        list.textContent = '';
-        if (rows.length === 0) {
-          list.appendChild(el('p', { class: 'muted', style: 'grid-column: 1/-1; text-align: center; font-size:1.2rem;' }, '（尚無 workspace，請於上方建立新工作區）'));
-          return;
-        }
-        for (const row of rows) {
-          const card = el('div', { class: 'sketch-box task-card', style: 'padding: 1.2rem; background: #fff; cursor: pointer;' });
-          
-          const title = el('h3', { style: 'margin: 0 0 0.8rem 0; font-size:1.4rem; display: flex; align-items: center; gap: 0.5rem;' });
-          const dot = el('span', { title: row.status });
-          dot.style.display = 'inline-block';
-          dot.style.width = '10px';
-          dot.style.height = '10px';
-          dot.style.borderRadius = '50%';
-          dot.style.flexShrink = '0';
-          if (row.status === 'active') {
-            dot.style.backgroundColor = '#22c55e';
-            dot.style.border = '1px solid #22c55e';
-          } else if (row.status === 'archived') {
-            dot.style.backgroundColor = '#9ca3af';
-            dot.style.border = '1px solid #9ca3af';
-          } else { // deleted
-            dot.style.backgroundColor = 'transparent';
-            dot.style.border = '1.5px solid #9ca3af';
-          }
-          title.appendChild(dot);
-          title.appendChild(document.createTextNode(row.name));
-          card.appendChild(title);
-
-          const footer = el('div', { class: 'muted', style: 'font-size:0.8rem; border-top:1px dashed #ccc; padding-top:0.5rem; text-align:right;' }, formatTime(row.created_at));
-          card.appendChild(footer);
-
-          card.addEventListener('click', () => {
-            if (row.status === 'Deleted') {
-              alert('此工作區已被刪除，無法進入。');
-              return;
-            }
-            state.workspaceId = row.workspace_id;
-            state.workspaceName = row.name;
-            navigate('#/tasks');
-          });
-          list.appendChild(card);
-        }
+        workspacesData = await api('/api/workspaces');
+        renderPage();
       } catch (err) {
         showError('ws-error', err);
       }

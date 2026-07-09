@@ -1044,4 +1044,127 @@ tr:last-child td {
   .kanban-filters .filter-label {
     display: none !important;
   }
+
 }
+
+/* Workspaces view styling */
+.ws-create-container {
+  padding: 0.75rem 1.5rem;
+  background: #ffffff;
+  margin-bottom: 1rem;
+}
+.ws-create-form {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 500px;
+}
+.ws-create-form input {
+  flex-grow: 1;
+}
+.ws-list-header {
+  margin-bottom: 1.2rem;
+}
+.ws-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.workspace-card {
+  padding: 1.2rem;
+  background: #ffffff;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 280px;
+}
+.workspace-card.status-archived {
+  opacity: 0.6;
+}
+.workspace-card.status-deleted {
+  opacity: 0.2;
+  box-shadow: none;
+}
+.workspace-card.status-deleted:hover {
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+}
+.ws-card-title {
+  margin: 0 0 0.8rem 0;
+  font-size: 1.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ws-status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.ws-status-dot.active {
+  background-color: #22c55e;
+  border: 1px solid #22c55e;
+}
+.ws-status-dot.archived {
+  background-color: #9ca3af;
+  border: 1px solid #9ca3af;
+}
+.ws-status-dot.deleted {
+  background-color: transparent;
+  border: 1.5px solid #9ca3af;
+}
+.ws-card-footer {
+  font-size: 0.8rem;
+  border-top: 1px dashed #ccc;
+  padding-top: 0.5rem;
+  text-align: right;
+}
+
+/* Pagination controls */
+.pagination-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 2rem;
+  margin-bottom: 2rem;
+}
+.pagination-btn {
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: bold;
+  padding: 0.35rem 0.75rem;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--pencil-color);
+  cursor: pointer;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.15s ease;
+}
+.pagination-btn:hover:not(:disabled) {
+  background-color: var(--btn-hover-bg);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
+}
+.pagination-btn:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0px 0px var(--pencil-color);
+}
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: 1px 1px 0px 0px var(--pencil-color);
+}
+.pagination-btn.active {
+  background-color: var(--pencil-color);
+  color: #ffffff;
+  box-shadow: none;
+  transform: none;
+  cursor: default;
+}
+
