@@ -2,7 +2,7 @@
 
 import { api } from '../api.js';
 import { state } from '../state.js';
-import { el, formatTime } from '../utils.js';
+import { el, formatTime, loadStyle, unloadStyle } from '../utils.js';
 
 /**
  * @typedef {Object} TaskDetailModalOptions
@@ -50,6 +50,8 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   if (document.body && document.body.classList) {
     document.body.classList.add('modal-open');
   }
+
+  loadStyle('task-detail-css', 'css/task-detail.css');
 
   let originalTitle = currentTask.title;
   let originalDesc = currentTask.description || '';
@@ -121,6 +123,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
    * @returns {void}
    */
   const cleanup = () => {
+    unloadStyle('task-detail-css');
     if (document.body && document.body.classList) {
       document.body.classList.remove('modal-open');
     }

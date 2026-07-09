@@ -1,0 +1,20 @@
+/* Members view layout helper classes */
+.text-center {
+  text-align: center;
+}
+
+.member-name {
+  font-weight: bold;
+}
+
+.member-role-select {
+  padding: 0.25rem;
+}
+
+.member-joined-time {
+  font-size: 0.9rem;
+}
+
+.member-actions-td {
+  text-align: right;
+}

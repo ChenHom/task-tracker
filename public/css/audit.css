@@ -1,0 +1,90 @@
+/* Audit log timeline */
+.audit-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1.5rem;
+  padding-left: 1rem;
+  border-left: 2px dashed var(--pencil-color);
+}
+.audit-card {
+  position: relative;
+  background: #fff;
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
+  padding: 1rem;
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
+}
+.audit-card::before {
+  content: "";
+  position: absolute;
+  left: -20px;
+  top: 18px;
+  width: 10px;
+  height: 10px;
+  background: var(--pencil-color);
+  border-radius: 50%;
+}
+.audit-card-header {
+  display: flex;
+  justify-content: space-between;
+  font-weight: bold;
+  border-bottom: 1px dashed #ccc;
+  padding-bottom: 0.3rem;
+  margin-bottom: 0.5rem;
+}
+.audit-card-meta {
+  font-size: 0.85rem;
+  color: #4b5563;
+  margin-bottom: 0.5rem;
+}
+.audit-card-payload {
+  background: #f8fafc;
+  border: 2px solid var(--pencil-color);
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  font-family: monospace;
+}
+
+/* Audit view layout helper classes */
+.audit-empty-text {
+  list-style: none;
+  text-align: center;
+  padding: 2rem;
+}
+
+.audit-event-type {
+  font-weight: bold;
+  font-size: 1.15rem;
+  color: #475569;
+}
+
+.audit-event-time {
+  font-size: 0.85rem;
+}
+
+.audit-event-text {
+  font-size: 1.15rem;
+  margin: 0.6rem 0;
+  font-weight: bold;
+  color: #1e3a8a;
+}
+
+.audit-details-btn {
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.audit-card-payload {
+  display: none;
+  margin-top: 0.5rem;
+  max-height: 250px;
+  overflow: auto;
+}
+
+.audit-card-payload.show {
+  display: block;
+}

@@ -1,0 +1,437 @@
+@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+  --font-cursive: 'Lexend', "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+  --bg-paper: #faf8f2; /* Warm retro beige paper background */
+  --grid-line: #e3dec9; /* Vintage grid line color */
+  --pencil-color: #000000; /* Crisp pure black ink borders and text */
+  --card-bg: #ffffff;
+  --btn-hover-bg: #fde047; /* Bright primary pop yellow for interactive states */
+
+  /* Neo-brutalist bold pastel accents */
+  --highlight-todo: #bae6fd;    /* Soft pastel blue */
+  --highlight-doing: #c7d2fe;   /* Soft pastel lavender indigo */
+  --highlight-review: #fed7aa;  /* Soft pastel peach orange */
+  --highlight-done: #bbf7d0;    /* Soft pastel mint green */
+  --highlight-archived: #cbd5e1; /* Soft pastel slate gray */
+
+  --priority-low: #ffffff;
+  --priority-medium: #fef08a; /* Saturated yellow */
+  --priority-high: #fecaca;   /* Saturated red-pink */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Red pen circle indicator replacement */
+.red-pen-circle {
+  position: relative;
+  border-color: #ef4444 !important;
+  background: transparent !important;
+  box-shadow: 2px 2px 0px 0px #ef4444 !important;
+}
+
+/* Neo-brutalist yellow highlighter underline */
+.red-pen-underline {
+  position: relative;
+  display: inline-block;
+  z-index: 1;
+}
+.red-pen-underline::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0.15em;
+  height: 0.4em;
+  background: var(--btn-hover-bg);
+  z-index: -1;
+}
+
+body {
+  background-color: var(--bg-paper);
+  background-image: 
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 24px 24px;
+  font-family: var(--font-cursive);
+  color: var(--pencil-color);
+  margin: 0;
+  padding: 0;
+  line-height: 1.5;
+}
+
+/* layout structure */
+#layout-container {
+  display: flex;
+  gap: clamp(0.5rem, 2vw, 2rem);
+  width: 100%;
+  max-width: 1700px;
+  margin: 1.5rem auto;
+  padding: 0 clamp(0px, 3vw, 2rem);
+}
+
+#sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  padding: clamp(0.8rem, 2vw, 1.5rem);
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  min-height: 85vh;
+  align-self: start;
+  background-color: #fff;
+}
+
+#main-content {
+  flex-grow: 1;
+  min-width: 0;
+}
+
+/* Sketch Box Style - sharp solid boundaries and offset shadows */
+.sketch-box {
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
+}
+
+/* Sidebar Styling */
+.logo h1 {
+  font-size: 1.8rem;
+  margin: 0;
+  text-align: center;
+  font-weight: 800;
+  border-bottom: 2px dashed var(--pencil-color);
+  padding-bottom: 0.5rem;
+}
+
+#workspace-section {
+  border: 2px dashed var(--pencil-color);
+  padding: 0.8rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+}
+#workspace-section h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1rem;
+  letter-spacing: 0.5px;
+  font-weight: 700;
+}
+
+.meta-field {
+  font-size: 0.95rem;
+  margin-bottom: 0.3rem;
+  white-space: normal;
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+#nav-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.nav-btn {
+  display: block;
+  text-decoration: none;
+  color: var(--pencil-color);
+  font-weight: bold;
+  font-size: 1.1rem;
+  padding: 0.5rem 1rem;
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
+  text-align: center;
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.15s ease;
+  background: transparent;
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
+}
+.nav-btn:hover, .nav-btn.active {
+  background-color: var(--btn-hover-bg);
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  border-top: 2px dashed var(--pencil-color);
+  padding-top: 1rem;
+  text-align: center;
+}
+
+/* Global button styles - mechanical press-down active state */
+button {
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--pencil-color);
+  background: #ffffff;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
+}
+button:hover {
+  background-color: var(--btn-hover-bg);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
+}
+button:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0px 0px 0px 0px var(--pencil-color);
+}
+
+button.btn-danger {
+  color: #ffffff;
+  background-color: #ef4444;
+  border-color: var(--pencil-color);
+}
+button.btn-danger:hover {
+  background-color: #dc2626;
+}
+
+button.btn-secondary {
+  background-color: #f1f5f9;
+  color: var(--pencil-color);
+}
+button.btn-secondary:hover {
+  background-color: #e2e8f0;
+}
+
+/* Forms & Inputs */
+input[type="text"], input[type="email"], input[type="password"], textarea, select {
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 0.4rem 0.6rem;
+  background: #fff;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  outline: none;
+  color: var(--pencil-color);
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--pencil-color);
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
+}
+
+form div {
+  margin: 0.5rem 0;
+}
+form label {
+  display: block;
+  font-weight: bold;
+  margin-bottom: 0.2rem;
+}
+
+/* Table overrides for backward compatibility (e.g. Members table) */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.5rem 0;
+  background: #fff;
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
+}
+th, td {
+  padding: 0.6rem 0.8rem;
+  text-align: left;
+  border-bottom: 2px solid var(--pencil-color);
+}
+th {
+  background-color: var(--btn-hover-bg);
+  border-bottom: 2px solid var(--pencil-color);
+  font-weight: 800;
+}
+tr:last-child td {
+  border-bottom: none;
+}
+
+.error {
+  color: #b91c1c;
+  background: #fee2e2;
+  border: 2px solid var(--pencil-color);
+  padding: 0.5rem;
+  border-radius: 6px;
+  font-weight: bold;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
+}
+
+.message {
+  color: #047857;
+  background: #d1fae5;
+  border: 2px solid var(--pencil-color);
+  padding: 0.5rem;
+  border-radius: 6px;
+  font-weight: bold;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
+}
+
+.muted {
+  color: #4b5563;
+}
+
+/* Sidebar toggle button & backdrop - hidden on desktop */
+#sidebar-toggle {
+  display: none;
+}
+#sidebar-backdrop {
+  display: none;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1024px) {
+  #layout-container {
+    flex-direction: column;
+    padding: 0 clamp(0px, 2vw, 1rem);
+    margin: 0.5rem auto;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Toggle button - fixed top-right */
+  #sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 0.2rem;
+    right: 0.6rem;
+    z-index: 1100;
+    width: 34px;
+    height: 34px;
+    border: 2px solid var(--pencil-color);
+    background: #ffffff;
+    font-size: 1.05rem;
+    cursor: pointer;
+    color: var(--pencil-color);
+    font-family: var(--font-cursive);
+    padding: 0;
+    line-height: 1;
+    border-radius: 4px;
+    box-shadow: 2px 2px 0px 0px var(--pencil-color);
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+  }
+  #sidebar-toggle:active {
+    transform: translate(2px, 2px);
+    box-shadow: 0px 0px 0px 0px var(--pencil-color);
+  }
+  #sidebar-toggle.scrolling {
+    opacity: 0.7;
+  }
+
+  /* Backdrop overlay */
+  #sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 1049;
+  }
+  #sidebar-backdrop.visible {
+    display: block;
+  }
+
+  /* Sidebar - slide in from right */
+  #sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 280px;
+    max-width: 85vw;
+    height: 100vh;
+    z-index: 1050;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    overflow-y: auto;
+    border-radius: 0;
+    border-right: none;
+    box-shadow: -4px 0 16px rgba(0,0,0,0.15);
+    padding: clamp(0.8rem, 3vw, 1.2rem);
+    min-height: 100vh;
+    border-left: 2px solid var(--pencil-color);
+  }
+  #sidebar.open {
+    transform: translateX(0);
+  }
+
+  /* Adjust layout to not reserve sidebar space */
+  #layout-container {
+    flex-direction: column;
+    padding: 0 clamp(0px, 2vw, 1rem);
+    margin: 0.5rem auto;
+    /* Leave space for toggle button */
+    padding-top: 0.2rem;
+  }
+
+  #main-content {
+    width: 100%;
+  }
+}
+
+/* Desktop / Mobile text switcher */
+.mobile-text {
+  display: none !important;
+}
+
+@media (max-width: 768px) {
+  .desktop-text {
+    display: none !important;
+  }
+  .mobile-text {
+    display: inline !important;
+  }
+}
+
+/* Pagination controls */
+.pagination-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 2rem;
+  margin-bottom: 2rem;
+}
+.pagination-btn {
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: bold;
+  padding: 0.35rem 0.75rem;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--pencil-color);
+  cursor: pointer;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.15s ease;
+}
+.pagination-btn:hover:not(:disabled) {
+  background-color: var(--btn-hover-bg);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
+}
+.pagination-btn:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0px 0px var(--pencil-color);
+}
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: 1px 1px 0px 0px var(--pencil-color);
+}
+.pagination-btn.active {
+  background-color: var(--pencil-color);
+  color: #ffffff;
+  box-shadow: none;
+  transform: none;
+  cursor: default;
+}

@@ -1,0 +1,524 @@
+/* Task Detail Page Styling */
+.task-detail-container {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 2rem;
+}
+
+.task-detail-left {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.task-detail-right {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.detail-section {
+  background: #fff;
+  padding: 1.2rem;
+  border-radius: 8px;
+  border: 2px solid var(--pencil-color);
+  box-shadow: 4px 4px 0px 0px var(--pencil-color);
+}
+
+.detail-section h3 {
+  margin-top: 0;
+  border-bottom: 2px dashed var(--pencil-color);
+  padding-bottom: 0.4rem;
+  font-weight: 800;
+}
+
+.inline-edit-group {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.3rem;
+}
+.inline-edit-group input, .inline-edit-group textarea {
+  flex-grow: 1;
+}
+
+.comments-timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+.comment-item {
+  background: #fdfdfd;
+  border: 2px solid var(--pencil-color);
+  border-radius: 8px;
+  padding: 0.6rem;
+  position: relative;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
+}
+.comment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  border-bottom: 1px dashed #ccc;
+  padding-bottom: 0.2rem;
+  margin-bottom: 0.4rem;
+}
+.comment-author {
+  font-weight: bold;
+  word-break: break-all;
+}
+.comment-body {
+  font-size: 0.95rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.comment-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+.comment-actions button {
+  padding: 0.15rem 0.4rem;
+  font-size: 0.75rem;
+  border-radius: 4px;
+}
+.comment-serial {
+  cursor: pointer;
+  color: #3b82f6;
+  font-weight: bold;
+  margin-right: 0.4rem;
+  text-decoration: underline;
+}
+.comment-serial:hover {
+  color: #2563eb;
+}
+.comment-form {
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  position: sticky;
+  bottom: 0;
+  background-color: #faf8f2;
+  padding-top: 0.8rem;
+  padding-bottom: 0.2rem;
+  z-index: 10;
+  border-top: 2px dashed var(--pencil-color);
+}
+.comment-textarea {
+  flex-grow: 1;
+  resize: none;
+  font-family: inherit;
+  padding: 0.4rem;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  min-height: 38px;
+  height: 38px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  margin: 0;
+  min-width: 0;
+}
+.comment-submit-btn {
+  height: 38px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin: 0;
+}
+.reply-select-box {
+  position: absolute;
+  background: #ffffff;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  padding: 0.4rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 100px;
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
+}
+.reply-select-box button {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.5rem;
+  width: 100%;
+}
+
+.attachments-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.attachment-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 2px dotted var(--pencil-color);
+  padding-bottom: 0.3rem;
+  font-size: 0.9rem;
+  gap: 0.5rem;
+}
+.attachment-item a {
+  text-decoration: none;
+  color: #4f46e5;
+  font-weight: bold;
+  word-break: break-all;
+  min-width: 0;
+  flex-grow: 1;
+}
+.attachment-item a:hover {
+  text-decoration: underline;
+}
+
+/* Modal overlay */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  padding: 1.5rem;
+}
+
+/* Modal container - Neo-brutalism bold card styling */
+.modal-container {
+  background-color: #faf8f2;
+  background-image: 
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 24px 24px;
+  width: 85vw;
+  max-width: 1200px;
+  max-height: 90vh;
+  overflow: hidden;
+  padding: 2rem;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  border: 3px solid var(--pencil-color);
+  border-radius: 12px;
+  box-shadow: 8px 8px 0px 0px var(--pencil-color);
+}
+
+.modal-scroll-area {
+  overflow-y: auto;
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding-right: 0.5rem;
+}
+
+/* Close button style */
+.modal-close-btn {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1010;
+  font-size: 1.5rem;
+  border-radius: 50%;
+  width: 2.2rem;
+  height: 2.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 2px solid var(--pencil-color);
+  background: #fff;
+  cursor: pointer;
+  line-height: 1;
+  box-shadow: 2px 2px 0px 0px var(--pencil-color);
+}
+.modal-close-btn:hover {
+  background-color: #fee2e2;
+  color: #dc2626;
+  transform: rotate(90deg) translate(-1px, -1px);
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
+}
+.modal-close-btn:active {
+  transform: rotate(90deg) translate(1px, 1px);
+  box-shadow: 0px 0px 0px 0px var(--pencil-color);
+}
+
+@keyframes shake {
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  20%, 60% { transform: rotate(-5deg) scale(1.05); }
+  40%, 80% { transform: rotate(5deg) scale(1.05); }
+}
+.shake-anim {
+  animation: shake 0.3s ease-in-out;
+  border-color: #dc2626 !important;
+  color: #dc2626 !important;
+}
+
+/* Modal right side fixed sticky */
+.task-detail-right {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+}
+
+/* Status Line Container (One-row layout) */
+.status-line-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  width: 100%;
+}
+.status-btn-slot, .status-badge-slot {
+  height: 36px;
+  display: flex;
+  align-items: center;
+}
+.status-btn-slot {
+  width: 30%;
+}
+.status-btn-slot.left-slot {
+  justify-content: flex-start;
+}
+.status-btn-slot.right-slot {
+  justify-content: flex-end;
+}
+.status-badge-slot {
+  flex-grow: 1;
+  justify-content: center;
+}
+.status-btn-slot button, .status-badge-slot .badge {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  margin: 0 !important;
+  padding: 0 0.5rem !important;
+}
+
+/* Workspaces and Task Detail layout helper classes */
+.detail-section label {
+  font-size: 1.15rem;
+  font-weight: bold;
+  display: block;
+  margin-bottom: 0.3rem;
+}
+
+.detail-section label.attr-label {
+  margin-top: 1rem;
+  display: block;
+}
+
+.detail-section input[type="text"],
+.detail-section input[type="date"],
+.detail-section textarea,
+.detail-section select {
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.detail-save-btn-group {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.save-badge-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  overflow: visible;
+}
+
+.unsaved-badge-popup {
+  position: absolute;
+  right: 100%;
+  top: 3px;
+  bottom: 3px;
+  margin-right: -2.5px;
+  background: #fff;
+  color: #ef4444;
+  border: 2px solid #000000;
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.6rem;
+  font-size: 0.85rem;
+  font-weight: bold;
+  z-index: 1;
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.detail-save-btn {
+  position: relative;
+  z-index: 2;
+  background: #fff;
+  margin: 0;
+}
+
+p.error {
+  display: none;
+}
+
+.detail-empty-item {
+  list-style: none;
+  text-align: center;
+}
+
+.comment-me-badge {
+  font-size: 0.7rem;
+  background: rgba(99, 102, 241, 0.1);
+  border-color: #6366f1;
+  color: #6366f1;
+  margin-left: 0.3rem;
+}
+
+.comment-time {
+  font-size: 0.75rem;
+  margin-left: auto;
+}
+
+.comment-edit-textarea {
+  width: 100%;
+  font-size: 0.9rem;
+  resize: none;
+  font-family: inherit;
+  padding: 0.4rem;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  min-height: 160px;
+  box-sizing: border-box;
+}
+
+.status-badge-lg {
+  display: block;
+  text-align: center;
+  font-size: 1.1rem;
+  padding: 0.3rem;
+  margin: 0;
+}
+
+.status-change-btn {
+  width: 100%;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.attach-form {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.attach-form input[type="file"] {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+@keyframes highlight-flash-anim {
+  0% {
+    background-color: #fef08a;
+    border-color: #eab308;
+    transform: scale(1.02);
+  }
+  100% {
+    background-color: #ffffff;
+    border-color: #000000;
+    transform: scale(1);
+  }
+}
+
+.comment-item.highlight-flash {
+  animation: highlight-flash-anim 2s ease-out 1;
+}
+
+@media (max-width: 1024px) {
+  .task-detail-container {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .modal-overlay {
+    padding: 0;
+  }
+  .modal-container {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100vh;
+    padding: 0;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    border-bottom: none;
+    box-shadow: none;
+  }
+  .modal-scroll-area {
+    padding: 1rem 0.5rem;
+    overflow-x: hidden;
+  }
+  .detail-section.sketch-box {
+    padding: 0.2rem;
+  }
+  .comment-form .comment-submit-btn {
+    display: none;
+  }
+  .comment-form:focus-within {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .comment-form:focus-within .comment-submit-btn {
+    display: flex;
+    width: 100%;
+    height: 38px;
+    margin-top: 0.5rem;
+  }
+  .comment-form:focus-within .comment-textarea {
+    min-height: 160px;
+  }
+  .comment-actions {
+    width: 100%;
+  }
+  .comment-actions button {
+    width: 100%;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  body.modal-open #sidebar-toggle {
+    display: none !important;
+  }
+}

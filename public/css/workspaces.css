@@ -1,0 +1,95 @@
+/* Workspaces view styling */
+.ws-create-container {
+  padding: 0.75rem 1.5rem;
+  background: #ffffff;
+  margin-bottom: 1rem;
+}
+.ws-create-title {
+  margin-top: 0;
+}
+.ws-create-form {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 500px;
+}
+.ws-create-form input {
+  flex-grow: 1;
+}
+.ws-list-header {
+  margin-bottom: 1.2rem;
+}
+.ws-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.workspace-card {
+  padding: 1.2rem;
+  background: #ffffff;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 280px;
+}
+.workspace-card.status-archived {
+  opacity: 0.6;
+}
+.workspace-card.status-deleted {
+  opacity: 0.2;
+  box-shadow: none;
+}
+.workspace-card.status-deleted:hover {
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+}
+.ws-card-title {
+  margin: 0 0 0.8rem 0;
+  font-size: 1.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ws-status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.ws-status-dot.active {
+  background-color: #22c55e;
+  border: 1px solid #22c55e;
+}
+.ws-status-dot.archived {
+  background-color: #9ca3af;
+  border: 1px solid #9ca3af;
+}
+.ws-status-dot.deleted {
+  background-color: transparent;
+  border: 1.5px solid #9ca3af;
+}
+.ws-card-footer {
+  font-size: 0.8rem;
+  border-top: 1px dashed #ccc;
+  padding-top: 0.5rem;
+  text-align: right;
+}
+
+.ws-empty-text {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 1.2rem;
+}
+
+@media (max-width: 768px) {
+  .ws-create-title {
+    display: none;
+  }
+  .ws-create-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
