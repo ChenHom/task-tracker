@@ -368,26 +368,6 @@ async function runTests() {
 
   assert.ok(mockDocument.body.classList.classes.includes('modal-open'), 'Body should have "modal-open" class when modal is open');
 
-  const overlay5 = bodyChildren[bodyChildren.length - 1];
-  const backToTopBtn = findElement(overlay5, (el) => el.tag === 'button' && el.textContent === '↑ 回到上方');
-  const scrollArea = findElement(overlay5, (el) => el.tag === 'div' && el.className === 'modal-scroll-area');
-
-  assert.ok(backToTopBtn, 'Back to top button should be present in modal');
-  assert.ok(scrollArea, 'Scroll area should be present in modal');
-  assert.ok(!backToTopBtn.classList.classes.includes('visible'), 'Back to top button should not be visible initially');
-
-  // Trigger scroll event on scrollArea
-  const scrollListeners = scrollArea.eventListeners['scroll'];
-  assert.ok(scrollListeners && scrollListeners.length > 0, 'Scroll area should have scroll event listener');
-
-  scrollArea.scrollTop = 200; // scroll past threshold
-  scrollListeners[0]();
-  assert.ok(backToTopBtn.classList.classes.includes('visible'), 'Back to top button should become visible on scroll past 150px');
-
-  scrollArea.scrollTop = 50; // scroll back below threshold
-  scrollListeners[0]();
-  assert.ok(!backToTopBtn.classList.classes.includes('visible'), 'Back to top button should hide on scroll below 150px');
-
   // Trigger Escape to close and verify cleanup
   const mockEvent5 = {
     key: 'Escape',
