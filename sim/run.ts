@@ -7,16 +7,13 @@
 // 前置：task-tracker 跑在 localhost:3000、`npm run seed` 已建立 user01-30、目標 repo 工作樹乾淨（會打 tag）
 // 回退：git reset --hard <本場 tag>；git worktree remove sim-work/<u> --force；git branch -D sim/<u>
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, mkdirSync, openSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync, symlinkSync, unlinkSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 const BASE = 'http://localhost:3000';
 const ROOT = join(__dirname, '..');
 const LOG_DIR = join(ROOT, 'sim-logs'); // 產物一律留在 task-tracker 底下，方便統一查看
-// 成員實作/CI/worktree 針對的 repo 與其 sim-work 目錄；main() 依 scenario.repoRoot 設定（brain 場改指向 /home/hom/code/brain）
-let REPO_ROOT = ROOT;
-let WORK_DIR = join(ROOT, 'sim-work');
 const SMOKE = process.argv.includes('--smoke');
 const FAST = process.argv.includes('--fast');
 const SWEEP = process.argv.includes('--sweep');
@@ -56,9 +53,33 @@ export interface PromptArtifact {
   bytes: number;
 }
 
-interface CommandCheck {
-  ok: boolean;
+export type CheckStatus = 'pass' | 'fail' | 'skip';
+
+export interface CommandCheck {
+  status: CheckStatus;
   outputPath: string;
+}
+
+export type CheckRunner = (cwd: string, command: string, args: string[], outputPath: string) => CommandCheck;
+
+const checkLabel = (check: CommandCheck): string => check.status.toUpperCase();
+
+export function allChecksPass(tsc: CommandCheck, test: CommandCheck): boolean {
+  return tsc.status === 'pass' && test.status === 'pass';
+}
+
+export function hasReviewChanges(ahead: number, dirty: boolean): boolean {
+  return ahead > 0 || dirty;
+}
+
+export function dirtyReviewChecks(tscPath: string, testPath: string): { tsc: CommandCheck; test: CommandCheck } {
+  const message = 'worktree 有未提交 diff（前一個 session 失敗或逾時）；driver 未執行 CI，也不可視為工作佚失。請退回 Doing 後續作。\n';
+  writeFileSync(tscPath, message);
+  writeFileSync(testPath, message);
+  return {
+    tsc: { status: 'fail', outputPath: tscPath },
+    test: { status: 'fail', outputPath: testPath },
+  };
 }
 
 export interface BranchReviewPacket {
@@ -66,6 +87,7 @@ export interface BranchReviewPacket {
   memberName: string;
   memberEmail: string;
   ahead: number;
+  dirty: boolean;
   commits: string[];
   changedFiles: string[];
   diffstat: string;
@@ -148,8 +170,33 @@ const SCENARIOS = {
 type ScenarioKey = keyof typeof SCENARIOS;
 type Scenario = (typeof SCENARIOS)[ScenarioKey];
 
-let MEMBERS: Member[] = [];
-const wt = (m: Member) => join(WORK_DIR, m.user);
+interface RunContext {
+  repoRoot: string;
+  workDir: string;
+  members: Member[];
+}
+
+// 單一 process 一次只啟用一個 scenario；集中狀態可避免 repoRoot/workDir/members 分別改動後不一致。
+let RUN: RunContext = { repoRoot: ROOT, workDir: join(ROOT, 'sim-work'), members: [] };
+
+export function assertPathWithin(root: string, target: string, label: string): void {
+  const canonical = (path: string) => {
+    const resolved = resolve(path);
+    let ancestor = resolved;
+    while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) ancestor = dirname(ancestor);
+    return existsSync(ancestor) ? resolve(realpathSync(ancestor), relative(ancestor, resolved)) : resolved;
+  };
+  const path = relative(canonical(root), canonical(target));
+  if (isAbsolute(path) || path === '..' || path.startsWith(`..${sep}`)) {
+    throw new Error(`${label} 超出允許目錄 ${root}: ${target}`);
+  }
+}
+
+const wt = (m: Member) => {
+  const path = join(RUN.workDir, m.user);
+  assertPathWithin(RUN.repoRoot, path, `${m.user} worktree`);
+  return path;
+};
 const branch = (m: Member) => `sim/${m.user}`;
 
 export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): Member[] {
@@ -197,6 +244,34 @@ export function parseScenario(argv: string[]): Scenario {
   return SCENARIOS[key];
 }
 
+export function scenarioFromStoredKey(key: string): Scenario | undefined {
+  if (key === 'technical-debt') return SCENARIOS['self-directed'];
+  return key in SCENARIOS ? SCENARIOS[key as ScenarioKey] : undefined;
+}
+
+export function validateGitRootFacts(repoRoot: string, topLevel: string, currentBranch: string): void {
+  if (resolve(topLevel) !== resolve(repoRoot)) {
+    throw new Error(`scenario repoRoot 不是 Git top-level：預期 ${repoRoot}，實際 ${topLevel}`);
+  }
+  if (currentBranch !== 'master') {
+    throw new Error(`scenario repo 必須位於 master：${repoRoot} 目前是 ${currentBranch || '(detached HEAD)'}`);
+  }
+}
+
+export function validateGitRoot(repoRoot: string): void {
+  if (!existsSync(repoRoot)) throw new Error(`scenario repo 不存在：${repoRoot}`);
+  const topLevel = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+  const currentBranch = execFileSync('git', ['branch', '--show-current'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+  validateGitRootFacts(repoRoot, topLevel, currentBranch);
+}
+
+function activateScenario(scenario: Scenario, members: Member[]): void {
+  validateGitRoot(scenario.repoRoot);
+  const workDir = join(scenario.repoRoot, 'sim-work');
+  assertPathWithin(scenario.repoRoot, workDir, 'sim worktree root');
+  RUN = { repoRoot: scenario.repoRoot, workDir, members };
+}
+
 // ── HTTP helpers（bootstrap 用，不經 LLM）────────────────────────────
 async function api(path: string, init: RequestInit = {}, cookie?: string): Promise<{ status: number; body: any }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(init.headers as any) };
@@ -220,11 +295,11 @@ async function login(email: string): Promise<string> {
   return m[0];
 }
 
-const git = (args: string[], cwd = REPO_ROOT) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+const git = (args: string[], cwd = RUN.repoRoot) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
 // owner session 若違反指示手動解衝突到一半被 timeout SIGKILL，repo 會卡在衝突態；每次 owner-close/repair 後兜底清掉。
 function abortStaleMerge(): void {
-  if (!existsSync(join(REPO_ROOT, '.git', 'MERGE_HEAD'))) return;
+  if (!existsSync(join(RUN.repoRoot, '.git', 'MERGE_HEAD'))) return;
   git(['merge', '--abort']);
   console.log('[兜底] owner session 留下未完成 merge，已 abort 回乾淨態');
 }
@@ -248,16 +323,14 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
   const health = await api('/api/health');
   if (health.status !== 200) throw new Error('server 不在 localhost:3000，先啟動 task-tracker');
   if (scenario.repoRoot === BRAIN_ROOT) ensureBrainRepo();
-  if (git(['status', '--porcelain'])) throw new Error(`工作樹不乾淨（${REPO_ROOT}），先 commit 再跑 sim`);
+  if (git(['status', '--porcelain'])) throw new Error(`工作樹不乾淨（${RUN.repoRoot}），先 commit 再跑 sim`);
 
   const tag = `sim-run-${Date.now()}`;
   git(['tag', tag]);
 
   // 全員用 git worktree（branch 直接在目標 repo，owner 免 fetch 即可審/merge）。
-  // 注意：codex 的 workspace-write sandbox 刻意保護 .git 唯讀（防竄改歷史），worktree
-  // 或 clone 都一樣擋——所以 codex member 不自己 commit，改由 driver 在 session 後代 commit
-  // （commitCodexWork）；claude member 工具權限能自己 commit。
-  for (const m of MEMBERS) {
+  // member 一律不取得 Git 寫入權限；正常完成後由 driver 統一提交，避免 runner 間完成語意不同。
+  for (const m of RUN.members) {
     if (existsSync(wt(m))) throw new Error(`${wt(m)} 已存在。清理：git worktree remove sim-work/${m.user} --force && git branch -D sim/${m.user} 2>/dev/null`);
     git(['worktree', 'add', wt(m), '-b', branch(m), 'master']);
     // task-tracker 場：symlink 主 repo node_modules（測試現成）；brain 場各子專案自帶依賴，不 symlink
@@ -269,7 +342,7 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
   if (ws.status !== 201) throw new Error(`建 workspace 失敗: ${JSON.stringify(ws.body)}`);
   const wsId: string = ws.body.id;
 
-  for (const m of MEMBERS) {
+  for (const m of RUN.members) {
     const inv = await api(`/api/workspaces/${wsId}/members`, { method: 'POST', body: JSON.stringify({ email: m.email, role: 'Member' }) }, ownerCookie);
     if (inv.status !== 200 && inv.status !== 201) throw new Error(`邀請 ${m.email} 失敗: ${JSON.stringify(inv.body)}`);
     const mc = await login(m.email);
@@ -278,7 +351,7 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
   }
   const list = await api(`/api/workspaces/${wsId}/members`, {}, ownerCookie);
   for (const row of list.body as { user_id: string; email: string }[]) {
-    const m = MEMBERS.find((x) => x.email === row.email);
+    const m = RUN.members.find((x) => x.email === row.email);
     if (m) m.userId = row.user_id;
   }
   console.log(`[bootstrap] tag=${tag} workspace=${wsId} 成員就位，worktrees 建於 sim-work/`);
@@ -287,7 +360,7 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
 
 // ── 子行程 spawn ────────────────────────────────────────────────────
 // Claude Code 的 Bash 權限用冒號前綴語法 Bash(<cmd>:*)（實測：空格版 Bash(curl *) 會卡在權限批准）
-const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Write,Edit,Glob,Grep';
+export const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Read,Write,Edit,Glob,Grep';
 const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
 // owner 開場是生成型工作（發想＋開題），交給較快的 sonnet；中場/收尾/repair 是審查判斷，用 opus
 const OWNER_OPEN_MODEL = 'claude-sonnet-5';
@@ -300,6 +373,60 @@ export function createRunDir(root: string, runId: string): string {
   return dir;
 }
 
+export function acquireRunLock(lockPath: string, pid = process.pid): () => void {
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const create = () => {
+    const fd = openSync(lockPath, 'wx', 0o600);
+    try { writeFileSync(fd, `${pid}\n`); } finally { closeSync(fd); }
+  };
+
+  let acquired = false;
+  try {
+    create();
+    acquired = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    let existingText: string;
+    try {
+      existingText = readFileSync(lockPath, 'utf8').trim();
+    } catch (readError) {
+      if ((readError as NodeJS.ErrnoException).code !== 'ENOENT') throw readError;
+      create(); // holder 正好在 EEXIST 後釋放；只重試一次，若又被搶走就 fail closed。
+      acquired = true;
+      existingText = '';
+    }
+    if (!acquired) {
+      const existingPid = Number(existingText);
+      if (!Number.isSafeInteger(existingPid) || existingPid <= 0) {
+        throw new Error(`sim lock 內容無效，為避免搶鎖不自動刪除：${lockPath}`);
+      }
+      let alive = true;
+      try { process.kill(existingPid, 0); }
+      catch (probeError) { alive = (probeError as NodeJS.ErrnoException).code !== 'ESRCH'; }
+      if (alive) throw new Error(`另一個 sim process 正在執行中（PID ${existingPid}，lock ${lockPath}）`);
+      unlinkSync(lockPath);
+      create();
+    }
+  }
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    try {
+      const ownerPid = Number(readFileSync(lockPath, 'utf8').trim());
+      if (ownerPid === pid) unlinkSync(lockPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  };
+}
+
+export async function withRunLock<T>(lockPath: string, action: () => Promise<T>): Promise<T> {
+  const release = acquireRunLock(lockPath);
+  try { return await action(); } finally { release(); }
+}
+
 export function writePromptArtifact(runDir: string, label: string, prompt: string): PromptArtifact {
   const safe = label.replace(/[^a-zA-Z0-9_-]+/g, '-');
   const existing = readdirSync(join(runDir, 'prompts')).filter((name) => name.endsWith('.md')).length;
@@ -308,7 +435,27 @@ export function writePromptArtifact(runDir: string, label: string, prompt: strin
   return { label, path, bytes: Buffer.byteLength(prompt, 'utf8') };
 }
 
-interface SessionResult { timedOut: boolean; errored: boolean }
+export interface SessionResult { timedOut: boolean; errored: boolean }
+
+export function commitIfSessionSucceeded(result: SessionResult, commit: () => boolean): boolean {
+  return !result.errored && !result.timedOut && commit();
+}
+
+export async function runMemberSession(
+  run: () => Promise<SessionResult>,
+  commit: () => boolean,
+): Promise<{ result: SessionResult; committed: boolean }> {
+  const result = await run();
+  return { result, committed: commitIfSessionSucceeded(result, commit) };
+}
+
+export async function settleAllOrThrow(tasks: Promise<unknown>[]): Promise<void> {
+  const results = await Promise.allSettled(tasks);
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map((result) => result.reason);
+  if (failures.length) throw new AggregateError(failures, `${failures.length} 個平行 member 工作失敗`);
+}
 
 function runSession(
   label: string,
@@ -350,7 +497,7 @@ function runSession(
 
 // ── Owner 開場的探勘材料（driver 預蒐，機械工作交給 code，不佔 owner session）──
 // best-effort：任一指令失敗不中斷，回退為說明字串。owner 只讀材料做判斷，不自己跑指令。
-function shell(cmd: string, args: string[], cwd = REPO_ROOT): string {
+function shell(cmd: string, args: string[], cwd = RUN.repoRoot): string {
   try { return execFileSync(cmd, args, { cwd, encoding: 'utf8', timeout: 30 * 1000, maxBuffer: 4 * 1024 * 1024 }).trim(); }
   catch (e) { const out = (e as { stdout?: string }).stdout; return typeof out === 'string' ? out.trim() : ''; }
 }
@@ -404,9 +551,7 @@ ${API_RULES(jar)}
 - 只在目前目錄內改檔案；只改完成 task 需要的檔案，不順手重構
 ${doneDef}
 - 絕對不要執行 npm run sim（含 --smoke / --fast）：那會遞迴啟動一整場新的真實 AI sprint（呼叫 claude/codex CLI）
-${m.runner === 'claude'
-  ? '- 完成後 git add -A && git commit -m "<描述>"，取得 commit hash（git log -1 --format=%h）'
-  : '- 你不需要（也無法）自己 git commit——這個工作環境的 .git 是唯讀的，團隊 CI 會在你下線後自動把你的變更提交到 branch ' + branch(m) + '。你只要把檔案改好、驗證通過即可'}
+- 不要執行任何 git 指令。你只要把檔案改好、驗證通過；session 成功結束後，driver 才會把變更提交到 branch ${branch(m)}
 本次流程（這是認領制看板：task 開出來時沒有指派，誰適合誰認領）：
 1. 登入後 GET ${BASE}/api/workspaces/${wsId}/tasks
 2. 決定要做哪一題，優先序：
@@ -419,18 +564,18 @@ ${m.runner === 'claude'
    - 再 GET 一次確認 assignee_id 現在是你；若不是（被隊友搶先），放棄這題、回步驟 2 重新挑
    - 認領後留言：為什麼你選這題（扣連你的專長）、實作計畫
 4. PATCH {"status":"Doing"}（若還在 Todo）
-5. 實作 → 跑驗證${m.runner === 'claude' ? ' → commit' : '（改檔+驗證即可，不用 commit）'}
-6. 完成留言：做法摘要、驗證實際結果${m.runner === 'claude' ? '、commit hash' : '（CI 會補上 commit）'}（branch ${branch(m)}）→ PATCH {"status":"Review"}
+5. 實作 → 跑驗證（改檔+驗證即可，不要 commit）
+6. 完成留言：做法摘要、驗證實際結果（driver 會在 session 成功後補 commit；branch ${branch(m)}）→ PATCH {"status":"Review"}
 7. 一次只做一題；做完進 Review 才可回步驟 2 認領下一題。若沒有可做也沒有可認領的題：讀一個隊友 task 的留言串，留一則有實質內容的意見，然後總結下線
 ⚠️ 若這題卡在「需要修改的原始碼不在你目前工作目錄底下」這類環境/scenario 不一致（不是 code 邏輯問題），且上一則留言已經講過同樣結論、環境沒有變化：這輪不要重新實測探針指令、不要重寫一次完整解釋，留言最多一句「環境阻塞未變，維持現狀」即可，把時間留給步驟 7 那類還能做的事。
 結束時輸出一行總結。`;
 }
 
 function ownerOpenPrompt(wsId: string, scenario: Scenario, material: string): string {
-  const jar = join(REPO_ROOT, '.jar-owner.txt'); // 落在 owner 自己的 cwd（REPO_ROOT）內，理由同 memberPrompt
+  const jar = join(RUN.repoRoot, '.jar-owner.txt'); // 落在 owner 自己的 cwd 內，理由同 memberPrompt
   const byName: Record<string, string> = {};
-  for (const m of MEMBERS) byName[m.name] = m.userId!;
-  const roster = MEMBERS.map((m) => `- ${m.name}（user_id ${m.userId}）：${m.profile}`).join('\n');
+  for (const m of RUN.members) byName[m.name] = m.userId!;
+  const roster = RUN.members.map((m) => `- ${m.name}（user_id ${m.userId}）：${m.profile}`).join('\n');
 
   if (scenario.key === 'product-ideation') {
     const items = PRODUCT_DISCOVERY_BACKLOG(byName).map((task, index) => `${index + 1}. title:「${task.title}」 assignee:${task.assignee}\n   說明素材：${task.desc}`).join('\n');
@@ -487,8 +632,8 @@ ${API_RULES(jar)}
 }
 
 function ownerMidPrompt(wsId: string): string {
-  const jar = join(REPO_ROOT, '.jar-owner-mid.txt');
-  const map = MEMBERS.map((m) => `- ${m.name}（user_id ${m.userId}）→ branch ${branch(m)}`).join('\n');
+  const jar = join(RUN.repoRoot, '.jar-owner-mid.txt');
+  const map = RUN.members.map((m) => `- ${m.name}（user_id ${m.userId}）→ branch ${branch(m)}`).join('\n');
   return `你是「${OWNER.name}」（${OWNER.email}），Owner。第一輪開發完成，進行中場 code review（只審查，不 merge）。
 workspace：${wsId}。目前目錄是主 repo（master）。
 成員與 branch 對照：
@@ -507,18 +652,18 @@ ${API_RULES(jar)}
 }
 
 function ownerClosePrompt(wsId: string, tag: string, verified: BranchReviewPacket[], scenario: Scenario): string {
-  const jar = join(REPO_ROOT, '.jar-owner-close.txt');
+  const jar = join(RUN.repoRoot, '.jar-owner-close.txt');
   const packetByBranch = new Map(verified.map((packet) => [packet.branch, packet]));
-  const map = MEMBERS.map((m) => {
+  const map = RUN.members.map((m) => {
     const packet = packetByBranch.get(branch(m));
-    if (!packet || packet.ahead === 0) return `- ${m.name} / ${branch(m)}: 無 commit`;
-    return `- ${m.name} / ${packet.branch}: tsc ${packet.tsc.ok ? 'PASS' : 'FAIL'}, test ${packet.test.ok ? 'PASS' : 'FAIL'}, ${packet.ahead} commits, ${packet.changedFiles.length} files changed, packet: ${packet.packetPath}`;
+    if (!packet || !hasReviewChanges(packet.ahead, packet.dirty)) return `- ${m.name} / ${branch(m)}: 無 commit`;
+    return `- ${m.name} / ${packet.branch}: tsc ${checkLabel(packet.tsc)}, test ${checkLabel(packet.test)}, ${packet.ahead} commits${packet.dirty ? ' + 未提交 diff' : ''}, ${packet.changedFiles.length} files changed, packet: ${packet.packetPath}`;
   }).join('\n');
   const integrationStep = scenario.repoRoot === BRAIN_ROOT
     ? '3. 全部 merge 完成後，對「有被改動的子專案」各跑一次它自己的驗證（有 package.json+test script 就在該目錄 npm test；有 tsconfig 就 npx tsc --noEmit）做整合驗證；若失敗，git log 找出問題 merge、git reset --hard <該 merge 前> 退回它、在對應 task 留言退回原因 + PATCH {"status":"Doing"}'
     : '3. 全部 merge 完成後，跑「一次」npx tsc --noEmit && npm test 做整合驗證（不是每 branch 一次）；若整合失敗，git log 找出問題 merge、git reset --hard <該 merge 前> 退回它、在對應 task 留言退回原因 + PATCH {"status":"Doing"}';
   return `你是「${OWNER.name}」（${OWNER.email}），Owner。sprint 收尾：審查通過的合併進 master，總結全場。
-workspace：${wsId}。目前目錄是主 repo（master，${REPO_ROOT}）。
+workspace：${wsId}。目前目錄是主 repo（master，${RUN.repoRoot}）。
 CI（driver）已幫你把每個 branch 對 master 獨立跑過驗證，結果如下——你不用自己重跑各 branch 的測試：
 ${map}
 ${API_RULES(jar)}
@@ -529,9 +674,10 @@ ${API_RULES(jar)}
    b. git merge --no-ff <branch> -m "merge: <task 標題>"；⚠️ 絕對不要手動解衝突——你的 session 有硬時限，手動解衝突是上一場 owner 逾時被強制中止的死因。遇衝突一律：git merge --abort → task 留言衝突檔案清單＋請該成員 rebase → PATCH {"status":"Doing"} 退回 → 繼續合下一條乾淨的 branch
    c. task 留言「已合併進 master（附 merge commit hash）」→ PATCH {"status":"Done"}
 ${integrationStep}
-4. CI 顯示驗證 FAIL 的 branch：不要 merge，直接在 task 留言「具體」問題（引用檔案/行為，讓成員知道要修什麼）+ PATCH {"status":"Doing"} 退回——這題會進入重修
-5. 還在 Todo/Doing 或無人認領的 task：留言說明現況；[BUG]/[ESCALATE] task：triage 留言、解不了的標「已上報 harness 上層處理」
-6. 輸出 sprint 總結（5 行內：合了幾件、退了幾件、學到什麼）
+4. CI 顯示 SKIP（未附 tooling）的 branch：不可當成 PASS。人工審 diff、task 驗收證據與成員實際執行的檢查；證據足夠才可 merge，否則留言缺少的驗證並 PATCH {"status":"Doing"}
+5. CI 顯示 FAIL 的 branch：不要 merge，直接在 task 留言「具體」問題（引用檔案/行為，讓成員知道要修什麼）+ PATCH {"status":"Doing"} 退回——這題會進入重修
+6. 還在 Todo/Doing 或無人認領的 task：留言說明現況；[BUG]/[ESCALATE] task：triage 留言、解不了的標「已上報 harness 上層處理」
+7. 輸出 sprint 總結（5 行內：合了幾件、退了幾件、學到什麼）
 （回退錨點 tag：${tag}，僅供你知道，不要動它）`;
 }
 
@@ -556,7 +702,7 @@ export function formatReportMarkdown(report: SprintReport): string {
     ...(report.tasks.length ? [] : ['- (none)']),
     '',
     '## Branches',
-    ...report.branches.map((packet) => `- ${packet.branch}: tsc ${packet.tsc.ok ? 'PASS' : 'FAIL'}, test ${packet.test.ok ? 'PASS' : 'FAIL'}, commits ${packet.commits.length}, files ${packet.changedFiles.length}`),
+    ...report.branches.map((packet) => `- ${packet.branch}: tsc ${checkLabel(packet.tsc)}, test ${checkLabel(packet.test)}, commits ${packet.commits.length}, dirty ${packet.dirty ? 'yes' : 'no'}, files ${packet.changedFiles.length}`),
     ...(report.branches.length ? [] : ['- (none)']),
     '',
     '## ⚠️ CI 綠燈但未合併',
@@ -607,7 +753,7 @@ function buildSprintReport(
     tag,
     startedAt: since,
     finishedAt: new Date().toISOString(),
-    members: MEMBERS.map((member) => ({ email: member.email, name: member.name, branch: branch(member) })),
+    members: RUN.members.map((member) => ({ email: member.email, name: member.name, branch: branch(member) })),
     tasks: tasks.map((task) => ({ taskId: task.task_id, title: task.title, status: task.status, priority: task.priority })),
     branches,
     promptArtifacts,
@@ -631,7 +777,7 @@ function printStats(
 ): void {
   // CI 綠燈（tsc+test 皆過）卻仍領先 master 的 branch＝該合未合，只信 git 事實，不信 task 狀態
   const greenAhead = branches
-    .filter((packet) => packet.tsc.ok && packet.test.ok)
+    .filter((packet) => allChecksPass(packet.tsc, packet.test))
     .map((packet) => ({ branch: packet.branch, ahead: Number(git(['rev-list', '--count', `master..${packet.branch}`])) }))
     .filter((x) => x.ahead > 0);
   const unmergedGreen = greenAhead.map((x) => x.branch);
@@ -650,7 +796,7 @@ function printStats(
   try {
     const merged = git(['log', '--oneline', `${tag}..master`]);
     console.log(`\nmaster 自 ${tag} 以來：\n${merged || '（無新 commit）'}`);
-    for (const m of MEMBERS) {
+    for (const m of RUN.members) {
       // 全員 worktree，branch 直接在主 repo。
       try { console.log(`${branch(m)}: ${git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean).length} 個未合併 commit`); } catch { /* branch 可能已不存在 */ }
     }
@@ -663,13 +809,14 @@ function printStats(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const jitter = (minS: number, maxS: number) => (minS + Math.random() * (maxS - minS)) * 1000;
 
-// codex sandbox 不能寫 .git，session 後由 driver 代 commit（在 sandbox 外，能寫）。
-// worktree dirty 就 add -A + commit 到該 member 的 branch。回傳是否有 commit。
-function commitCodexWork(m: Member, round: number): boolean {
+// 所有 member 都只改 worktree；driver 僅在 session 成功後統一提交，避免 runner 權限與完成語意分裂。
+function commitMemberWork(m: Member, round: number): boolean {
+  validateMemberWorktree(m);
   const dirty = git(['status', '--porcelain'], wt(m));
   if (!dirty) return false;
   git(['add', '-A'], wt(m));
-  git(['commit', '-m', `feat(${m.name}/${m.model}): r${round} 產出（driver 代 commit——codex sandbox .git 唯讀）`], wt(m));
+  git(['diff', '--cached', '--check'], wt(m));
+  git(['commit', '-m', `feat(${m.name}/${m.model}): r${round} 產出（driver 代 commit）`], wt(m));
   const hash = git(['log', '-1', '--format=%h'], wt(m));
   console.log(`[代commit] ${branch(m)} r${round} → ${hash}`);
   return true;
@@ -681,8 +828,9 @@ export function formatReviewPacket(packet: BranchReviewPacket): string {
     '',
     `member: ${packet.memberName} <${packet.memberEmail}>`,
     `ahead: ${packet.ahead}`,
-    `tsc: ${packet.tsc.ok ? 'PASS' : 'FAIL'} (${packet.tsc.outputPath})`,
-    `test: ${packet.test.ok ? 'PASS' : 'FAIL'} (${packet.test.outputPath})`,
+    `dirty: ${packet.dirty ? 'yes' : 'no'}`,
+    `tsc: ${checkLabel(packet.tsc)} (${packet.tsc.outputPath})`,
+    `test: ${checkLabel(packet.test)} (${packet.test.outputPath})`,
     '',
     '## Commits',
     ...packet.commits.map((commit) => `- ${commit}`),
@@ -709,30 +857,56 @@ function runCheck(cwd: string, command: string, args: string[], outputPath: stri
       maxBuffer: 20 * 1024 * 1024,
     });
     writeFileSync(outputPath, stdout);
-    return { ok: true, outputPath };
+    return { status: 'pass', outputPath };
   } catch (error) {
     const failure = error as Error & { stdout?: Buffer | string; stderr?: Buffer | string };
     const stdout = typeof failure.stdout === 'string' ? failure.stdout : failure.stdout?.toString() ?? '';
     const stderr = typeof failure.stderr === 'string' ? failure.stderr : failure.stderr?.toString() ?? '';
     writeFileSync(outputPath, [`$ ${command} ${args.join(' ')}`, stdout && `STDOUT:\n${stdout}`, stderr && `STDERR:\n${stderr}`, `ERR:${String(error)}`].filter(Boolean).join('\n\n'));
-    return { ok: false, outputPath };
+    return { status: 'fail', outputPath };
   }
 }
 
-// brain 場 best-effort CI：依變動檔的子專案有無 tooling 決定跑什麼。無 tooling → 標記通過但註明需人工審 diff。
-function brainChecks(worktree: string, changedFiles: string[], tscPath: string, testPath: string): { tsc: CommandCheck; test: CommandCheck } {
+// brain 場 best-effort CI：無 tooling 或一次跨多個可驗證子專案都標 SKIP，交給 owner 人工驗證，不製造假綠燈。
+export function brainChecks(
+  worktree: string,
+  changedFiles: string[],
+  tscPath: string,
+  testPath: string,
+  check: CheckRunner = runCheck,
+): { tsc: CommandCheck; test: CommandCheck } {
   const subs = [...new Set(changedFiles.map((f) => f.split('/')[0]).filter((s) => s && existsSync(join(worktree, s, 'package.json')) || s && existsSync(join(worktree, s, 'tsconfig.json'))))];
-  const tscDir = subs.find((s) => existsSync(join(worktree, s, 'tsconfig.json')));
-  const testDir = subs.find((s) => {
+  const tscDirs = subs.filter((s) => existsSync(join(worktree, s, 'tsconfig.json')));
+  const testDirs = subs.filter((s) => {
     const pkgPath = join(worktree, s, 'package.json');
     if (!existsSync(pkgPath)) return false;
     try { return !!(JSON.parse(readFileSync(pkgPath, 'utf8')).scripts?.test); } catch { return false; }
   });
-  const noteOk = (path: string): CommandCheck => { writeFileSync(path, '無自動驗證（子專案未附 tooling）——owner 請人工審 diff\n'); return { ok: true, outputPath: path }; };
-  const installIfNeeded = (dir: string) => { if (!existsSync(join(worktree, dir, 'node_modules'))) runCheck(join(worktree, dir), 'npm', ['install'], join(worktree, dir, '.sim-install.log')); };
+  const noteSkip = (path: string, reason: string): CommandCheck => {
+    writeFileSync(path, `${reason}——owner 請人工審 diff 與 task 驗收證據\n`);
+    return { status: 'skip', outputPath: path };
+  };
+  const installIfNeeded = (dir: string, outputPath: string): CommandCheck | undefined => {
+    if (!existsSync(join(worktree, dir, 'node_modules'))) {
+      return check(join(worktree, dir), 'npm', ['install', '--no-package-lock', '--ignore-scripts'], `${outputPath}.install.txt`);
+    }
+  };
+  const checkOne = (dirs: string[], kind: 'tsc' | 'test', outputPath: string): CommandCheck => {
+    if (!dirs.length) return noteSkip(outputPath, '無自動驗證（變動子專案未附對應 tooling）');
+    if (dirs.length > 1) return noteSkip(outputPath, `一次變更多個含 ${kind} tooling 的子專案（${dirs.join('、')}）`);
+    const dir = dirs[0];
+    const install = installIfNeeded(dir, outputPath);
+    if (install?.status === 'fail') {
+      writeFileSync(outputPath, `依賴安裝失敗，詳見 ${install.outputPath}\n`);
+      return { status: 'fail', outputPath };
+    }
+    return kind === 'tsc'
+      ? check(join(worktree, dir), 'npx', ['tsc', '--noEmit'], outputPath)
+      : check(join(worktree, dir), 'npm', ['test'], outputPath);
+  };
   return {
-    tsc: tscDir ? (installIfNeeded(tscDir), runCheck(join(worktree, tscDir), 'npx', ['tsc', '--noEmit'], tscPath)) : noteOk(tscPath),
-    test: testDir ? (installIfNeeded(testDir), runCheck(join(worktree, testDir), 'npm', ['test'], testPath)) : noteOk(testPath),
+    tsc: checkOne(tscDirs, 'tsc', tscPath),
+    test: checkOne(testDirs, 'test', testPath),
   };
 }
 
@@ -740,24 +914,40 @@ function brainChecks(worktree: string, changedFiles: string[], tscPath: string, 
 // 在各自 worktree 跑（主 repo 尚未 merge），彼此獨立故平行。結果注入 ownerClosePrompt，owner 只做判斷與 merge。
 async function verifyBranches(runDir: string, scenario: Scenario): Promise<BranchReviewPacket[]> {
   const isBrain = scenario.repoRoot === BRAIN_ROOT;
-  return Promise.all(MEMBERS.map(async (m) => {
+  return Promise.all(RUN.members.map(async (m) => {
     const packetBase = branch(m).replace(/[^a-zA-Z0-9_-]+/g, '-');
     const packetPath = join(runDir, 'review-packets', `${packetBase}.md`);
     const tscPath = join(runDir, 'review-packets', `${packetBase}-tsc.txt`);
     const testPath = join(runDir, 'review-packets', `${packetBase}-test.txt`);
-    const base = (ahead: number): BranchReviewPacket => ({
-      branch: branch(m), memberName: m.name, memberEmail: m.email, ahead,
+    const base = (ahead: number, dirty = false): BranchReviewPacket => ({
+      branch: branch(m), memberName: m.name, memberEmail: m.email, ahead, dirty,
       commits: [], changedFiles: [], diffstat: '',
-      tsc: { ok: false, outputPath: tscPath }, test: { ok: false, outputPath: testPath }, packetPath,
+      tsc: { status: 'skip', outputPath: tscPath }, test: { status: 'skip', outputPath: testPath }, packetPath,
     });
     if (!existsSync(wt(m))) return base(0);
+    validateMemberWorktree(m);
     const ahead = Number(git(['rev-list', '--count', `master..${branch(m)}`]));
-    const packet = base(ahead);
-    if (!ahead) return packet;
-    packet.commits = git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean);
-    packet.changedFiles = git(['diff', '--name-only', `master...${branch(m)}`]).split('\n').filter(Boolean);
-    packet.diffstat = git(['diff', '--stat', `master...${branch(m)}`]);
-    if (isBrain) {
+    const dirty = !!git(['status', '--porcelain'], wt(m));
+    const packet = base(ahead, dirty);
+    if (!hasReviewChanges(ahead, dirty)) return packet;
+    if (ahead) packet.commits = git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean);
+    const committedFiles = ahead ? git(['diff', '--name-only', `master...${branch(m)}`]).split('\n').filter(Boolean) : [];
+    const workingFiles = dirty ? [
+      ...git(['diff', '--name-only'], wt(m)).split('\n').filter(Boolean),
+      ...git(['diff', '--cached', '--name-only'], wt(m)).split('\n').filter(Boolean),
+      ...git(['ls-files', '--others', '--exclude-standard'], wt(m)).split('\n').filter(Boolean),
+    ] : [];
+    packet.changedFiles = [...new Set([...committedFiles, ...workingFiles])];
+    packet.diffstat = [
+      ahead ? git(['diff', '--stat', `master...${branch(m)}`]) : '',
+      dirty ? git(['diff', '--stat'], wt(m)) : '',
+      dirty ? git(['diff', '--cached', '--stat'], wt(m)) : '',
+    ].filter(Boolean).join('\n');
+    if (dirty) {
+      const checks = dirtyReviewChecks(tscPath, testPath);
+      packet.tsc = checks.tsc;
+      packet.test = checks.test;
+    } else if (isBrain) {
       const checks = brainChecks(wt(m), packet.changedFiles, tscPath, testPath);
       packet.tsc = checks.tsc; packet.test = checks.test;
     } else {
@@ -765,7 +955,7 @@ async function verifyBranches(runDir: string, scenario: Scenario): Promise<Branc
       packet.test = runCheck(wt(m), 'npm', ['test'], testPath);
     }
     writeFileSync(packetPath, formatReviewPacket(packet));
-    console.log(`[CI預跑] ${branch(m)}: tsc ${packet.tsc.ok ? '✓' : '✗'} / test ${packet.test.ok ? '✓' : '✗'}（${ahead} commit）`);
+    console.log(`[CI預跑] ${branch(m)}: tsc ${checkLabel(packet.tsc)} / test ${checkLabel(packet.test)}（${ahead} commit）`);
     return packet;
   }));
 }
@@ -781,51 +971,77 @@ function queryTasks(wsId: string): Array<{ assignee_id: string | null; status: s
 function membersToRun(wsId: string): Member[] {
   const tasks = queryTasks(wsId);
   const unclaimed = tasks.some((t) => !t.assignee_id && t.status === 'Todo');
-  return MEMBERS.filter((m) => unclaimed || tasks.some((t) => t.assignee_id === m.userId && (t.status === 'Todo' || t.status === 'Doing')));
+  return RUN.members.filter((m) => unclaimed || tasks.some((t) => t.assignee_id === m.userId && (t.status === 'Todo' || t.status === 'Doing')));
 }
 
 // repair：owner 收尾把不合格題退回 Doing，找出名下有被退回題的成員來重修
 function membersWithRejects(wsId: string): Member[] {
   const tasks = queryTasks(wsId);
-  return MEMBERS.filter((m) => tasks.some((t) => t.assignee_id === m.userId && t.status === 'Doing'));
+  return RUN.members.filter((m) => tasks.some((t) => t.assignee_id === m.userId && t.status === 'Doing'));
+}
+
+function cleanupUnstartedRun(tag: string): void {
+  let safeToDeleteTag = true;
+  for (const m of RUN.members) {
+    if (existsSync(wt(m))) {
+      if (git(['status', '--porcelain'], wt(m))) {
+        safeToDeleteTag = false;
+        console.log(`[cleanup] ${wt(m)} 有未提交內容，保留供人工檢查`);
+        continue;
+      }
+      git(['worktree', 'remove', wt(m), '--force']);
+    }
+    if (git(['branch', '--list', branch(m)]) && branchAhead(m) === 0) git(['branch', '-D', branch(m)]);
+  }
+  if (safeToDeleteTag && git(['tag', '--list', tag])) git(['tag', '-d', tag]);
 }
 
 async function main(): Promise<void> {
   mkdirSync(LOG_DIR, { recursive: true });
-  MEMBERS = loadMembersFromUsers();
   const scenario = parseScenario(process.argv);
-  REPO_ROOT = scenario.repoRoot;
-  WORK_DIR = join(REPO_ROOT, 'sim-work');
+  if (scenario.repoRoot === BRAIN_ROOT) ensureBrainRepo();
+  activateScenario(scenario, loadMembersFromUsers());
   const since = new Date().toISOString();
   const { wsId, tag } = await bootstrap(scenario);
   const runDir = createRunDir(LOG_DIR, tag);
   const promptArtifacts: PromptArtifact[] = [];
+  // 先寫 discovery report；後續任何 session/commit/CI 例外時 sweep 仍找得到這個 workspace，收尾再覆寫完整內容。
+  writeReport(runDir, buildSprintReport(wsId, since, tag, tag, scenario.key, promptArtifacts, [], []));
 
   const memberOpts = (m: Member) => ({ cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: MEMBER_TIMEOUT, runDir, promptArtifacts });
-  const ownerOpts = { cwd: REPO_ROOT, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT, runDir, promptArtifacts };
+  const ownerOpts = { cwd: RUN.repoRoot, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT, runDir, promptArtifacts };
 
-  // 一個 member session：跑 + 若是 codex 則 driver 代 commit
+  // 一個 member session：只有正常結束才由 driver 提交；失敗 diff 留在 worktree 供人工檢查/下輪續作。
   const memberSession = async (m: Member, round: number) => {
-    await runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` });
-    if (m.runner === 'codex') commitCodexWork(m, round);
+    const { result } = await runMemberSession(
+      () => runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` }),
+      () => commitMemberWork(m, round),
+    );
+    if (result.errored || result.timedOut) console.log(`[${m.name}-r${round}] session 未成功，保留未提交 diff，不進入 branch commit`);
   };
   // 一輪：成員並行，登入用小 jitter 錯開避免同秒撞認領
   const runRound = async (members: Member[], round: number, minJit: number, maxJit: number) =>
-    Promise.all(members.map(async (m) => { await sleep(jitter(minJit, maxJit)); await memberSession(m, round); }));
+    settleAllOrThrow(members.map(async (m) => { await sleep(jitter(minJit, maxJit)); await memberSession(m, round); }));
 
   if (SMOKE) {
-    await memberSession(MEMBERS[0], 1); // haiku
-    await memberSession(MEMBERS[2], 1); // codex（驗證 driver 代 commit）
+    await memberSession(RUN.members[0], 1); // haiku
+    await memberSession(RUN.members[2], 1); // codex（驗證 driver 代 commit）
     printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, []);
     return;
   }
 
   // owner 開場（sonnet + driver 預蒐材料）→ 發想主題、改名 workspace、開無主 task
   const material = exploreMaterial(scenario);
-  await runSession('owner-開場', 'claude', OWNER_OPEN_MODEL, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' });
+  const ownerOpen = await runSession('owner-開場', 'claude', OWNER_OPEN_MODEL, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' });
+  if (ownerOpen.errored || ownerOpen.timedOut) {
+    try { printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, []); }
+    catch (error) { console.log(`[owner-開場] 失敗報告寫入異常：${String(error)}`); }
+    finally { cleanupUnstartedRun(tag); }
+    throw new Error(`owner 開場 session 失敗，未派 member；workspace ${wsId} 與 report 保留，乾淨 worktree/branch 已移除`);
+  }
 
   // 第 1 輪：全員上線認領
-  await runRound(MEMBERS, 1, 1, 5);
+  await runRound(RUN.members, 1, 1, 5);
 
   if (!FAST) {
     // 深度模式：中場審查（opus）＋條件式 r2-3
@@ -876,13 +1092,39 @@ function writeOwnerState(s: SweepOwnerState): void {
   try { writeFileSync(OWNER_STATE_FILE, JSON.stringify(s)); } catch { /* 寫不進去不致命，下輪照 base 值 */ }
 }
 
-function probeQuota(): Promise<boolean> {
+export function sweepBudgets(
+  role: 'owner' | 'team' | 'both',
+  ownerTimeoutStreak: number,
+  claudeAvailable: boolean,
+): { owner: number; member: number } {
+  return {
+    owner: role === 'team' || !claudeAvailable ? 0 : Math.max(1, 2 - ownerTimeoutStreak),
+    member: role === 'owner' ? 0 : 2,
+  };
+}
+
+export function workspaceFitsSweepBudget(
+  ownerBudget: number,
+  memberBudget: number,
+  tasks: Array<{ status: string; assignee_id: string | null }>,
+  eligibleUserIds: string[],
+): boolean {
+  if (ownerBudget > 0) return true;
+  if (memberBudget <= 0) return false;
+  const eligible = new Set(eligibleUserIds);
+  return tasks.some((task) =>
+    (!task.assignee_id && task.status === 'Todo' && eligible.size > 0)
+    || (!!task.assignee_id && eligible.has(task.assignee_id) && (task.status === 'Todo' || task.status === 'Doing')),
+  );
+}
+
+function probeClaudeQuota(): Promise<boolean> {
   return new Promise((resolve) => {
     execFile('claude', ['-p', '回覆OK兩字即可', '--model', 'claude-haiku-4-5-20251001'],
       { timeout: 90 * 1000, killSignal: 'SIGKILL' },
-      (err, stdout, stderr) => {
-        const out = `${stdout ?? ''}${stderr ?? ''}`;
-        resolve(!err && !/session limit|rate limit/i.test(out));
+      (error, stdout, stderr) => {
+        const output = `${stdout ?? ''}${stderr ?? ''}`;
+        resolve(!error && !/session limit|rate limit/i.test(output));
       });
   });
 }
@@ -894,9 +1136,28 @@ function branchAhead(m: Member): number {
   } catch { return 0; }
 }
 
+function memberHasReviewChanges(m: Member): boolean {
+  if (branchAhead(m) > 0) return true;
+  if (!existsSync(wt(m))) return false;
+  validateMemberWorktree(m);
+  return hasReviewChanges(0, !!git(['status', '--porcelain'], wt(m)));
+}
+
+function validateMemberWorktree(m: Member): void {
+  const path = wt(m);
+  const topLevel = git(['rev-parse', '--show-toplevel'], path);
+  const currentBranch = git(['branch', '--show-current'], path);
+  if (resolve(topLevel) !== resolve(path) || currentBranch !== branch(m)) {
+    throw new Error(`${m.user} worktree 不符合預期：path=${path} topLevel=${topLevel} branch=${currentBranch || '(detached HEAD)'}`);
+  }
+}
+
 // 巡檢的 worktree 可能已被清掉：branch 還有未合併工作就掛回來；branch 已合併/不存在就從 master 重開
 function ensureWorktree(m: Member, scenario: Scenario): void {
-  if (existsSync(wt(m))) return;
+  if (existsSync(wt(m))) {
+    validateMemberWorktree(m);
+    return;
+  }
   const hasBranch = !!git(['branch', '--list', branch(m)]);
   if (hasBranch && branchAhead(m) === 0) git(['branch', '-D', branch(m)]);
   if (hasBranch && branchAhead(m) > 0) git(['worktree', 'add', wt(m), branch(m)]);
@@ -904,21 +1165,22 @@ function ensureWorktree(m: Member, scenario: Scenario): void {
   if (scenario.repoRoot === ROOT && !existsSync(join(wt(m), 'node_modules'))) {
     symlinkSync(join(ROOT, 'node_modules'), join(wt(m), 'node_modules'));
   }
+  validateMemberWorktree(m);
 }
 
 interface SweepTask { task_id: string; title: string; status: string; assignee_id: string | null }
 
 function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string): string {
-  const jar = join(REPO_ROOT, '.jar-owner-sweep.txt');
+  const jar = join(RUN.repoRoot, '.jar-owner-sweep.txt');
   const packetByBranch = new Map(verified.map((p) => [p.branch, p]));
-  const ci = MEMBERS.map((m) => {
+  const ci = RUN.members.map((m) => {
     const p = packetByBranch.get(branch(m));
-    if (!p || p.ahead === 0) return `- ${m.name} / ${branch(m)}: 無未合併 commit`;
-    return `- ${m.name} / ${p.branch}: tsc ${p.tsc.ok ? 'PASS' : 'FAIL'}, test ${p.test.ok ? 'PASS' : 'FAIL'}, ${p.ahead} commits, packet: ${p.packetPath}`;
+    if (!p || !hasReviewChanges(p.ahead, p.dirty)) return `- ${m.name} / ${branch(m)}: 無未合併 commit`;
+    return `- ${m.name} / ${p.branch}: tsc ${checkLabel(p.tsc)}, test ${checkLabel(p.test)}, ${p.ahead} commits${p.dirty ? ' + 未提交 diff' : ''}, packet: ${p.packetPath}`;
   }).join('\n');
-  const memberIds = MEMBERS.map((m) => `- ${m.name}：user_id ${m.userId}`).join('\n');
+  const memberIds = RUN.members.map((m) => `- ${m.name}：user_id ${m.userId}`).join('\n');
   return `你是「${OWNER.name}」（${OWNER.email}），Owner。這是定時（每 30 分）的「巡檢」session：把看板收乾淨、回應老闆、讓團隊持續前進。
-workspace：${wsId}。目前目錄是主 repo（master，${REPO_ROOT}）。
+workspace：${wsId}。目前目錄是主 repo（master，${RUN.repoRoot}）。
 成員 user_id 對照：
 ${memberIds}
 CI 摘要（driver 已預跑，信任它，不要自己重跑各 branch 測試）：
@@ -933,6 +1195,7 @@ ${API_RULES(jar)}
 3. status=Review 的 task 對照 CI 摘要：
    - CI 全 PASS → git merge --no-ff <branch> -m "merge: <task 標題>" → 留言（附 merge hash）→ PATCH {"status":"Done"}
      ⚠️ 遇衝突「絕對不要手動解」（上一場 owner 就是手動解衝突逾時被強制中止）：git merge --abort → 留言列出衝突檔案、請成員 rebase → PATCH {"status":"Doing"}
+   - CI 有 SKIP → 不可當成 PASS；人工審 diff、task 驗收證據與成員實際檢查，證據足夠才可 merge，否則留言缺少的驗證並退回 Doing
    - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
    - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"} 再 PATCH {"status":"Todo"}，並 PATCH {"assignee":null} 讓人重新認領
 4. status=Doing 沒動靜的：催辦留言。無主 Todo 沒人領的：補充說明讓它更好認領。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）、且上一輪已有相同結論、環境沒有變化：不要催辦、不要重新診斷，跳過即可
@@ -942,7 +1205,7 @@ ${API_RULES(jar)}
 
 async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   mkdirSync(LOG_DIR, { recursive: true });
-  MEMBERS = loadMembersFromUsers();
+  const members = loadMembersFromUsers();
   const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
   const boss = db.prepare('SELECT id, name FROM users WHERE email = ?').get(BOSS_EMAIL) as { id: string; name: string } | undefined;
 
@@ -961,6 +1224,11 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; bossPinged: boolean; startedAt: string }
   const pendings: PendingWs[] = [];
   for (const [wsId, info] of wsScenario) {
+    const scenario = scenarioFromStoredKey(info.key);
+    if (!scenario) {
+      console.log(`[sweep:${role}] workspace ${wsId.slice(0, 8)} 的 scenarioKey=${info.key} 未知，為避免寫錯 repo 已跳過`);
+      continue;
+    }
     const ws = db.prepare('SELECT status FROM workspaces_read_model WHERE workspace_id = ?').get(wsId) as { status: string } | undefined;
     if (!ws || ws.status !== 'active') continue;
     const tasks = db.prepare("SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND status IN ('Todo','Doing','Review')").all(wsId) as unknown as SweepTask[];
@@ -971,7 +1239,6 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       return last?.user_id === boss.id;
     });
     if (!work.length && !bossPinged) continue;
-    const scenario = SCENARIOS[info.key as ScenarioKey] ?? SCENARIOS['self-directed'];
     pendings.push({ wsId, scenario, work, bossPinged, startedAt: info.startedAt });
   }
   db.close();
@@ -979,14 +1246,16 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   if (!pendings.length) { console.log(`[sweep:${role}] 看板全收乾淨、老闆無新留言，本 tick 零成本結束`); return; }
   console.log(`[sweep:${role}] ${pendings.length} 個 workspace 有待收工作：${pendings.map((p) => `${p.wsId.slice(0, 8)}(${p.work.length}題${p.bossPinged ? '+老闆留言' : ''})`).join('、')}`);
 
-  if (!(await probeQuota())) { console.log(`[sweep:${role}] 額度不足，本 tick 放棄，等下個 tick timer 再試`); return; }
-
   // owner 逾時自適應：上一輪 owner 逾時 streak 越高 → 這輪 timeout 越長、owner 收的 workspace 越少
   const ownerState = role === 'team' ? { streak: 0, timedOutWs: [] as string[] } : readOwnerState();
   const ownerTimeoutMs = Math.min(SWEEP_OWNER_TIMEOUT + ownerState.streak * 6 * 60 * 1000, 30 * 60 * 1000);
+  // team tick 不先探 Claude；每個 member session 自己隔離失敗。owner/both 只用 probe 決定是否略過 owner。
+  const claudeAvailable = role === 'team' ? true : await probeClaudeQuota();
+  if (!claudeAvailable) console.log(`[sweep:${role}] Claude 不可用，本 tick 略過 owner；Codex member 預算不受影響`);
   // 預算按 role：owner tick 只跑 owner session、team tick 只跑成員 session（both=手動全掃）。做不完留給下個 tick，自癒
-  let ownerBudget = role === 'team' ? 0 : Math.max(1, 2 - ownerState.streak);
-  let memberBudget = role === 'owner' ? 0 : 2;
+  const budgets = sweepBudgets(role, ownerState.streak, claudeAvailable);
+  let ownerBudget = budgets.owner;
+  let memberBudget = budgets.member;
   if (ownerState.streak > 0) {
     console.log(`[sweep:${role}] 前輪 owner 逾時（streak ${ownerState.streak}）→ 本輪 timeout=${Math.round(ownerTimeoutMs / 60000)}分、owner 收 ${ownerBudget} 個、優先 ${ownerState.timedOutWs.map((x) => x.slice(0, 8)).join(',') || '(無記錄)'}`);
   }
@@ -999,30 +1268,47 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   let ownerSessionsRun = 0;
   const timedOutThisTick: string[] = [];
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  const processedRepoRoots = new Set<string>();
 
   for (const p of pendings) {
     if (ownerBudget <= 0 && memberBudget <= 0) break;
-    REPO_ROOT = p.scenario.repoRoot;
-    WORK_DIR = join(REPO_ROOT, 'sim-work');
-    const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${p.wsId.slice(0, 8)}`);
-    const promptArtifacts: PromptArtifact[] = [];
+    if (processedRepoRoots.has(p.scenario.repoRoot)) {
+      console.log(`[sweep] ${p.wsId.slice(0, 8)} 與本 tick 已處理 workspace 共用 ${p.scenario.repoRoot} branch，延到下個 tick`);
+      continue;
+    }
+    if (p.scenario.repoRoot === BRAIN_ROOT) ensureBrainRepo();
+    activateScenario(p.scenario, members);
 
     // member userId 需要重新對應（跨 workspace 不同）
     const ownerCookie = await login(OWNER.email);
     const list = await api(`/api/workspaces/${p.wsId}/members`, {}, ownerCookie);
+    for (const m of RUN.members) delete m.userId;
     for (const row of (list.body ?? []) as { user_id: string; email: string }[]) {
-      const m = MEMBERS.find((x) => x.email === row.email);
+      const m = RUN.members.find((x) => x.email === row.email);
       if (m) m.userId = row.user_id;
     }
+    const eligibleMembers = RUN.members.filter((m) => claudeAvailable || m.runner !== 'claude');
+    if (!workspaceFitsSweepBudget(ownerBudget, memberBudget, p.work, eligibleMembers.flatMap((m) => m.userId ? [m.userId] : []))) {
+      console.log(`[sweep] ${p.wsId.slice(0, 8)} 沒有目前 runner 可推進的工作，不占用 repo slot`);
+      continue;
+    }
+    processedRepoRoots.add(p.scenario.repoRoot);
+    const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${p.wsId.slice(0, 8)}`);
+    const promptArtifacts: PromptArtifact[] = [];
 
     // verifyBranches 只給 owner 判斷 CI 用；team tick 免跑（省時）
-    const anyAhead = MEMBERS.some((m) => branchAhead(m) > 0);
-    const verified = (ownerBudget > 0 && anyAhead) ? await verifyBranches(runDir, p.scenario) : [];
+    if (ownerBudget > 0) {
+      for (const m of RUN.members) {
+        if (branchAhead(m) > 0 && !existsSync(wt(m))) ensureWorktree(m, p.scenario);
+      }
+    }
+    const anyReviewChanges = ownerBudget > 0 && RUN.members.some(memberHasReviewChanges);
+    const verified = (ownerBudget > 0 && anyReviewChanges) ? await verifyBranches(runDir, p.scenario) : [];
 
     if (ownerBudget > 0) {
       const r = await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'claude', OWNER_REVIEW_MODEL,
         ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
-        { cwd: REPO_ROOT, tools: OWNER_TOOLS, timeoutMs: ownerTimeoutMs, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
+        { cwd: RUN.repoRoot, tools: OWNER_TOOLS, timeoutMs: ownerTimeoutMs, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
       ownerSessionsRun++;
       if (r.timedOut) timedOutThisTick.push(p.wsId);
       ownerBudget--;
@@ -1035,18 +1321,23 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       const tasks2 = db2.prepare("SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND status IN ('Todo','Doing','Review')").all(p.wsId) as unknown as SweepTask[];
       db2.close();
       const work2 = tasks2.filter((t) => !t.title.startsWith('[討論]'));
-      const rejected = MEMBERS.filter((m) => work2.some((t) => t.assignee_id === m.userId && t.status === 'Doing'));
+      const rejected = eligibleMembers.filter((m) => work2.some((t) => t.assignee_id === m.userId && (t.status === 'Todo' || t.status === 'Doing')));
       const unclaimed = work2.some((t) => !t.assignee_id && t.status === 'Todo');
-      const idle = MEMBERS.filter((m) => !work2.some((t) => t.assignee_id === m.userId));
+      const idle = eligibleMembers.filter((m) => !work2.some((t) => t.assignee_id === m.userId));
       const toRun = [...rejected, ...(unclaimed ? idle : [])].slice(0, memberBudget);
       if (toRun.length) {
         for (const m of toRun) ensureWorktree(m, p.scenario);
         const hour = new Date().getHours();
-        await Promise.all(toRun.map(async (m) => {
+        await settleAllOrThrow(toRun.map(async (m) => {
           await sleep(jitter(1, 5));
-          await runSession(`${m.name}-巡檢`, m.runner, m.model, memberPrompt(m, p.wsId, hour, p.scenario),
-            { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep` });
-          if (m.runner === 'codex') commitCodexWork(m, hour);
+          const { result } = await runMemberSession(
+            () => runSession(`${m.name}-巡檢`, m.runner, m.model, memberPrompt(m, p.wsId, hour, p.scenario),
+              { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep` }),
+            () => commitMemberWork(m, hour),
+          );
+          if (result.errored || result.timedOut) {
+            console.log(`[${m.name}-巡檢] session 未成功，保留未提交 diff，不進入 branch commit`);
+          }
         }));
         memberBudget -= toRun.length;
       }
@@ -1064,6 +1355,19 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   console.log('[sweep] 本 tick 結束；未完部分下個 tick 繼續');
 }
 
+async function runCli(): Promise<void> {
+  const lockPath = join(LOG_DIR, '.run.lock');
+  try {
+    await withRunLock(lockPath, () => SWEEP ? sweep(SWEEP_ROLE) : main());
+  } catch (error) {
+    if (SWEEP && String(error).includes('正在執行中')) {
+      console.log(`[sweep:${SWEEP_ROLE}] 另一個 sim 尚未結束，本 tick 跳過`);
+      return;
+    }
+    throw error;
+  }
+}
+
 if (require.main === module) {
-  (SWEEP ? sweep(SWEEP_ROLE) : main()).catch((e) => { console.error(e); process.exit(1); });
+  runCli().catch((e) => { console.error(e); process.exitCode = 1; });
 }

@@ -59,3 +59,26 @@ tail -n 80 /var/log/nginx/error.log
 ```
 
 If `/tracker/` returns `502`, first check whether `task-tracker.service` is active and whether port 3000 answers `/api/health`.
+
+## Sim harness
+
+Run from the repo root:
+
+```bash
+npm run sim -- --fast --scenario self-directed
+npm run sim -- --scenario brain
+npm run sim -- --sweep owner
+npm run sim -- --sweep team
+```
+
+The driver holds `sim-logs/.run.lock` for the complete run. Manual runs and owner/team timers therefore cannot mutate the shared board or Git worktrees concurrently. A sweep that sees a live PID exits and lets the next timer retry; a lock whose PID no longer exists is recovered automatically. Do not delete a lock owned by a live process.
+
+Member sessions edit and verify files but do not commit. After a successful, non-timeout session, the driver verifies the expected Git top-level/worktree branch, stages the isolated worktree, runs `git diff --cached --check`, and commits. A failed or timed-out session remains uncommitted; its dirty worktree is reported as CI `FAIL` so the Owner returns the task to `Doing` instead of treating the work as lost.
+
+Review statuses are:
+
+- `PASS`: command ran successfully; only `tsc PASS + test PASS` is automatically green.
+- `FAIL`: command failed or the worktree contains an incomplete uncommitted diff; do not merge.
+- `SKIP`: no suitable tooling, or a brain change spans multiple independently verifiable subprojects; the Owner must inspect the diff and task evidence before deciding.
+
+The Claude member tool allowlist blocks direct Git commands, and Codex keeps its `workspace-write` sandbox. This is cooperative-agent protection, not hostile-code isolation: driver CI executes branch code on the host. Run the harness and CI inside a container or VM before accepting untrusted code or prompts.

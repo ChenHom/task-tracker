@@ -7,7 +7,8 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "npm run lint && tsx src/test.ts && tsx sim/run.test.ts",
+    "typecheck": "tsc --noEmit && tsc -p sim/tsconfig.json",
+    "test": "npm run lint && npm run typecheck && node --import tsx src/test.ts && node --import tsx sim/run.test.ts",
     "seed": "tsx src/seed.ts",
     "sim": "tsx sim/run.ts",
     "lint": "eslint public/js"

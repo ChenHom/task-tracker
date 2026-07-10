@@ -93,6 +93,12 @@
 - [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
 - [x] 各模式寫入 prompt artifacts、`report.md` 與 `report.json`；fast/deep 場在 branch 驗證後另寫 review packets
 - [x] 支援 `self-directed` / `product-ideation` / `brain` scenario，以及 `--fast` / `--smoke` / `--sweep owner|team`
+- [x] member session 統一由 driver commit；error/timeout 不提交，dirty worktree 在 review packet 標 FAIL 並保留續作
+- [x] CI 結果改為 `PASS` / `FAIL` / `SKIP`；缺 tooling 或跨多個子專案不再製造假綠燈，SKIP 必須由 Owner 人工驗證
+- [x] scenario 啟用前驗證 Git top-level/master，commit 前再驗 worktree/branch；legacy `technical-debt` report 明確映射，未知 scenario fail closed
+- [x] `sim-logs/.run.lock` 序列化 manual/timer 流程並回收 dead-PID lock；平行 member 全部 settle 後才解鎖
+- [x] Claude quota probe 只影響 owner 預算；`team` 不做全域 probe，`both` 在 Claude 不可用時仍保留 Codex member 預算
+- [x] `sim/tsconfig.json` 納入 `npm test`，讓 sim harness 也受 strict TypeScript 檢查
 - [x] 跑完整端到端 `--fast` self-directed sprint（`sim-run-1783392991269`）
 - [ ] 跑深度 `npm run sim`（含 r2/r3 與中場 owner 審查）
 
@@ -100,6 +106,7 @@
 > codex member 同樣完成（曾卡在 `codex exec` 等 piped stdin EOF，已修：spawn 後立即 `child.stdin.end()`）。
 > Fast 場於 2026-07-07 執行 18 分 21 秒：7 題全部 Done，4 支成員 branch 的 tsc/test 均 PASS，產生 26 則留言與 47 個 events。
 > 本機證據：`sim-logs/sim-run-1783392991269/report.md`。產物/報告/scenario 實作主要來自 `3721b50`；後續 sandbox 路徑與重複 escalation 修正為 `e9fdb69`。
+> 2026-07-10 hardening 保持單檔/stdlib 架構：member tool allowlist 是避免誤操作的操作政策，不是 hostile-code sandbox；driver 仍會執行 branch 的 tsc/test。需要執行不受信任程式碼時，應另放進 container/VM，而不是擴張這個 harness 的權限規則。
 
 ---
 

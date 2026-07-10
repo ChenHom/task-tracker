@@ -15,6 +15,7 @@
 - Complete in `sim/run.ts` and `sim/run.test.ts`, primarily via commit `3721b50`; no DB schema or extra helper module was added.
 - Prompt artifacts, branch review packets, `report.md`, `report.json`, and in-code scenarios are in use. The harness later added `--fast`, `--sweep`, and the explicit `brain` repo scenario.
 - End-to-end fast-run evidence exists at `sim-logs/sim-run-1783392991269/report.md`: an 18-minute self-directed run with seven Done tasks and four green member branches. A deep run with r2/r3 remains pending.
+- The 2026-07-10 hardening pass added driver-owned member commits, error/timeout commit gating, tri-state CI, Git/path preflight, a global PID lock, owner-only Claude quota gating, early discovery reports, and strict sim TypeScript checking. See [2026-07-10-sim-run-hardening.md](./2026-07-10-sim-run-hardening.md).
 - The unchecked implementation steps below are the original execution recipe, not the live progress tracker. Current status and follow-up work live in [TASKS_V2.md](../../../TASKS_V2.md#phase-12--ai-模擬使用者sim-harnessclaude--codex-混合車隊).
 
 ---
@@ -40,7 +41,7 @@ Do not do yet:
 ## Target Flow
 
 ```text
-npm run sim -- --scenario technical-debt
+npm run sim -- --scenario self-directed
   -> create runId and sim-logs/<run-id>/
   -> bootstrap existing task-tracker workspace/worktrees
   -> write each rendered prompt to prompts/*.md before spawning an agent
@@ -86,7 +87,7 @@ sim-logs/<run-id>/
 ```json
 {
   "runId": "sim-run-20260707-001",
-  "scenarioKey": "technical-debt",
+  "scenarioKey": "self-directed",
   "workspaceId": "workspace-id",
   "tag": "sim-run-...",
   "targetPath": "/home/hom/code/task-tracker",
@@ -101,10 +102,10 @@ Use an in-code map first:
 
 ```ts
 const SCENARIOS = {
-  'technical-debt': {
-    key: 'technical-debt',
-    title: '技術債清償 Sprint',
-    taskCreationMode: 'current-backlog',
+  'self-directed': {
+    key: 'self-directed',
+    title: '自主 Sprint',
+    taskCreationMode: 'owner-explored',
   },
   'product-ideation': {
     key: 'product-ideation',
@@ -117,11 +118,11 @@ const SCENARIOS = {
 Support:
 
 ```bash
-npm run sim -- --scenario technical-debt
+npm run sim -- --scenario self-directed
 npm run sim -- --scenario product-ideation
 ```
 
-Default: `technical-debt`.
+Default: `self-directed`. Stored legacy reports using `technical-debt` are explicitly mapped to `self-directed`; other unknown keys are skipped.
 
 `product-ideation` should not attempt broad repo implementation yet. It should ask the owner to create product/project/tasks in task-tracker. Implementation can be added after the report/artifact loop proves useful.
 
@@ -155,11 +156,12 @@ interface BranchReviewPacket {
   memberName: string;
   memberEmail: string;
   ahead: number;
+  dirty: boolean;
   commits: string[];
   changedFiles: string[];
   diffstat: string;
-  tsc: { ok: boolean; outputPath: string };
-  test: { ok: boolean; outputPath: string };
+  tsc: { status: 'pass' | 'fail' | 'skip'; outputPath: string };
+  test: { status: 'pass' | 'fail' | 'skip'; outputPath: string };
   packetPath: string;
 }
 ```
@@ -288,15 +290,16 @@ const markdown = formatReviewPacket({
   memberName: '小美',
   memberEmail: 'user02@test.local',
   ahead: 2,
+  dirty: false,
   commits: ['abc123 feat: example'],
   changedFiles: ['src/auth.ts'],
   diffstat: ' src/auth.ts | 2 ++',
-  tsc: { ok: true, outputPath: '/tmp/tsc.txt' },
-  test: { ok: false, outputPath: '/tmp/test.txt' },
+  tsc: { status: 'pass', outputPath: '/tmp/tsc.txt' },
+  test: { status: 'skip', outputPath: '/tmp/test.txt' },
   packetPath: '/tmp/packet.md',
 });
 assert.ok(markdown.includes('sim/user02'));
-assert.ok(markdown.includes('test: FAIL'));
+assert.ok(markdown.includes('test: SKIP'));
 assert.ok(markdown.includes('src/auth.ts'));
 ```
 
@@ -315,8 +318,8 @@ function formatReviewPacket(packet: BranchReviewPacket): string {
     '',
     `member: ${packet.memberName} <${packet.memberEmail}>`,
     `ahead: ${packet.ahead}`,
-    `tsc: ${packet.tsc.ok ? 'PASS' : 'FAIL'} (${packet.tsc.outputPath})`,
-    `test: ${packet.test.ok ? 'PASS' : 'FAIL'} (${packet.test.outputPath})`,
+    `tsc: ${packet.tsc.status.toUpperCase()} (${packet.tsc.outputPath})`,
+    `test: ${packet.test.status.toUpperCase()} (${packet.test.outputPath})`,
     '',
     '## Commits',
     ...packet.commits.map((commit) => `- ${commit}`),
@@ -373,7 +376,7 @@ Add a pure formatter test:
 ```ts
 const report = formatReportMarkdown({
   runId: 'sim-run-test',
-  scenarioKey: 'technical-debt',
+  scenarioKey: 'self-directed',
   workspaceId: 'ws1',
   tag: 'sim-run-test',
   startedAt: '2026-07-07T00:00:00.000Z',
@@ -434,7 +437,7 @@ git commit -m "feat: write sim sprint reports"
 Add:
 
 ```ts
-assert.strictEqual(parseScenario(['node', 'run.ts']).key, 'technical-debt');
+assert.strictEqual(parseScenario(['node', 'run.ts']).key, 'self-directed');
 assert.strictEqual(parseScenario(['node', 'run.ts', '--scenario', 'product-ideation']).key, 'product-ideation');
 assert.throws(() => parseScenario(['node', 'run.ts', '--scenario', 'missing']), /Unknown scenario/);
 ```
@@ -449,7 +452,7 @@ Use the `SCENARIOS` map from the Scenario Strategy section.
 
 - [ ] **Step 3: Use scenario title in owner open prompt**
 
-For `technical-debt`, keep current `BACKLOG` behavior.
+For `self-directed`, keep the current owner-explored backlog behavior.
 
 For `product-ideation`, owner open prompt should create a project and tasks for product discovery only. No code implementation requirement yet.
 
@@ -470,9 +473,13 @@ git commit -m "feat: add minimal sim scenarios"
 
 - `npm test` passes.
 - `npm run build` passes.
-- Existing `npm run sim -- --smoke` still works for `technical-debt`.
+- Existing `npm run sim -- --smoke --scenario self-directed` still works.
 - Every session writes a prompt file before spawning the agent.
 - `verifyBranches()` writes review packet markdown and command output files.
+- Only `pass + pass` is automatically green; `skip` requires explicit Owner review and dirty worktrees are never treated as lost work.
+- Error/timeout member sessions never call the driver commit path.
+- Manual runs and timers share one PID lock; a Claude quota failure cannot cancel available Codex member work.
+- `npm test` type-checks both `src/` and `sim/`.
 - Final run writes `report.md` and `report.json`.
 - `product-ideation` can create planning tasks without touching app code.
 
