@@ -2,6 +2,7 @@
 
 > 對應 [DESIGN_V2.md](DESIGN_V2.md)，接續 [TASKS.md](TASKS.md) 已完成的 Phase 0-7。
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
+> 最後巡檢：2026-07-10；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 13 是目前交接。
 
 ---
 
@@ -55,7 +56,7 @@
 
 ---
 
-## Phase 11 — 前端串接
+## Phase 11 — 前端串接 ✅
 
 - [x] 單頁 hash routing：`{hash 前綴: renderFn}` 查表 + `switch`，無框架
 - [x] 登入頁（呼叫既有 `/api/auth/login`，401 導回登入）
@@ -86,15 +87,54 @@
 ## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex 混合車隊）
 
 - [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-05、join）→ spawn headless 子行程
-- [x] 混合車隊：Owner=user01（`claude -p` opus，開場建 task/收尾巡場）；Member user02/03（`claude -p` haiku）、user04/05（`codex exec` gpt-5.4-mini，走 ChatGPT 額度）
+- [x] 混合車隊：Owner 開場=Claude Sonnet、中場/收尾/repair=Claude Opus；user02=Claude Haiku；user03=Codex gpt-5.4；user04/05=Codex gpt-5.4-mini
 - [x] 主題 Dogfooding：owner prompt 內嵌本專案真實技術債清單（ponytail: 註記）出題
 - [x] 全員 QA 規則：可重現的系統問題建 `[BUG]` task（重現步驟/預期 vs 實際/原始回應），owner 收尾 triage
 - [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
-- [ ] 跑完整一場（`npm run sim`，約 15-25 分鐘：opus×2 + haiku×6 + gpt-5.4-mini×6）
+- [x] 各模式寫入 prompt artifacts、`report.md` 與 `report.json`；fast/deep 場在 branch 驗證後另寫 review packets
+- [x] 支援 `self-directed` / `product-ideation` / `brain` scenario，以及 `--fast` / `--smoke` / `--sweep owner|team`
+- [x] 跑完整端到端 `--fast` self-directed sprint（`sim-run-1783392991269`）
+- [ ] 跑深度 `npm run sim`（含 r2/r3 與中場 owner 審查）
 
 > 實測（smoke）：bootstrap 5 人就位；haiku member 正確走「無指派→建詢問 task」分支（3/12 curl）；
 > codex member 同樣完成（曾卡在 `codex exec` 等 piped stdin EOF，已修：spawn 後立即 `child.stdin.end()`）。
-> `tsc`（standalone flags 檢查 sim/run.ts）與 `npm test` 均乾淨；sim/ 不在 tsconfig include，不影響 build。
+> Fast 場於 2026-07-07 執行 18 分 21 秒：7 題全部 Done，4 支成員 branch 的 tsc/test 均 PASS，產生 26 則留言與 47 個 events。
+> 本機證據：`sim-logs/sim-run-1783392991269/report.md`。產物/報告/scenario 實作主要來自 `3721b50`；後續 sandbox 路徑與重複 escalation 修正為 `e9fdb69`。
+
+---
+
+## Phase 13 — AI session 巡檢交接（2026-07-10）
+
+> 來源：`data/dev.db` 的目前看板、`sim-logs/` 最新 sweep，以及 Claude/Codex session 記錄。下列功能必須用 `self-directed` 或 `product-ideation` scenario，讓 `repoRoot` 指向本 repo；不放寬 sandbox 白名單。
+
+### 跨 workspace 搬移 task（`451c2509`，Doing / High）
+
+- [ ] `moveTask(actorId, taskId, targetWorkspaceId)` append `task.moved`，payload 含 source/target workspace
+- [ ] projection 同步更新 `workspace_id`，並清掉舊 workspace 所屬的 `project_id`
+- [ ] actor 在 source/target 均至少為 Member；source/target 都必須 active；archived task 不可搬移
+- [ ] assignee 不在 target 時走既有 invite/join 流程，不隱式寫 read model；這是只限本 task 原 assignee、固定 Member 角色的受限例外，不得變成任意邀人或指定角色的旁路
+- [ ] 已存在 pending invite 不可讓搬移失敗；測試必須證明受限例外沒有放寬一般 Member API 的 Admin+ 邊界
+- [ ] 新增 `POST /api/tasks/:id/move`，使用既有 command error 映射
+- [ ] 自動測試覆蓋成功、權限不足、inactive workspace、archived task、`project_id` 清空與 pending invite
+- [ ] 真 HTTP smoke 用 A=source only、B=target only、C=雙邊成員驗證搬移前後 `GET/PATCH/comments` 權限完整反轉
+
+> 最新 user03 sweep 未改程式。Brain repo 的 `20e8b2c` 只包含 `.jar-user03.txt`，不是 task-tracker 功能實作，不應合併當作交付。
+
+### Workspace 封存入口（`de228444`，Todo / Medium）
+
+- [x] domain 已有 `archiveWorkspace` / `deleteWorkspace` 與唯一 Owner 守門
+- [ ] 確認並新增 archive HTTP 路由，保留後端權限為唯一權威；delete endpoint 不在本題範圍
+- [ ] 前端 workspace 管理頁提供封存操作與清楚確認，不先做批次管理
+
+### 台北時區顯示（`1f369e88`，Todo / Medium）
+
+- [ ] 系統產生的任務/留言/審計時間在顯示層統一使用 `Asia/Taipei` (`+08:00`)
+- [ ] 資料庫與 API 繼續儲存/傳輸 UTC ISO timestamp，不回填改寫歷史時間
+- [ ] 不自動重寫使用者輸入的 title/description/comment 自由文字
+
+### 巡檢發現
+
+- [ ] 欄內新增 UI 會將 `status` 送到 create-task API，但後端目前忽略該欄位並固定建立 Todo；Doing/Review 欄的新增結果與 UI 預期不一致。
 
 ---
 
@@ -102,5 +142,5 @@
 
 - [x] 忘記密碼 token：`randomBytes` 產生、存 hash、單次使用、有過期時間
 - [x] Member 邀請：權限升級檢查（Admin 不能任命 Owner）、IDOR 檢查、最後一個 Owner 防呆
-- [x] 前端 XSS：使用者輸入一律 `textContent`（`public/app.js` 的 `el()` helper 一律用 `textContent`；
-      `innerHTML` 只用在檔案內自己寫死、無變數插值的靜態骨架 markup）
+- [x] 前端 XSS：使用者輸入一律透過 `textContent` 渲染（共用 `el()` helper 位於 `public/js/utils.js`；
+      各 `public/js/views/*` 模組的 `innerHTML` 只用於無使用者變數插值的靜態骨架 markup）
