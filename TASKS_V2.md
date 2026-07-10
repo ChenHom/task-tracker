@@ -99,6 +99,7 @@
 - [x] `sim-logs/.run.lock` 序列化 manual/timer 流程並回收 dead-PID lock；平行 member 全部 settle 後才解鎖
 - [x] Claude quota probe 只影響 owner 預算；`team` 不做全域 probe，`both` 在 Claude 不可用時仍保留 Codex member 預算
 - [x] `sim/tsconfig.json` 納入 `npm test`，讓 sim harness 也受 strict TypeScript 檢查
+- [x] `docs/operations.md` 記錄手動模式、scenario、systemd owner/team timers、logs、lock 與權限邊界
 - [x] 跑完整端到端 `--fast` self-directed sprint（`sim-run-1783392991269`）
 - [ ] 跑深度 `npm run sim`（含 r2/r3 與中場 owner 審查）
 
