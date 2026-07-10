@@ -343,6 +343,13 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     commInput.style.height = `${newHeight}px`;
   });
 
+  // Shrink to single-line on blur
+  commInput.addEventListener('blur', () => {
+    setTimeout(() => {
+      commInput.style.height = '38px';
+    }, 150);
+  });
+
   // Handle enter key to submit, shift+enter to newline (Desktop only)
   commInput.addEventListener('keydown', (e) => {
     if (window.innerWidth > 768 && e.key === 'Enter' && !e.shiftKey) {
