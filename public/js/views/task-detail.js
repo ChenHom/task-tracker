@@ -916,8 +916,8 @@ function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberM
     } else if (spaceAbove >= requiredSpace) {
       positionMode = 'above';
     } else {
-      closeDropdown();
-      return;
+      // If neither side has enough space for 3 options, do nothing (keep it in default below position)
+      positionMode = 'below';
     }
 
     if (!dropdown) {
