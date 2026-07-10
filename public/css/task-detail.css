@@ -526,9 +526,10 @@ p.error {
   }
 }
 
-/* Mention and Link Suggestions Dropdown */
 .mention-suggestions-box {
   position: absolute;
+  top: 100%;
+  left: 0;
   background: #ffffff;
   border: 2px solid var(--pencil-color);
   border-radius: 6px;
@@ -541,6 +542,13 @@ p.error {
   min-width: 200px;
   width: 100%;
 }
+
+.mention-suggestions-box.position-above {
+  bottom: 100%;
+  top: auto;
+  box-shadow: 3px -3px 0px 0px var(--pencil-color);
+}
+
 
 .mention-suggestion-item {
   padding: 0.4rem 0.6rem;

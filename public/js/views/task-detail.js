@@ -884,7 +884,7 @@ function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberM
           return {
             shortId,
             label: `::${shortId} - ${t.title}`,
-            insertValue: `::${shortId} `,
+            insertValue: `::${shortId} (${t.title}) `,
             raw: t
           };
         })
@@ -902,9 +902,33 @@ function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberM
       return;
     }
 
+    const rect = textarea.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+
+    const itemHeight = 32;
+    const targetCount = Math.min(suggestions.length, 3);
+    const requiredSpace = targetCount * itemHeight + 12;
+
+    let positionMode = 'below';
+    if (spaceBelow >= requiredSpace) {
+      positionMode = 'below';
+    } else if (spaceAbove >= requiredSpace) {
+      positionMode = 'above';
+    } else {
+      closeDropdown();
+      return;
+    }
+
     if (!dropdown) {
       dropdown = el('div', { class: 'mention-suggestions-box' });
       wrapper.appendChild(dropdown);
+    }
+
+    if (positionMode === 'above') {
+      dropdown.classList.add('position-above');
+    } else {
+      dropdown.classList.remove('position-above');
     }
 
     dropdown.textContent = '';
