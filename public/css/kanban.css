@@ -101,7 +101,7 @@
   background: var(--card-bg);
   border: 2px solid var(--pencil-color);
   border-radius: 8px;
-  padding: 1.8rem 0.8rem 0.8rem 0.8rem;
+  padding: 1.2rem 0.8rem 0.8rem 0.8rem;
   box-shadow: 4px 4px 0px 0px var(--pencil-color);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   position: relative;
@@ -435,7 +435,7 @@
   position: absolute;
   top: 0.5rem;
   left: 0.8rem;
-  font-size: 0.75rem;
+  font-size: 0.55rem;
   color: #6b7280;
   font-family: monospace;
   cursor: pointer;
