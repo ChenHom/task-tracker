@@ -285,74 +285,14 @@ export const KanbanView = {
       });
 
       for (const task of filtered) {
-        const card = el('div', { class: 'task-card', 'data-task-id': task.task_id });
+        const card = el('div', {
+          class: 'task-card',
+          'data-task-id': task.task_id,
+          'data-short-id': `::${task.task_id.split('-')[0]}`
+        });
 
         // Top Section: Title & Description
         const topEl = el('div', { class: 'task-card-top clickable-section' });
-
-        const shortId = task.task_id.split('-')[0];
-        const idDiv = el('div', { class: 'task-card-number' }, `::${shortId}`);
-        idDiv.onclick = (e) => {
-          e.stopPropagation();
-          e.preventDefault();
-
-          // Remove any existing task action popup
-          const oldPopup = document.getElementById('task-action-popup');
-          if (oldPopup) oldPopup.remove();
-
-          const popup = el('div', {
-            id: 'task-action-popup',
-            class: 'task-action-popup'
-          });
-          popup.style.left = `${e.pageX}px`;
-          popup.style.top = `${e.pageY}px`;
-
-          const openBtn = el('button', { type: 'button', class: 'btn-secondary' }, '開啟');
-          openBtn.onclick = () => {
-            navigate(`#/task/${task.task_id}`);
-            popup.remove();
-          };
-
-          const shareBtn = el('button', { type: 'button', class: 'btn-secondary' }, '分享');
-          shareBtn.onclick = async () => {
-            const shareUrl = `${window.location.origin}${window.location.pathname}#/task/${task.task_id}`;
-            try {
-              await navigator.clipboard.writeText(shareUrl);
-              alert('分享連結已複製到剪貼簿！');
-            } catch (err) {
-              alert(`分享連結：${shareUrl}`);
-            }
-            popup.remove();
-          };
-
-          const copyIdBtn = el('button', { type: 'button', class: 'btn-secondary' }, '複製 id');
-          copyIdBtn.onclick = async () => {
-            try {
-              await navigator.clipboard.writeText(task.task_id);
-              alert('任務 ID 已複製到剪貼簿！');
-            } catch (err) {
-              alert(`任務 ID：${task.task_id}`);
-            }
-            popup.remove();
-          };
-
-          popup.appendChild(openBtn);
-          popup.appendChild(shareBtn);
-          popup.appendChild(copyIdBtn);
-          document.body.appendChild(popup);
-
-          // Close popup on click outside
-          const closeHandler = (clickEv) => {
-            if (!popup.contains(clickEv.target)) {
-              popup.remove();
-              document.removeEventListener('click', closeHandler);
-            }
-          };
-          setTimeout(() => {
-            document.addEventListener('click', closeHandler);
-          }, 0);
-        };
-        topEl.appendChild(idDiv);
 
         const titleEl = el('h4', { class: 'task-card-title' });
         const titleLink = el('a', { href: `#/task/${task.task_id}` }, task.title);
@@ -490,6 +430,76 @@ export const KanbanView = {
         const card = e.target.closest('.task-card');
         if (!card) return;
         const taskId = card.getAttribute('data-task-id');
+
+        // Check if clicked the ::before pseudo-element in the top-left area
+        const rect = card.getBoundingClientRect();
+        const isClickOnPseudo = (
+          e.clientX >= rect.left + 8 &&
+          e.clientX <= rect.left + 95 &&
+          e.clientY >= rect.top + 5 &&
+          e.clientY <= rect.top + 28
+        );
+
+        if (isClickOnPseudo) {
+          e.stopPropagation();
+          e.preventDefault();
+
+          // Remove any existing task action popup
+          const oldPopup = document.getElementById('task-action-popup');
+          if (oldPopup) oldPopup.remove();
+
+          const popup = el('div', {
+            id: 'task-action-popup',
+            class: 'task-action-popup'
+          });
+          popup.style.left = `${e.pageX}px`;
+          popup.style.top = `${e.pageY}px`;
+
+          const openBtn = el('button', { type: 'button', class: 'btn-secondary' }, '開啟');
+          openBtn.onclick = () => {
+            navigate(`#/task/${taskId}`);
+            popup.remove();
+          };
+
+          const shareBtn = el('button', { type: 'button', class: 'btn-secondary' }, '分享');
+          shareBtn.onclick = async () => {
+            const shareUrl = `${window.location.origin}${window.location.pathname}#/task/${taskId}`;
+            try {
+              await navigator.clipboard.writeText(shareUrl);
+              alert('分享連結已複製到剪貼簿！');
+            } catch (err) {
+              alert(`分享連結：${shareUrl}`);
+            }
+            popup.remove();
+          };
+
+          const copyIdBtn = el('button', { type: 'button', class: 'btn-secondary' }, '複製 id');
+          copyIdBtn.onclick = async () => {
+            try {
+              await navigator.clipboard.writeText(taskId);
+              alert('任務 ID 已複製到剪貼簿！');
+            } catch (err) {
+              alert(`任務 ID：${taskId}`);
+            }
+            popup.remove();
+          };
+
+          popup.appendChild(openBtn);
+          popup.appendChild(shareBtn);
+          popup.appendChild(copyIdBtn);
+          document.body.appendChild(popup);
+
+          const closeHandler = (clickEv) => {
+            if (!popup.contains(clickEv.target)) {
+              popup.remove();
+              document.removeEventListener('click', closeHandler);
+            }
+          };
+          setTimeout(() => {
+            document.addEventListener('click', closeHandler);
+          }, 0);
+          return;
+        }
 
         // 判斷點擊的是否為動作按鈕
         const actionEl = e.target.closest('[data-action]');

@@ -101,7 +101,7 @@
   background: var(--card-bg);
   border: 2px solid var(--pencil-color);
   border-radius: 8px;
-  padding: 0.8rem;
+  padding: 1.8rem 0.8rem 0.8rem 0.8rem;
   box-shadow: 4px 4px 0px 0px var(--pencil-color);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   position: relative;
@@ -429,17 +429,19 @@
   }
 }
 
-/* Task card short ID display */
-.task-card-number {
+/* Task card short ID display via pseudo-element */
+.task-card::before {
+  content: attr(data-short-id);
+  position: absolute;
+  top: 0.5rem;
+  left: 0.8rem;
   font-size: 0.75rem;
   color: #6b7280;
   font-family: monospace;
-  margin-bottom: 0.2rem;
   cursor: pointer;
-  width: fit-content;
   user-select: none;
 }
-.task-card-number:hover {
+.task-card:hover::before {
   color: #374151;
   text-decoration: underline;
 }
