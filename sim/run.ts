@@ -119,6 +119,9 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
 ];
 
 const BRAIN_ROOT = '/home/hom/code/brain';
+// 多個 session 各自 npm install/npx 時，預設 cache（~/.npm）在唯讀 HOME 的沙盒會 EROFS；
+// 固定指到一個可寫的共用暫存目錄，讓所有 session 的子行程都吃到（見 runSession 的 env 注入）。
+const NPM_CACHE_DIR = '/tmp/sim-npm-cache';
 
 // repoRoot：成員實作/CI/worktree 針對的 repo；self-directed/product-ideation 是本 task-tracker，brain 是獨立沙盒
 const SCENARIOS = {
@@ -234,7 +237,7 @@ function ensureBrainRepo(): void {
   git(['config', 'user.email', 'sim-brain@local'], BRAIN_ROOT);
   git(['config', 'user.name', 'sim-brain'], BRAIN_ROOT);
   writeFileSync(join(BRAIN_ROOT, 'README.md'), '# brain\n\nAI 團隊自主孵化的主題專案沙盒。每個子目錄是一個專案，由 sim sprint 逐場迭代。\n');
-  writeFileSync(join(BRAIN_ROOT, '.gitignore'), 'node_modules\nsim-work/\ndist/\n');
+  writeFileSync(join(BRAIN_ROOT, '.gitignore'), 'node_modules\nsim-work/\ndist/\n.jar-*.txt\n');
   git(['add', '-A'], BRAIN_ROOT);
   git(['commit', '-m', 'chore: brain repo 初始化（sim driver）'], BRAIN_ROOT);
   console.log('[bootstrap] brain repo 已初始化於 ' + BRAIN_ROOT);
@@ -325,9 +328,11 @@ function runSession(
        '-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true',
        '-m', model, '--output-last-message', `${logFile}.last`, prompt];
   console.log(`[${label}] 開始（${runner}/${model}）`);
+  mkdirSync(NPM_CACHE_DIR, { recursive: true });
   return new Promise((resolve) => {
     const child = execFile(runner === 'claude' ? 'claude' : 'codex', args,
-      { cwd: opts.cwd, timeout: opts.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 20 * 1024 * 1024 },
+      { cwd: opts.cwd, timeout: opts.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 20 * 1024 * 1024,
+        env: { ...process.env, npm_config_cache: NPM_CACHE_DIR } },
       (err, stdout, stderr) => {
         // execFile 逾時→送 killSignal(SIGKILL)＋err.killed=true；據此明確判定「逾時」而非額度/API 錯誤
         const e = err as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null;
@@ -381,7 +386,9 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 - 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層`;
 
 function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario): string {
-  const jar = join(LOG_DIR, `jar-${m.user}.txt`);
+  // jar 必須落在成員自己的 worktree 內：LOG_DIR 固定在 task-tracker 底下，跨到別的 repo 或
+  // 甚至同一 repo 的兄弟目錄（sim-logs/）都可能落在該 session 實際允許寫入的範圍之外。
+  const jar = join(wt(m), `.jar-${m.user}.txt`);
   const isBrain = scenario.repoRoot === BRAIN_ROOT;
   const workdirDesc = isBrain
     ? '你的工作目錄（已是 git worktree，branch ' + branch(m) + '）就是目前目錄，是團隊共用的主題專案沙盒 repo；task 會指明要動哪個子專案。'
@@ -415,11 +422,12 @@ ${m.runner === 'claude'
 5. 實作 → 跑驗證${m.runner === 'claude' ? ' → commit' : '（改檔+驗證即可，不用 commit）'}
 6. 完成留言：做法摘要、驗證實際結果${m.runner === 'claude' ? '、commit hash' : '（CI 會補上 commit）'}（branch ${branch(m)}）→ PATCH {"status":"Review"}
 7. 一次只做一題；做完進 Review 才可回步驟 2 認領下一題。若沒有可做也沒有可認領的題：讀一個隊友 task 的留言串，留一則有實質內容的意見，然後總結下線
+⚠️ 若這題卡在「需要修改的原始碼不在你目前工作目錄底下」這類環境/scenario 不一致（不是 code 邏輯問題），且上一則留言已經講過同樣結論、環境沒有變化：這輪不要重新實測探針指令、不要重寫一次完整解釋，留言最多一句「環境阻塞未變，維持現狀」即可，把時間留給步驟 7 那類還能做的事。
 結束時輸出一行總結。`;
 }
 
 function ownerOpenPrompt(wsId: string, scenario: Scenario, material: string): string {
-  const jar = join(LOG_DIR, 'jar-owner.txt');
+  const jar = join(REPO_ROOT, '.jar-owner.txt'); // 落在 owner 自己的 cwd（REPO_ROOT）內，理由同 memberPrompt
   const byName: Record<string, string> = {};
   for (const m of MEMBERS) byName[m.name] = m.userId!;
   const roster = MEMBERS.map((m) => `- ${m.name}（user_id ${m.userId}）：${m.profile}`).join('\n');
@@ -479,7 +487,7 @@ ${API_RULES(jar)}
 }
 
 function ownerMidPrompt(wsId: string): string {
-  const jar = join(LOG_DIR, 'jar-owner-mid.txt');
+  const jar = join(REPO_ROOT, '.jar-owner-mid.txt');
   const map = MEMBERS.map((m) => `- ${m.name}（user_id ${m.userId}）→ branch ${branch(m)}`).join('\n');
   return `你是「${OWNER.name}」（${OWNER.email}），Owner。第一輪開發完成，進行中場 code review（只審查，不 merge）。
 workspace：${wsId}。目前目錄是主 repo（master）。
@@ -494,12 +502,12 @@ ${API_RULES(jar)}
    c. 合格 → 留言具體肯定＋「中場審查通過，收尾時合併」（狀態保持 Review）
    d. 不合格 → 留言具體問題（引用檔案與行為）→ PATCH {"status":"Doing"} 退回
 3. 對「還沒被任何人認領」（assignee_id 為 null、還在 Todo）的 task：留言分析為什麼沒人領（題目太大？說明不清楚？），補充說明讓它更好認領，或點名建議哪位成員的專長適合（只是建議，不要強制指派）
-4. 留言含 [ESCALATE] 的 task：能給指導就留言具體指導；屬於環境/基礎設施問題你也解不了的 → 留言「已上報 harness 上層處理」並保持該 task 現狀
+4. 留言含 [ESCALATE] 的 task：能給指導就留言具體指導；屬於環境/基礎設施問題你也解不了的 → 留言「已上報 harness 上層處理」並保持該 task 現狀。若同一個環境/scenario 不一致的阻塞已經連續多輪判定過（上一則留言結論相同、環境沒變化）：不需要每輪重新分析，留言一句「阻塞未變」即可，不要重複整段診斷
 結束時輸出審查總結（幾件過、幾件退、退的原因、幾件無人認領、幾件上報）。`;
 }
 
 function ownerClosePrompt(wsId: string, tag: string, verified: BranchReviewPacket[], scenario: Scenario): string {
-  const jar = join(LOG_DIR, 'jar-owner-close.txt');
+  const jar = join(REPO_ROOT, '.jar-owner-close.txt');
   const packetByBranch = new Map(verified.map((packet) => [packet.branch, packet]));
   const map = MEMBERS.map((m) => {
     const packet = packetByBranch.get(branch(m));
@@ -901,7 +909,7 @@ function ensureWorktree(m: Member, scenario: Scenario): void {
 interface SweepTask { task_id: string; title: string; status: string; assignee_id: string | null }
 
 function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string): string {
-  const jar = join(LOG_DIR, 'jar-owner-sweep.txt');
+  const jar = join(REPO_ROOT, '.jar-owner-sweep.txt');
   const packetByBranch = new Map(verified.map((p) => [p.branch, p]));
   const ci = MEMBERS.map((m) => {
     const p = packetByBranch.get(branch(m));
@@ -927,7 +935,7 @@ ${API_RULES(jar)}
      ⚠️ 遇衝突「絕對不要手動解」（上一場 owner 就是手動解衝突逾時被強制中止）：git merge --abort → 留言列出衝突檔案、請成員 rebase → PATCH {"status":"Doing"}
    - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
    - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"} 再 PATCH {"status":"Todo"}，並 PATCH {"assignee":null} 讓人重新認領
-4. status=Doing 沒動靜的：催辦留言。無主 Todo 沒人領的：補充說明讓它更好認領
+4. status=Doing 沒動靜的：催辦留言。無主 Todo 沒人領的：補充說明讓它更好認領。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）、且上一輪已有相同結論、環境沒有變化：不要催辦、不要重新診斷，跳過即可
 5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task
 6. 結束輸出 3 行內總結（合了幾件、退了幾件、老闆有無新指示）`;
 }
