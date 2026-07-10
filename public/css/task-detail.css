@@ -608,4 +608,17 @@ p.error {
   flex-direction: column;
 }
 
+.rich-task-link {
+  color: #10b981;
+  text-decoration: underline;
+  font-weight: 700;
+  margin: 0 2px;
+  cursor: pointer;
+}
+
+.rich-task-link:hover {
+  color: #059669;
+}
+
+
 

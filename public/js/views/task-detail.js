@@ -296,7 +296,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   const descWrapper = el('div', { class: 'autocomplete-desc-wrapper' });
   descWrapper.appendChild(descInput);
   contentSec.appendChild(descWrapper);
-  bindAutocomplete(descInput, descWrapper, cachedMembers, () => cachedComments, memberMap);
+  bindAutocomplete(descInput, descWrapper, cachedMembers, () => cachedComments, memberMap, cachedTasks);
   
   const saveBtnGroup = el('div', { class: 'detail-save-btn-group' });
   
@@ -368,7 +368,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   commForm.appendChild(commSubmit);
   commSec.appendChild(commList);
   commSec.appendChild(commForm);
-  bindAutocomplete(commInput, commWrapper, cachedMembers, () => cachedComments, memberMap);
+  bindAutocomplete(commInput, commWrapper, cachedMembers, () => cachedComments, memberMap, cachedTasks);
   const commErr = el('p', { class: 'error' });
   commSec.appendChild(commErr);
   
@@ -507,7 +507,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
         item.appendChild(header);
 
         const bodyContainer = el('div', { class: 'comment-body' });
-        const contentFrag = renderRichText(c.content, cachedMembers, cachedComments);
+        const contentFrag = renderRichText(c.content, cachedMembers, cachedComments, cachedTasks);
         bodyContainer.appendChild(contentFrag);
         item.appendChild(bodyContainer);
 
@@ -525,7 +525,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
               bodyContainer.appendChild(editWrapper);
               input.focus();
               editBtn.textContent = '儲存';
-              bindAutocomplete(input, editWrapper, cachedMembers, () => cachedComments, memberMap);
+              bindAutocomplete(input, editWrapper, cachedMembers, () => cachedComments, memberMap, cachedTasks);
               
               input.onkeydown = async (ev) => {
                 if (window.innerWidth > 768 && ev.key === 'Enter' && !ev.shiftKey) {
@@ -823,7 +823,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
 /**
  * Autocomplete / Mentions suggestion dropdown binder
  */
-function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberMap) {
+function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberMap, cachedTasks) {
   let activeTrigger = null;
   let triggerIndex = -1;
   let selectedIndex = 0;
@@ -874,6 +874,22 @@ function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberM
         })
         .filter(item => {
           return String(item.number).includes(query) || item.label.toLowerCase().includes(query);
+        });
+    } else if (activeTrigger === '::') {
+      const taskQuery = text.substring(triggerIndex + 2, cursorPos).toLowerCase();
+      const tasks = cachedTasks || [];
+      return tasks
+        .map(t => {
+          const shortId = t.task_id.split('-')[0];
+          return {
+            shortId,
+            label: `::${shortId} - ${t.title}`,
+            insertValue: `::${shortId} `,
+            raw: t
+          };
+        })
+        .filter(item => {
+          return item.shortId.toLowerCase().includes(taskQuery) || item.raw.title.toLowerCase().includes(taskQuery);
         });
     }
     return [];
@@ -972,6 +988,13 @@ function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberM
         }
         break;
       }
+      if (char === ':' && i > 0 && text[i - 1] === ':') {
+        if (i - 1 === 0 || text[i - 2] === ' ' || text[i - 2] === '\n') {
+          activeTrigger = '::';
+          triggerIndex = i - 1;
+        }
+        break;
+      }
     }
 
     if (activeTrigger) {
@@ -989,11 +1012,11 @@ function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberM
 /**
  * Rich Text renderer for parsing mentions (@name) and comment links (#N)
  */
-function renderRichText(text, cachedMembers, cachedComments) {
+function renderRichText(text, cachedMembers, cachedComments, cachedTasks) {
   const fragment = document.createDocumentFragment();
   if (!text) return fragment;
 
-  const regex = /(@(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[^\s@#\(\)]+))|(#\d+)/g;
+  const regex = /(@(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[^\s@#\(\)]+))|(#\d+)|(::[a-fA-F0-9]{8})/g;
   const parts = text.split(regex);
 
   parts.forEach(part => {
@@ -1032,6 +1055,25 @@ function renderRichText(text, cachedMembers, cachedComments) {
           } else {
             alert(`找不到留言 #${num}`);
           }
+        };
+        fragment.appendChild(link);
+      } else {
+        fragment.appendChild(document.createTextNode(part));
+      }
+    } else if (part.startsWith('::') && /^[a-fA-F0-9]{8}$/.test(part.slice(2))) {
+      const shortId = part.slice(2);
+      const tasks = cachedTasks || [];
+      const targetTask = tasks.find(t => t.task_id.startsWith(shortId));
+      if (targetTask) {
+        const link = el('a', {
+          href: '#',
+          class: 'rich-task-link',
+          title: targetTask.title
+        }, `::${shortId}`);
+        link.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          window.location.hash = `#/task/${targetTask.task_id}`;
         };
         fragment.appendChild(link);
       } else {
