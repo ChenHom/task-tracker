@@ -1049,7 +1049,7 @@ function renderRichText(text, cachedMembers, cachedComments, cachedTasks) {
   const fragment = document.createDocumentFragment();
   if (!text) return fragment;
 
-  const regex = /(@(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[^\s@#\(\)]+))|(#\d+)|(::[a-fA-F0-9]{8})/g;
+  const regex = /(@(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[^\s@#\(\)]+))|(#\d+)|(::[a-fA-F0-9]{8}(?:\([^)]+\))?)/g;
   const parts = text.split(regex);
 
   parts.forEach(part => {
@@ -1093,8 +1093,8 @@ function renderRichText(text, cachedMembers, cachedComments, cachedTasks) {
       } else {
         fragment.appendChild(document.createTextNode(part));
       }
-    } else if (part.startsWith('::') && /^[a-fA-F0-9]{8}$/.test(part.slice(2))) {
-      const shortId = part.slice(2);
+    } else if (part.startsWith('::')) {
+      const shortId = part.slice(2, 10);
       const tasks = cachedTasks || [];
       const targetTask = tasks.find(t => t.task_id.startsWith(shortId));
       if (targetTask) {
@@ -1102,7 +1102,7 @@ function renderRichText(text, cachedMembers, cachedComments, cachedTasks) {
           href: '#',
           class: 'rich-task-link',
           title: targetTask.title
-        }, `::${shortId}`);
+        }, part);
         link.onclick = (e) => {
           e.preventDefault();
           e.stopPropagation();
