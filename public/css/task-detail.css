@@ -122,9 +122,8 @@
   height: 38px;
   box-sizing: border-box;
   overflow-y: auto;
-  margin: 0;
-  margin-bottom: 0;
   min-width: 0;
+  margin: 0;
 }
 .comment-submit-btn {
   height: 38px;
@@ -596,6 +595,7 @@ p.error {
   position: relative;
   flex-grow: 1;
   display: flex;
+  margin: 0;
 }
 
 .autocomplete-edit-wrapper {
