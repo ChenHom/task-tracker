@@ -522,3 +522,86 @@ p.error {
     display: none !important;
   }
 }
+
+/* Mention and Link Suggestions Dropdown */
+.mention-suggestions-box {
+  position: absolute;
+  background: #ffffff;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 3px 3px 0px 0px var(--pencil-color);
+  min-width: 200px;
+  width: 100%;
+}
+
+.mention-suggestion-item {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+  color: var(--pencil-color);
+}
+
+.mention-suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.mention-suggestion-item.active,
+.mention-suggestion-item:hover {
+  background-color: var(--btn-hover-bg);
+  font-weight: bold;
+}
+
+/* Rich Text Rendering Styles */
+.rich-mention {
+  background-color: var(--highlight-todo);
+  border: 2px solid var(--pencil-color);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-weight: 700;
+  font-size: 0.9em;
+  box-shadow: 1px 1px 0px 0px var(--pencil-color);
+  display: inline-block;
+  margin: 0 2px;
+}
+
+.rich-comment-link {
+  color: #2563eb;
+  text-decoration: underline;
+  font-weight: 700;
+  margin: 0 2px;
+  cursor: pointer;
+}
+
+.rich-comment-link:hover {
+  color: #1d4ed8;
+}
+
+/* Autocomplete Textarea Wrapper Classes */
+.autocomplete-desc-wrapper {
+  position: relative;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.autocomplete-comm-wrapper {
+  position: relative;
+  flex-grow: 1;
+  display: flex;
+}
+
+.autocomplete-edit-wrapper {
+  position: relative;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+

@@ -46,6 +46,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
   let escHandler, hashChangeHandler;
   let activeReplyBoxClickCloseHandler; // Track reply box click close handler to prevent memory leaks
   let hasScrolledToComment = false;
+  let cachedComments = [];
 
   if (document.body && document.body.classList) {
     document.body.classList.add('modal-open');
@@ -291,7 +292,11 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
       }
     }
   });
-  contentSec.appendChild(descInput);
+  // Wrap descInput to enable autocomplete absolute positioning
+  const descWrapper = el('div', { class: 'autocomplete-desc-wrapper' });
+  descWrapper.appendChild(descInput);
+  contentSec.appendChild(descWrapper);
+  bindAutocomplete(descInput, descWrapper, cachedMembers, () => cachedComments, memberMap);
   
   const saveBtnGroup = el('div', { class: 'detail-save-btn-group' });
   
@@ -350,10 +355,13 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     }
   });
 
-  commForm.appendChild(commInput);
+  const commWrapper = el('div', { class: 'autocomplete-comm-wrapper' });
+  commWrapper.appendChild(commInput);
+  commForm.appendChild(commWrapper);
   commForm.appendChild(commSubmit);
   commSec.appendChild(commList);
   commSec.appendChild(commForm);
+  bindAutocomplete(commInput, commWrapper, cachedMembers, () => cachedComments, memberMap);
   const commErr = el('p', { class: 'error' });
   commSec.appendChild(commErr);
   
@@ -366,6 +374,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     commErr.style.display = 'none';
     try {
       const rows = await api(`/api/tasks/${taskId}/comments`);
+      cachedComments = rows; // Cache comments for autocomplete and rich links
       if (rows.length === 0) {
         commList.appendChild(el('li', { class: 'muted detail-empty-item' }, '（尚無留言）'));
         return;
@@ -491,8 +500,8 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
         item.appendChild(header);
 
         const bodyContainer = el('div', { class: 'comment-body' });
-        const contentText = el('span', { class: 'comment-content-text' }, c.content);
-        bodyContainer.appendChild(contentText);
+        const contentFrag = renderRichText(c.content, cachedMembers, cachedComments);
+        bodyContainer.appendChild(contentFrag);
         item.appendChild(bodyContainer);
 
         if (currentEmail && authorEmail === currentEmail) {
@@ -504,9 +513,12 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
               const input = el('textarea', { class: 'comment-edit-textarea', rows: '7' });
               input.value = c.content;
               bodyContainer.textContent = '';
-              bodyContainer.appendChild(input);
+              const editWrapper = el('div', { class: 'autocomplete-edit-wrapper' });
+              editWrapper.appendChild(input);
+              bodyContainer.appendChild(editWrapper);
               input.focus();
               editBtn.textContent = '儲存';
+              bindAutocomplete(input, editWrapper, cachedMembers, () => cachedComments, memberMap);
               
               input.onkeydown = async (ev) => {
                 if (window.innerWidth > 768 && ev.key === 'Enter' && !ev.shiftKey) {
@@ -798,4 +810,229 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
 
   // Initial loads
   await Promise.all([loadComments(), loadAttachments()]);
+}
+
+/**
+ * Autocomplete / Mentions suggestion dropdown binder
+ */
+function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberMap) {
+  let activeTrigger = null;
+  let triggerIndex = -1;
+  let selectedIndex = 0;
+  let dropdown = null;
+
+  const closeDropdown = () => {
+    if (dropdown) {
+      dropdown.remove();
+      dropdown = null;
+    }
+    activeTrigger = null;
+    triggerIndex = -1;
+    selectedIndex = 0;
+  };
+
+  const getFilteredSuggestions = () => {
+    if (!activeTrigger) return [];
+    const text = textarea.value;
+    const cursorPos = textarea.selectionStart;
+    const query = text.substring(triggerIndex + 1, cursorPos).toLowerCase();
+
+    if (activeTrigger === '@') {
+      return cachedMembers
+        .filter(m => {
+          const name = (m.name || '').toLowerCase();
+          const email = (m.email || '').toLowerCase();
+          return name.includes(query) || email.includes(query);
+        })
+        .map(m => ({
+          label: `${m.name || '未命名'} (${m.email})`,
+          insertValue: `@${m.name || m.email} `,
+          raw: m
+        }));
+    } else if (activeTrigger === '#') {
+      const comments = getComments() || [];
+      return comments
+        .map((c, idx) => {
+          const num = idx + 1;
+          const author = memberMap.get(c.user_id) || `成員 (${c.user_id.slice(0, 8)})`;
+          let snippet = c.content.trim().replace(/\n/g, ' ');
+          if (snippet.length > 20) snippet = snippet.substring(0, 20) + '...';
+          return {
+            number: num,
+            label: `#${num} - ${author}: ${snippet}`,
+            insertValue: `#${num} `,
+            raw: c
+          };
+        })
+        .filter(item => {
+          return String(item.number).includes(query) || item.label.toLowerCase().includes(query);
+        });
+    }
+    return [];
+  };
+
+  const renderDropdown = () => {
+    const suggestions = getFilteredSuggestions();
+    if (suggestions.length === 0) {
+      closeDropdown();
+      return;
+    }
+
+    if (!dropdown) {
+      dropdown = el('div', { class: 'mention-suggestions-box' });
+      wrapper.appendChild(dropdown);
+    }
+
+    dropdown.textContent = '';
+    suggestions.forEach((s, idx) => {
+      const item = el('div', {
+        class: `mention-suggestion-item${idx === selectedIndex ? ' active' : ''}`
+      }, s.label);
+      
+      item.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        selectSuggestion(s);
+      };
+
+      dropdown.appendChild(item);
+    });
+
+    if (selectedIndex >= suggestions.length) {
+      selectedIndex = suggestions.length - 1;
+      renderDropdown();
+    }
+  };
+
+  const selectSuggestion = (suggestion) => {
+    const text = textarea.value;
+    const cursorPos = textarea.selectionStart;
+    const before = text.substring(0, triggerIndex);
+    const after = text.substring(cursorPos);
+    const insertText = suggestion.insertValue;
+
+    textarea.value = before + insertText + after;
+    textarea.focus();
+    
+    const newCursorPos = triggerIndex + insertText.length;
+    textarea.setSelectionRange(newCursorPos, newCursorPos);
+
+    textarea.dispatchEvent(new Event('input'));
+    closeDropdown();
+  };
+
+  textarea.addEventListener('keydown', (e) => {
+    if (!dropdown) return;
+
+    const suggestions = getFilteredSuggestions();
+    if (suggestions.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectedIndex = (selectedIndex + 1) % suggestions.length;
+      renderDropdown();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectedIndex = (selectedIndex - 1 + suggestions.length) % suggestions.length;
+      renderDropdown();
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      selectSuggestion(suggestions[selectedIndex]);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeDropdown();
+    }
+  });
+
+  textarea.addEventListener('input', () => {
+    const text = textarea.value;
+    const cursorPos = textarea.selectionStart;
+
+    activeTrigger = null;
+    triggerIndex = -1;
+
+    for (let i = cursorPos - 1; i >= 0; i--) {
+      const char = text[i];
+      if (char === ' ' || char === '\n') {
+        break;
+      }
+      if (char === '@' || char === '#') {
+        if (i === 0 || text[i - 1] === ' ' || text[i - 1] === '\n') {
+          activeTrigger = char;
+          triggerIndex = i;
+        }
+        break;
+      }
+    }
+
+    if (activeTrigger) {
+      renderDropdown();
+    } else {
+      closeDropdown();
+    }
+  });
+
+  textarea.addEventListener('blur', () => {
+    setTimeout(closeDropdown, 200);
+  });
+}
+
+/**
+ * Rich Text renderer for parsing mentions (@name) and comment links (#N)
+ */
+function renderRichText(text, cachedMembers, cachedComments) {
+  const fragment = document.createDocumentFragment();
+  if (!text) return fragment;
+
+  const regex = /(@(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[^\s@#\(\)]+))|(#\d+)/g;
+  const parts = text.split(regex);
+
+  parts.forEach(part => {
+    if (!part) return;
+
+    if (part.startsWith('@')) {
+      const nameOrEmail = part.slice(1);
+      const member = cachedMembers.find(m => m.name === nameOrEmail || m.email === nameOrEmail || m.user_id === nameOrEmail);
+      if (member) {
+        const mentionEl = el('span', {
+          class: 'rich-mention',
+          title: member.email
+        }, `@${member.name || member.email}`);
+        fragment.appendChild(mentionEl);
+      } else {
+        fragment.appendChild(document.createTextNode(part));
+      }
+    } else if (part.startsWith('#') && /^\d+$/.test(part.slice(1))) {
+      const num = parseInt(part.slice(1), 10);
+      const commentIdx = num - 1;
+      if (cachedComments && commentIdx >= 0 && commentIdx < cachedComments.length) {
+        const comment = cachedComments[commentIdx];
+        const link = el('a', {
+          href: '#',
+          class: 'rich-comment-link'
+        }, `#${num}`);
+        link.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const targetEl = document.getElementById(`comment-${comment.comment_id}`);
+          if (targetEl) {
+            targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            targetEl.classList.remove('highlight-flash');
+            void targetEl.offsetWidth; // trigger reflow
+            targetEl.classList.add('highlight-flash');
+          } else {
+            alert(`找不到留言 #${num}`);
+          }
+        };
+        fragment.appendChild(link);
+      } else {
+        fragment.appendChild(document.createTextNode(part));
+      }
+    } else {
+      fragment.appendChild(document.createTextNode(part));
+    }
+  });
+
+  return fragment;
 }
