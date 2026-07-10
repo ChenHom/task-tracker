@@ -19,7 +19,7 @@
 }
 .project-filter-label {
   font-weight: bold;
-  display: flex;
+  display: none;
   align-items: center;
   gap: 0.3rem;
 }
