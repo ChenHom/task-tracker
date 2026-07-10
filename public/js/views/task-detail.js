@@ -253,7 +253,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     }, 300);
   });
   descInput.addEventListener('keydown', async (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if ((window.innerWidth === undefined || window.innerWidth > 768) && e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       descInput.blur();
       
