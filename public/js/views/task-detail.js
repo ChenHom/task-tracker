@@ -932,9 +932,11 @@ function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberM
     }
 
     dropdown.textContent = '';
+    let activeItem = null;
     suggestions.forEach((s, idx) => {
+      const isActive = idx === selectedIndex;
       const item = el('div', {
-        class: `mention-suggestion-item${idx === selectedIndex ? ' active' : ''}`
+        class: `mention-suggestion-item${isActive ? ' active' : ''}`
       }, s.label);
       
       item.onclick = (e) => {
@@ -944,7 +946,14 @@ function bindAutocomplete(textarea, wrapper, cachedMembers, getComments, memberM
       };
 
       dropdown.appendChild(item);
+      if (isActive) {
+        activeItem = item;
+      }
     });
+
+    if (activeItem) {
+      activeItem.scrollIntoView({ block: 'nearest' });
+    }
 
     if (selectedIndex >= suggestions.length) {
       selectedIndex = suggestions.length - 1;
