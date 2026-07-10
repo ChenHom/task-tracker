@@ -1049,7 +1049,7 @@ function renderRichText(text, cachedMembers, cachedComments, cachedTasks) {
   const fragment = document.createDocumentFragment();
   if (!text) return fragment;
 
-  const regex = /(@(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[^\s@#\(\)]+))|(#\d+)|(::[a-fA-F0-9]{8}(?:\([^)]+\))?)/g;
+  const regex = /(@(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[^\s@#\(\)]+))|(#\d+)|(::[a-fA-F0-9]{8}(?:\s*\([^)]+\))?)/g;
   const parts = text.split(regex);
 
   parts.forEach(part => {
