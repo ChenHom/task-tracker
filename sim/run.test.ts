@@ -8,16 +8,20 @@ import {
   acquireRunLock,
   allChecksPass,
   assertPathWithin,
+  BRAIN_ROOT,
   brainChecks,
+  canonicalWorkspaceForRepoRoot,
   commitIfSessionSucceeded,
   createRunDir,
   dirtyReviewChecks,
+  ensureCanonicalWorkspaceCandidates,
   formatReportMarkdown,
   formatReviewPacket,
   hasReviewChanges,
   loadMembersFromUsers,
   MEMBER_TOOLS,
   parseScenario,
+  ROOT,
   runMemberSession,
   scenarioFromStoredKey,
   settleAllOrThrow,
@@ -35,6 +39,7 @@ assert.ok(!source.includes('let WORK_DIR'), 'scenario 狀態不應拆成多個�
 assert.ok(!source.includes('let MEMBERS'), 'scenario 狀態不應拆成多個可不同步的 global');
 assert.ok(!MEMBER_TOOLS.includes('Bash(git:*)'), 'member tool policy 不應直接允許任意 Git 指令');
 assert.ok(source.includes('CI 有 SKIP'), 'owner prompt 必須保留 SKIP 人工審查規則');
+assert.ok(source.includes('[CROSS-REPO]'), '跨 repo 轉移需要獨立標記，不能沿用死路的 [ESCALATE]');
 
 const dir = mkdtempSync(join(tmpdir(), 'task-tracker-sim-'));
 const dbPath = join(dir, 'dev.db');
@@ -200,6 +205,14 @@ assert.throws(() => parseScenario(['node', 'run.ts', '--scenario', 'missing']), 
 assert.strictEqual(scenarioFromStoredKey('technical-debt')?.key, 'self-directed');
 assert.strictEqual(scenarioFromStoredKey('brain')?.key, 'brain');
 assert.strictEqual(scenarioFromStoredKey('missing'), undefined);
+
+const EXPECTED_ROOT_WORKSPACE_ID = 'd9da9945-ce5f-400f-806e-1d75e95e313a';
+assert.strictEqual(canonicalWorkspaceForRepoRoot(ROOT), EXPECTED_ROOT_WORKSPACE_ID);
+assert.strictEqual(canonicalWorkspaceForRepoRoot(BRAIN_ROOT), undefined);
+
+const canonicalCandidates = new Map<string, { key: string; startedAt: string }>();
+ensureCanonicalWorkspaceCandidates(canonicalCandidates);
+assert.ok(canonicalCandidates.has(EXPECTED_ROOT_WORKSPACE_ID));
 
 assert.deepStrictEqual(sweepBudgets('owner', 0, true), { owner: 2, member: 0 });
 assert.deepStrictEqual(sweepBudgets('owner', 0, false), { owner: 0, member: 0 });

@@ -115,7 +115,9 @@
 
 > 來源：`data/dev.db` 的目前看板、`sim-logs/` 最新 sweep，以及 Claude/Codex session 記錄。下列功能必須用 `self-directed` 或 `product-ideation` scenario，讓 `repoRoot` 指向本 repo；不放寬 sandbox 白名單。
 
-### 跨 workspace 搬移 task（`451c2509`，Doing / High）
+### 跨 workspace 搬移 task（原 `451c2509`，已轉移至 `11983af5` @ workspace `d9da9945`，High）
+
+> `451c2509` 卡在 workspace `11db3331`（scenario=brain，repoRoot 不合）32 小時後人工轉移；本功能規格未變，下列 checklist 仍待實作。詳見 [2026-07-10-crossrepo-workspace-routing.md](superpowers/plans/2026-07-10-crossrepo-workspace-routing.md)。
 
 - [ ] `moveTask(actorId, taskId, targetWorkspaceId)` append `task.moved`，payload 含 source/target workspace
 - [ ] projection 同步更新 `workspace_id`，並清掉舊 workspace 所屬的 `project_id`

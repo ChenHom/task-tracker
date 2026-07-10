@@ -12,7 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 const BASE = 'http://localhost:3000';
-const ROOT = join(__dirname, '..');
+export const ROOT = join(__dirname, '..');
 const LOG_DIR = join(ROOT, 'sim-logs'); // 產物一律留在 task-tracker 底下，方便統一查看
 const SMOKE = process.argv.includes('--smoke');
 const FAST = process.argv.includes('--fast');
@@ -140,7 +140,7 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
     profile: '中小題，動手前先查核現況避免重工' },
 ];
 
-const BRAIN_ROOT = '/home/hom/code/brain';
+export const BRAIN_ROOT = '/home/hom/code/brain';
 // 多個 session 各自 npm install/npx 時，預設 cache（~/.npm）在唯讀 HOME 的沙盒會 EROFS；
 // 固定指到一個可寫的共用暫存目錄，讓所有 session 的子行程都吃到（見 runSession 的 env 注入）。
 const NPM_CACHE_DIR = '/tmp/sim-npm-cache';
@@ -166,6 +166,40 @@ const SCENARIOS = {
     repoRoot: BRAIN_ROOT,
   },
 } as const;
+
+// 跨 scenario 轉移用的「canonical 收件 workspace」：key 是絕對路徑的 repoRoot，
+// value 是該 repo 固定的收件 workspace id。純手動維護（比照 SCENARIOS 本身）；
+// 只有「其他 scenario 可能誤判、需要轉移過來」的 repo 才登記——目前只有 task-tracker 本體。
+// brain 是純沙盒，不是任何轉移目標，不登記。
+export const CANONICAL_WORKSPACE_BY_REPOROOT: Record<string, string> = {
+  [ROOT]: 'd9da9945-ce5f-400f-806e-1d75e95e313a',
+};
+
+export function canonicalWorkspaceForRepoRoot(repoRoot: string): string | undefined {
+  return CANONICAL_WORKSPACE_BY_REPOROOT[repoRoot];
+}
+
+export function ensureCanonicalWorkspaceCandidates(
+  candidates: Map<string, { key: string; startedAt: string }>,
+): void {
+  for (const [repoRoot, wsId] of Object.entries(CANONICAL_WORKSPACE_BY_REPOROOT)) {
+    const scenario = Object.values(SCENARIOS).find((s) => s.repoRoot === repoRoot);
+    if (scenario && !candidates.has(wsId)) {
+      candidates.set(wsId, { key: scenario.key, startedAt: '1970-01-01T00:00:00.000Z' });
+    }
+  }
+}
+
+function crossRepoRule(scenario: Scenario): string {
+  if (scenario.repoRoot === ROOT) return '';
+  const target = canonicalWorkspaceForRepoRoot(ROOT);
+  return `
+⚠️ 跨 repo 判斷（你現在的 repoRoot 是 ${scenario.repoRoot}，不是 task-tracker 本體 ${ROOT}）：
+處理任何討論／建立新 task 前，先問：這其實是要改 task-tracker 本體嗎？
+- 是，且有登記收件 workspace（目前：${target ?? '尚未登記'}）：不要在這裡開這個 task、也不要留在這裡實作。改用 curl 在 workspace ${target} 建立實作 task（你已是該 workspace 的 Owner，不需要額外加入）；description 開頭附「來源：workspace ${'${wsId}'}／task ${'${task_id}'}」避免重複建立。回這裡留言貼上新 task 網址（${BASE}/#/task/<id>），並把這裡標記完成／說明不用再等。已經轉移過的不要重複轉移——先看留言/連結貼過沒有。
+- 是，但沒有登記收件 workspace：留言清楚寫「需要 task-tracker 本體、但沒有登記 canonical workspace，需要人工指定」，講一次就好，不要每輪重講。
+- 不是（這題本來就屬於你現在的 repoRoot）：忽略這條規則，正常處理。`;
+}
 
 type ScenarioKey = keyof typeof SCENARIOS;
 type Scenario = (typeof SCENARIOS)[ScenarioKey];
@@ -530,7 +564,8 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 - 狀態機：Todo→Doing→Review→Done 相鄰前進或一步回退；PATCH /api/tasks/<id> 一次只能改一個欄位（如 {"status":"Doing"}）；400/409 就重新 GET 再決定
 - 留言 POST /api/tasks/<id>/comments {"content":"..."}：正體中文、像真的工程師、具體（做法/卡點/驗證結果）
 - 遇疑似系統 bug：自查重試一次，可重現就建 [BUG] task（POST /api/workspaces/<ws>/tasks，title 以 [BUG] 開頭，description 含重現步驟/預期 vs 實際/原始回應，priority High）
-- 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層`;
+- 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層
+- 若這個 task 需要改的原始碼其實屬於別的 repo（不是你現在這個 repoRoot）：不要用 [ESCALATE]（那是給環境/權限問題，處理不了 repo 不合）。改用 [CROSS-REPO] 開頭留言說明是誰的 repo，並依下方跨 repo 判斷規則處理。`;
 
 function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario): string {
   // jar 必須落在成員自己的 worktree 內：LOG_DIR 固定在 task-tracker 底下，跨到別的 repo 或
@@ -567,7 +602,7 @@ ${doneDef}
 5. 實作 → 跑驗證（改檔+驗證即可，不要 commit）
 6. 完成留言：做法摘要、驗證實際結果（driver 會在 session 成功後補 commit；branch ${branch(m)}）→ PATCH {"status":"Review"}
 7. 一次只做一題；做完進 Review 才可回步驟 2 認領下一題。若沒有可做也沒有可認領的題：讀一個隊友 task 的留言串，留一則有實質內容的意見，然後總結下線
-⚠️ 若這題卡在「需要修改的原始碼不在你目前工作目錄底下」這類環境/scenario 不一致（不是 code 邏輯問題），且上一則留言已經講過同樣結論、環境沒有變化：這輪不要重新實測探針指令、不要重寫一次完整解釋，留言最多一句「環境阻塞未變，維持現狀」即可，把時間留給步驟 7 那類還能做的事。
+⚠️ 若這題卡在「需要修改的原始碼不在你目前工作目錄底下」這類環境/scenario 不一致（不是 code 邏輯問題），且上一則留言已經講過同樣結論、環境沒有變化：這輪不要重新實測探針指令、不要重寫一次完整解釋，留言最多一句「環境阻塞未變，維持現狀」即可，把時間留給步驟 7 那類還能做的事。第一次發現這種不一致時，先用 [CROSS-REPO] 開頭留言講清楚（不要含糊帶過、也不要當成已知阻塞就不講）。
 結束時輸出一行總結。`;
 }
 
@@ -619,6 +654,7 @@ ${material}
 ${roster}
 
 ${API_RULES(jar)}
+${crossRepoRule(scenario)}
 本次要做的事（只用 curl／git 讀取，不改 code）：
 1. 歸納主題後，PATCH ${BASE}/api/workspaces/${wsId} {"name":"<你定的主題名稱，寫清楚主題，例如『前端錯誤處理一致性』>"} 把 workspace 改名為主題
 2. POST ${BASE}/api/workspaces/${wsId}/projects {"name":"<同主題名稱>"}，取得 project id
@@ -631,7 +667,7 @@ ${API_RULES(jar)}
 結束時輸出一行總結（主題是什麼、開了幾題、難度分佈）。`;
 }
 
-function ownerMidPrompt(wsId: string): string {
+function ownerMidPrompt(wsId: string, scenario: Scenario): string {
   const jar = join(RUN.repoRoot, '.jar-owner-mid.txt');
   const map = RUN.members.map((m) => `- ${m.name}（user_id ${m.userId}）→ branch ${branch(m)}`).join('\n');
   return `你是「${OWNER.name}」（${OWNER.email}），Owner。第一輪開發完成，進行中場 code review（只審查，不 merge）。
@@ -639,6 +675,7 @@ workspace：${wsId}。目前目錄是主 repo（master）。
 成員與 branch 對照：
 ${map}
 ${API_RULES(jar)}
+${crossRepoRule(scenario)}
 本次流程：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks
 2. 對每個 status=Review 的 task（認領制：從 task 的 assignee_id 對照上表看是誰做的、對應哪條 branch）：
@@ -648,6 +685,7 @@ ${API_RULES(jar)}
    d. 不合格 → 留言具體問題（引用檔案與行為）→ PATCH {"status":"Doing"} 退回
 3. 對「還沒被任何人認領」（assignee_id 為 null、還在 Todo）的 task：留言分析為什麼沒人領（題目太大？說明不清楚？），補充說明讓它更好認領，或點名建議哪位成員的專長適合（只是建議，不要強制指派）
 4. 留言含 [ESCALATE] 的 task：能給指導就留言具體指導；屬於環境/基礎設施問題你也解不了的 → 留言「已上報 harness 上層處理」並保持該 task 現狀。若同一個環境/scenario 不一致的阻塞已經連續多輪判定過（上一則留言結論相同、環境沒變化）：不需要每輪重新分析，留言一句「阻塞未變」即可，不要重複整段診斷
+   留言含 [CROSS-REPO] 的 task：依上方跨 repo 判斷規則處理（有登記 canonical workspace 就協助/確認轉移已完成；沒登記就留言請人工指定，不要重複講）
 結束時輸出審查總結（幾件過、幾件退、退的原因、幾件無人認領、幾件上報）。`;
 }
 
@@ -1045,7 +1083,7 @@ async function main(): Promise<void> {
 
   if (!FAST) {
     // 深度模式：中場審查（opus）＋條件式 r2-3
-    await runSession('owner-中場審查', 'claude', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId), { ...ownerOpts, promptLabel: 'owner-mid' });
+    await runSession('owner-中場審查', 'claude', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' });
     for (let r = 2; r <= 3; r++) {
       const active = membersToRun(wsId);
       if (!active.length) { console.log(`[r${r}] 無成員需上線（都已進 Review/Done），跳過`); break; }
@@ -1188,9 +1226,10 @@ ${ci || '（本 tick 無 branch 有新 commit）'}
 ${API_RULES(jar)}
 巡檢流程（⚠️ 你有 12 分鐘硬時限，優先序：老闆回覆 > 綠燈合併 > 紅燈退回 > 催辦。時間不夠就少做，下次巡檢還會再來）：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks 全覽
+${crossRepoRule(scenario)}
 2. [討論] task（title 以「[討論]」開頭）——這是你與老闆（${bossName}，真人）的對話串：
    - 不存在 → 建一個（title「[討論] 方向與下一步」，priority Low，不指派），留言 3-5 行提案接下來的方向，請老闆回覆
-   - 存在 → 讀留言。最新一則若是老闆說的且你還沒回應：先回覆他；他核准/指示的方向就開成具體 task（認領制：不指派、寫清楚範圍與驗收）
+   - 存在 → 讀留言。最新一則若是老闆說的且你還沒回應：先回覆他；他核准/指示的方向就開成具體 task 前，先套用上方跨 repo 判斷規則決定要在哪個 workspace 開（認領制：不指派、寫清楚範圍與驗收）
    - [討論] task 永遠保持 Todo，不要推進狀態
 3. status=Review 的 task 對照 CI 摘要：
    - CI 全 PASS → git merge --no-ff <branch> -m "merge: <task 標題>" → 留言（附 merge hash）→ PATCH {"status":"Done"}
@@ -1198,7 +1237,7 @@ ${API_RULES(jar)}
    - CI 有 SKIP → 不可當成 PASS；人工審 diff、task 驗收證據與成員實際檢查，證據足夠才可 merge，否則留言缺少的驗證並退回 Doing
    - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
    - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"} 再 PATCH {"status":"Todo"}，並 PATCH {"assignee":null} 讓人重新認領
-4. status=Doing 沒動靜的：催辦留言。無主 Todo 沒人領的：補充說明讓它更好認領。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）、且上一輪已有相同結論、環境沒有變化：不要催辦、不要重新診斷，跳過即可
+4. status=Doing 沒動靜的：催辦留言。無主 Todo 沒人領的：補充說明讓它更好認領。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）：先檢查是否已用 [CROSS-REPO] 轉移過——沒轉移過，依上方跨 repo 判斷規則轉移，不要原地跳過；已轉移過、且上一輪已有相同結論、環境沒有變化，才可以不催辦、不重新診斷，跳過即可
 5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task
 6. 結束輸出 3 行內總結（合了幾件、退了幾件、老闆有無新指示）`;
 }
@@ -1220,6 +1259,8 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       if (!prev || r.startedAt > prev.startedAt) wsScenario.set(r.workspaceId, { key: r.scenarioKey, startedAt: r.startedAt });
     } catch { /* 壞檔跳過 */ }
   }
+  // canonical workspace 不能因為安靜太久（沒有最近的 report.json）而從候選名單消失
+  ensureCanonicalWorkspaceCandidates(wsScenario);
 
   interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; bossPinged: boolean; startedAt: string }
   const pendings: PendingWs[] = [];

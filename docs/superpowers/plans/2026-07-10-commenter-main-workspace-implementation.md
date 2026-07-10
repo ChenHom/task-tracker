@@ -899,7 +899,7 @@ export function mainDiscussionNeedsOwner(
 }
 ```
 
-Call `ensureMainWorkspaceCandidate(wsScenario)` after reading all `report.json` files. Exclude `[規則]` and `[討論]` with `isSweepWorkTask()` in both initial and post-owner task scans.
+Call `ensureMainWorkspaceCandidate(wsScenario)` after reading all `report.json` files. Also call `ensureCanonicalWorkspaceCandidates(wsScenario)` right after it, so the two report.json-independent candidate-registration mechanisms (main workspace + canonical workspace, see `workspace-task-synchronous-tome.md` 第 1 節) coexist without overwriting each other. Exclude `[規則]` and `[討論]` with `isSweepWorkTask()` in both initial and post-owner task scans.
 
 For the fixed workspace, load user01's runtime id and use `mainDiscussionNeedsOwner()`; for every other workspace, preserve the existing user09 latest-comment behavior.
 
@@ -911,7 +911,7 @@ Add a main-workspace branch at the start of `ownerSweepPrompt()`. Its prompt mus
 2. read each active `[討論]` task;
 3. move Todo to Doing, relying on automatic assignment;
 4. reply to discussion without editing code or assigning a member in the main workspace;
-5. after agreement, use existing workspace/task APIs to create the implementation task in the target workspace;
+5. after agreement, use existing workspace/task APIs to create the implementation task in the target workspace — before creating it, call `canonicalWorkspaceForRepoRoot(ROOT)` to get the registered receiving workspace; if one is registered, use it as the target workspace; only if none is registered may a new workspace be created/found instead, and the discussion comment must note "未登記，人工介入選定";
 6. post the complete `http://localhost:3000/#/task/<id>` URL to the original discussion;
 7. move the original discussion through Review to Done using legal adjacent transitions.
 
