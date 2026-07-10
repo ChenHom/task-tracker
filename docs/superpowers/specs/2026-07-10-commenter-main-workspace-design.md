@@ -4,7 +4,7 @@
 
 **狀態：** 待使用者 review
 
-**主工作區：** `11a82028-fc50-466a-a723-e002032cd9a6`（目前名稱：Owner→阿哲 收件匣）
+**主工作區：** `11a82028-fc50-466a-a723-e002032cd9a6`（上線時改名為：主協作工作區）
 **流程負責人：** `user01@test.local`
 
 ## 背景
@@ -59,7 +59,7 @@ Viewer < Commenter < Member < Admin < Owner
 
 ### Commenter 建立 task 的限制
 
-Commenter 只能提交 `title` 與 `description`。若 request body 含 `status`、`priority`、`assignee`、`assigneeId`、`projectId` 或 `dueAt`，伺服器回 HTTP 400，不靜默忽略；合法建立使用固定值：
+Commenter 只能提交 `title` 與 `description`。若 request body 含 `status`、`priority`、`assignee`、`assigneeId`、`projectId` 或 `dueAt`，伺服器回 HTTP 400，不忽略；合法建立使用固定值：
 
 ```text
 status = Todo
@@ -97,6 +97,7 @@ RBAC 不通過時沿用 `requirePermission()` 的 HTTP 403。Commenter 編修或
 
 ```text
 MAIN_WORKSPACE_ID = 11a82028-fc50-466a-a723-e002032cd9a6
+MAIN_WORKSPACE_NAME = 主協作工作區
 MAIN_OWNER_EMAIL = user01@test.local
 MAIN_DISCUSSION_PREFIX = [討論]
 MAIN_POLICY_TITLE = [規則] 主工作區協作與交接
@@ -107,6 +108,7 @@ MAIN_POLICY_TITLE = [規則] 主工作區協作與交接
 ### 成員同步
 
 - Server 啟動時掃描所有 users。
+- 主工作區名稱不同時更新為 `主協作工作區`。
 - user01 必須已是主工作區 Owner；若不是，記錄明確設定錯誤並停止本輪同步，不自動提權。
 - 所有非 user01 帳號都加入或調整為 `Commenter`；目前的 user09 會由 Member 調整為 Commenter。
 - 重複同步不得建立重複 member events。
@@ -237,8 +239,8 @@ git diff --check
 
 1. 部署程式並執行完整測試。
 2. restart `task-tracker.service`。
-3. 啟動同步將現有非 user01 成員調整為 Commenter、加入其餘 users，並建立規則 task。
-4. 驗證主工作區 active member 數等於 users 數，且只有 user01 是 Owner。
+3. 啟動同步將主工作區改名為 `主協作工作區`、將現有非 user01 成員調整為 Commenter、加入其餘 users，並建立規則 task。
+4. 驗證主工作區名稱、active member 數等於 users 數，且只有 user01 是 Owner。
 5. 執行 HTTP smoke，再觀察第一輪 owner sweep log。
 
 本次沒有 schema migration，也不需要重建 event store/read model。
