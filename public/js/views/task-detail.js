@@ -598,6 +598,7 @@ export async function openTaskDetailModal(taskId, { cachedTasks, cachedMembers, 
     try {
       await api(`/api/tasks/${taskId}/comments`, { method: 'POST', body: { content } });
       commInput.value = '';
+      commInput.blur();
       commInput.style.height = '38px'; // Reset height
       await loadComments();
     } catch (err) {
