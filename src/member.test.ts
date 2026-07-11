@@ -16,7 +16,9 @@ import {
   countActiveMembers,
   listMembers,
   autoAddObserver,
+  ACCESS_ROLE,
 } from './member';
+import { MAIN_OWNER_EMAIL, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
@@ -33,6 +35,18 @@ assert.ok(hasPermission('Owner', 'Admin'), 'Owner 應 >= Admin');
 assert.ok(hasPermission('Admin', 'Admin'), '同級應通過');
 assert.ok(!hasPermission('Member', 'Admin'), 'Member 應 < Admin');
 assert.ok(!hasPermission('Viewer', 'Member'), 'Viewer 應 < Member');
+assert.ok(hasPermission('Commenter', 'Viewer'));
+assert.ok(!hasPermission('Commenter', 'Member'));
+assert.ok(hasPermission('Member', 'Commenter'));
+assert.deepStrictEqual(ACCESS_ROLE, {
+  read: 'Viewer',
+  createTask: 'Commenter',
+  createComment: 'Commenter',
+  mutateOwnComment: 'Commenter',
+  mutateTask: 'Member',
+  writeProject: 'Member',
+  writeAttachment: 'Member',
+});
 
 // ── seedOwner：invited + joined → read model 有 Owner ──
 seedOwner(WS, 'owner', db);
@@ -133,20 +147,50 @@ removeMember('owner', WS3, 'owner', db);
 assert.strictEqual(getMemberRole(WS3, 'owner', db), null, '唯一成員時應允許 Owner 自我移除');
 assert.strictEqual(countActiveMembers(WS3, db), 0, '移除後 active 成員數為 0');
 
+// ── removed member 可重新邀請 ──
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('eve', 'eve@x.com', 'Eve', 'x');
+const WS_REINVITE = 'ws-reinvite';
+seedOwner(WS_REINVITE, 'owner', db);
+inviteMember('owner', WS_REINVITE, 'eve', 'Commenter', db);
+joinWorkspace('eve', WS_REINVITE, db);
+removeMember('owner', WS_REINVITE, 'eve', db);
+inviteMember('owner', WS_REINVITE, 'eve', 'Commenter', db);
+joinWorkspace('eve', WS_REINVITE, db);
+assert.strictEqual(getMemberRole(WS_REINVITE, 'eve', db), 'Commenter');
+
 // ── autoAddObserver：user01 建 workspace 時自動把老闆 user09 加成成員 ──
-db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('u01', 'user01@test.local', '阿哲', 'x');
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-owner', MAIN_OWNER_EMAIL, '阿哲', 'x');
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('u09', 'user09@test.local', '老闆', 'x');
 
 const WS_BOSS = 'ws-boss';
-seedOwner(WS_BOSS, 'u01', db); // user01 建立
-autoAddObserver('u01', WS_BOSS, db);
+seedOwner(WS_BOSS, 'main-owner', db); // user01 建立
+autoAddObserver('main-owner', WS_BOSS, db);
 assert.strictEqual(getMemberRole(WS_BOSS, 'u09', db), 'Member', 'user01 建立的 workspace 應自動含老闆 user09（Member）');
-assert.doesNotThrow(() => autoAddObserver('u01', WS_BOSS, db), '重複呼叫應 idempotent（吞已存在的 CommandError）');
+assert.doesNotThrow(() => autoAddObserver('main-owner', WS_BOSS, db), '重複呼叫應 idempotent（吞已存在的 CommandError）');
 assert.strictEqual(getMemberRole(WS_BOSS, 'u09', db), 'Member', '重複呼叫後老闆仍是 Member');
 
 const WS_OTHER = 'ws-other';
 seedOwner(WS_OTHER, 'bob', db); // 非 user01 建立
 autoAddObserver('bob', WS_OTHER, db);
 assert.strictEqual(getMemberRole(WS_OTHER, 'u09', db), null, '非 user01 建立的 workspace 不應自動加老闆');
+
+// ── 主工作區角色由同步流程固定管理 ──
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)')
+  .run('main-user', 'user02@test.local', '小美', 'x');
+seedOwner(MAIN_WORKSPACE_ID, 'main-owner', db);
+inviteMember('main-owner', MAIN_WORKSPACE_ID, 'main-user', 'Commenter', db);
+joinWorkspace('main-user', MAIN_WORKSPACE_ID, db);
+assert.throws(
+  () => changeMemberRole('main-owner', MAIN_WORKSPACE_ID, 'main-user', 'Member', db),
+  /主工作區成員固定為 Commenter/,
+);
+assert.throws(
+  () => changeMemberRole('main-owner', MAIN_WORKSPACE_ID, 'main-owner', 'Admin', db),
+  /不可變更主工作區流程負責人角色/,
+);
+assert.throws(
+  () => removeMember('main-owner', MAIN_WORKSPACE_ID, 'main-user', db),
+  /主工作區成員由系統同步/,
+);
 
 console.log('member.test.ts OK');
