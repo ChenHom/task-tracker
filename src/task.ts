@@ -133,8 +133,9 @@ function requireActiveWorkspace(workspaceId: string, database: DatabaseSync): vo
 
 export function createTask(actorId: string, workspaceId: string, input: CreateTaskInput, database = db): string {
   requireActiveWorkspace(workspaceId, database);
+  const isCommenter = getMemberRole(workspaceId, actorId, database) === 'Commenter';
   if (
-    getMemberRole(workspaceId, actorId, database) === 'Commenter'
+    isCommenter
     && Object.keys(input).some((field) => field !== 'title' && field !== 'description')
   ) {
     throw new CommandError('Commenter 建立 task 只能提交 title 與 description');
@@ -155,10 +156,11 @@ export function createTask(actorId: string, workspaceId: string, input: CreateTa
   }
 
   if (isMainDiscussion) title = validateTitle(title.startsWith(MAIN_DISCUSSION_PREFIX) ? title : `${MAIN_DISCUSSION_PREFIX} ${title}`);
-  const priority = isMainDiscussion ? 'Medium' : input.priority == null ? 'Medium' : validatePriority(input.priority);
-  const assigneeId = isMainDiscussion ? null : validateAssignee(input.assignee);
-  const dueAt = isMainDiscussion ? null : validateDueAt(input.dueAt);
-  const projectId = isMainDiscussion ? null : input.projectId == null ? null : String(input.projectId); // Project 是 Phase 6，先允許 null
+  const useDefaults = isMainDiscussion || isCommenter;
+  const priority = useDefaults ? 'Medium' : input.priority == null ? 'Medium' : validatePriority(input.priority);
+  const assigneeId = useDefaults ? null : validateAssignee(input.assignee);
+  const dueAt = useDefaults ? null : validateDueAt(input.dueAt);
+  const projectId = useDefaults ? null : input.projectId == null ? null : String(input.projectId); // Project 是 Phase 6，先允許 null
   const id = randomUUID();
   appendEvent(
     'Task',
@@ -173,8 +175,14 @@ export function createTask(actorId: string, workspaceId: string, input: CreateTa
 }
 
 export function changeTaskTitle(actorId: string, taskId: string, title: unknown, database = db): void {
-  const clean = validateTitle(title);
+  let clean = validateTitle(title);
   const { version } = loadEditableTask(taskId, database);
+  const task = getTask(taskId, database);
+  if (task?.workspace_id === MAIN_WORKSPACE_ID) {
+    if (task.title === MAIN_POLICY_TITLE) throw new CommandError('主工作區規則 task 標題固定');
+    if (clean === MAIN_POLICY_TITLE) throw new CommandError('一般 task 不可改為主工作區規則 task');
+    clean = validateTitle(clean.startsWith(MAIN_DISCUSSION_PREFIX) ? clean : `${MAIN_DISCUSSION_PREFIX} ${clean}`);
+  }
   appendEvent('Task', taskId, version, 'task.title_changed', { title: clean }, meta(actorId), database);
 }
 
@@ -252,6 +260,12 @@ export function changeTaskDueDate(actorId: string, taskId: string, dueAt: unknow
 
 export function archiveTask(actorId: string, taskId: string, database = db): void {
   const { version } = loadEditableTask(taskId, database); // 已 archived / deleted 都會被擋
+  if (
+    getTaskWorkspaceId(taskId, database) === MAIN_WORKSPACE_ID
+    && actorId !== getUserIdByEmail(MAIN_OWNER_EMAIL, database)
+  ) {
+    throw new CommandError('只有 user01 可以改變主工作區 task 狀態');
+  }
   appendEvent('Task', taskId, version, 'task.archived', {}, meta(actorId), database);
 }
 

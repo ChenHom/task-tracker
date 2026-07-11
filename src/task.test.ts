@@ -235,10 +235,70 @@ assert.throws(
   { name: 'CommandError', message: '不是可正規化的主工作區 task' },
 );
 const archivedDiscussionId = createTask('main-user', MAIN_WORKSPACE_ID, { title: '已歸檔討論' }, db);
+const beforeArchiveEventCount = loadEvents(archivedDiscussionId, db).length;
+assert.throws(
+  () => archiveTask('main-user', archivedDiscussionId, db),
+  { name: 'CommandError', message: '只有 user01 可以改變主工作區 task 狀態' },
+);
+assert.strictEqual(getTask(archivedDiscussionId, db)?.status, 'Todo', '非 owner 不得 archive 主工作區 task');
+assert.strictEqual(loadEvents(archivedDiscussionId, db).length, beforeArchiveEventCount, '拒絕 archive 時不可追加 event');
+db.prepare('UPDATE users SET email = ? WHERE id = ?').run('former-main-owner@test.local', 'main-owner');
+assert.throws(
+  () => archiveTask('main-owner', archivedDiscussionId, db),
+  { name: 'CommandError', message: '只有 user01 可以改變主工作區 task 狀態' },
+);
+assert.strictEqual(loadEvents(archivedDiscussionId, db).length, beforeArchiveEventCount, '找不到 runtime owner 時應 fail closed');
+db.prepare('UPDATE users SET email = ? WHERE id = ?').run(MAIN_OWNER_EMAIL, 'main-owner');
 archiveTask('main-owner', archivedDiscussionId, db);
+assert.strictEqual(getTask(archivedDiscussionId, db)?.status, 'Archived');
 assert.throws(
   () => normalizeMainDiscussion('main-owner', archivedDiscussionId, db),
   { name: 'CommandError', message: '不是可正規化的主工作區 task' },
+);
+
+// ── 主工作區 policy title 固定；一般 task rename 維持討論 prefix ──
+assert.throws(
+  () => changeTaskTitle('main-owner', discussionId, MAIN_POLICY_TITLE, db),
+  /規則 task/,
+);
+assert.strictEqual(
+  listTasks(MAIN_WORKSPACE_ID, db).filter((task) => task.title === MAIN_POLICY_TITLE && task.status !== 'Archived').length,
+  1,
+  'active policy 仍只能有一筆',
+);
+assert.throws(
+  () => changeTaskTitle('main-owner', policyId, '其他名稱', db),
+  /主工作區規則 task 標題固定/,
+);
+changeTaskTitle('main-owner', discussionId, '新方向', db);
+assert.strictEqual(getTask(discussionId, db)?.title, '[討論] 新方向');
+changeTaskTitle('main-owner', discussionId, '[討論] 已改方向', db);
+assert.strictEqual(getTask(discussionId, db)?.title, '[討論] 已改方向', 'rename 不重複加討論 prefix');
+assert.throws(
+  () => changeTaskTitle('main-owner', discussionId, 'x'.repeat(200), db),
+  /title 過長/,
+  'rename 加上討論 prefix 後 title 仍不可超過 200 字',
+);
+
+// ── Commenter 不得從 prototype / non-enumerable forbidden fields 帶入初始值 ──
+const inheritedCommenterInput = Object.create({
+  priority: 'High',
+  assignee: 'bad',
+  projectId: 'bad',
+  dueAt: '2027-01-01',
+});
+inheritedCommenterInput.title = 'inherited defaults';
+inheritedCommenterInput.description = 'safe';
+const inheritedCommenterTaskId = createTask('main-user', COMMENTER_WS, inheritedCommenterInput, db);
+const inheritedCommenterTask = getTask(inheritedCommenterTaskId, db)!;
+assert.deepStrictEqual(
+  {
+    priority: inheritedCommenterTask.priority,
+    assigneeId: inheritedCommenterTask.assignee_id,
+    projectId: inheritedCommenterTask.project_id,
+    dueAt: inheritedCommenterTask.due_at,
+  },
+  { priority: 'Medium', assigneeId: null, projectId: null, dueAt: null },
 );
 
 // ── 主討論 Todo → Doing：狀態與負責人在單一事件內更新 ──
@@ -261,6 +321,13 @@ normalizeMainDiscussion('main-owner', discussionId, db);
 assert.strictEqual(getTask(discussionId, db)?.assignee_id, 'main-owner', 'Doing normalize 保留負責人');
 assert.strictEqual(loadEvents(discussionId, db).length, beforeStartedNormalize.eventCount, '已合規時不追加 event');
 assert.strictEqual(getTask(discussionId, db)?.version, beforeStartedNormalize.version, '已合規時 version 不變');
+assert.throws(
+  () => changeTaskStatus('main-user', discussionId, 'Review', db),
+  { name: 'CommandError', message: '只有 user01 可以改變主工作區 task 狀態' },
+);
+changeTaskStatus('main-owner', discussionId, 'Review', db);
+assert.strictEqual(getTask(discussionId, db)?.status, 'Review', 'discussion_started replay 後應允許 Doing → Review');
+assert.strictEqual(loadEvents(discussionId, db).at(-1)?.event_type, 'task.status_changed');
 
 // ── legacy Todo 討論正規化；description/status 保留且第二次完全 no-op ──
 const legacyTodoId = 'legacy-main-todo';
