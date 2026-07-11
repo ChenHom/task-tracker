@@ -1102,14 +1102,17 @@ function renderRichText(text, cachedMembers, cachedComments, cachedTasks) {
   parts.forEach(part => {
     if (!part) return;
 
-    const href = safeHttpUrl(part);
+    const punctuation = part.startsWith('http') ? part.match(/[.,;:!?]+$/)?.[0] || '' : '';
+    const urlText = punctuation ? part.slice(0, -punctuation.length) : part;
+    const href = safeHttpUrl(urlText);
     if (href) {
       fragment.appendChild(el('a', {
         class: 'rich-url-link',
         href,
         target: '_blank',
         rel: 'noopener noreferrer'
-      }, part));
+      }, urlText));
+      if (punctuation) fragment.appendChild(document.createTextNode(punctuation));
     } else if (part.startsWith('@')) {
       const nameOrEmail = part.slice(1);
       const member = cachedMembers.find(m => m.name === nameOrEmail || m.email === nameOrEmail || m.user_id === nameOrEmail);

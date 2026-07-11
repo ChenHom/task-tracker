@@ -16,6 +16,8 @@ export const MembersView = {
    */
   async render(container) {
     if (!requireWorkspace(container)) return;
+    const renderWorkspaceId = state.workspaceId;
+    let loadGeneration = 0;
 
     container.innerHTML = `
       <div id="invite-panel" class="sketch-box" hidden style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 1rem;">
@@ -60,14 +62,17 @@ export const MembersView = {
      * @returns {Promise<void>}
      */
     async function load() {
+      if (state.workspaceId !== renderWorkspaceId) return;
+      const generation = ++loadGeneration;
       const tbody = document.getElementById('member-tbody');
       if (!tbody) return;
       tbody.textContent = '';
       try {
-        const rows = await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members`);
+        const rows = await api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/members`);
+        if (generation !== loadGeneration || state.workspaceId !== renderWorkspaceId) return;
         const currentMember = rows.find(m => m.email === state.userEmail);
         const currentRole = currentMember ? currentMember.role : 'Viewer';
-        canManageMembers = hasRole(currentRole, 'Admin') && state.workspaceId !== MAIN_WORKSPACE_ID;
+        canManageMembers = hasRole(currentRole, 'Admin') && renderWorkspaceId !== MAIN_WORKSPACE_ID;
         const invitePanel = document.getElementById('invite-panel');
         if (invitePanel) invitePanel.hidden = !canManageMembers;
         if (canManageMembers) bindManagementControls();
@@ -129,7 +134,9 @@ export const MembersView = {
           tbody.appendChild(tr);
         }
       } catch (err) {
-        showError('member-error', err);
+        if (generation === loadGeneration && state.workspaceId === renderWorkspaceId) {
+          showError('member-error', err);
+        }
       }
     }
 

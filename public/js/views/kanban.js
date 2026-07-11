@@ -26,12 +26,14 @@ export const KanbanView = {
    */
   async render(container, rest, query) {
     if (!requireWorkspace(container)) return;
+    const renderWorkspaceId = state.workspaceId;
+    let loadGeneration = 0;
 
     // Check if we are opening a specific task via `#/task/:taskId`
     // The router registers both 'tasks' and 'task' view.
     // When prefix is 'task', rest[0] contains the task ID.
     const openTaskId = rest && rest[0];
-    const isMainWorkspace = state.workspaceId === MAIN_WORKSPACE_ID;
+    const isMainWorkspace = renderWorkspaceId === MAIN_WORKSPACE_ID;
     let currentRole = 'Viewer';
     let canCreateTask = false;
     let canManageTask = false;
@@ -211,6 +213,8 @@ export const KanbanView = {
      * @returns {Promise<void>}
      */
     async function loadAllData() {
+      if (state.workspaceId !== renderWorkspaceId) return;
+      const generation = ++loadGeneration;
       clearInlineAdders();
       // 顯示載入指示器
       const boardEl = document.getElementById('kanban-board-el');
@@ -224,10 +228,11 @@ export const KanbanView = {
 
       try {
         const [tasks, projects, members] = await Promise.all([
-          api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/tasks`),
-          api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/projects`),
-          api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members`)
+          api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/tasks`),
+          api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/projects`),
+          api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/members`)
         ]);
+        if (generation !== loadGeneration || state.workspaceId !== renderWorkspaceId) return;
         cachedTasks = tasks;
         cachedProjects = projects;
         cachedMembers = members;
@@ -276,9 +281,11 @@ export const KanbanView = {
           });
         }
       } catch (err) {
-        showError('task-error', err);
+        if (generation === loadGeneration && state.workspaceId === renderWorkspaceId) {
+          showError('task-error', err);
+        }
       } finally {
-        if (loadingOverlay) {
+        if (generation === loadGeneration && state.workspaceId === renderWorkspaceId && loadingOverlay) {
           loadingOverlay.remove();
         }
       }

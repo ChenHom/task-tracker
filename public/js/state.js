@@ -44,7 +44,8 @@ export const state = {
    * @type {string|null}
    */
   get userEmail() {
-    return sessionStorage.getItem('user_email');
+    const value = sessionStorage.getItem('user_email');
+    return value ? value.trim().toLowerCase() || null : null;
   },
   
   /**
@@ -52,7 +53,8 @@ export const state = {
    * @type {string|null}
    */
   set userEmail(val) {
-    if (val) sessionStorage.setItem('user_email', val);
+    const value = val ? val.trim().toLowerCase() : '';
+    if (value) sessionStorage.setItem('user_email', value);
     else sessionStorage.removeItem('user_email');
   },
 
