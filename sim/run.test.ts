@@ -4,27 +4,36 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
+import { MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from '../src/mainWorkspacePolicy';
 import {
   acquireRunLock,
   allChecksPass,
   assertPathWithin,
   BRAIN_ROOT,
   brainChecks,
+  canonicalWorkspaceDirectory,
   canonicalWorkspaceForRepoRoot,
+  compareSweepCandidates,
   commitIfSessionSucceeded,
   createRunDir,
   dirtyReviewChecks,
   ensureCanonicalWorkspaceCandidates,
+  ensureMainWorkspaceCandidate,
   formatReportMarkdown,
   formatReviewPacket,
   hasReviewChanges,
+  isSweepWorkTask,
   loadMembersFromUsers,
+  MAIN_HANDOFF_PENDING,
+  mainDiscussionNeedsOwner,
+  MAIN_OWNER_TOOLS,
   MEMBER_TOOLS,
   parseScenario,
   ROOT,
   runMemberSession,
   scenarioFromStoredKey,
   settleAllOrThrow,
+  sweepCandidateUsesRepoSlot,
   sweepBudgets,
   validateGitRootFacts,
   withRunLock,
@@ -38,8 +47,50 @@ assert.ok(!source.includes('let REPO_ROOT'), 'scenario 狀態不應拆成多個�
 assert.ok(!source.includes('let WORK_DIR'), 'scenario 狀態不應拆成多個可不同步的 global');
 assert.ok(!source.includes('let MEMBERS'), 'scenario 狀態不應拆成多個可不同步的 global');
 assert.ok(!MEMBER_TOOLS.includes('Bash(git:*)'), 'member tool policy 不應直接允許任意 Git 指令');
+assert.strictEqual(MAIN_OWNER_TOOLS, 'Bash(curl:*)', 'main owner session 只能使用 curl');
 assert.ok(source.includes('CI 有 SKIP'), 'owner prompt 必須保留 SKIP 人工審查規則');
 assert.ok(source.includes('[CROSS-REPO]'), '跨 repo 轉移需要獨立標記，不能沿用死路的 [ESCALATE]');
+assert.strictEqual(
+  source.match(/ensureMainWorkspaceCandidate\(wsScenario\);\n\s*ensureCanonicalWorkspaceCandidates\(wsScenario\);/g)?.length,
+  1,
+  'main candidate 必須恰好一次且緊鄰 canonical candidate 前加入',
+);
+assert.strictEqual(source.match(/\.filter\(isSweepWorkTask\)/g)?.length, 2, '兩次 sweep task scan 都必須排除討論與規則');
+assert.ok(
+  source.includes('- 主協作工作區（${MAIN_WORKSPACE_ID}）只放討論；非 user01 不改狀態，實作 task 必須建立在目標工作區。'),
+  '所有 agent prompt 都必須知道主工作區邊界',
+);
+assert.ok(source.includes('未登記，人工介入選定'), '主工作區 prompt 必須標示未登記 repo 需要人工介入');
+assert.ok(source.includes('${BASE}/#/task/<id>'), '主工作區 prompt 必須回寫完整 task URL');
+assert.ok(source.includes('Todo→Doing→Review→Done'), '主工作區 prompt 必須要求合法相鄰狀態轉移');
+assert.ok(source.includes('只用 curl/API 操作，不得編輯、提交或合併任何程式碼'), '主工作區 owner session 必須是 API-only');
+assert.ok(source.includes('${canonicalWorkspaceDirectory()}'), '主工作區 prompt 必須嵌入 canonical repo/workspace 對照');
+assert.ok(source.includes('先從討論內容辨識 target repo'), '主工作區 prompt 必須先辨識目標 repo');
+assert.ok(source.includes('先檢查原討論留言與目標 workspace'), '重試 handoff 前必須先檢查既有 task 避免重複建立');
+assert.strictEqual(source.match(/\[討論\] task 永遠保持 Todo/g)?.length, 1, '舊 Todo 規則只能保留在非 main prompt');
+assert.strictEqual(
+  source.match(/ownerBudget > 0 && sweepCandidateUsesRepoSlot\(p\.wsId\)/g)?.length,
+  2,
+  'main API-only sweep 不得還原 worktree 或執行 branch verification',
+);
+assert.ok(
+  source.includes('sweepCandidateUsesRepoSlot(p.wsId) && processedRepoRoots.has(p.scenario.repoRoot)'),
+  '只有使用 repo slot 的 candidate 才能被 processedRepoRoots 擋下',
+);
+assert.ok(
+  source.includes('if (sweepCandidateUsesRepoSlot(p.wsId)) processedRepoRoots.add(p.scenario.repoRoot);'),
+  '只有 code workspace 能占用 repo slot',
+);
+assert.ok(
+  source.includes('if (p.wsId === MAIN_WORKSPACE_ID) activateMainSweepContext(members);'),
+  'main sweep 必須略過 scenario git 驗證與 brain 初始化',
+);
+assert.ok(
+  source.includes('tools: p.wsId === MAIN_WORKSPACE_ID ? MAIN_OWNER_TOOLS : OWNER_TOOLS'),
+  'main owner runSession 必須使用 curl-only tools',
+);
+assert.ok(source.includes('if (p.wsId !== MAIN_WORKSPACE_ID) abortStaleMerge();'), 'main owner session 後不得操作 git merge 狀態');
+assert.ok(source.includes('${MAIN_HANDOFF_PENDING} target repo:'), 'main prompt 必須先留下 durable handoff marker');
 
 const dir = mkdtempSync(join(tmpdir(), 'task-tracker-sim-'));
 const dbPath = join(dir, 'dev.db');
@@ -213,6 +264,68 @@ assert.strictEqual(canonicalWorkspaceForRepoRoot(BRAIN_ROOT), undefined);
 const canonicalCandidates = new Map<string, { key: string; startedAt: string }>();
 ensureCanonicalWorkspaceCandidates(canonicalCandidates);
 assert.ok(canonicalCandidates.has(EXPECTED_ROOT_WORKSPACE_ID));
+
+const mainCandidates = new Map<string, { key: string; startedAt: string }>();
+ensureMainWorkspaceCandidate(mainCandidates);
+assert.deepStrictEqual(mainCandidates.get(MAIN_WORKSPACE_ID), {
+  key: 'self-directed',
+  startedAt: '1970-01-01T00:00:00.000Z',
+});
+mainCandidates.set(MAIN_WORKSPACE_ID, { key: 'brain', startedAt: '2026-07-11T00:00:00.000Z' });
+ensureMainWorkspaceCandidate(mainCandidates);
+assert.deepStrictEqual(mainCandidates.get(MAIN_WORKSPACE_ID), {
+  key: 'brain',
+  startedAt: '2026-07-11T00:00:00.000Z',
+}, 'main candidate 重複加入不得覆寫 report 資訊');
+
+const combinedCandidates = new Map<string, { key: string; startedAt: string }>();
+ensureMainWorkspaceCandidate(combinedCandidates);
+ensureCanonicalWorkspaceCandidates(combinedCandidates);
+const combinedSnapshot = [...combinedCandidates];
+ensureMainWorkspaceCandidate(combinedCandidates);
+ensureCanonicalWorkspaceCandidates(combinedCandidates);
+assert.deepStrictEqual([...combinedCandidates], combinedSnapshot, '重複確保 main/canonical 不得新增或覆寫');
+assert.ok(combinedCandidates.has(MAIN_WORKSPACE_ID));
+assert.ok(combinedCandidates.has(EXPECTED_ROOT_WORKSPACE_ID));
+
+assert.strictEqual(isSweepWorkTask({ title: MAIN_POLICY_TITLE }), false);
+assert.strictEqual(isSweepWorkTask({ title: '[討論] 方向' }), false);
+assert.strictEqual(isSweepWorkTask({ title: '實作功能' }), true);
+
+assert.strictEqual(mainDiscussionNeedsOwner('Todo', 'u01', 'u01'), true);
+assert.strictEqual(mainDiscussionNeedsOwner('Doing', undefined, 'u01'), true);
+assert.strictEqual(mainDiscussionNeedsOwner('Doing', 'u02', 'u01'), true);
+assert.strictEqual(mainDiscussionNeedsOwner('Doing', 'u01', 'u01', '一般討論回覆'), false);
+assert.strictEqual(
+  mainDiscussionNeedsOwner('Doing', 'u01', 'u01', `${MAIN_HANDOFF_PENDING} target repo: /home/hom/code/example`),
+  true,
+);
+assert.strictEqual(
+  mainDiscussionNeedsOwner('Doing', 'u01', 'u01', '已建立 http://localhost:3000/#/task/implementation-id'),
+  true,
+);
+assert.strictEqual(mainDiscussionNeedsOwner('Review', 'u01', 'u01'), true);
+
+const directory = canonicalWorkspaceDirectory();
+assert.match(directory, new RegExp(ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+assert.match(directory, new RegExp(EXPECTED_ROOT_WORKSPACE_ID));
+
+const ordered = [
+  { wsId: 'ordinary-new', startedAt: '2026-07-11T00:00:00.000Z' },
+  { wsId: 'timed-out', startedAt: '1970-01-01T00:00:00.000Z' },
+  { wsId: EXPECTED_ROOT_WORKSPACE_ID, startedAt: '1970-01-01T00:00:00.000Z' },
+  { wsId: MAIN_WORKSPACE_ID, startedAt: '1970-01-01T00:00:00.000Z' },
+].sort((a, b) => compareSweepCandidates(a, b, ['timed-out']));
+assert.deepStrictEqual(ordered.map((item) => item.wsId), [
+  'timed-out',
+  MAIN_WORKSPACE_ID,
+  EXPECTED_ROOT_WORKSPACE_ID,
+  'ordinary-new',
+]);
+
+assert.strictEqual(sweepCandidateUsesRepoSlot(MAIN_WORKSPACE_ID), false);
+assert.strictEqual(sweepCandidateUsesRepoSlot(EXPECTED_ROOT_WORKSPACE_ID), true);
+assert.strictEqual(sweepCandidateUsesRepoSlot('ordinary'), true);
 
 assert.deepStrictEqual(sweepBudgets('owner', 0, true), { owner: 2, member: 0 });
 assert.deepStrictEqual(sweepBudgets('owner', 0, false), { owner: 0, member: 0 });
