@@ -1,7 +1,13 @@
 'use strict';
 
 import { api } from '../api.js';
-import { state } from '../state.js';
+import {
+  state,
+  hasRole,
+  MAIN_WORKSPACE_ID,
+  MAIN_OWNER_EMAIL,
+  MAIN_POLICY_TITLE
+} from '../state.js';
 import { navigate } from '../router.js';
 import { el, showError, formatTime, requireWorkspace } from '../utils.js';
 import { openTaskDetailModal } from './task-detail.js';
@@ -25,6 +31,10 @@ export const KanbanView = {
     // The router registers both 'tasks' and 'task' view.
     // When prefix is 'task', rest[0] contains the task ID.
     const openTaskId = rest && rest[0];
+    const isMainWorkspace = state.workspaceId === MAIN_WORKSPACE_ID;
+    let currentRole = 'Viewer';
+    let canCreateTask = false;
+    let canManageTask = false;
 
     container.innerHTML = `
       <!-- Kanban Top Header -->
@@ -51,6 +61,17 @@ export const KanbanView = {
           </label>
         </div>
       </div>
+
+      ${isMainWorkspace ? `
+        <section class="main-workspace-policy" aria-label="主工作區協作規則">
+          <strong>主工作區協作規則</strong>
+          <span>只討論，不在主工作區實作。</span>
+          <span>所有人可新增 Todo 與留言。</span>
+          <span>只有 user01 可調整任務狀態。</span>
+          <span>開始處理時自動指派給 user01。</span>
+          <span>決議先判斷 target repo，再於 canonical 或對應 workspace 建立 task 並回寫連結。</span>
+        </section>
+      ` : ''}
 
       <p id="task-error" class="error" style="display: none; margin-bottom: 1.5rem;"></p>
 
@@ -86,8 +107,21 @@ export const KanbanView = {
      * Instantiates "+" buttons and form templates for inline task creation in headers.
      * @returns {void}
      */
+    function clearInlineAdders() {
+      for (const colStatus of ['Todo', 'Doing', 'Review']) {
+        const btnSlot = document.getElementById(`add-btn-${colStatus}`);
+        const formSlot = document.getElementById(`add-form-${colStatus}`);
+        if (btnSlot) btnSlot.textContent = '';
+        if (formSlot) formSlot.textContent = '';
+      }
+    }
+
     function setupInlineAdders() {
-      const colStatuses = ['Todo', 'Doing', 'Review'];
+      clearInlineAdders();
+      if (!canCreateTask) return;
+      const colStatuses = isMainWorkspace || !hasRole(currentRole, 'Member')
+        ? ['Todo']
+        : ['Todo', 'Doing', 'Review'];
       for (const colStatus of colStatuses) {
         const btnSlot = document.getElementById(`add-btn-${colStatus}`);
         const formSlot = document.getElementById(`add-form-${colStatus}`);
@@ -135,17 +169,20 @@ export const KanbanView = {
             const projectId = (filterVal && filterVal !== 'all' && filterVal !== 'none') ? filterVal : null;
 
             try {
+              const body = hasRole(currentRole, 'Member')
+                ? {
+                    title,
+                    description: '',
+                    priority: 'Medium',
+                    status: colStatus,
+                    projectId,
+                    assigneeId: null,
+                    dueAt: null
+                  }
+                : { title, description: '' };
               await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/tasks`, {
                 method: 'POST',
-                body: {
-                  title,
-                  description: '',
-                  priority: 'Medium',
-                  status: colStatus,
-                  projectId,
-                  assigneeId: null,
-                  dueAt: null
-                }
+                body
               });
               formSlot.textContent = '';
               await loadAllData();
@@ -157,8 +194,6 @@ export const KanbanView = {
           formSlot.appendChild(form);
           input.focus();
         };
-
-        btnSlot.textContent = '';
         btnSlot.appendChild(addBtn);
       }
     }
@@ -176,6 +211,7 @@ export const KanbanView = {
      * @returns {Promise<void>}
      */
     async function loadAllData() {
+      clearInlineAdders();
       // 顯示載入指示器
       const boardEl = document.getElementById('kanban-board-el');
       let loadingOverlay = document.getElementById('kanban-loading-overlay');
@@ -198,6 +234,12 @@ export const KanbanView = {
         projectMap = new Map(projects.map(p => [p.project_id, p.name]));
         memberMap = new Map(members.map(m => [m.user_id, m.name || m.email]));
         memberEmailMap = new Map(members.map(m => [m.user_id, m.email]));
+        const currentMember = members.find(m => m.email === state.userEmail);
+        currentRole = currentMember ? currentMember.role : 'Viewer';
+        canCreateTask = hasRole(currentRole, 'Commenter');
+        canManageTask = hasRole(currentRole, 'Member')
+          && (!isMainWorkspace || state.userEmail === MAIN_OWNER_EMAIL);
+        setupInlineAdders();
 
         // 填充篩選選單
         const filterSelect = document.getElementById('project-filter-select');
@@ -210,7 +252,9 @@ export const KanbanView = {
           for (const p of projects) {
             filterSelect.appendChild(el('option', { value: p.project_id }, p.name));
           }
-          filterSelect.appendChild(el('option', { value: '__create_new__', class: 'select-create-new-option' }, '+ 建立新專案...'));
+          if (canManageTask) {
+            filterSelect.appendChild(el('option', { value: '__create_new__', class: 'select-create-new-option' }, '+ 建立新專案...'));
+          }
           if (prevFilterVal && Array.from(filterSelect.options).some(o => o.value === prevFilterVal)) {
             filterSelect.value = prevFilterVal;
           }
@@ -226,7 +270,9 @@ export const KanbanView = {
             memberMap,
             memberEmailMap,
             onUpdate: loadAllData,
-            query
+            query,
+            currentRole,
+            isMainWorkspace
           });
         }
       } catch (err) {
@@ -282,7 +328,7 @@ export const KanbanView = {
         }
         if (t.status === 'Archived' && !showArchived) return false;
         return true;
-      });
+      }).sort((a, b) => Number(b.title === MAIN_POLICY_TITLE) - Number(a.title === MAIN_POLICY_TITLE));
 
       for (const task of filtered) {
         const card = el('div', {
@@ -340,39 +386,36 @@ export const KanbanView = {
         }
         card.appendChild(midEl);
 
-        // Transitions & Action buttons
-        const actionsEl = el('div', { class: 'task-card-actions' });
-        
-        // Row 1: Flow buttons
-        const flowEl = el('div', { class: 'task-card-flow' });
-        const flowLeft = el('div', { class: 'flow-left' });
-        const flowRight = el('div', { class: 'flow-right' });
-        if (task.status === 'Todo') {
-          flowRight.appendChild(createStateBtn('→ Doing', 'Doing'));
-        } else if (task.status === 'Doing') {
-          flowLeft.appendChild(createStateBtn('← Todo', 'Todo'));
-          flowRight.appendChild(createStateBtn('Review →', 'Review'));
-        } else if (task.status === 'Review') {
-          flowLeft.appendChild(createStateBtn('← Doing', 'Doing'));
-          flowRight.appendChild(createStateBtn('Done →', 'Done'));
-        } else if (task.status === 'Done') {
-          flowLeft.appendChild(createStateBtn('← Review', 'Review'));
-        }
-        flowEl.appendChild(flowLeft);
-        flowEl.appendChild(flowRight);
-        actionsEl.appendChild(flowEl);
+        if (canManageTask) {
+          const actionsEl = el('div', { class: 'task-card-actions' });
+          const flowEl = el('div', { class: 'task-card-flow' });
+          const flowLeft = el('div', { class: 'flow-left' });
+          const flowRight = el('div', { class: 'flow-right' });
+          if (task.status === 'Todo') {
+            flowRight.appendChild(createStateBtn('→ Doing', 'Doing'));
+          } else if (task.status === 'Doing') {
+            flowLeft.appendChild(createStateBtn('← Todo', 'Todo'));
+            flowRight.appendChild(createStateBtn('Review →', 'Review'));
+          } else if (task.status === 'Review') {
+            flowLeft.appendChild(createStateBtn('← Doing', 'Doing'));
+            flowRight.appendChild(createStateBtn('Done →', 'Done'));
+          } else if (task.status === 'Done') {
+            flowLeft.appendChild(createStateBtn('← Review', 'Review'));
+          }
+          flowEl.appendChild(flowLeft);
+          flowEl.appendChild(flowRight);
+          actionsEl.appendChild(flowEl);
 
-        // Row 2: Utility buttons
-        const utilityEl = el('div', { class: 'task-card-utils' });
-        if (task.status !== 'Archived') {
-          const archiveBtn = el('button', { type: 'button', class: 'btn-secondary', 'data-action': 'archive' }, 'Archive');
-          utilityEl.appendChild(archiveBtn);
+          const utilityEl = el('div', { class: 'task-card-utils' });
+          if (task.status !== 'Archived') {
+            const archiveBtn = el('button', { type: 'button', class: 'btn-secondary', 'data-action': 'archive' }, 'Archive');
+            utilityEl.appendChild(archiveBtn);
+          }
+          const deleteBtn = el('button', { type: 'button', class: 'btn-danger', 'data-action': 'delete' }, 'Delete');
+          utilityEl.appendChild(deleteBtn);
+          actionsEl.appendChild(utilityEl);
+          card.appendChild(actionsEl);
         }
-        const deleteBtn = el('button', { type: 'button', class: 'btn-danger', 'data-action': 'delete' }, 'Delete');
-        utilityEl.appendChild(deleteBtn);
-        
-        actionsEl.appendChild(utilityEl);
-        card.appendChild(actionsEl);
 
         const targetContainer = document.getElementById(`cards-${task.status}`);
         if (targetContainer) targetContainer.appendChild(card);
@@ -503,7 +546,7 @@ export const KanbanView = {
 
         // 判斷點擊的是否為動作按鈕
         const actionEl = e.target.closest('[data-action]');
-        if (actionEl) {
+        if (actionEl && canManageTask) {
           const action = actionEl.getAttribute('data-action');
           if (action === 'archive') {
             await archiveTask(taskId);
@@ -512,7 +555,7 @@ export const KanbanView = {
           } else if (action === 'transition') {
             const newStatus = actionEl.getAttribute('data-status');
             // 限制：切換至 Doing 時，必須有負責人
-            if (newStatus === 'Doing') {
+            if (newStatus === 'Doing' && !(isMainWorkspace && state.userEmail === MAIN_OWNER_EMAIL)) {
               const task = cachedTasks.find(t => t.task_id === taskId);
               if (task && !task.assignee_id) {
                 alert('錯誤：切換至 Doing 狀態前，必須先指派負責人！');
@@ -545,6 +588,10 @@ export const KanbanView = {
       filterSelect.addEventListener('change', async () => {
         const val = filterSelect.value;
         if (val === '__create_new__') {
+          if (!canManageTask) {
+            filterSelect.value = lastSelectedProject;
+            return;
+          }
           const name = prompt('請輸入新專案名稱：');
           if (name && name.trim()) {
             try {
@@ -577,7 +624,6 @@ export const KanbanView = {
       });
     }
 
-    setupInlineAdders();
     loadAllData();
   }
 };

@@ -9,6 +9,7 @@ const windowListeners: { [event: string]: Function[] } = {};
 const bodyChildren: MockElement[] = [];
 
 class MockElement {
+  [key: string]: any;
   tag: string;
   id: string;
   className: string;
@@ -44,6 +45,9 @@ class MockElement {
     this.tag = tag;
     this.id = attrs.id || '';
     this.className = attrs.class || '';
+    for (const [key, value] of Object.entries(attrs)) {
+      if (key !== 'class') this[key] = value;
+    }
     if (this.className) {
       this.classList.classes = this.className.split(' ');
     }
@@ -124,6 +128,12 @@ const mockDocument: any = {
     }
     return null;
   },
+  createDocumentFragment: () => new MockElement('#fragment'),
+  createTextNode: (text: string) => {
+    const node = new MockElement('#text');
+    node.textContent = text;
+    return node;
+  },
   addEventListener: (event: string, callback: Function) => {
     listeners[event] = listeners[event] || [];
     listeners[event].push(callback);
@@ -174,6 +184,8 @@ code = code.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
 
 // Convert export to globalThis mapping
 code = code.replace(/export\s+async\s+function\s+openTaskDetailModal/g, 'globalThis.openTaskDetailModal = async function openTaskDetailModal');
+code = code.replace(/export\s+function\s+safeHttpUrl/g, 'function safeHttpUrl');
+code += '\nglobalThis.safeHttpUrl = typeof safeHttpUrl === "function" ? safeHttpUrl : undefined;';
 
 // 3. Create sandbox
 const sandbox = {
@@ -182,10 +194,18 @@ const sandbox = {
   location: mockLocation,
   alert: () => {},
   console: console,
-  api: async () => [],
+  Event,
+  URL,
+  api: (async () => []) as (...args: any[]) => Promise<any>,
   state: {
-    user: { email: 'test@test.com' }
+    userEmail: 'test@test.com',
+    clear: () => {}
   },
+  hasRole: (role: string, minimum: string) => {
+    const ranks: Record<string, number> = { Viewer: 0, Commenter: 1, Member: 2, Admin: 3, Owner: 4 };
+    return ranks[role] >= ranks[minimum];
+  },
+  MAIN_OWNER_EMAIL: 'user01@test.local',
   navigate: () => {},
   el: (tag: string, attrs: any = {}, ...children: any[]) => {
     const element = new MockElement(tag, attrs);
@@ -210,6 +230,7 @@ vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
 
 const openTaskDetailModal = sandbox.globalThis.openTaskDetailModal;
+const safeHttpUrl = sandbox.globalThis.safeHttpUrl;
 
 function findElement(el: MockElement, predicate: (element: MockElement) => boolean): MockElement | null {
   if (predicate(el)) return el;
@@ -375,6 +396,108 @@ async function runTests() {
   };
   listeners['keydown'][0](mockEvent5);
   assert.ok(!mockDocument.body.classList.classes.includes('modal-open'), 'Body should lose "modal-open" class after cleanup');
+
+  // Test 6: Commenters can discuss main-workspace tasks without task mutation controls
+  bodyChildren.length = 0;
+  mockLocation.hash = '#/task/task-1';
+  sandbox.api = async (path: string) => path.endsWith('/comments')
+    ? [{ comment_id: 'comment-own', user_id: 'user-1', content: 'Own comment', created_at: '2026-07-11T00:00:00.000Z' }]
+    : [];
+
+  await openTaskDetailModal('task-1', {
+    cachedTasks: [{
+      task_id: 'task-1',
+      title: 'Discussion Task',
+      description: 'Discuss only',
+      status: 'Todo',
+      priority: 'Medium',
+      assignee_id: null,
+      due_at: null
+    }],
+    cachedMembers: [{ user_id: 'user-1', name: 'Tester', email: 'test@test.com' }],
+    memberMap: new Map([['user-1', 'Tester']]),
+    memberEmailMap: new Map([['user-1', 'test@test.com']]),
+    onUpdate: async () => {},
+    currentRole: 'Commenter',
+    isMainWorkspace: true
+  });
+
+  const commenterOverlay = bodyChildren[bodyChildren.length - 1];
+  assert.ok(findElement(commenterOverlay, (node) => node.textContent === 'Discussion Task'), 'Commenter should see the task title');
+  assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '留言'), 'Commenter should have comment submit');
+  assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '編輯'), 'Commenter should edit their own comment');
+  assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '刪除留言'), 'Commenter should delete their own comment');
+  assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '儲存'), null, 'Commenter should not have task save');
+  assert.strictEqual(findElement(commenterOverlay, (node) => node.classList.contains('status-change-btn')), null, 'Commenter should not have status controls');
+  assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'select'), null, 'Commenter should not have task attribute selects');
+  assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'input'), null, 'Commenter should not have task, date, or upload inputs');
+  assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '刪除'), null, 'Commenter should not have attachment delete');
+
+  // Test 7: Viewers retain task, comment, sharing, and attachment reads without mutation controls
+  bodyChildren.length = 0;
+  mockLocation.hash = '#/task/task-1';
+  sandbox.api = async (path: string) => {
+    if (path.endsWith('/comments')) {
+      return [{ comment_id: 'comment-1', user_id: 'user-1', content: 'handoff https://example.com/run/1', created_at: '2026-07-11T00:00:00.000Z' }];
+    }
+    if (path.endsWith('/attachments')) {
+      return [{ attachment_id: 'attachment-1', original_name: 'handoff.txt', size: 1024 }];
+    }
+    return [];
+  };
+
+  await openTaskDetailModal('task-1', {
+    cachedTasks: [{
+      task_id: 'task-1',
+      title: 'Read Only Task',
+      description: 'Read only description',
+      status: 'Todo',
+      priority: 'Low',
+      assignee_id: null,
+      due_at: null
+    }],
+    cachedMembers: [{ user_id: 'user-1', name: 'Tester', email: 'test@test.com' }],
+    memberMap: new Map([['user-1', 'Tester']]),
+    memberEmailMap: new Map([['user-1', 'test@test.com']]),
+    onUpdate: async () => {},
+    currentRole: 'Viewer',
+    isMainWorkspace: true
+  });
+
+  const viewerOverlay = bodyChildren[bodyChildren.length - 1];
+  assert.ok(findElement(viewerOverlay, (node) => node.textContent === 'Read Only Task'), 'Viewer should see the task title');
+  assert.ok(findElement(viewerOverlay, (node) => node.textContent === 'handoff.txt (1.0 KB)' && node.tag === 'a'), 'Viewer should retain attachment downloads');
+  const urlLink = findElement(viewerOverlay, (node) => node.classList.contains('rich-url-link'));
+  assert.ok(urlLink, 'Viewer should see safe handoff URLs as links');
+  assert.strictEqual(urlLink.href, 'https://example.com/run/1');
+  assert.strictEqual(urlLink.rel, 'noopener noreferrer');
+  assert.strictEqual(findElement(viewerOverlay, (node) => node.tag === 'button' && ['留言', '編輯', '刪除留言', '刪除'].includes(node.textContent)), null, 'Viewer should not have comment or attachment mutations');
+
+  const serial = findElement(viewerOverlay, (node) => node.classList.contains('comment-serial'));
+  assert.ok(serial && serial.onclick, 'Viewer should retain the comment share menu');
+  serial.onclick({ stopPropagation: () => {}, pageX: 0, pageY: 0 });
+  const viewerPopup = bodyChildren[bodyChildren.length - 1];
+  assert.ok(findElement(viewerPopup, (node) => node.tag === 'button' && node.textContent === '分享'), 'Viewer should retain comment sharing');
+  assert.strictEqual(findElement(viewerPopup, (node) => node.tag === 'button' && node.textContent === '回覆'), null, 'Viewer should not have reply controls');
+
+  // Test 8: Only absolute HTTP(S) URLs are linkable
+  assert.strictEqual(safeHttpUrl('http://example.com/path'), 'http://example.com/path');
+  assert.strictEqual(safeHttpUrl('https://example.com/path?x=1#handoff'), 'https://example.com/path?x=1#handoff');
+  assert.strictEqual(safeHttpUrl('javascript:alert(1)'), null);
+  assert.strictEqual(safeHttpUrl('/relative/path'), null);
+  assert.strictEqual(safeHttpUrl('not a url'), null);
+
+  // Keep broad view policy checks source-level; the modal behavior above owns the DOM harness.
+  const stateSource = readFileSync(join(__dirname, '../public/js/state.js'), 'utf8');
+  const kanbanSource = readFileSync(join(__dirname, '../public/js/views/kanban.js'), 'utf8');
+  const membersSource = readFileSync(join(__dirname, '../public/js/views/members.js'), 'utf8');
+  const taskDetailSource = readFileSync(join(__dirname, '../public/js/views/task-detail.js'), 'utf8');
+  assert.match(stateSource, /ROLE_RANK[\s\S]*Commenter:\s*1[\s\S]*MAIN_WORKSPACE_ID[\s\S]*MAIN_OWNER_EMAIL[\s\S]*MAIN_POLICY_TITLE/);
+  assert.match(kanbanSource, /main-workspace-policy/);
+  assert.match(kanbanSource, /canCreateTask[\s\S]*canManageTask/);
+  assert.match(kanbanSource, /MAIN_POLICY_TITLE[\s\S]*\.sort\(/);
+  assert.match(membersSource, /hasRole[\s\S]*MAIN_WORKSPACE_ID[\s\S]*canManageMembers/);
+  assert.match(taskDetailSource, /rich-url-link[\s\S]*rel:\s*['"]noopener noreferrer['"]/);
 
   console.log('frontend.test.ts OK');
 }
