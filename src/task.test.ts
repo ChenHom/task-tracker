@@ -1,7 +1,8 @@
 import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
-import { resetProjections, loadEvents, CommandError } from './eventStore';
+import { appendEvent, resetProjections, loadEvents, CommandError } from './eventStore';
+import { MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 import {
   createTask,
   changeTaskTitle,
@@ -16,6 +17,7 @@ import {
   listTasks,
   getTask,
   getTaskWorkspaceId,
+  normalizeMainDiscussion,
   registerTaskProjections,
 } from './task';
 
@@ -25,11 +27,22 @@ resetProjections();
 registerTaskProjections();
 
 const WS = 'ws-1';
+const COMMENTER_WS = 'ws-commenter';
 // createTask 會檢查 workspace 生命週期 → 需要 workspaces_read_model 有 active 的 fixture。
 const seedWs = (id: string, status = 'active') =>
   db.prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, created_at) VALUES (?, ?, ?, ?)').run(id, id, status, 't');
 seedWs(WS);
 seedWs('ws-other');
+seedWs(COMMENTER_WS);
+seedWs(MAIN_WORKSPACE_ID);
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-owner', MAIN_OWNER_EMAIL, 'Main Owner', 'x');
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-user', 'user02@test.local', 'Main User', 'x');
+const insertMember = db.prepare(
+  'INSERT INTO workspace_members_read_model (workspace_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)',
+);
+insertMember.run(MAIN_WORKSPACE_ID, 'main-owner', 'Owner', 't');
+insertMember.run(MAIN_WORKSPACE_ID, 'main-user', 'Commenter', 't');
+insertMember.run(COMMENTER_WS, 'main-user', 'Commenter', 't');
 const one = (id: string) => listTasks(WS, db).find((t) => t.task_id === id)!;
 
 // ── create → read model 全欄位 + 預設值 ──
@@ -142,5 +155,199 @@ assert.ok(t3, 'getTask 返回存在的 task');
 assert.strictEqual(t3?.task_id, id2);
 assert.strictEqual(t3?.title, 'Patched', 'getTask 返回最新資料');
 assert.strictEqual(getTask('nonexistent', db), null, 'getTask 不存在的 id 返回 null');
+
+// ── Commenter 建立 task 只能送 title / description，規則適用所有 workspace ──
+assert.throws(
+  () => createTask('main-user', MAIN_WORKSPACE_ID, { title: '方向', priority: 'High' }, db),
+  { name: 'CommandError', message: 'Commenter 建立 task 只能提交 title 與 description' },
+);
+for (const field of ['status', 'priority', 'assignee', 'assigneeId', 'projectId', 'dueAt'] as const) {
+  const input = { title: `forbidden ${field}`, [field]: null };
+  assert.throws(
+    () => createTask('main-user', COMMENTER_WS, input, db),
+    { name: 'CommandError', message: 'Commenter 建立 task 只能提交 title 與 description' },
+    `Commenter input 即使 ${field} 為 null 也應拒絕`,
+  );
+}
+const commenterTaskId = createTask('main-user', COMMENTER_WS, { title: '一般方向', description: '一般討論' }, db);
+assert.strictEqual(getTask(commenterTaskId, db)?.title, '一般方向', '一般 workspace 不加討論 prefix');
+
+// ── 主工作區建立規則：唯一 policy + 其餘固定為 Todo 討論 ──
+assert.throws(
+  () => createTask('main-user', MAIN_WORKSPACE_ID, { title: MAIN_POLICY_TITLE }, db),
+  { name: 'CommandError', message: '只有 user01 可以建立主工作區規則 task' },
+);
+const discussionId = createTask('main-user', MAIN_WORKSPACE_ID, { title: '方向', description: '討論內容' }, db);
+assert.deepStrictEqual(
+  (() => {
+    const row = getTask(discussionId, db)!;
+    return {
+      title: row.title,
+      description: row.description,
+      status: row.status,
+      priority: row.priority,
+      assigneeId: row.assignee_id,
+      projectId: row.project_id,
+      dueAt: row.due_at,
+    };
+  })(),
+  {
+    title: '[討論] 方向',
+    description: '討論內容',
+    status: 'Todo',
+    priority: 'Medium',
+    assigneeId: null,
+    projectId: null,
+    dueAt: null,
+  },
+);
+const prefixedId = createTask('main-user', MAIN_WORKSPACE_ID, { title: '[討論] 已有前綴' }, db);
+assert.strictEqual(getTask(prefixedId, db)?.title, '[討論] 已有前綴', '不得重複加討論 prefix');
+assert.throws(
+  () => createTask('main-user', MAIN_WORKSPACE_ID, { title: 'x'.repeat(200) }, db),
+  /title 過長/,
+  '加上討論 prefix 後 title 仍不可超過 200 字',
+);
+
+const policyId = createTask('main-owner', MAIN_WORKSPACE_ID, { title: MAIN_POLICY_TITLE }, db);
+assert.strictEqual(getTask(policyId, db)?.title, MAIN_POLICY_TITLE);
+assert.throws(
+  () => createTask('main-owner', MAIN_WORKSPACE_ID, { title: MAIN_POLICY_TITLE }, db),
+  { name: 'CommandError', message: '主工作區規則 task 已存在' },
+);
+
+// ── normalize 權限與適用範圍 ──
+assert.throws(
+  () => normalizeMainDiscussion('main-user', discussionId, db),
+  { name: 'CommandError', message: '只有 user01 可以正規化主工作區 task' },
+);
+assert.throws(
+  () => normalizeMainDiscussion('main-owner', commenterTaskId, db),
+  { name: 'CommandError', message: '不是可正規化的主工作區 task' },
+);
+assert.throws(
+  () => normalizeMainDiscussion('main-owner', policyId, db),
+  { name: 'CommandError', message: '不是可正規化的主工作區 task' },
+);
+const archivedDiscussionId = createTask('main-user', MAIN_WORKSPACE_ID, { title: '已歸檔討論' }, db);
+archiveTask('main-owner', archivedDiscussionId, db);
+assert.throws(
+  () => normalizeMainDiscussion('main-owner', archivedDiscussionId, db),
+  { name: 'CommandError', message: '不是可正規化的主工作區 task' },
+);
+
+// ── 主討論 Todo → Doing：狀態與負責人在單一事件內更新 ──
+assert.throws(
+  () => changeTaskStatus('main-user', discussionId, 'Doing', db),
+  { name: 'CommandError', message: '只有 user01 可以改變主工作區 task 狀態' },
+);
+const beforeStartEvents = loadEvents(discussionId, db);
+changeTaskStatus('main-owner', discussionId, 'Doing', db);
+const started = getTask(discussionId, db)!;
+const afterStartEvents = loadEvents(discussionId, db);
+assert.strictEqual(started.status, 'Doing');
+assert.strictEqual(started.assignee_id, 'main-owner');
+assert.strictEqual(afterStartEvents.length, beforeStartEvents.length + 1, '開始討論只新增一個 event');
+assert.strictEqual(afterStartEvents.at(-1)?.event_type, 'task.discussion_started');
+assert.deepStrictEqual(afterStartEvents.at(-1)?.payload, { status: 'Doing', assigneeId: 'main-owner' });
+
+const beforeStartedNormalize = { eventCount: afterStartEvents.length, version: started.version };
+normalizeMainDiscussion('main-owner', discussionId, db);
+assert.strictEqual(getTask(discussionId, db)?.assignee_id, 'main-owner', 'Doing normalize 保留負責人');
+assert.strictEqual(loadEvents(discussionId, db).length, beforeStartedNormalize.eventCount, '已合規時不追加 event');
+assert.strictEqual(getTask(discussionId, db)?.version, beforeStartedNormalize.version, '已合規時 version 不變');
+
+// ── legacy Todo 討論正規化；description/status 保留且第二次完全 no-op ──
+const legacyTodoId = 'legacy-main-todo';
+appendEvent(
+  'Task',
+  legacyTodoId,
+  0,
+  'task.created',
+  {
+    workspaceId: MAIN_WORKSPACE_ID,
+    projectId: 'legacy-project',
+    title: '舊方向',
+    description: '保留的舊內容',
+    status: 'Todo',
+    priority: 'High',
+    assigneeId: 'main-user',
+    dueAt: '2027-01-01T00:00:00.000Z',
+  },
+  { actor_id: 'legacy' },
+  db,
+);
+normalizeMainDiscussion('main-owner', legacyTodoId, db);
+const normalizedTodo = getTask(legacyTodoId, db)!;
+assert.deepStrictEqual(
+  {
+    title: normalizedTodo.title,
+    description: normalizedTodo.description,
+    status: normalizedTodo.status,
+    priority: normalizedTodo.priority,
+    assigneeId: normalizedTodo.assignee_id,
+    projectId: normalizedTodo.project_id,
+    dueAt: normalizedTodo.due_at,
+  },
+  {
+    title: '[討論] 舊方向',
+    description: '保留的舊內容',
+    status: 'Todo',
+    priority: 'Medium',
+    assigneeId: null,
+    projectId: null,
+    dueAt: null,
+  },
+);
+assert.strictEqual(loadEvents(legacyTodoId, db).at(-1)?.event_type, 'task.main_discussion_normalized');
+const normalizedTodoSnapshot = { eventCount: loadEvents(legacyTodoId, db).length, version: normalizedTodo.version };
+normalizeMainDiscussion('main-owner', legacyTodoId, db);
+assert.strictEqual(loadEvents(legacyTodoId, db).length, normalizedTodoSnapshot.eventCount);
+assert.strictEqual(getTask(legacyTodoId, db)?.version, normalizedTodoSnapshot.version);
+
+// ── legacy 非 Todo 討論正規化時保留既有負責人 ──
+const legacyDoingId = 'legacy-main-doing';
+appendEvent(
+  'Task',
+  legacyDoingId,
+  0,
+  'task.created',
+  {
+    workspaceId: MAIN_WORKSPACE_ID,
+    projectId: 'legacy-project',
+    title: '進行中的舊方向',
+    description: '進行中內容',
+    status: 'Todo',
+    priority: 'High',
+    assigneeId: 'main-owner',
+    dueAt: '2027-02-01T00:00:00.000Z',
+  },
+  { actor_id: 'legacy' },
+  db,
+);
+appendEvent('Task', legacyDoingId, 1, 'task.status_changed', { status: 'Doing' }, { actor_id: 'legacy' }, db);
+normalizeMainDiscussion('main-owner', legacyDoingId, db);
+const normalizedDoing = getTask(legacyDoingId, db)!;
+assert.deepStrictEqual(
+  {
+    title: normalizedDoing.title,
+    description: normalizedDoing.description,
+    status: normalizedDoing.status,
+    priority: normalizedDoing.priority,
+    assigneeId: normalizedDoing.assignee_id,
+    projectId: normalizedDoing.project_id,
+    dueAt: normalizedDoing.due_at,
+  },
+  {
+    title: '[討論] 進行中的舊方向',
+    description: '進行中內容',
+    status: 'Doing',
+    priority: 'Medium',
+    assigneeId: 'main-owner',
+    projectId: null,
+    dueAt: null,
+  },
+);
+assert.strictEqual(loadEvents(legacyDoingId, db).at(-1)?.event_type, 'task.main_discussion_normalized');
 
 console.log('task.test.ts OK');
