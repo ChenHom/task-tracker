@@ -1102,7 +1102,7 @@ function renderRichText(text, cachedMembers, cachedComments, cachedTasks) {
   parts.forEach(part => {
     if (!part) return;
 
-    const punctuation = part.startsWith('http') ? part.match(/[.,;:!?]+$/)?.[0] || '' : '';
+    const punctuation = part.startsWith('http') ? part.match(/[.,;:!?。！？，；：]+$/)?.[0] || '' : '';
     const urlText = punctuation ? part.slice(0, -punctuation.length) : part;
     const href = safeHttpUrl(urlText);
     if (href) {

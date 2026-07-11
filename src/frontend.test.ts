@@ -491,7 +491,7 @@ async function runTests() {
   sandbox.state.userEmail = 'test@test.com';
   sandbox.api = async (path: string) => {
     if (path.endsWith('/comments')) {
-      return [{ comment_id: 'comment-1', user_id: 'user-1', content: 'handoff https://example.com/run/1.', created_at: '2026-07-11T00:00:00.000Z' }];
+      return [{ comment_id: 'comment-1', user_id: 'user-1', content: 'handoff https://example.com/run/1.。', created_at: '2026-07-11T00:00:00.000Z' }];
     }
     if (path.endsWith('/attachments')) {
       return [{ attachment_id: 'attachment-1', original_name: 'handoff.txt', size: 1024 }];
@@ -524,7 +524,7 @@ async function runTests() {
   assert.ok(urlLink, 'Viewer should see safe handoff URLs as links');
   assert.strictEqual(urlLink.href, 'https://example.com/run/1');
   assert.strictEqual(urlLink.rel, 'noopener noreferrer');
-  assert.ok(findElement(viewerOverlay, (node) => node.tag === '#text' && node.textContent === '.'), 'Trailing URL punctuation should remain text');
+  assert.ok(findElement(viewerOverlay, (node) => node.tag === '#text' && node.textContent === '.。'), 'Trailing URL punctuation should remain text');
   assert.strictEqual(findElement(viewerOverlay, (node) => node.tag === 'button' && ['留言', '編輯', '刪除留言', '刪除'].includes(node.textContent)), null, 'Viewer should not have comment or attachment mutations');
 
   const serial = findElement(viewerOverlay, (node) => node.classList.contains('comment-serial'));
