@@ -60,6 +60,17 @@ tail -n 80 /var/log/nginx/error.log
 
 If `/tracker/` returns `502`, first check whether `task-tracker.service` is active and whether port 3000 answers `/api/health`.
 
+## 主協作工作區
+
+- 固定 UUID：`11a82028-fc50-466a-a723-e002032cd9a6`
+- 固定名稱：`主協作工作區`
+- `user01@test.local` 是唯一 Owner；其他內部使用者同步為 Commenter。
+- 所有人都可建立 Todo 討論與留言；只有 user01 可改變 task 狀態。
+- user01 將 Todo 移至 Doing 時，單一 `task.discussion_started` event 會同時指派 runtime user01。
+- 決議後先判斷 target repo，再於 canonical／對應 workspace 建立實作 task，並在原討論回寫完整 task URL；實作 task 不留在主協作工作區。
+- `[規則] 主工作區協作與交接` 是政策提示，不是 sweep work。
+- Server startup 會修復固定名稱、成員角色、規則 task 與 legacy 討論；成功登入時也會同步該使用者。
+
 ## Sim harness
 
 ### Prerequisites
@@ -94,7 +105,9 @@ npm run sim -- --sweep
 
 `npm run sim` executes `tsx sim/run.ts`. The entrypoint acquires the run lock and then selects either the full sprint flow or the requested sweep role. Omitting a scenario uses `self-directed`; omitting a sweep role runs `owner + team`.
 
-### Automatic sweeps
+### Operator-controlled sweeps
+
+SIM timers 只由操作人員控制，部署或啟動 Task Tracker 時不得自動 enable。Live sweep 會呼叫真實 AI 並修改看板，只有取得明確人工授權後才執行 `npm run sim -- --sweep owner` 或啟用 timer。
 
 Installed user units and wrapper:
 
@@ -102,7 +115,7 @@ Installed user units and wrapper:
 - `~/.config/systemd/user/sim-sweep-team.timer`: runs at `:15` every hour.
 - `~/.local/bin/sim-sweep-cron.sh`: checks for an existing sim process and verifies `/api/health` before invoking `npm run sim -- --sweep <role>`.
 
-Enable both timers:
+Explicitly enable both timers when authorized:
 
 ```bash
 systemctl --user daemon-reload

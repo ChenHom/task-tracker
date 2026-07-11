@@ -170,3 +170,18 @@
 - [x] 留言板顯示時，會解析並渲染 `::shortId` 為翡翠綠色任務連結 (`.rich-task-link`)，hover 顯示完整標題，點擊會無縫切換 Hash 路由，在 Modal 中加載目標任務。
 
 > 實測：Eslint 靜態檢查與 Jest/sim 測試均 100% 通過。實際操作上，`@`、`#` 與 `::` 能流暢地進行混合自動補全與鍵盤導覽；對 `::` 短 ID 點擊時彈出選單與偽元素座標點擊比對功能皆符合預期，大幅提升使用者在看板上的便利性與協作體驗。
+
+---
+
+## Phase 15 — Commenter 與主協作工作區（feature branch 已驗證）
+
+- [x] 新增 `Commenter` 角色與 RBAC／API 權限矩陣；可建立 Todo 討論及留言，但不可修改 task、project 或附件
+- [x] 固定主協作工作區名稱、user01 Owner、其他 user Commenter，並由 startup／login 同步修復
+- [x] 主工作區討論預設、legacy task 正規化與 `task.discussion_started` 單一事件已由 domain 測試覆蓋
+- [x] 前端依角色收斂控制，並安全自動連結完整 HTTP(S) URL、保留網址尾端中英文標點
+- [x] SIM sweep 固定發現主工作區、排除 policy task、依 target repo 路由，且 main 不占 canonical repo slot
+- [x] feature branch 已通過 `npm test`、`npm run build`、`git diff --check` 與 focused `sim/run.test.ts`
+- [ ] 合併至 `master`、build、restart 與正式服務部署驗證
+- [ ] DB readback：固定名稱、30 位使用者角色、單一 policy task、legacy task title
+- [ ] 完整 Commenter／Owner HTTP smoke 與交接流程驗證
+- [ ] 經明確人工授權執行 live `npm run sim -- --sweep owner`
