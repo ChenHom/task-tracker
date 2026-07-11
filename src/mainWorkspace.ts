@@ -44,6 +44,9 @@ function ensureCommenter(ownerId: string, userId: string, database: DatabaseSync
     inviteMember(ownerId, MAIN_WORKSPACE_ID, userId, 'Commenter', database);
     joinWorkspace(userId, MAIN_WORKSPACE_ID, database);
   }
+  if (getMemberRole(MAIN_WORKSPACE_ID, userId, database) !== 'Commenter') {
+    changeMemberRole(ownerId, MAIN_WORKSPACE_ID, userId, 'Commenter', database);
+  }
 }
 
 export function syncMainWorkspaceUser(userId: string, database = db): void {

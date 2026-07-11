@@ -26,6 +26,7 @@ registerTaskProjections();
 const insertUser = db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)');
 insertUser.run('u01', MAIN_OWNER_EMAIL, '阿哲', 'x');
 insertUser.run('u02', 'user02@test.local', '小美', 'x');
+insertUser.run('u03', 'user03@test.local', '阿凱', 'x');
 insertUser.run('u09', 'user09@test.local', '老闆', 'x');
 
 appendEvent(
@@ -50,6 +51,15 @@ appendEvent(
   db,
 );
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u09', db), 'Member', 'fixture 應保留歷史 Member');
+appendEvent(
+  'Member',
+  `${MAIN_WORKSPACE_ID}:u03`,
+  0,
+  'member.invited',
+  { workspaceId: MAIN_WORKSPACE_ID, userId: 'u03', role: 'Member' },
+  { actor_id: 'legacy' },
+  db,
+);
 
 const legacyTaskId = 'legacy-main-discussion';
 appendEvent(
@@ -86,6 +96,7 @@ assert.throws(
 );
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u01', db), 'Owner');
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u02', db), 'Commenter');
+assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u03', db), 'Commenter');
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u09', db), 'Commenter');
 assert.strictEqual(getTask(legacyTaskId, db)?.title, '[討論] workspace的封存功能');
 assert.strictEqual(loadEvents(legacyTaskId, db).at(-1)?.event_type, 'task.main_discussion_normalized');
