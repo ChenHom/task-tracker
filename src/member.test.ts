@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
-import { resetProjections, CommandError } from './eventStore';
+import { resetProjections, CommandError, loadEvents } from './eventStore';
 import { createSession } from './auth';
 import {
   inviteMember,
@@ -177,6 +177,16 @@ assert.strictEqual(getMemberRole(WS_OTHER, 'u09', db), null, '非 user01 建立�
 // ── 主工作區角色由同步流程固定管理 ──
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)')
   .run('main-user', 'user02@test.local', '小美', 'x');
+assert.throws(
+  () => inviteMember('main-owner', MAIN_WORKSPACE_ID, 'main-user', 'Member', db),
+  /主工作區成員固定為 Commenter/,
+);
+assert.strictEqual(loadEvents(`${MAIN_WORKSPACE_ID}:main-user`, db).length, 0);
+assert.throws(
+  () => inviteMember('main-owner', MAIN_WORKSPACE_ID, 'main-owner', 'Commenter', db),
+  /主工作區成員固定為 Owner/,
+);
+assert.strictEqual(loadEvents(`${MAIN_WORKSPACE_ID}:main-owner`, db).length, 0);
 seedOwner(MAIN_WORKSPACE_ID, 'main-owner', db);
 inviteMember('main-owner', MAIN_WORKSPACE_ID, 'main-user', 'Commenter', db);
 joinWorkspace('main-user', MAIN_WORKSPACE_ID, db);
