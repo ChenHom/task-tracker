@@ -550,6 +550,7 @@ async function runTests() {
   assert.match(kanbanSource, /hasRole\(currentRole,\s*['"]Member['"]\)[\s\S]*:\s*\{\s*title,\s*description:\s*['"]{2}\s*\}/);
   assert.match(membersSource, /hasRole[\s\S]*MAIN_WORKSPACE_ID[\s\S]*canManageMembers/);
   assert.match(membersSource, /const\s+renderWorkspaceId\s*=\s*state\.workspaceId[\s\S]*let\s+loadGeneration\s*=\s*0[\s\S]*async\s+function\s+load\(\)\s*\{\s*if\s*\(state\.workspaceId\s*!==\s*renderWorkspaceId\)\s*return;[\s\S]*encodeURIComponent\(renderWorkspaceId\)[\s\S]*generation\s*!==\s*loadGeneration[\s\S]*state\.workspaceId\s*!==\s*renderWorkspaceId/);
+  assert.match(membersSource, /const\s+searchGeneration\s*=\s*loadGeneration[\s\S]*setTimeout\(async\s*\(\)\s*=>\s*\{\s*if\s*\(!canManageMembers\s*\|\|\s*state\.workspaceId\s*!==\s*renderWorkspaceId\s*\|\|\s*searchGeneration\s*!==\s*loadGeneration\)\s*return;[\s\S]*await\s+api\([\s\S]*if\s*\(!canManageMembers\s*\|\|\s*state\.workspaceId\s*!==\s*renderWorkspaceId\s*\|\|\s*searchGeneration\s*!==\s*loadGeneration\)\s*return;[\s\S]*suggestionsDatalist\.innerHTML/);
   assert.match(taskDetailSource, /rich-url-link[\s\S]*rel:\s*['"]noopener noreferrer['"]/);
 
   console.log('frontend.test.ts OK');

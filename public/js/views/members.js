@@ -165,10 +165,11 @@ export const MembersView = {
         }
       });
       inviteEmailInput.addEventListener('input', () => {
-        if (!canManageMembers) return;
+        if (!canManageMembers || state.workspaceId !== renderWorkspaceId) return;
+        const searchGeneration = loadGeneration;
         clearTimeout(searchTimer);
         searchTimer = setTimeout(async () => {
-          if (!canManageMembers) return;
+          if (!canManageMembers || state.workspaceId !== renderWorkspaceId || searchGeneration !== loadGeneration) return;
           const val = inviteEmailInput.value.trim();
           if (val.length < 1) {
             suggestionsDatalist.innerHTML = '';
@@ -182,6 +183,7 @@ export const MembersView = {
             const list = await api(`/api/users/search?q=${encodeURIComponent(val)}`, {
               signal: searchAbortController.signal
             });
+            if (!canManageMembers || state.workspaceId !== renderWorkspaceId || searchGeneration !== loadGeneration) return;
             suggestionsDatalist.innerHTML = '';
             for (const item of list) {
               suggestionsDatalist.appendChild(el('option', { value: item.email }, `${item.name} (${item.email})`));
