@@ -1,4 +1,6 @@
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
 import { resetProjections, CommandError, loadEvents } from './eventStore';
@@ -158,6 +160,33 @@ inviteMember('owner', WS_REINVITE, 'eve', 'Commenter', db);
 joinWorkspace('eve', WS_REINVITE, db);
 assert.strictEqual(getMemberRole(WS_REINVITE, 'eve', db), 'Commenter');
 
+const commenterTok = createSession('eve', db);
+for (const [action, minRole] of [
+  ['createTask', ACCESS_ROLE.createTask],
+  ['createComment', ACCESS_ROLE.createComment],
+  ['mutateOwnComment', ACCESS_ROLE.mutateOwnComment],
+] as const) {
+  cap = capture();
+  assert.strictEqual(
+    requirePermission(fakeReq(commenterTok), cap.res, WS_REINVITE, minRole, db),
+    'eve',
+    `Commenter 應通過 ${action}`,
+  );
+}
+for (const [action, minRole] of [
+  ['mutateTask', ACCESS_ROLE.mutateTask],
+  ['writeProject', ACCESS_ROLE.writeProject],
+  ['writeAttachment', ACCESS_ROLE.writeAttachment],
+] as const) {
+  cap = capture();
+  assert.strictEqual(
+    requirePermission(fakeReq(commenterTok), cap.res, WS_REINVITE, minRole, db),
+    null,
+    `Commenter 不應通過 ${action}`,
+  );
+  assert.strictEqual(cap.get(), 403, `Commenter 被拒絕 ${action} 應寫 403`);
+}
+
 // ── autoAddObserver：user01 建 workspace 時自動把老闆 user09 加成成員 ──
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-owner', MAIN_OWNER_EMAIL, '阿哲', 'x');
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('u09', 'user09@test.local', '老闆', 'x');
@@ -202,5 +231,100 @@ assert.throws(
   () => removeMember('main-owner', MAIN_WORKSPACE_ID, 'main-user', db),
   /主工作區成員由系統同步/,
 );
+
+// server 會在 import 時 listen；以相鄰 route marker 切段，避免跨 route 的 regex 假綠。
+const serverSource = readFileSync(join(__dirname, 'server.ts'), 'utf8');
+const routeBlock = (startMarker: string, endMarker: string): string => {
+  const start = serverSource.indexOf(startMarker);
+  assert.notStrictEqual(start, -1, `找不到 route 起點：${startMarker}`);
+  const end = serverSource.indexOf(endMarker, start + startMarker.length);
+  assert.ok(end > start, `找不到 route 終點：${endMarker}`);
+  return serverSource.slice(start, end);
+};
+
+const workspacePatchBlock = routeBlock('const patchMatch =', 'const wsMembersMatch =');
+const workspaceMembersBlock = routeBlock('const wsMembersMatch =', 'const joinMatch =');
+const memberMutationBlock = routeBlock('const memberMatch =', 'const wsTasksMatch =');
+const workspaceTasksBlock = routeBlock('const wsTasksMatch =', 'const taskMatch =');
+const taskBlock = routeBlock('const taskMatch =', 'const archiveMatch =');
+const archiveBlock = routeBlock('const archiveMatch =', 'const wsProjectsMatch =');
+const workspaceProjectsBlock = routeBlock('const wsProjectsMatch =', 'const projectMatch =');
+const projectBlock = routeBlock('const projectMatch =', 'const taskCommentsMatch =');
+const taskCommentsBlock = routeBlock('const taskCommentsMatch =', 'const commentMatch =');
+const commentBlock = routeBlock('const commentMatch =', 'const taskAttachMatch =');
+const taskAttachmentsBlock = routeBlock('const taskAttachMatch =', 'const attachMatch =');
+const attachmentBlock = routeBlock('const attachMatch =', '// ── Search API');
+const auditBlock = routeBlock('// ── Audit API', 'const filePath =');
+
+assert.match(
+  workspaceTasksBlock,
+  /if \(req\.method === 'GET'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, ACCESS_ROLE\.read\)/,
+  'workspace task GET 應使用 read 權限',
+);
+assert.match(
+  workspaceTasksBlock,
+  /if \(req\.method === 'POST'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, ACCESS_ROLE\.createTask\)/,
+  'workspace task POST 應使用 createTask 權限',
+);
+assert.match(
+  taskBlock,
+  /const taskRole = req\.method === 'GET' \? ACCESS_ROLE\.read : ACCESS_ROLE\.mutateTask;\s*const userId = requirePermission\(req, res, workspaceId, taskRole\)/,
+  'single task GET 應 read，PATCH/DELETE 應 mutateTask',
+);
+assert.match(archiveBlock, /requirePermission\(req, res, workspaceId, ACCESS_ROLE\.mutateTask\)/, 'archive 應使用 mutateTask 權限');
+
+assert.match(
+  workspaceProjectsBlock,
+  /if \(req\.method === 'GET'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, (?:ACCESS_ROLE\.read|'Viewer')\)/,
+  'project GET 應維持 read 權限',
+);
+assert.match(
+  workspaceProjectsBlock,
+  /if \(req\.method === 'POST'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, ACCESS_ROLE\.writeProject\)/,
+  'project POST 應使用 writeProject 權限',
+);
+assert.match(projectBlock, /requirePermission\(req, res, workspaceId, ACCESS_ROLE\.writeProject\)/, 'project PATCH/DELETE 應使用 writeProject 權限');
+
+assert.match(
+  taskCommentsBlock,
+  /if \(req\.method === 'GET'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, ACCESS_ROLE\.read\)/,
+  'comment GET 應使用 read 權限',
+);
+assert.match(
+  taskCommentsBlock,
+  /if \(req\.method === 'POST'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, ACCESS_ROLE\.createComment\)/,
+  'comment POST 應使用 createComment 權限',
+);
+assert.match(commentBlock, /requirePermission\(req, res, ctx\.workspace_id, ACCESS_ROLE\.mutateOwnComment\)/, 'comment PATCH/DELETE 應使用 mutateOwnComment 權限');
+assert.ok(
+  commentBlock.indexOf('if (ctx.user_id !== userId)') > commentBlock.indexOf('ACCESS_ROLE.mutateOwnComment'),
+  'comment ownership check 應保留在角色檢查之後',
+);
+
+assert.match(
+  taskAttachmentsBlock,
+  /if \(req\.method === 'GET'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, ACCESS_ROLE\.read\)/,
+  'task attachment GET 應使用 read 權限',
+);
+assert.match(
+  taskAttachmentsBlock,
+  /if \(req\.method === 'POST'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, ACCESS_ROLE\.writeAttachment\)/,
+  'task attachment POST 應使用 writeAttachment 權限',
+);
+assert.match(
+  attachmentBlock,
+  /if \(req\.method === 'GET'\)\s*{\s*const userId = requirePermission\(req, res, ctx\.workspace_id, ACCESS_ROLE\.read\)/,
+  'single attachment GET 應使用 read 權限',
+);
+assert.match(attachmentBlock, /requirePermission\(req, res, ctx\.workspace_id, ACCESS_ROLE\.writeAttachment\)/, 'attachment DELETE 應使用 writeAttachment 權限');
+
+assert.match(workspacePatchBlock, /requirePermission\(req, res, workspaceId, 'Admin'\)/, 'workspace rename 仍需 Admin');
+assert.match(
+  workspaceMembersBlock,
+  /if \(req\.method === 'POST'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, 'Admin'\)/,
+  'member invite 仍需 Admin',
+);
+assert.match(memberMutationBlock, /requirePermission\(req, res, workspaceId, 'Admin'\)/, 'member PATCH/DELETE 仍需 Admin');
+assert.match(auditBlock, /requirePermission\(req, res, workspaceId, 'Admin'\)/, 'audit 仍需 Admin');
 
 console.log('member.test.ts OK');
