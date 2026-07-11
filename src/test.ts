@@ -6,6 +6,7 @@ import './seed.test';
 import './eventStore.test';
 import './workspace.test';
 import './member.test';
+import './mainWorkspace.test';
 import './task.test';
 import './project.test';
 import './comment.test';

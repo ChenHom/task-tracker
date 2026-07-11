@@ -51,6 +51,7 @@ import { searchWorkspace } from './search';
 import { getAggregateWorkspace, getAuditTrail } from './audit';
 import { createRateLimiter } from './rateLimit';
 import { clientIp } from './clientIp';
+import { syncMainWorkspace, syncMainWorkspaceUser } from './mainWorkspace';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
@@ -75,6 +76,15 @@ function isCsrfSafe(req: IncomingMessage): boolean {
 registerWorkspaceProjections();
 registerMemberProjections();
 registerTaskProjections();
+
+function syncMainWorkspaceSafely(userId?: string): void {
+  try {
+    if (userId) syncMainWorkspaceUser(userId);
+    else syncMainWorkspace();
+  } catch (error) {
+    console.error('[main-workspace] sync failed:', error);
+  }
+}
 
 // 統一把 command 錯誤映射成 HTTP：CommandError → 400，其餘 → 500。
 function sendCommandError(res: ServerResponse, e: unknown): void {
@@ -154,6 +164,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     // session fixation 防護：廢棄登入前的舊 session，認證後一律用全新 id。
     const oldToken = parseCookies(req.headers.cookie)[SESSION_COOKIE];
     if (oldToken) destroySession(oldToken);
+    syncMainWorkspaceSafely(userId);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': sessionCookie(createSession(userId)) });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -710,5 +721,6 @@ process.on('SIGHUP', () => {
   console.log('task-tracker reloaded');
 });
 
+syncMainWorkspaceSafely();
 const PORT = 3000;
 server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
