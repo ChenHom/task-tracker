@@ -5,4 +5,5 @@ sim-logs/
 sim-work/
 .worktrees/
 .playwright-mcp/
+.playwright-cli/
 .jar-*.txt
