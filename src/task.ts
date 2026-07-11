@@ -135,7 +135,7 @@ export function createTask(actorId: string, workspaceId: string, input: CreateTa
   requireActiveWorkspace(workspaceId, database);
   if (
     getMemberRole(workspaceId, actorId, database) === 'Commenter'
-    && ['status', 'priority', 'assignee', 'assigneeId', 'projectId', 'dueAt'].some((field) => field in input)
+    && Object.keys(input).some((field) => field !== 'title' && field !== 'description')
   ) {
     throw new CommandError('Commenter 建立 task 只能提交 title 與 description');
   }

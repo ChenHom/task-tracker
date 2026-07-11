@@ -169,6 +169,11 @@ for (const field of ['status', 'priority', 'assignee', 'assigneeId', 'projectId'
     `Commenter input 即使 ${field} 為 null 也應拒絕`,
   );
 }
+const unexpectedInput = { title: 'unexpected field', unexpected: null };
+assert.throws(
+  () => createTask('main-user', COMMENTER_WS, unexpectedInput, db),
+  { name: 'CommandError', message: 'Commenter 建立 task 只能提交 title 與 description' },
+);
 const commenterTaskId = createTask('main-user', COMMENTER_WS, { title: '一般方向', description: '一般討論' }, db);
 assert.strictEqual(getTask(commenterTaskId, db)?.title, '一般方向', '一般 workspace 不加討論 prefix');
 
