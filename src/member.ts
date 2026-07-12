@@ -215,6 +215,11 @@ export function getMemberRole(workspaceId: string, userId: string, database = db
   return row?.role ?? null;
 }
 
+export function getMembershipStatus(workspaceId: string, userId: string, database = db): 'none' | 'invited' | 'active' | 'removed' {
+  const events = loadEvents(mid(workspaceId, userId), database);
+  return events.reduce(reduce, INITIAL).status;
+}
+
 export function hasPermission(role: Role, minRole: Role): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[minRole];
 }

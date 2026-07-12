@@ -95,6 +95,17 @@ export function runMigrations(db: DatabaseSync): void {
       created_at TEXT NOT NULL DEFAULT ''
     );
 
+    -- Notification：comment mention 的收信夾。由 notification.* 事件投影而來。
+    CREATE TABLE IF NOT EXISTS notifications_read_model (
+      notification_id  TEXT PRIMARY KEY,
+      recipient_id     TEXT NOT NULL,
+      source_task_id   TEXT NOT NULL,
+      source_comment_id TEXT NOT NULL,
+      snippet          TEXT NOT NULL,
+      created_at       TEXT NOT NULL,
+      read_at          TEXT
+    );
+
     -- Attachment：metadata 進 DB，實體檔在 data/attachments/。original_name 只供顯示（不信任、不當路徑）；
     -- stored_name 是伺服器生成的 uuid，才是磁碟上的真檔名。
     CREATE TABLE IF NOT EXISTS attachments (
@@ -138,6 +149,12 @@ export function runMigrations(db: DatabaseSync): void {
 
   try {
     db.prepare('ALTER TABLE workspaces_read_model ADD COLUMN updated_at TEXT').run();
+  } catch {
+    // 忽略如果欄位已存在
+  }
+
+  try {
+    db.prepare('ALTER TABLE notifications_read_model ADD COLUMN read_at TEXT').run();
   } catch {
     // 忽略如果欄位已存在
   }

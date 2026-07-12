@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -20,8 +20,8 @@ import {
   searchUserEmails,
   SESSION_COOKIE,
 } from './auth';
-import { CommandError } from './eventStore';
-import { createWorkspace, renameWorkspace, listWorkspaces, registerWorkspaceProjections } from './workspace';
+import { CommandError, ConflictError } from './eventStore';
+import { createWorkspace, renameWorkspace, listWorkspaces, archiveWorkspace, deleteWorkspace, registerWorkspaceProjections } from './workspace';
 import {
   registerMemberProjections,
   requirePermission,
@@ -39,6 +39,7 @@ import {
   applyTaskPatch,
   archiveTask,
   deleteTask,
+  moveTask,
   listTasks,
   getTask,
   getTaskWorkspaceId,
@@ -47,6 +48,7 @@ import {
 } from './task';
 import { createProject, listProjects, renameProject, deleteProject, getProjectWorkspaceId } from './project';
 import { createComment, listComments, updateComment, deleteComment, getCommentContext } from './comment';
+import { registerNotificationProjections, listNotifications, markNotificationRead } from './notification';
 import { createAttachment, listAttachments, readAttachment, deleteAttachment, getAttachmentContext, attachmentMaxBytes } from './attachment';
 import { searchWorkspace } from './search';
 import { getAggregateWorkspace, getAuditTrail } from './audit';
@@ -85,9 +87,9 @@ function syncMainWorkspaceSafely(userId?: string): void {
 
 // 統一把 command 錯誤映射成 HTTP：CommandError → 400，其餘 → 500。
 function sendCommandError(res: ServerResponse, e: unknown): void {
-  const status = e instanceof CommandError ? 400 : 500;
+  const status = e instanceof ConflictError ? 409 : e instanceof CommandError ? 400 : 500;
   res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: e instanceof CommandError ? e.message : '內部錯誤' }));
+  res.end(JSON.stringify({ error: e instanceof ConflictError || e instanceof CommandError ? e.message : '內部錯誤' }));
 }
 
 const PUBLIC_DIR = join(__dirname, '../public');
@@ -127,7 +129,7 @@ async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer>
   return Buffer.concat(chunks);
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!isCsrfSafe(req)) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'CSRF 檢查失敗（Origin 不符）' }));
@@ -282,6 +284,38 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const status = e instanceof CommandError ? 400 : 500;
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e instanceof CommandError ? e.message : '內部錯誤' }));
+    }
+    return;
+  }
+
+  // POST /api/workspaces/:id/archive —— 封存，需該 workspace 的 Admin 以上。
+  const wsArchiveMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/archive$/);
+  if (wsArchiveMatch && req.method === 'POST') {
+    const workspaceId = wsArchiveMatch[1];
+    const userId = requirePermission(req, res, workspaceId, 'Admin');
+    if (!userId) return;
+    try {
+      archiveWorkspace(userId, workspaceId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
+  // POST /api/workspaces/:id/delete —— 刪除，需該 workspace 的 Admin 以上。
+  const wsDeleteMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/delete$/);
+  if (wsDeleteMatch && req.method === 'POST') {
+    const workspaceId = wsDeleteMatch[1];
+    const userId = requirePermission(req, res, workspaceId, 'Admin');
+    if (!userId) return;
+    try {
+      deleteWorkspace(userId, workspaceId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
     }
     return;
   }
@@ -444,6 +478,53 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!userId) return;
     try {
       archiveTask(userId, taskId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
+  const moveMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)\/move$/);
+  if (moveMatch && req.method === 'POST') {
+    const taskId = moveMatch[1];
+    const workspaceId = getTaskWorkspaceId(taskId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'task 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.mutateTask);
+    if (!userId) return;
+    const body = (await readJson(req).catch(() => null)) as { targetWorkspaceId?: unknown } | null;
+    try {
+      if (!body || typeof body.targetWorkspaceId !== 'string' || !body.targetWorkspaceId.trim()) {
+        throw new CommandError('targetWorkspaceId 為必填');
+      }
+      const result = moveTask(userId, taskId, body.targetWorkspaceId.trim());
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.invitedAssignee ? { ok: true, message: '已對 assignee 發邀請，待其接受' } : { ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
+  if (req.url === '/api/notifications' && req.method === 'GET') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(listNotifications(userId)));
+    return;
+  }
+
+  const notificationReadMatch = req.url?.match(/^\/api\/notifications\/([^/?]+)\/read$/);
+  if (notificationReadMatch && req.method === 'POST') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    try {
+      markNotificationRead(userId, notificationReadMatch[1]);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
@@ -716,19 +797,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 }
 
 // 每個 request 開一個 context：ip / user_agent / request_id 供 command 的 metadata（audit）取用。
-const server = createServer((req, res) => {
-  const requestId = randomUUID();
-  res.setHeader('X-Request-Id', requestId);
-  runWithRequestContext(
-    { ip: clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY), userAgent: req.headers['user-agent'] ?? null, requestId },
-    () => handle(req, res),
-  );
-});
+export function createAppServer(): Server {
+  return createServer((req, res) => {
+    const requestId = randomUUID();
+    res.setHeader('X-Request-Id', requestId);
+    runWithRequestContext(
+      { ip: clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY), userAgent: req.headers['user-agent'] ?? null, requestId },
+      () => handle(req, res),
+    );
+  });
+}
 
 if (require.main === module) {
   registerWorkspaceProjections();
   registerMemberProjections();
   registerTaskProjections();
+  registerNotificationProjections();
   cleanupExpiredSessions();
   process.on('SIGHUP', () => {
     cleanupExpiredSessions();
@@ -736,6 +820,9 @@ if (require.main === module) {
   });
 
   syncMainWorkspaceSafely();
-  const PORT = 3000;
-  server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+  if (process.env.TASK_TRACKER_DISABLE_LISTEN !== '1') {
+    const PORT = Number(process.env.PORT ?? 3000);
+    const server = createAppServer();
+    server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+  }
 }

@@ -10,6 +10,7 @@ import './mainWorkspace.test';
 import './task.test';
 import './project.test';
 import './comment.test';
+import './notification.test';
 import './attachment.test';
 import './search.test';
 import './audit.test';
