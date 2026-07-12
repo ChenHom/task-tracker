@@ -20,8 +20,8 @@ import {
   searchUserEmails,
   SESSION_COOKIE,
 } from './auth';
-import { CommandError } from './eventStore';
-import { createWorkspace, renameWorkspace, listWorkspaces, registerWorkspaceProjections } from './workspace';
+import { CommandError, ConflictError } from './eventStore';
+import { createWorkspace, renameWorkspace, listWorkspaces, archiveWorkspace, deleteWorkspace, registerWorkspaceProjections } from './workspace';
 import {
   registerMemberProjections,
   requirePermission,
@@ -89,9 +89,17 @@ function syncMainWorkspaceSafely(userId?: string): void {
 
 // 統一把 command 錯誤映射成 HTTP：CommandError → 400，其餘 → 500。
 function sendCommandError(res: ServerResponse, e: unknown): void {
-  const status = e instanceof CommandError ? 400 : 500;
+  let status = 500;
+  let message = '內部錯誤';
+  if (e instanceof ConflictError) {
+    status = 409;
+    message = e.message;
+  } else if (e instanceof CommandError) {
+    status = 400;
+    message = e.message;
+  }
   res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: e instanceof CommandError ? e.message : '內部錯誤' }));
+  res.end(JSON.stringify({ error: message }));
 }
 
 const PUBLIC_DIR = join(__dirname, '../public');
@@ -282,6 +290,38 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const status = e instanceof CommandError ? 400 : 500;
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e instanceof CommandError ? e.message : '內部錯誤' }));
+    }
+    return;
+  }
+
+  // POST /api/workspaces/:id/archive —— 封存，需該 workspace 的 Admin 以上。
+  const wsArchiveMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/archive$/);
+  if (wsArchiveMatch && req.method === 'POST') {
+    const workspaceId = wsArchiveMatch[1];
+    const userId = requirePermission(req, res, workspaceId, 'Admin');
+    if (!userId) return;
+    try {
+      archiveWorkspace(userId, workspaceId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
+  // POST /api/workspaces/:id/delete —— 刪除，需該 workspace 的 Admin 以上。
+  const wsDeleteMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/delete$/);
+  if (wsDeleteMatch && req.method === 'POST') {
+    const workspaceId = wsDeleteMatch[1];
+    const userId = requirePermission(req, res, workspaceId, 'Admin');
+    if (!userId) return;
+    try {
+      deleteWorkspace(userId, workspaceId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
     }
     return;
   }

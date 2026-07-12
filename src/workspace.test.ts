@@ -9,6 +9,7 @@ import {
   deleteWorkspace,
   registerWorkspaceProjections,
   listWorkspaces,
+  getWorkspaceStatus,
 } from './workspace';
 import { registerMemberProjections, inviteMember, joinWorkspace, removeMember } from './member';
 
@@ -77,5 +78,11 @@ deleteWorkspace('u1', id2, db); // 封存後、只剩 Owner 一人時也可刪�
 const list = listWorkspaces('u1', db);
 const found = list.find((w) => w.workspace_id === id2);
 assert.strictEqual(found?.status, 'deleted', '刪除後應標記為 deleted 狀態並存在於列表');
+
+// ── getWorkspaceStatus 驗證 ──
+const id3 = createWorkspace('u1', 'Test WS', db);
+assert.strictEqual(getWorkspaceStatus(id3, db), 'active', 'archive 前應為 active');
+archiveWorkspace('u1', id3, db);
+assert.strictEqual(getWorkspaceStatus(id3, db), 'archived', 'archive 後應為 archived');
 
 console.log('workspace.test.ts OK');

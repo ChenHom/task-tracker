@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
-import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
+import { appendEvent, loadEvents, registerProjection, CommandError, ConflictError, type StoredEvent } from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 import { seedOwner, countActiveMembers } from './member';
 import { MAIN_WORKSPACE_ID, MAIN_WORKSPACE_NAME } from './mainWorkspacePolicy';
@@ -71,16 +71,16 @@ export function renameWorkspace(actorId: string, id: string, name: unknown, data
 export function archiveWorkspace(actorId: string, id: string, database = db): void {
   const { state, version } = load(id, database);
   if (!state.exists) throw new CommandError('workspace 不存在');
-  if (state.status !== 'active') throw new CommandError(`workspace 目前為 ${state.status}，不可封存`);
-  if (countActiveMembers(id, database) !== 1) throw new CommandError('workspace 還有其他成員，需先移除才能關閉');
+  if (state.status !== 'active') throw new ConflictError(`workspace 目前為 ${state.status}，不可封存`);
+  if (countActiveMembers(id, database) !== 1) throw new ConflictError('workspace 還有其他成員，需先移除才能關閉');
   appendEvent('Workspace', id, version, 'workspace.archived', {}, meta(actorId), database);
 }
 
 export function deleteWorkspace(actorId: string, id: string, database = db): void {
   const { state, version } = load(id, database);
   if (!state.exists) throw new CommandError('workspace 不存在');
-  if (state.status === 'deleted') throw new CommandError('workspace 已刪除');
-  if (countActiveMembers(id, database) !== 1) throw new CommandError('workspace 還有其他成員，需先移除才能關閉');
+  if (state.status === 'deleted') throw new ConflictError('workspace 已刪除');
+  if (countActiveMembers(id, database) !== 1) throw new ConflictError('workspace 還有其他成員，需先移除才能關閉');
   appendEvent('Workspace', id, version, 'workspace.deleted', {}, meta(actorId), database);
 }
 
