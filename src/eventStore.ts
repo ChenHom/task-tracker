@@ -18,7 +18,7 @@ export class CommandError extends Error {
   }
 }
 
-// 衝突類業務違反（例如 workspace 狀態不允許封存/刪除）。對應 HTTP 409。
+// 業務衝突（資源已處於某狀態，無法進行操作）。對應 HTTP 409。
 export class ConflictError extends CommandError {
   constructor(message: string) {
     super(message);

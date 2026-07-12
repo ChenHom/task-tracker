@@ -87,9 +87,17 @@ function syncMainWorkspaceSafely(userId?: string): void {
 
 // 統一把 command 錯誤映射成 HTTP：CommandError → 400，其餘 → 500。
 function sendCommandError(res: ServerResponse, e: unknown): void {
-  const status = e instanceof ConflictError ? 409 : e instanceof CommandError ? 400 : 500;
+  let status = 500;
+  let message = '內部錯誤';
+  if (e instanceof ConflictError) {
+    status = 409;
+    message = e.message;
+  } else if (e instanceof CommandError) {
+    status = 400;
+    message = e.message;
+  }
   res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: e instanceof ConflictError || e instanceof CommandError ? e.message : '內部錯誤' }));
+  res.end(JSON.stringify({ error: message }));
 }
 
 const PUBLIC_DIR = join(__dirname, '../public');
@@ -532,7 +540,6 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
     return;
   }
-
   // ── Project API（傳統 CRUD，不走 ES）───────────────────────────
   const wsProjectsMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/projects$/);
   if (wsProjectsMatch) {
