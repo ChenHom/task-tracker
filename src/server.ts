@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -42,6 +42,7 @@ import {
   listTasks,
   getTask,
   getTaskWorkspaceId,
+  moveTask,
   registerTaskProjections,
   type CreateTaskInput,
 } from './task';
@@ -127,7 +128,7 @@ async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer>
   return Buffer.concat(chunks);
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!isCsrfSafe(req)) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'CSRF 檢查失敗（Origin 不符）' }));
@@ -444,6 +445,31 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return;
   }
 
+  const moveMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)\/move$/);
+  if (moveMatch && req.method === 'POST') {
+    const taskId = moveMatch[1];
+    const workspaceId = getTaskWorkspaceId(taskId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'task 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.mutateTask);
+    if (!userId) return;
+    const body = (await readJson(req).catch(() => null)) as { targetWorkspaceId?: unknown } | null;
+    try {
+      if (!body || typeof body.targetWorkspaceId !== 'string' || !body.targetWorkspaceId.trim()) {
+        throw new CommandError('targetWorkspaceId 為必填');
+      }
+      const result = moveTask(userId, taskId, body.targetWorkspaceId.trim());
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.invitedAssignee ? { ok: true, message: '已對 assignee 發邀請，待其接受' } : { ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
   // ── Project API（傳統 CRUD，不走 ES）───────────────────────────
   const wsProjectsMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/projects$/);
   if (wsProjectsMatch) {
@@ -708,14 +734,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 }
 
 // 每個 request 開一個 context：ip / user_agent / request_id 供 command 的 metadata（audit）取用。
-const server = createServer((req, res) => {
-  const requestId = randomUUID();
-  res.setHeader('X-Request-Id', requestId);
-  runWithRequestContext(
-    { ip: clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY), userAgent: req.headers['user-agent'] ?? null, requestId },
-    () => handle(req, res),
-  );
-});
+export function createAppServer(): Server {
+  return createServer((req, res) => {
+    const requestId = randomUUID();
+    res.setHeader('X-Request-Id', requestId);
+    runWithRequestContext(
+      { ip: clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY), userAgent: req.headers['user-agent'] ?? null, requestId },
+      () => handle(req, res),
+    );
+  });
+}
 
 cleanupExpiredSessions();
 process.on('SIGHUP', () => {
@@ -724,5 +752,8 @@ process.on('SIGHUP', () => {
 });
 
 syncMainWorkspaceSafely();
-const PORT = 3000;
-server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+if (process.env.TASK_TRACKER_DISABLE_LISTEN !== '1') {
+  const PORT = Number(process.env.PORT ?? 3000);
+  const server = createAppServer();
+  server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+}
