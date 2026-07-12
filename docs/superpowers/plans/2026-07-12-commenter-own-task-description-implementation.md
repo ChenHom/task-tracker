@@ -121,7 +121,7 @@ git commit -m "feat: admit Commenter description-only task patches"
 **Files:**
 - Modify: `src/frontend.test.ts`
 - Modify: `public/js/views/task-detail.js`
-- Modify: `TASKS_V2.md`
+- Modify: `docs/tasks/current.md`
 - Modify: `docs/operations.md`
 - Modify: `docs/superpowers/specs/2026-07-12-commenter-own-task-description-design.md`
 
@@ -160,7 +160,7 @@ Render the title input only for `canManageTask`; otherwise render the existing r
 
 - [ ] **Step 4: Update the existing docs**
 
-- Add the completed behavior and verification to Phase 15 in `TASKS_V2.md`.
+- Add the completed behavior and verification to Phase 15 in `docs/tasks/current.md`.
 - Add the Commenter self-created description rule to `docs/operations.md`.
 - Change the design status to implemented after all checks pass.
 - Keep the explicit rule that only the main workspace synchronizes non-user01 users to Commenter.
@@ -180,14 +180,14 @@ Expected: all commands exit 0.
 - [ ] **Step 6: Commit UI and documentation**
 
 ```bash
-git add src/frontend.test.ts public/js/views/task-detail.js TASKS_V2.md docs/operations.md docs/superpowers/specs/2026-07-12-commenter-own-task-description-design.md
+git add src/frontend.test.ts public/js/views/task-detail.js docs/tasks/current.md docs/operations.md docs/superpowers/specs/2026-07-12-commenter-own-task-description-design.md
 git commit -m "docs: document Commenter owned description editing"
 ```
 
 ### Task 4: Deployment Smoke
 
 **Files:**
-- Modify after verification: `TASKS_V2.md`
+- Modify after verification: `docs/tasks/current.md`
 - Modify after verification: `docs/operations.md`
 
 - [ ] **Step 1: Recheck automation is stopped**
@@ -211,9 +211,9 @@ As a Commenter, create a task, PATCH its description successfully, verify title/
 
 - [ ] **Step 4: Record rollout and commit**
 
-Mark smoke evidence in `TASKS_V2.md` and `docs/operations.md`, run `git diff --check`, then commit:
+Mark smoke evidence in `docs/tasks/current.md` and `docs/operations.md`, run `git diff --check`, then commit:
 
 ```bash
-git add TASKS_V2.md docs/operations.md
+git add docs/tasks/current.md docs/operations.md
 git commit -m "docs: record Commenter description rollout"
 ```

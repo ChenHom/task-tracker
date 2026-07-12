@@ -7,3 +7,4 @@ sim-work/
 .playwright-mcp/
 .playwright-cli/
 .jar-*.txt
+.cache/

@@ -54,6 +54,7 @@ import { getAggregateWorkspace, getAuditTrail } from './audit';
 import { createRateLimiter } from './rateLimit';
 import { clientIp } from './clientIp';
 import { syncMainWorkspace, syncMainWorkspaceUser } from './mainWorkspace';
+import { getQuotaSnapshot } from './quota';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
@@ -240,6 +241,19 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const emails = searchUserEmails(q);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(emails));
+    return;
+  }
+
+  if (req.url === '/api/quota' && req.method === 'GET') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    try {
+      const snapshot = await getQuotaSnapshot();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(snapshot.providers));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
     return;
   }
 
