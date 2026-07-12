@@ -2,7 +2,7 @@
 
 **日期：** 2026-07-12
 
-**狀態：** 已核准，待實作
+**狀態：** 實作完成，待部署驗收
 
 ## 範圍
 
@@ -32,3 +32,9 @@
 - HTTP test：Commenter 的自建描述 PATCH 成功，標題／狀態與他人描述被拒絕。
 - frontend test：自建 task 只有描述可編輯；他人 task 無儲存控制；Member UI 不變。
 - `npm test`、`npm run build`、`git diff --check` 全數通過。
+
+## 實作驗證
+
+- Domain 與 HTTP 層已驗證 Commenter 只能 PATCH 自建 task 的 `{ description }`，其他欄位與他人 task 維持拒絕。
+- Frontend fixture 已驗證自建 task 顯示唯讀標題、description textarea 與儲存按鈕，儲存時只發送 `{ description }`；他人 task 無儲存控制。
+- Focused frontend test、`npm test`、`npm run build` 與 `git diff --check` 已在本分支通過。
