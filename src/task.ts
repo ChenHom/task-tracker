@@ -331,6 +331,10 @@ const PATCH_FIELDS = ['title', 'description', 'status', 'priority', 'assignee', 
 export function applyTaskPatch(actorId: string, taskId: string, body: Record<string, unknown>, database = db): void {
   const keys = PATCH_FIELDS.filter((k) => k in body);
   if (keys.length !== 1) throw new CommandError('PATCH 一次只能改一個欄位');
+  const workspaceId = getTaskWorkspaceId(taskId, database);
+  if (workspaceId && getMemberRole(workspaceId, actorId, database) === 'Commenter' && !['title', 'description'].includes(keys[0])) {
+    throw new CommandError('Commenter 只能修改 title 與 description');
+  }
   switch (keys[0]) {
     case 'title': return changeTaskTitle(actorId, taskId, body.title, database);
     case 'description': return changeTaskDescription(actorId, taskId, body.description, database);
