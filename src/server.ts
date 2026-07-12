@@ -74,10 +74,6 @@ function isCsrfSafe(req: IncomingMessage): boolean {
   }
 }
 
-registerWorkspaceProjections();
-registerMemberProjections();
-registerTaskProjections();
-
 function syncMainWorkspaceSafely(userId?: string): void {
   try {
     if (userId) syncMainWorkspaceUser(userId);
@@ -112,6 +108,10 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   }
   const raw = Buffer.concat(chunks).toString('utf8');
   return raw ? JSON.parse(raw) : {};
+}
+
+export function taskPatchRole(body: Record<string, unknown>): 'Commenter' | 'Member' {
+  return Object.keys(body).length === 1 && 'description' in body ? 'Commenter' : 'Member';
 }
 
 // 讀原始位元組（attachment 上傳）。超過上限丟錯 → 413。
@@ -399,7 +399,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.end(JSON.stringify({ error: 'task 不存在' }));
       return;
     }
-    const taskRole = req.method === 'GET' ? ACCESS_ROLE.read : ACCESS_ROLE.mutateTask;
+    if (req.method === 'PATCH' && !requireAuth(req, res)) return;
+    const parsed = req.method === 'PATCH' ? await readJson(req).catch(() => null) : null;
+    const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+    const taskRole = req.method === 'GET'
+      ? ACCESS_ROLE.read
+      : req.method === 'PATCH'
+        ? taskPatchRole(body)
+        : ACCESS_ROLE.mutateTask;
     const userId = requirePermission(req, res, workspaceId, taskRole);
     if (!userId) return;
     try {
@@ -412,8 +421,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } else {
-        const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
-        applyTaskPatch(userId, taskId, body ?? {});
+        applyTaskPatch(userId, taskId, body);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       }
@@ -717,12 +725,17 @@ const server = createServer((req, res) => {
   );
 });
 
-cleanupExpiredSessions();
-process.on('SIGHUP', () => {
+if (require.main === module) {
+  registerWorkspaceProjections();
+  registerMemberProjections();
+  registerTaskProjections();
   cleanupExpiredSessions();
-  console.log('task-tracker reloaded');
-});
+  process.on('SIGHUP', () => {
+    cleanupExpiredSessions();
+    console.log('task-tracker reloaded');
+  });
 
-syncMainWorkspaceSafely();
-const PORT = 3000;
-server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+  syncMainWorkspaceSafely();
+  const PORT = 3000;
+  server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+}

@@ -232,7 +232,7 @@ assert.throws(
   /主工作區成員由系統同步/,
 );
 
-// server 會在 import 時 listen；以相鄰 route marker 切段，避免跨 route 的 regex 假綠。
+// 以相鄰 route marker 切段，避免跨 route 的 regex 假綠。
 const serverSource = readFileSync(join(__dirname, 'server.ts'), 'utf8');
 const routeBlock = (startMarker: string, endMarker: string): string => {
   const start = serverSource.indexOf(startMarker);
@@ -268,8 +268,13 @@ assert.match(
 );
 assert.match(
   taskBlock,
-  /const taskRole = req\.method === 'GET' \? ACCESS_ROLE\.read : ACCESS_ROLE\.mutateTask;\s*const userId = requirePermission\(req, res, workspaceId, taskRole\)/,
-  'single task GET 應 read，PATCH/DELETE 應 mutateTask',
+  /const taskRole = req\.method === 'GET'\s*\? ACCESS_ROLE\.read\s*:\s*req\.method === 'PATCH'\s*\? taskPatchRole\(body\)\s*:\s*ACCESS_ROLE\.mutateTask;\s*const userId = requirePermission\(req, res, workspaceId, taskRole\)/,
+  'single task GET 應 read，PATCH 應依 body 判定，DELETE 應 mutateTask',
+);
+assert.match(
+  taskBlock,
+  /if \(req\.method === 'PATCH' && !requireAuth\(req, res\)\) return;\s*const parsed = req\.method === 'PATCH' \? await readJson\(req\)/,
+  'single task PATCH 應在讀取 body 前驗證登入',
 );
 assert.match(archiveBlock, /requirePermission\(req, res, workspaceId, ACCESS_ROLE\.mutateTask\)/, 'archive 應使用 mutateTask 權限');
 

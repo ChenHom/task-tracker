@@ -1,5 +1,6 @@
 import assert from 'node:assert';
 import { clientIp } from './clientIp';
+import { taskPatchRole } from './server';
 
 const socketIp = '203.0.113.10';
 
@@ -26,5 +27,11 @@ assert.strictEqual(
   null,
   '沒有 socket IP 且未提供 X-Forwarded-For 時應回 null',
 );
+
+assert.strictEqual(taskPatchRole({ description: 'updated' }), 'Commenter');
+assert.strictEqual(taskPatchRole({ title: 'renamed' }), 'Member');
+assert.strictEqual(taskPatchRole({ status: 'Doing' }), 'Member');
+assert.strictEqual(taskPatchRole({ description: 'x', title: 'y' }), 'Member');
+assert.strictEqual(taskPatchRole({}), 'Member');
 
 console.log('server.test.ts OK');
