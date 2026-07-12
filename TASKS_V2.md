@@ -173,7 +173,7 @@
 
 ---
 
-## Phase 15 — Commenter 與主協作工作區（feature branch 已驗證）
+## Phase 15 — Commenter 與主協作工作區 ✅
 
 - [x] 新增 `Commenter` 角色與 RBAC／API 權限矩陣；可建立 Todo 討論及留言，但不可修改 task、project 或附件
 - [x] 固定主協作工作區名稱、user01 Owner、其他 user Commenter，並由 startup／login 同步修復
@@ -181,7 +181,9 @@
 - [x] 前端依角色收斂控制，並安全自動連結完整 HTTP(S) URL、保留網址尾端中英文標點
 - [x] SIM sweep 固定發現主工作區、排除 policy task、依 target repo 路由，且 main 不占 canonical repo slot
 - [x] feature branch 已通過 `npm test`、`npm run build`、`git diff --check` 與 focused `sim/run.test.ts`
-- [ ] 合併至 `master`、build、restart 與正式服務部署驗證
-- [ ] DB readback：固定名稱、30 位使用者角色、單一 policy task、legacy task title
-- [ ] 完整 Commenter／Owner HTTP smoke 與交接流程驗證
+- [x] 合併至 `master`、build、restart 與正式服務部署驗證
+- [x] DB readback：固定名稱、30 位使用者角色、單一 policy task、legacy task title
+- [x] 完整 Commenter／Owner HTTP smoke 與交接流程驗證
 - [ ] 經明確人工授權執行 live `npm run sim -- --sweep owner`
+
+> 2026-07-12 rollout：`master` merge `efbeb4b` 後 `npm test`、`npm run build`、health check 全數通過。DB 為 1 Owner + 29 Commenter、唯一規則 task，兩筆 legacy task 已加上 `[討論]`。HTTP smoke 驗證 Commenter 可建討論／留言但改狀態為 403，user01 以單一 `task.discussion_started` 完成 Doing 指派，並建立 canonical task、回寫完整 URL、推進 Review → Done。Live AI sweep 未執行。

@@ -2,7 +2,7 @@
 
 **日期：** 2026-07-10
 
-**狀態：** 實作完成，待合併後 rollout 驗收
+**狀態：** 已實作並驗收（live AI sweep 待明確人工授權）
 
 **主工作區：** `11a82028-fc50-466a-a723-e002032cd9a6`（固定名稱：主協作工作區）
 **流程負責人：** `user01@test.local`
@@ -16,12 +16,12 @@
 
 因此原系統無法表達「可建立討論與留言，但不可推進工作流程」的使用者。當時主工作區也只有 user01 與 user09 是成員，且 sweep 只把 user09 的特定 `[討論]` 留言視為 owner 工作，無法承載所有 user 的討論入口。
 
-## 實作現況（2026-07-11）
+## 實作現況（2026-07-12）
 
-- Commenter RBAC、主工作區同步／domain policy、前端角色控制與安全 URL renderer 已在 `feature/commenter-main-workspace` 完成並通過自動測試。
+- Commenter RBAC、主工作區同步／domain policy、前端角色控制與安全 URL renderer 已合併至 `master`，並通過自動測試及正式服務 smoke。
 - main-workspace sweep 已重用既有 canonical registry；主工作區是固定候選且不占 repo slot，因此可在同一 tick 接續處理共用 ROOT 的 canonical workspace。
 - canonical registry 目前只登記 task-tracker repo：`/home/hom/code/task-tracker` → workspace `d9da9945-ce5f-400f-806e-1d75e95e313a`；其他 repo 仍按既有 workspace／新增 workspace 流程處理。
-- 正式服務部署、DB 同步結果、完整 HTTP smoke 與 live owner sweep 尚待合併後驗收。
+- 正式服務、DB 同步與完整 HTTP smoke 已驗收；live owner sweep 仍待明確人工授權。
 
 ## 目標
 

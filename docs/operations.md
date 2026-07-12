@@ -71,6 +71,14 @@ If `/tracker/` returns `502`, first check whether `task-tracker.service` is acti
 - `[規則] 主工作區協作與交接` 是政策提示，不是 sweep work。
 - Server startup 會修復固定名稱、成員角色、規則 task 與 legacy 討論；成功登入時也會同步該使用者。
 
+### 2026-07-12 rollout 驗收
+
+- `master` merge：`efbeb4b`；`npm test`、`npm run build`、`git diff --check` 通過。
+- `task-tracker.service` restart 後 `/api/health` 回 HTTP 200 與 `{"status":"ok","db":true}`。
+- DB readback：workspace active、1 Owner + 29 Commenter、唯一 `[規則] 主工作區協作與交接`，兩筆 legacy task 已正規化為 `[討論]`。
+- HTTP smoke：discussion `1086ccfd-96f7-485c-b8da-335bb4058269`；Commenter 建立／留言成功、狀態 PATCH 為 403；user01 以單一 `task.discussion_started` 指派自己，建立 canonical task `af06f594-682c-4437-aea5-d71eb354471c`、回寫完整 URL，並完成 Doing → Review → Done。
+- Live AI sweep 與 SIM timers 未啟用，仍需明確人工授權。
+
 ## Sim harness
 
 ### Prerequisites
