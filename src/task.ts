@@ -189,6 +189,10 @@ export function changeTaskTitle(actorId: string, taskId: string, title: unknown,
 export function changeTaskDescription(actorId: string, taskId: string, description: unknown, database = db): void {
   const clean = validateDescription(description);
   const { version } = loadEditableTask(taskId, database);
+  const task = getTask(taskId, database)!;
+  if (getMemberRole(task.workspace_id, actorId, database) === 'Commenter' && task.creator_id !== actorId) {
+    throw new CommandError('Commenter 只能修改自己建立 task 的描述');
+  }
   appendEvent('Task', taskId, version, 'task.description_changed', { description: clean }, meta(actorId), database);
 }
 
@@ -356,6 +360,7 @@ export function registerTaskProjections(): void {
 export interface TaskRow {
   task_id: string;
   workspace_id: string;
+  creator_id: string | null;
   project_id: string | null;
   title: string;
   description: string;
@@ -366,15 +371,25 @@ export interface TaskRow {
   version: number;
   updated_at: string | null;
 }
+
+function getTaskCreatorId(taskId: string, database: DatabaseSync): string | null {
+  const created = loadEvents(taskId, database).find((event) => event.event_type === 'task.created');
+  const actorId = created?.metadata && typeof created.metadata === 'object'
+    ? (created.metadata as { actor_id?: unknown }).actor_id
+    : null;
+  return typeof actorId === 'string' && actorId.length > 0 ? actorId : null;
+}
+
 export function listTasks(workspaceId: string, database = db): TaskRow[] {
-  return database
+  const rows = database
     .prepare('SELECT * FROM tasks_read_model WHERE workspace_id = ? ORDER BY rowid')
     .all(workspaceId) as unknown as TaskRow[];
+  return rows.map((row) => ({ ...row, creator_id: getTaskCreatorId(row.task_id, database) }));
 }
 
 export function getTask(taskId: string, database = db): TaskRow | null {
   const row = database.prepare('SELECT * FROM tasks_read_model WHERE task_id = ?').get(taskId) as TaskRow | undefined;
-  return row ?? null;
+  return row ? { ...row, creator_id: getTaskCreatorId(taskId, database) } : null;
 }
 
 // PATCH / archive / delete 用：查資源歸屬的 workspace 以做權限檢查。null = task 不存在（或已刪）。

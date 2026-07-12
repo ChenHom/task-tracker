@@ -43,6 +43,7 @@ const insertMember = db.prepare(
 insertMember.run(MAIN_WORKSPACE_ID, 'main-owner', 'Owner', 't');
 insertMember.run(MAIN_WORKSPACE_ID, 'main-user', 'Commenter', 't');
 insertMember.run(COMMENTER_WS, 'main-user', 'Commenter', 't');
+insertMember.run(COMMENTER_WS, 'other-commenter', 'Commenter', 't');
 const one = (id: string) => listTasks(WS, db).find((t) => t.task_id === id)!;
 
 // ── create → read model 全欄位 + 預設值 ──
@@ -176,6 +177,38 @@ assert.throws(
 );
 const commenterTaskId = createTask('main-user', COMMENTER_WS, { title: '一般方向', description: '一般討論' }, db);
 assert.strictEqual(getTask(commenterTaskId, db)?.title, '一般方向', '一般 workspace 不加討論 prefix');
+assert.strictEqual(getTask(commenterTaskId, db)?.creator_id, 'main-user');
+changeTaskDescription('main-user', commenterTaskId, '本人更新', db);
+assert.strictEqual(getTask(commenterTaskId, db)?.description, '本人更新');
+assert.throws(
+  () => changeTaskDescription('other-commenter', commenterTaskId, '他人更新', db),
+  { name: 'CommandError', message: 'Commenter 只能修改自己建立 task 的描述' },
+);
+
+const legacyCommenterTaskId = 'legacy-commenter-task';
+appendEvent(
+  'Task',
+  legacyCommenterTaskId,
+  0,
+  'task.created',
+  {
+    workspaceId: COMMENTER_WS,
+    projectId: null,
+    title: '歷史 task',
+    description: '舊描述',
+    status: 'Todo',
+    priority: 'Medium',
+    assigneeId: null,
+    dueAt: null,
+  },
+  {},
+  db,
+);
+assert.strictEqual(getTask(legacyCommenterTaskId, db)?.creator_id, null);
+assert.throws(
+  () => changeTaskDescription('main-user', legacyCommenterTaskId, '新描述', db),
+  { name: 'CommandError', message: 'Commenter 只能修改自己建立 task 的描述' },
+);
 
 // ── 主工作區建立規則：唯一 policy + 其餘固定為 Todo 討論 ──
 assert.throws(
