@@ -184,6 +184,9 @@
 - [x] 合併至 `master`、build、restart 與正式服務部署驗證
 - [x] DB readback：固定名稱、30 位使用者角色、單一 policy task、legacy task title
 - [x] 完整 Commenter／Owner HTTP smoke 與交接流程驗證
+- [x] Commenter 可在任何 workspace 修改自己建立 task 的 description；標題、狀態、屬性、附件與他人 task 仍不可修改
 - [ ] 經明確人工授權執行 live `npm run sim -- --sweep owner`
 
 > 2026-07-12 rollout：`master` merge `efbeb4b` 後 `npm test`、`npm run build`、health check 全數通過。DB 為 1 Owner + 29 Commenter、唯一規則 task，兩筆 legacy task 已加上 `[討論]`。HTTP smoke 驗證 Commenter 可建討論／留言但改狀態為 403，user01 以單一 `task.discussion_started` 完成 Doing 指派，並建立 canonical task、回寫完整 URL、推進 Review → Done。Live AI sweep 未執行。
+
+> 2026-07-12 description rollout：`master` fast-forward 至 `4794674` 後完整測試、build 與 health check 通過。Commenter 自建 task 描述 PATCH 為 200，標題／狀態為 403，他人描述為 400；user02 在非主工作區仍是 Member，標題與描述 PATCH 均為 200。

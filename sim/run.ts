@@ -454,7 +454,7 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
 
 // ── 子行程 spawn ────────────────────────────────────────────────────
 // Claude Code 的 Bash 權限用冒號前綴語法 Bash(<cmd>:*)（實測：空格版 Bash(curl *) 會卡在權限批准）
-export const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Read,Write,Edit,Glob,Grep';
+export const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git status:*),Bash(git diff:*),Bash(git merge:*),Bash(git add:*),Bash(git commit:*),Read,Write,Edit,Glob,Grep';
 export const MAIN_OWNER_TOOLS = 'Bash(curl:*)';
 const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
 // owner 開場是生成型工作（發想＋開題），交給較快的 sonnet；中場/收尾/repair 是審查判斷，用 opus
@@ -648,7 +648,7 @@ ${API_RULES(jar)}
 - 只在目前目錄內改檔案；只改完成 task 需要的檔案，不順手重構
 ${doneDef}
 - 絕對不要執行 npm run sim（含 --smoke / --fast）：那會遞迴啟動一整場新的真實 AI sprint（呼叫 claude/codex CLI）
-- 不要執行任何 git 指令。你只要把檔案改好、驗證通過；session 成功結束後，driver 才會把變更提交到 branch ${branch(m)}
+- 一般工作不要執行 git，session 成功後由 driver 代 commit。只有 owner 最新審查明確指出 merge conflict 並要求同步 master 時，才可依序 git status → git merge master → 解衝突 → git add 衝突檔 → git commit 完成 merge；禁止 rebase/reset/checkout，也不要提交其他工作
 本次流程（這是認領制看板：task 開出來時沒有指派，誰適合誰認領）：
 1. 登入後 GET ${BASE}/api/workspaces/${wsId}/tasks
 2. 決定要做哪一題，優先序：
@@ -771,7 +771,7 @@ ${API_RULES(jar)}
 1. GET ${BASE}/api/workspaces/${wsId}/tasks
 2. 對每個 status=Review 且 CI 顯示驗證皆 PASS 的 task，依其 branch 逐一 merge（一次一個）：
    a. git diff master...<branch> 快速看 code（審查重點，不用跑測試）
-   b. git merge --no-ff <branch> -m "merge: <task 標題>"；⚠️ 絕對不要手動解衝突——你的 session 有硬時限，手動解衝突是上一場 owner 逾時被強制中止的死因。遇衝突一律：git merge --abort → task 留言衝突檔案清單＋請該成員 rebase → PATCH {"status":"Doing"} 退回 → 繼續合下一條乾淨的 branch
+   b. git merge --no-ff <branch> -m "merge: <task 標題>"；⚠️ 絕對不要手動解衝突——你的 session 有硬時限，手動解衝突是上一場 owner 逾時被強制中止的死因。遇衝突一律：git merge --abort → task 留言衝突檔案清單＋請該成員 merge master → PATCH {"status":"Doing"} 退回 → 繼續合下一條乾淨的 branch
    c. task 留言「已合併進 master（附 merge commit hash）」→ PATCH {"status":"Done"}
 ${integrationStep}
 4. CI 顯示 SKIP（未附 tooling）的 branch：不可當成 PASS。人工審 diff、task 驗收證據與成員實際執行的檢查；證據足夠才可 merge，否則留言缺少的驗證並 PATCH {"status":"Doing"}
@@ -1311,7 +1311,7 @@ ${crossRepoRule(scenario)}
    - [討論] task 永遠保持 Todo，不要推進狀態
 3. status=Review 的 task 對照 CI 摘要：
    - CI 全 PASS → git merge --no-ff <branch> -m "merge: <task 標題>" → 留言（附 merge hash）→ PATCH {"status":"Done"}
-     ⚠️ 遇衝突「絕對不要手動解」（上一場 owner 就是手動解衝突逾時被強制中止）：git merge --abort → 留言列出衝突檔案、請成員 rebase → PATCH {"status":"Doing"}
+     ⚠️ 遇衝突「絕對不要手動解」（上一場 owner 就是手動解衝突逾時被強制中止）：git merge --abort → 留言列出衝突檔案、請該成員 merge master → PATCH {"status":"Doing"}
    - CI 有 SKIP → 不可當成 PASS；人工審 diff、task 驗收證據與成員實際檢查，證據足夠才可 merge，否則留言缺少的驗證並退回 Doing
    - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
    - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"} 再 PATCH {"status":"Todo"}，並 PATCH {"assignee":null} 讓人重新認領

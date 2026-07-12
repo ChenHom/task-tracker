@@ -430,6 +430,7 @@ async function runTests() {
   await openTaskDetailModal('task-1', {
     cachedTasks: [{
       task_id: 'task-1',
+      creator_id: 'user-2',
       title: 'Discussion Task',
       description: 'Discuss only',
       status: 'Todo',
@@ -455,6 +456,49 @@ async function runTests() {
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'select'), null, 'Commenter should not have task attribute selects');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'input'), null, 'Commenter should not have task, date, or upload inputs');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '刪除'), null, 'Commenter should not have attachment delete');
+
+  // A Commenter may edit only the description of a task they created.
+  bodyChildren.length = 0;
+  mockLocation.hash = '#/task/task-1';
+  sandbox.state.userEmail = ' TEST@TEST.COM ';
+  const ownTaskPatches: any[] = [];
+  sandbox.api = async (_path: string, options?: any) => {
+    if (options?.method === 'PATCH') ownTaskPatches.push(options.body);
+    return [];
+  };
+  await openTaskDetailModal('task-1', {
+    cachedTasks: [{
+      task_id: 'task-1',
+      creator_id: 'user-1',
+      title: 'Own Discussion Task',
+      description: 'Original description',
+      status: 'Todo',
+      priority: 'Medium',
+      assignee_id: null,
+      due_at: null
+    }],
+    cachedMembers: [{ user_id: 'user-1', name: 'Tester', email: 'test@test.com' }],
+    memberMap: new Map([['user-1', 'Tester']]),
+    memberEmailMap: new Map([['user-1', 'test@test.com']]),
+    onUpdate: async () => {},
+    currentRole: 'Commenter'
+  });
+
+  const ownTaskOverlay = bodyChildren[bodyChildren.length - 1];
+  assert.ok(findElement(ownTaskOverlay, (node) => node.classList.contains('task-readonly-title') && node.textContent === 'Own Discussion Task'), 'Commenter should see a read-only title for their own task');
+  const ownDescription = findElement(ownTaskOverlay, (node) => node.tag === 'textarea' && node.rows === '5');
+  const ownSave = findElement(ownTaskOverlay, (node) => node.tag === 'button' && node.textContent === '儲存');
+  assert.ok(ownDescription, 'Commenter should edit their own task description');
+  assert.ok(ownSave, 'Commenter should save their own task description');
+  assert.strictEqual(findElement(ownTaskOverlay, (node) => node.tag === 'input'), null, 'Commenter should not have title, date, or upload inputs');
+  assert.strictEqual(findElement(ownTaskOverlay, (node) => node.classList.contains('status-change-btn')), null, 'Commenter should not have status controls on their own task');
+  assert.strictEqual(findElement(ownTaskOverlay, (node) => node.tag === 'select'), null, 'Commenter should not have task attribute selects on their own task');
+  assert.strictEqual(findElement(ownTaskOverlay, (node) => node.tag === 'button' && node.textContent === '刪除'), null, 'Commenter should not have attachment delete on their own task');
+  ownDescription.value = 'Updated description';
+  const saveOwnDescription = ownSave.onclick;
+  assert.ok(saveOwnDescription, 'Commenter save button should have a click handler');
+  await saveOwnDescription();
+  assert.deepStrictEqual(ownTaskPatches.map(body => ({ ...body })), [{ description: 'Updated description' }], 'Commenter save should PATCH only the description');
 
   // Main-workspace Member data must not grant task management to a non-owner.
   bodyChildren.length = 0;

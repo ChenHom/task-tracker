@@ -65,7 +65,9 @@ If `/tracker/` returns `502`, first check whether `task-tracker.service` is acti
 - 固定 UUID：`11a82028-fc50-466a-a723-e002032cd9a6`
 - 固定名稱：`主協作工作區`
 - `user01@test.local` 是唯一 Owner；其他內部使用者同步為 Commenter。
-- 所有人都可建立 Todo 討論與留言；只有 user01 可改變 task 狀態。
+- Commenter 在任何 workspace 都可修改自己建立 task 的 description，但不可修改標題、狀態、其他屬性、附件或他人 task。
+- 只有主協作工作區會同步其他內部使用者為 Commenter；其他 workspace 的新成員預設仍為 Member，Owner 可另行調整角色。
+- 主協作工作區所有人都可建立 Todo 討論與留言；只有 user01 可改變 task 狀態。
 - user01 將 Todo 移至 Doing 時，單一 `task.discussion_started` event 會同時指派 runtime user01。
 - 決議後先判斷 target repo，再於 canonical／對應 workspace 建立實作 task，並在原討論回寫完整 task URL；實作 task 不留在主協作工作區。
 - `[規則] 主工作區協作與交接` 是政策提示，不是 sweep work。
@@ -77,6 +79,7 @@ If `/tracker/` returns `502`, first check whether `task-tracker.service` is acti
 - `task-tracker.service` restart 後 `/api/health` 回 HTTP 200 與 `{"status":"ok","db":true}`。
 - DB readback：workspace active、1 Owner + 29 Commenter、唯一 `[規則] 主工作區協作與交接`，兩筆 legacy task 已正規化為 `[討論]`。
 - HTTP smoke：discussion `1086ccfd-96f7-485c-b8da-335bb4058269`；Commenter 建立／留言成功、狀態 PATCH 為 403；user01 以單一 `task.discussion_started` 指派自己，建立 canonical task `af06f594-682c-4437-aea5-d71eb354471c`、回寫完整 URL，並完成 Doing → Review → Done。
+- Commenter description smoke：自建 task `15b9852a-9190-4868-b9a2-6023ad744c0a` 的描述 PATCH 為 200，標題／狀態為 403，user03 修改其描述為 400；user02 在非主工作區 `79618d0f-2401-41e5-a858-c4d10dedd338` 仍為 Member，task `a48e1048-feab-4214-b1ac-f195fdaf6f9c` 的標題與描述 PATCH 均為 200。
 - Live AI sweep 與 SIM timers 未啟用，仍需明確人工授權。
 
 ## Sim harness
