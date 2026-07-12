@@ -4,7 +4,7 @@ import { db } from './db';
 import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 import { getWorkspaceStatus } from './workspace';
-import { getMemberRole } from './member';
+import { getMemberRole, getMembershipStatus, hasPermission, inviteMember } from './member';
 import { getUserIdByEmail } from './auth';
 import { MAIN_DISCUSSION_PREFIX, MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 
@@ -121,6 +121,10 @@ export interface CreateTaskInput {
   assigneeId?: unknown;
   dueAt?: unknown;
   projectId?: unknown;
+}
+
+export interface MoveTaskResult {
+  invitedAssignee: boolean;
 }
 // 只在「建立」時 gate workspace 生命週期：不讓新 task 落進 archived/deleted/不存在的 workspace（防孤兒資料）。
 // ponytail: 已存在 task 的 patch/archive/delete 不再回查 workspace，故 archived workspace 內既有 task 仍可微調。
@@ -262,6 +266,48 @@ export function changeTaskDueDate(actorId: string, taskId: string, dueAt: unknow
   appendEvent('Task', taskId, version, 'task.due_date_changed', { dueAt: clean }, meta(actorId), database);
 }
 
+export function moveTask(actorId: string, taskId: string, targetWorkspaceId: string, database = db): MoveTaskResult {
+  const task = getTask(taskId, database);
+  if (!task) throw new CommandError('task 不存在');
+  const { state, version } = load(taskId, database);
+  requireEditable(state);
+
+  const sourceWorkspaceId = task.workspace_id;
+  if (sourceWorkspaceId === targetWorkspaceId) throw new CommandError('task 已在目標 workspace');
+
+  const sourceRole = getMemberRole(sourceWorkspaceId, actorId, database);
+  if (!sourceRole || !hasPermission(sourceRole, 'Member')) throw new CommandError('來源 workspace 權限不足');
+
+  const targetStatus = getWorkspaceStatus(targetWorkspaceId, database);
+  if (targetStatus === null) throw new CommandError('workspace 不存在');
+  if (targetStatus !== 'active') throw new CommandError(`workspace 目前為 ${targetStatus}，不可搬入 task`);
+
+  const targetRole = getMemberRole(targetWorkspaceId, actorId, database);
+  if (!targetRole || !hasPermission(targetRole, 'Member')) throw new CommandError('目標 workspace 權限不足');
+
+  let invitedAssignee = false;
+  if (task.assignee_id) {
+    const membershipStatus = getMembershipStatus(targetWorkspaceId, task.assignee_id, database);
+    if (membershipStatus === 'none' || membershipStatus === 'removed') {
+      inviteMember(actorId, targetWorkspaceId, task.assignee_id, 'Member', database);
+      invitedAssignee = true;
+    } else if (membershipStatus === 'invited') {
+      invitedAssignee = true;
+    }
+  }
+
+  appendEvent(
+    'Task',
+    taskId,
+    version,
+    'task.moved',
+    { fromWorkspaceId: sourceWorkspaceId, toWorkspaceId: targetWorkspaceId },
+    meta(actorId),
+    database,
+  );
+  return { invitedAssignee };
+}
+
 export function archiveTask(actorId: string, taskId: string, database = db): void {
   const { version } = loadEditableTask(taskId, database); // 已 archived / deleted 都會被擋
   if (
@@ -334,6 +380,12 @@ export function registerTaskProjections(): void {
   registerProjection('task.priority_changed', (e, database) => setCol('priority')(e, database, (e.payload as { priority: string }).priority));
   registerProjection('task.assignee_changed', (e, database) => setCol('assignee_id')(e, database, (e.payload as { assigneeId: string | null }).assigneeId));
   registerProjection('task.due_date_changed', (e, database) => setCol('due_at')(e, database, (e.payload as { dueAt: string | null }).dueAt));
+  registerProjection('task.moved', (e, database) => {
+    const p = e.payload as { toWorkspaceId: string };
+    database
+      .prepare('UPDATE tasks_read_model SET workspace_id = ?, project_id = NULL, version = ?, updated_at = ? WHERE task_id = ?')
+      .run(p.toWorkspaceId, e.aggregate_version, e.occurred_at, e.aggregate_id);
+  });
   registerProjection('task.main_discussion_normalized', (e, database) => {
     const p = e.payload as {
       title: string;

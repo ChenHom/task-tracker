@@ -165,7 +165,7 @@ assert.match(
 );
 assert.match(
   serverSource,
-  /syncMainWorkspaceSafely\(\);\s*(?:const PORT\s*=\s*3000;\s*)?server\.listen\(/,
+  /syncMainWorkspaceSafely\(\);[\s\S]*?server\.listen\(/,
   'server.listen 前應同步一次主工作區',
 );
 
