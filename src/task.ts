@@ -189,6 +189,11 @@ export function changeTaskTitle(actorId: string, taskId: string, title: unknown,
 export function changeTaskDescription(actorId: string, taskId: string, description: unknown, database = db): void {
   const clean = validateDescription(description);
   const { version } = loadEditableTask(taskId, database);
+  const workspaceId = getTaskWorkspaceId(taskId, database);
+  if (workspaceId && getMemberRole(workspaceId, actorId, database) === 'Commenter') {
+    const creatorId = loadEvents(taskId, database).find((e) => e.event_type === 'task.created')?.metadata as { actor_id: string } | undefined;
+    if (creatorId?.actor_id !== actorId) throw new CommandError('Commenter 只能修改自己建立的 task 的描述');
+  }
   appendEvent('Task', taskId, version, 'task.description_changed', { description: clean }, meta(actorId), database);
 }
 
@@ -281,6 +286,10 @@ const PATCH_FIELDS = ['title', 'description', 'status', 'priority', 'assignee', 
 export function applyTaskPatch(actorId: string, taskId: string, body: Record<string, unknown>, database = db): void {
   const keys = PATCH_FIELDS.filter((k) => k in body);
   if (keys.length !== 1) throw new CommandError('PATCH 一次只能改一個欄位');
+  const workspaceId = getTaskWorkspaceId(taskId, database);
+  if (workspaceId && getMemberRole(workspaceId, actorId, database) === 'Commenter' && !['title', 'description'].includes(keys[0])) {
+    throw new CommandError('Commenter 只能修改 title 與 description');
+  }
   switch (keys[0]) {
     case 'title': return changeTaskTitle(actorId, taskId, body.title, database);
     case 'description': return changeTaskDescription(actorId, taskId, body.description, database);

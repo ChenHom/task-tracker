@@ -422,4 +422,30 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(loadEvents(legacyDoingId, db).at(-1)?.event_type, 'task.main_discussion_normalized');
 
+// ── Commenter 修改 description 權限控制 ──
+// 需 Admin 建立測試用的 task（由 Commenter 建立）
+const commenterCreatedTaskId = createTask('main-user', COMMENTER_WS, { title: 'Commenter Task', description: 'Original' }, db);
+// 由 Admin 建立的 task（给 Commenter 嘗試修改）
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('admin-user', 'admin@test.local', 'Admin User', 'x');
+insertMember.run(COMMENTER_WS, 'admin-user', 'Admin', 't');
+const adminCreatedTaskId = createTask('admin-user', COMMENTER_WS, { title: 'Admin Task', description: 'Original' }, db);
+
+// 測試 1: Commenter 對「自己建立」的 task 改 description → 成功
+changeTaskDescription('main-user', commenterCreatedTaskId, 'Modified by Commenter', db);
+assert.strictEqual(getTask(commenterCreatedTaskId, db)?.description, 'Modified by Commenter', 'Commenter 可以修改自己建立的 description');
+
+// 測試 2: Commenter 對「別人建立」的 task 改 description → 應被擋
+assert.throws(
+  () => changeTaskDescription('main-user', adminCreatedTaskId, 'Modified by Commenter', db),
+  { name: 'CommandError', message: /Commenter 只能修改自己建立/ },
+  'Commenter 不能修改別人的 description',
+);
+
+// 測試 3: Commenter 修改非 title/description 欄位 → 應被擋
+assert.throws(
+  () => applyTaskPatch('main-user', commenterCreatedTaskId, { status: 'Doing' }, db),
+  { name: 'CommandError' },
+  'Commenter 不能修改 status',
+);
+
 console.log('task.test.ts OK');
