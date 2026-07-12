@@ -55,6 +55,10 @@ export async function openTaskDetailModal(taskId, {
   const canManageTask = hasRole(currentRole, 'Member')
     && (!isMainWorkspace || state.userEmail === MAIN_OWNER_EMAIL);
   const canComment = hasRole(currentRole, 'Commenter');
+  const currentEmail = (state.userEmail || '').trim().toLowerCase();
+  const currentUserId = cachedMembers.find(member => member.email?.trim().toLowerCase() === currentEmail)?.user_id;
+  const canEditDescription = canManageTask
+    || (currentRole === 'Commenter' && Boolean(currentUserId) && currentTask.creator_id === currentUserId);
 
   let titleInput, descInput, unsavedBadge, saveBtn;
   let overlay, container, closeBtn;
@@ -166,7 +170,7 @@ export async function openTaskDetailModal(taskId, {
    * @returns {Promise<boolean>} True if saved successfully, false otherwise.
    */
   async function saveTask() {
-    const valTitle = titleInput.value.trim();
+    const valTitle = titleInput ? titleInput.value.trim() : currentTask.title;
     const valDesc = descInput.value;
     if (!valTitle) {
       alert('錯誤：任務名稱為必填欄位！');
@@ -176,7 +180,7 @@ export async function openTaskDetailModal(taskId, {
     if (overlay) overlay.isSaving = true; // Mark as saving to prevent recreation of this modal
     try {
       // 依序發送變更（因後端限制 PATCH 一次只能改一個欄位）
-      if (valTitle !== currentTask.title) {
+      if (titleInput && valTitle !== currentTask.title) {
         await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { title: valTitle } });
       }
       if (valDesc !== (currentTask.description || '')) {
@@ -256,8 +260,12 @@ export async function openTaskDetailModal(taskId, {
       }, 300);
     });
     contentSec.appendChild(titleInput);
+  } else {
+    contentSec.appendChild(el('div', { class: 'task-readonly-title' }, currentTask.title));
+  }
 
-    contentSec.appendChild(el('label', {}, '任務詳細描述'));
+  contentSec.appendChild(el('label', {}, '任務詳細描述'));
+  if (canEditDescription) {
     descInput = el('textarea', { rows: '5', placeholder: '無描述。輸入些什麼以建立任務說明...' });
     descInput.value = currentTask.description || '';
     descInput.addEventListener('focus', () => {
@@ -316,8 +324,6 @@ export async function openTaskDetailModal(taskId, {
     saveBtnGroup.appendChild(saveWrapper);
     contentSec.appendChild(saveBtnGroup);
   } else {
-    contentSec.appendChild(el('div', { class: 'task-readonly-title' }, currentTask.title));
-    contentSec.appendChild(el('label', {}, '任務詳細描述'));
     contentSec.appendChild(el('div', { class: 'task-readonly-description' }, currentTask.description || '（無描述）'));
   }
   

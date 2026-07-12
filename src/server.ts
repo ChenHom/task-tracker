@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -42,6 +42,7 @@ import {
   listTasks,
   getTask,
   getTaskWorkspaceId,
+  moveTask,
   registerTaskProjections,
   type CreateTaskInput,
 } from './task';
@@ -73,10 +74,6 @@ function isCsrfSafe(req: IncomingMessage): boolean {
     return false;
   }
 }
-
-registerWorkspaceProjections();
-registerMemberProjections();
-registerTaskProjections();
 
 function syncMainWorkspaceSafely(userId?: string): void {
   try {
@@ -122,6 +119,10 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   return raw ? JSON.parse(raw) : {};
 }
 
+export function taskPatchRole(body: Record<string, unknown>): 'Commenter' | 'Member' {
+  return Object.keys(body).length === 1 && 'description' in body ? 'Commenter' : 'Member';
+}
+
 // 讀原始位元組（attachment 上傳）。超過上限丟錯 → 413。
 // ponytail: 用 raw body + X-Filename header，避開自刻 multipart parser；正式環境改用表單/multipart。
 async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
@@ -135,7 +136,7 @@ async function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer>
   return Buffer.concat(chunks);
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (!isCsrfSafe(req)) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'CSRF 檢查失敗（Origin 不符）' }));
@@ -439,7 +440,16 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.end(JSON.stringify({ error: 'task 不存在' }));
       return;
     }
-    const taskRole = req.method === 'GET' ? ACCESS_ROLE.read : ACCESS_ROLE.mutateTask;
+    if (req.method === 'PATCH' && !requireAuth(req, res)) return;
+    const parsed = req.method === 'PATCH' ? await readJson(req).catch(() => null) : null;
+    const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+    const taskRole = req.method === 'GET'
+      ? ACCESS_ROLE.read
+      : req.method === 'PATCH'
+        ? taskPatchRole(body)
+        : ACCESS_ROLE.mutateTask;
     const userId = requirePermission(req, res, workspaceId, taskRole);
     if (!userId) return;
     try {
@@ -452,8 +462,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       } else {
-        const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
-        applyTaskPatch(userId, taskId, body ?? {});
+        applyTaskPatch(userId, taskId, body);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       }
@@ -478,6 +487,31 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       archiveTask(userId, taskId);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
+  const moveMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)\/move$/);
+  if (moveMatch && req.method === 'POST') {
+    const taskId = moveMatch[1];
+    const workspaceId = getTaskWorkspaceId(taskId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'task 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.mutateTask);
+    if (!userId) return;
+    const body = (await readJson(req).catch(() => null)) as { targetWorkspaceId?: unknown } | null;
+    try {
+      if (!body || typeof body.targetWorkspaceId !== 'string' || !body.targetWorkspaceId.trim()) {
+        throw new CommandError('targetWorkspaceId 為必填');
+      }
+      const result = moveTask(userId, taskId, body.targetWorkspaceId.trim());
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result.invitedAssignee ? { ok: true, message: '已對 assignee 發邀請，待其接受' } : { ok: true }));
     } catch (e) {
       sendCommandError(res, e);
     }
@@ -748,21 +782,31 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 }
 
 // 每個 request 開一個 context：ip / user_agent / request_id 供 command 的 metadata（audit）取用。
-const server = createServer((req, res) => {
-  const requestId = randomUUID();
-  res.setHeader('X-Request-Id', requestId);
-  runWithRequestContext(
-    { ip: clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY), userAgent: req.headers['user-agent'] ?? null, requestId },
-    () => handle(req, res),
-  );
-});
+export function createAppServer(): Server {
+  return createServer((req, res) => {
+    const requestId = randomUUID();
+    res.setHeader('X-Request-Id', requestId);
+    runWithRequestContext(
+      { ip: clientIp(req.headers, req.socket.remoteAddress, TRUST_PROXY), userAgent: req.headers['user-agent'] ?? null, requestId },
+      () => handle(req, res),
+    );
+  });
+}
 
-cleanupExpiredSessions();
-process.on('SIGHUP', () => {
+if (require.main === module) {
+  registerWorkspaceProjections();
+  registerMemberProjections();
+  registerTaskProjections();
   cleanupExpiredSessions();
-  console.log('task-tracker reloaded');
-});
+  process.on('SIGHUP', () => {
+    cleanupExpiredSessions();
+    console.log('task-tracker reloaded');
+  });
 
-syncMainWorkspaceSafely();
-const PORT = 3000;
-server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+  syncMainWorkspaceSafely();
+  if (process.env.TASK_TRACKER_DISABLE_LISTEN !== '1') {
+    const PORT = Number(process.env.PORT ?? 3000);
+    const server = createAppServer();
+    server.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+  }
+}

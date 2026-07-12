@@ -4,7 +4,7 @@ import { db } from './db';
 import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 import { getWorkspaceStatus } from './workspace';
-import { getMemberRole } from './member';
+import { getMemberRole, getMembershipStatus, hasPermission, inviteMember } from './member';
 import { getUserIdByEmail } from './auth';
 import { MAIN_DISCUSSION_PREFIX, MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 
@@ -122,6 +122,10 @@ export interface CreateTaskInput {
   dueAt?: unknown;
   projectId?: unknown;
 }
+
+export interface MoveTaskResult {
+  invitedAssignee: boolean;
+}
 // 只在「建立」時 gate workspace 生命週期：不讓新 task 落進 archived/deleted/不存在的 workspace（防孤兒資料）。
 // ponytail: 已存在 task 的 patch/archive/delete 不再回查 workspace，故 archived workspace 內既有 task 仍可微調。
 //   要完全凍結需每個 command 跨 aggregate 查 workspace 狀態，或用 process manager 級聯 archive/delete task；等有需求再上。
@@ -189,10 +193,9 @@ export function changeTaskTitle(actorId: string, taskId: string, title: unknown,
 export function changeTaskDescription(actorId: string, taskId: string, description: unknown, database = db): void {
   const clean = validateDescription(description);
   const { version } = loadEditableTask(taskId, database);
-  const workspaceId = getTaskWorkspaceId(taskId, database);
-  if (workspaceId && getMemberRole(workspaceId, actorId, database) === 'Commenter') {
-    const creatorId = loadEvents(taskId, database).find((e) => e.event_type === 'task.created')?.metadata as { actor_id: string } | undefined;
-    if (creatorId?.actor_id !== actorId) throw new CommandError('Commenter 只能修改自己建立的 task 的描述');
+  const task = getTask(taskId, database)!;
+  if (getMemberRole(task.workspace_id, actorId, database) === 'Commenter' && task.creator_id !== actorId) {
+    throw new CommandError('Commenter 只能修改自己建立 task 的描述');
   }
   appendEvent('Task', taskId, version, 'task.description_changed', { description: clean }, meta(actorId), database);
 }
@@ -261,6 +264,48 @@ export function changeTaskDueDate(actorId: string, taskId: string, dueAt: unknow
   const clean = validateDueAt(dueAt);
   const { version } = loadEditableTask(taskId, database);
   appendEvent('Task', taskId, version, 'task.due_date_changed', { dueAt: clean }, meta(actorId), database);
+}
+
+export function moveTask(actorId: string, taskId: string, targetWorkspaceId: string, database = db): MoveTaskResult {
+  const task = getTask(taskId, database);
+  if (!task) throw new CommandError('task 不存在');
+  const { state, version } = load(taskId, database);
+  requireEditable(state);
+
+  const sourceWorkspaceId = task.workspace_id;
+  if (sourceWorkspaceId === targetWorkspaceId) throw new CommandError('task 已在目標 workspace');
+
+  const sourceRole = getMemberRole(sourceWorkspaceId, actorId, database);
+  if (!sourceRole || !hasPermission(sourceRole, 'Member')) throw new CommandError('來源 workspace 權限不足');
+
+  const targetStatus = getWorkspaceStatus(targetWorkspaceId, database);
+  if (targetStatus === null) throw new CommandError('workspace 不存在');
+  if (targetStatus !== 'active') throw new CommandError(`workspace 目前為 ${targetStatus}，不可搬入 task`);
+
+  const targetRole = getMemberRole(targetWorkspaceId, actorId, database);
+  if (!targetRole || !hasPermission(targetRole, 'Member')) throw new CommandError('目標 workspace 權限不足');
+
+  let invitedAssignee = false;
+  if (task.assignee_id) {
+    const membershipStatus = getMembershipStatus(targetWorkspaceId, task.assignee_id, database);
+    if (membershipStatus === 'none' || membershipStatus === 'removed') {
+      inviteMember(actorId, targetWorkspaceId, task.assignee_id, 'Member', database);
+      invitedAssignee = true;
+    } else if (membershipStatus === 'invited') {
+      invitedAssignee = true;
+    }
+  }
+
+  appendEvent(
+    'Task',
+    taskId,
+    version,
+    'task.moved',
+    { fromWorkspaceId: sourceWorkspaceId, toWorkspaceId: targetWorkspaceId },
+    meta(actorId),
+    database,
+  );
+  return { invitedAssignee };
 }
 
 export function archiveTask(actorId: string, taskId: string, database = db): void {
@@ -339,6 +384,12 @@ export function registerTaskProjections(): void {
   registerProjection('task.priority_changed', (e, database) => setCol('priority')(e, database, (e.payload as { priority: string }).priority));
   registerProjection('task.assignee_changed', (e, database) => setCol('assignee_id')(e, database, (e.payload as { assigneeId: string | null }).assigneeId));
   registerProjection('task.due_date_changed', (e, database) => setCol('due_at')(e, database, (e.payload as { dueAt: string | null }).dueAt));
+  registerProjection('task.moved', (e, database) => {
+    const p = e.payload as { toWorkspaceId: string };
+    database
+      .prepare('UPDATE tasks_read_model SET workspace_id = ?, project_id = NULL, version = ?, updated_at = ? WHERE task_id = ?')
+      .run(p.toWorkspaceId, e.aggregate_version, e.occurred_at, e.aggregate_id);
+  });
   registerProjection('task.main_discussion_normalized', (e, database) => {
     const p = e.payload as {
       title: string;
@@ -365,6 +416,7 @@ export function registerTaskProjections(): void {
 export interface TaskRow {
   task_id: string;
   workspace_id: string;
+  creator_id: string | null;
   project_id: string | null;
   title: string;
   description: string;
@@ -375,15 +427,25 @@ export interface TaskRow {
   version: number;
   updated_at: string | null;
 }
+
+function getTaskCreatorId(taskId: string, database: DatabaseSync): string | null {
+  const created = loadEvents(taskId, database).find((event) => event.event_type === 'task.created');
+  const actorId = created?.metadata && typeof created.metadata === 'object'
+    ? (created.metadata as { actor_id?: unknown }).actor_id
+    : null;
+  return typeof actorId === 'string' && actorId.length > 0 ? actorId : null;
+}
+
 export function listTasks(workspaceId: string, database = db): TaskRow[] {
-  return database
+  const rows = database
     .prepare('SELECT * FROM tasks_read_model WHERE workspace_id = ? ORDER BY rowid')
     .all(workspaceId) as unknown as TaskRow[];
+  return rows.map((row) => ({ ...row, creator_id: getTaskCreatorId(row.task_id, database) }));
 }
 
 export function getTask(taskId: string, database = db): TaskRow | null {
   const row = database.prepare('SELECT * FROM tasks_read_model WHERE task_id = ?').get(taskId) as TaskRow | undefined;
-  return row ?? null;
+  return row ? { ...row, creator_id: getTaskCreatorId(taskId, database) } : null;
 }
 
 // PATCH / archive / delete 用：查資源歸屬的 workspace 以做權限檢查。null = task 不存在（或已刪）。

@@ -42,7 +42,7 @@ function mid(workspaceId: string, userId: string): string {
 }
 
 // ── Aggregate ──────────────────────────────────────────────────────
-type MemberStatus = 'none' | 'invited' | 'active' | 'removed';
+export type MemberStatus = 'none' | 'invited' | 'active' | 'removed';
 interface MemberState {
   status: MemberStatus;
   role: Role | null;
@@ -213,6 +213,10 @@ export function getMemberRole(workspaceId: string, userId: string, database = db
     .prepare('SELECT role FROM workspace_members_read_model WHERE workspace_id = ? AND user_id = ?')
     .get(workspaceId, userId) as { role: Role } | undefined;
   return row?.role ?? null;
+}
+
+export function getMembershipStatus(workspaceId: string, userId: string, database = db): MemberStatus {
+  return load(workspaceId, userId, database).state.status;
 }
 
 export function hasPermission(role: Role, minRole: Role): boolean {

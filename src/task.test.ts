@@ -17,9 +17,11 @@ import {
   listTasks,
   getTask,
   getTaskWorkspaceId,
+  moveTask,
   normalizeMainDiscussion,
   registerTaskProjections,
 } from './task';
+import { getMemberRole, getMembershipStatus, inviteMember } from './member';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
@@ -28,12 +30,18 @@ registerTaskProjections();
 
 const WS = 'ws-1';
 const COMMENTER_WS = 'ws-commenter';
+const MOVE_SOURCE_WS = 'ws-move-source';
+const MOVE_TARGET_WS = 'ws-move-target';
+const MOVE_ARCHIVED_WS = 'ws-move-archived';
 // createTask 會檢查 workspace 生命週期 → 需要 workspaces_read_model 有 active 的 fixture。
 const seedWs = (id: string, status = 'active') =>
   db.prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, created_at) VALUES (?, ?, ?, ?)').run(id, id, status, 't');
 seedWs(WS);
 seedWs('ws-other');
 seedWs(COMMENTER_WS);
+seedWs(MOVE_SOURCE_WS);
+seedWs(MOVE_TARGET_WS);
+seedWs(MOVE_ARCHIVED_WS, 'archived');
 seedWs(MAIN_WORKSPACE_ID);
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-owner', MAIN_OWNER_EMAIL, 'Main Owner', 'x');
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-user', 'user02@test.local', 'Main User', 'x');
@@ -43,6 +51,11 @@ const insertMember = db.prepare(
 insertMember.run(MAIN_WORKSPACE_ID, 'main-owner', 'Owner', 't');
 insertMember.run(MAIN_WORKSPACE_ID, 'main-user', 'Commenter', 't');
 insertMember.run(COMMENTER_WS, 'main-user', 'Commenter', 't');
+insertMember.run(MOVE_SOURCE_WS, 'mover', 'Member', 't');
+insertMember.run(MOVE_TARGET_WS, 'mover', 'Member', 't');
+insertMember.run(MOVE_TARGET_WS, 'target-only', 'Member', 't');
+insertMember.run(MOVE_ARCHIVED_WS, 'mover', 'Member', 't');
+insertMember.run(COMMENTER_WS, 'other-commenter', 'Commenter', 't');
 const one = (id: string) => listTasks(WS, db).find((t) => t.task_id === id)!;
 
 // ── create → read model 全欄位 + 預設值 ──
@@ -156,6 +169,61 @@ assert.strictEqual(t3?.task_id, id2);
 assert.strictEqual(t3?.title, 'Patched', 'getTask 返回最新資料');
 assert.strictEqual(getTask('nonexistent', db), null, 'getTask 不存在的 id 返回 null');
 
+// ── moveTask：成功搬移會更新 workspace_id、清空 project_id，且 route 之後會跟著新 workspace 走 ──
+const moveId = createTask('mover', MOVE_SOURCE_WS, { title: 'Move me', projectId: 'proj-1' }, db);
+const moveResult = moveTask('mover', moveId, MOVE_TARGET_WS, db);
+assert.deepStrictEqual(moveResult, { invitedAssignee: false });
+assert.deepStrictEqual(
+  {
+    workspaceId: getTask(moveId, db)?.workspace_id,
+    projectId: getTask(moveId, db)?.project_id,
+    taskWorkspaceId: getTaskWorkspaceId(moveId, db),
+  },
+  {
+    workspaceId: MOVE_TARGET_WS,
+    projectId: null,
+    taskWorkspaceId: MOVE_TARGET_WS,
+  },
+);
+assert.strictEqual(loadEvents(moveId, db).at(-1)?.event_type, 'task.moved');
+assert.deepStrictEqual(loadEvents(moveId, db).at(-1)?.payload, {
+  fromWorkspaceId: MOVE_SOURCE_WS,
+  toWorkspaceId: MOVE_TARGET_WS,
+});
+
+const noSourceRoleTaskId = createTask('mover', MOVE_SOURCE_WS, { title: 'No source role' }, db);
+assert.throws(
+  () => moveTask('target-only', noSourceRoleTaskId, MOVE_TARGET_WS, db),
+  { name: 'CommandError', message: '來源 workspace 權限不足' },
+);
+
+const archivedTargetTaskId = createTask('mover', MOVE_SOURCE_WS, { title: 'Archived target' }, db);
+assert.throws(
+  () => moveTask('mover', archivedTargetTaskId, MOVE_ARCHIVED_WS, db),
+  { name: 'CommandError', message: 'workspace 目前為 archived，不可搬入 task' },
+);
+
+const archivedMoveTaskId = createTask('mover', MOVE_SOURCE_WS, { title: 'Archived task cannot move' }, db);
+archiveTask('mover', archivedMoveTaskId, db);
+assert.throws(
+  () => moveTask('mover', archivedMoveTaskId, MOVE_TARGET_WS, db),
+  { name: 'CommandError', message: 'task 已歸檔，不可修改' },
+);
+
+const inviteAssigneeTaskId = createTask('mover', MOVE_SOURCE_WS, { title: 'Invite assignee', assignee: 'invite-assignee' }, db);
+const inviteResult = moveTask('mover', inviteAssigneeTaskId, MOVE_TARGET_WS, db);
+assert.deepStrictEqual(inviteResult, { invitedAssignee: true });
+assert.strictEqual(getMembershipStatus(MOVE_TARGET_WS, 'invite-assignee', db), 'invited', 'assignee 應被顯式邀請到目標 workspace');
+assert.strictEqual(getMemberRole(MOVE_TARGET_WS, 'invite-assignee', db), null, 'assignee 不可被隱式加入 read model');
+
+inviteMember('mover', MOVE_TARGET_WS, 'pending-assignee', 'Member', db);
+const pendingInviteEventsBefore = loadEvents(`${MOVE_TARGET_WS}:pending-assignee`, db).length;
+const pendingInviteTaskId = createTask('mover', MOVE_SOURCE_WS, { title: 'Pending invite reuse', assignee: 'pending-assignee' }, db);
+const pendingInviteResult = moveTask('mover', pendingInviteTaskId, MOVE_TARGET_WS, db);
+assert.deepStrictEqual(pendingInviteResult, { invitedAssignee: true });
+assert.strictEqual(loadEvents(`${MOVE_TARGET_WS}:pending-assignee`, db).length, pendingInviteEventsBefore, '既有 pending invite 不應重複追加事件');
+assert.strictEqual(getMembershipStatus(MOVE_TARGET_WS, 'pending-assignee', db), 'invited');
+
 // ── Commenter 建立 task 只能送 title / description，規則適用所有 workspace ──
 assert.throws(
   () => createTask('main-user', MAIN_WORKSPACE_ID, { title: '方向', priority: 'High' }, db),
@@ -176,6 +244,38 @@ assert.throws(
 );
 const commenterTaskId = createTask('main-user', COMMENTER_WS, { title: '一般方向', description: '一般討論' }, db);
 assert.strictEqual(getTask(commenterTaskId, db)?.title, '一般方向', '一般 workspace 不加討論 prefix');
+assert.strictEqual(getTask(commenterTaskId, db)?.creator_id, 'main-user');
+changeTaskDescription('main-user', commenterTaskId, '本人更新', db);
+assert.strictEqual(getTask(commenterTaskId, db)?.description, '本人更新');
+assert.throws(
+  () => changeTaskDescription('other-commenter', commenterTaskId, '他人更新', db),
+  { name: 'CommandError', message: 'Commenter 只能修改自己建立 task 的描述' },
+);
+
+const legacyCommenterTaskId = 'legacy-commenter-task';
+appendEvent(
+  'Task',
+  legacyCommenterTaskId,
+  0,
+  'task.created',
+  {
+    workspaceId: COMMENTER_WS,
+    projectId: null,
+    title: '歷史 task',
+    description: '舊描述',
+    status: 'Todo',
+    priority: 'Medium',
+    assigneeId: null,
+    dueAt: null,
+  },
+  {},
+  db,
+);
+assert.strictEqual(getTask(legacyCommenterTaskId, db)?.creator_id, null);
+assert.throws(
+  () => changeTaskDescription('main-user', legacyCommenterTaskId, '新描述', db),
+  { name: 'CommandError', message: 'Commenter 只能修改自己建立 task 的描述' },
+);
 
 // ── 主工作區建立規則：唯一 policy + 其餘固定為 Todo 討論 ──
 assert.throws(
