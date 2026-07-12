@@ -32,6 +32,7 @@ import {
   getMemberRole,
   listMembers,
   autoAddObserver,
+  ACCESS_ROLE,
 } from './member';
 import {
   createTask,
@@ -51,6 +52,7 @@ import { searchWorkspace } from './search';
 import { getAggregateWorkspace, getAuditTrail } from './audit';
 import { createRateLimiter } from './rateLimit';
 import { clientIp } from './clientIp';
+import { syncMainWorkspace, syncMainWorkspaceUser } from './mainWorkspace';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
@@ -75,6 +77,15 @@ function isCsrfSafe(req: IncomingMessage): boolean {
 registerWorkspaceProjections();
 registerMemberProjections();
 registerTaskProjections();
+
+function syncMainWorkspaceSafely(userId?: string): void {
+  try {
+    if (userId) syncMainWorkspaceUser(userId);
+    else syncMainWorkspace();
+  } catch (error) {
+    console.error('[main-workspace] sync failed:', error);
+  }
+}
 
 // 統一把 command 錯誤映射成 HTTP：CommandError → 400，其餘 → 500。
 function sendCommandError(res: ServerResponse, e: unknown): void {
@@ -154,6 +165,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     // session fixation 防護：廢棄登入前的舊 session，認證後一律用全新 id。
     const oldToken = parseCookies(req.headers.cookie)[SESSION_COOKIE];
     if (oldToken) destroySession(oldToken);
+    syncMainWorkspaceSafely(userId);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': sessionCookie(createSession(userId)) });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -356,14 +368,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (wsTasksMatch) {
     const workspaceId = wsTasksMatch[1];
     if (req.method === 'GET') {
-      const userId = requirePermission(req, res, workspaceId, 'Viewer');
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
       if (!userId) return;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(listTasks(workspaceId)));
       return;
     }
     if (req.method === 'POST') {
-      const userId = requirePermission(req, res, workspaceId, 'Member');
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.createTask);
       if (!userId) return;
       const body = (await readJson(req).catch(() => null)) as CreateTaskInput | null;
       try {
@@ -387,7 +399,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.end(JSON.stringify({ error: 'task 不存在' }));
       return;
     }
-    const userId = requirePermission(req, res, workspaceId, 'Member');
+    const taskRole = req.method === 'GET' ? ACCESS_ROLE.read : ACCESS_ROLE.mutateTask;
+    const userId = requirePermission(req, res, workspaceId, taskRole);
     if (!userId) return;
     try {
       if (req.method === 'GET') {
@@ -419,7 +432,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.end(JSON.stringify({ error: 'task 不存在' }));
       return;
     }
-    const userId = requirePermission(req, res, workspaceId, 'Member');
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.mutateTask);
     if (!userId) return;
     try {
       archiveTask(userId, taskId);
@@ -436,14 +449,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (wsProjectsMatch) {
     const workspaceId = wsProjectsMatch[1];
     if (req.method === 'GET') {
-      const userId = requirePermission(req, res, workspaceId, 'Viewer');
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
       if (!userId) return;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(listProjects(workspaceId)));
       return;
     }
     if (req.method === 'POST') {
-      const userId = requirePermission(req, res, workspaceId, 'Member');
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
       if (!userId) return;
       const body = (await readJson(req).catch(() => null)) as { name?: unknown } | null;
       try {
@@ -467,7 +480,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.end(JSON.stringify({ error: 'project 不存在' }));
       return;
     }
-    const userId = requirePermission(req, res, workspaceId, 'Member');
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
     if (!userId) return;
     try {
       if (req.method === 'DELETE') {
@@ -495,14 +508,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
     if (req.method === 'GET') {
-      const userId = requirePermission(req, res, workspaceId, 'Viewer');
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
       if (!userId) return;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(listComments(taskId)));
       return;
     }
     if (req.method === 'POST') {
-      const userId = requirePermission(req, res, workspaceId, 'Member');
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.createComment);
       if (!userId) return;
       const body = (await readJson(req).catch(() => null)) as { content?: unknown } | null;
       try {
@@ -516,7 +529,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
   }
 
-  // 單一 comment：workspace 角色(Member) + ownership（只能改/刪自己的留言）。
+  // 單一 comment：workspace 角色(Commenter) + ownership（只能改/刪自己的留言）。
   const commentMatch = req.url?.match(/^\/api\/comments\/([^/?]+)$/);
   if (commentMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
     const commentId = commentMatch[1];
@@ -526,7 +539,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       res.end(JSON.stringify({ error: 'comment 不存在' }));
       return;
     }
-    const userId = requirePermission(req, res, ctx.workspace_id, 'Member');
+    const userId = requirePermission(req, res, ctx.workspace_id, ACCESS_ROLE.mutateOwnComment);
     if (!userId) return;
     if (ctx.user_id !== userId) {
       // ponytail: 只允許作者本人。版主刪他人留言（Admin+ moderation）等有需求再加。
@@ -561,14 +574,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
     if (req.method === 'GET') {
-      const userId = requirePermission(req, res, workspaceId, 'Viewer');
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
       if (!userId) return;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(listAttachments(taskId)));
       return;
     }
     if (req.method === 'POST') {
-      const userId = requirePermission(req, res, workspaceId, 'Member');
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeAttachment);
       if (!userId) return;
       let data: Buffer;
       try {
@@ -602,7 +615,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
     if (req.method === 'GET') {
-      const userId = requirePermission(req, res, ctx.workspace_id, 'Viewer');
+      const userId = requirePermission(req, res, ctx.workspace_id, ACCESS_ROLE.read);
       if (!userId) return;
       try {
         const file = readAttachment(attachmentId);
@@ -624,7 +637,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return;
     }
     // DELETE
-    const userId = requirePermission(req, res, ctx.workspace_id, 'Member');
+    const userId = requirePermission(req, res, ctx.workspace_id, ACCESS_ROLE.writeAttachment);
     if (!userId) return;
     try {
       deleteAttachment(attachmentId);
@@ -710,5 +723,6 @@ process.on('SIGHUP', () => {
   console.log('task-tracker reloaded');
 });
 
+syncMainWorkspaceSafely();
 const PORT = 3000;
 server.listen(PORT, () => console.log(`http://localhost:${PORT}`));

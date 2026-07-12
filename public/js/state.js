@@ -8,7 +8,13 @@
  * List of roles permitted in workspaces.
  * @type {string[]}
  */
-export const ROLES = ['Viewer', 'Member', 'Admin', 'Owner'];
+export const ROLE_RANK = Object.freeze({ Viewer: 0, Commenter: 1, Member: 2, Admin: 3, Owner: 4 });
+export const ROLES = Object.keys(ROLE_RANK);
+export const hasRole = (role, minimum) => ROLE_RANK[role] >= ROLE_RANK[minimum];
+
+export const MAIN_WORKSPACE_ID = '11a82028-fc50-466a-a723-e002032cd9a6';
+export const MAIN_OWNER_EMAIL = 'user01@test.local';
+export const MAIN_POLICY_TITLE = '[規則] 主工作區協作與交接';
 
 /**
  * Valid workflow statuses for a task.
@@ -38,7 +44,8 @@ export const state = {
    * @type {string|null}
    */
   get userEmail() {
-    return sessionStorage.getItem('user_email');
+    const value = sessionStorage.getItem('user_email');
+    return value ? value.trim().toLowerCase() || null : null;
   },
   
   /**
@@ -46,7 +53,8 @@ export const state = {
    * @type {string|null}
    */
   set userEmail(val) {
-    if (val) sessionStorage.setItem('user_email', val);
+    const value = val ? val.trim().toLowerCase() : '';
+    if (value) sessionStorage.setItem('user_email', value);
     else sessionStorage.removeItem('user_email');
   },
 

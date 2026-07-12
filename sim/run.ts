@@ -10,6 +10,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync, symlinkSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { MAIN_DISCUSSION_PREFIX, MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from '../src/mainWorkspacePolicy';
 
 const BASE = 'http://localhost:3000';
 export const ROOT = join(__dirname, '..');
@@ -190,6 +191,61 @@ export function ensureCanonicalWorkspaceCandidates(
   }
 }
 
+export function ensureMainWorkspaceCandidate(
+  candidates: Map<string, { key: string; startedAt: string }>,
+): void {
+  if (!candidates.has(MAIN_WORKSPACE_ID)) {
+    candidates.set(MAIN_WORKSPACE_ID, { key: 'self-directed', startedAt: '1970-01-01T00:00:00.000Z' });
+  }
+}
+
+export function isSweepWorkTask(task: { title: string }): boolean {
+  return task.title !== MAIN_POLICY_TITLE && !task.title.startsWith(MAIN_DISCUSSION_PREFIX);
+}
+
+export function mainDiscussionNeedsOwner(
+  status: string,
+  latestCommentUserId: string | undefined,
+  ownerId: string,
+  latestCommentContent?: string,
+): boolean {
+  return status === 'Todo'
+    || status === 'Review'
+    || latestCommentUserId !== ownerId
+    || (status === 'Doing' && (
+      latestCommentContent?.includes(MAIN_HANDOFF_PENDING) === true
+      || latestCommentContent?.includes(`${BASE}/#/task/`) === true
+    ));
+}
+
+export const MAIN_HANDOFF_PENDING = '[HANDOFF-PENDING]';
+
+export function canonicalWorkspaceDirectory(): string {
+  const entries = Object.entries(CANONICAL_WORKSPACE_BY_REPOROOT);
+  return entries.length
+    ? entries.map(([repoRoot, workspaceId]) => `- ${repoRoot} -> workspace ${workspaceId}`).join('\n')
+    : '- （目前沒有登記）';
+}
+
+export function compareSweepCandidates(
+  a: { wsId: string; startedAt: string },
+  b: { wsId: string; startedAt: string },
+  timedOutWs: string[],
+): number {
+  const canonicalIds = Object.values(CANONICAL_WORKSPACE_BY_REPOROOT);
+  const score = (item: { wsId: string }) => {
+    if (timedOutWs.includes(item.wsId)) return 3;
+    if (item.wsId === MAIN_WORKSPACE_ID) return 2;
+    if (canonicalIds.includes(item.wsId)) return 1;
+    return 0;
+  };
+  return score(b) - score(a) || b.startedAt.localeCompare(a.startedAt);
+}
+
+export function sweepCandidateUsesRepoSlot(wsId: string): boolean {
+  return wsId !== MAIN_WORKSPACE_ID;
+}
+
 function crossRepoRule(scenario: Scenario): string {
   if (scenario.repoRoot === ROOT) return '';
   const target = canonicalWorkspaceForRepoRoot(ROOT);
@@ -306,6 +362,10 @@ function activateScenario(scenario: Scenario, members: Member[]): void {
   RUN = { repoRoot: scenario.repoRoot, workDir, members };
 }
 
+function activateMainSweepContext(members: Member[]): void {
+  RUN = { repoRoot: ROOT, workDir: join(ROOT, 'sim-work'), members };
+}
+
 // ── HTTP helpers（bootstrap 用，不經 LLM）────────────────────────────
 async function api(path: string, init: RequestInit = {}, cookie?: string): Promise<{ status: number; body: any }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(init.headers as any) };
@@ -395,6 +455,7 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
 // ── 子行程 spawn ────────────────────────────────────────────────────
 // Claude Code 的 Bash 權限用冒號前綴語法 Bash(<cmd>:*)（實測：空格版 Bash(curl *) 會卡在權限批准）
 export const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Read,Write,Edit,Glob,Grep';
+export const MAIN_OWNER_TOOLS = 'Bash(curl:*)';
 const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
 // owner 開場是生成型工作（發想＋開題），交給較快的 sonnet；中場/收尾/repair 是審查判斷，用 opus
 const OWNER_OPEN_MODEL = 'claude-sonnet-5';
@@ -565,6 +626,7 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 - 留言 POST /api/tasks/<id>/comments {"content":"..."}：正體中文、像真的工程師、具體（做法/卡點/驗證結果）
 - 遇疑似系統 bug：自查重試一次，可重現就建 [BUG] task（POST /api/workspaces/<ws>/tasks，title 以 [BUG] 開頭，description 含重現步驟/預期 vs 實際/原始回應，priority High）
 - 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層
+- 主協作工作區（${MAIN_WORKSPACE_ID}）只放討論；非 user01 不改狀態，實作 task 必須建立在目標工作區。
 - 若這個 task 需要改的原始碼其實屬於別的 repo（不是你現在這個 repoRoot）：不要用 [ESCALATE]（那是給環境/權限問題，處理不了 repo 不合）。改用 [CROSS-REPO] 開頭留言說明是誰的 repo，並依下方跨 repo 判斷規則處理。`;
 
 function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario): string {
@@ -1210,6 +1272,22 @@ interface SweepTask { task_id: string; title: string; status: string; assignee_i
 
 function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string): string {
   const jar = join(RUN.repoRoot, '.jar-owner-sweep.txt');
+  if (wsId === MAIN_WORKSPACE_ID) {
+    return `你是「${OWNER.name}」（${OWNER.email}），主協作工作區的唯一 Owner。這個 session 只用 curl/API 操作，不得編輯、提交或合併任何程式碼。
+workspace：${wsId}。
+${API_RULES(jar)}
+主協作討論巡檢：
+1. GET ${BASE}/api/workspaces/${wsId}/tasks，忽略「${MAIN_POLICY_TITLE}」，它不是工作項目；逐一讀取 status=Todo/Doing/Review 的「${MAIN_DISCUSSION_PREFIX}」討論及留言。
+2. Todo 討論先 PATCH status=Doing；系統會自動指派 user01。Doing 討論以留言回覆與收斂方向，不要在主協作工作區指派 member，也不要在這裡建立實作 task 或改 code。
+3. 達成決議後，先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
+${canonicalWorkspaceDirectory()}
+4. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
+5. 一旦決議形成，在任何 owner 決議或 handoff 留言前，先 POST 一則「${MAIN_HANDOFF_PENDING} target repo: <絕對路徑>」。marker 後不要再貼其他 owner 留言，直到回寫實作 task URL，讓中途 crash 可由下輪巡檢接手。
+6. 建立前先檢查原討論留言與目標 workspace，包括 ${MAIN_HANDOFF_PENDING} marker 與既有來源 URL；若已有同一來源網址的實作 task 就沿用，避免重試時重複建立。否則使用既有 task API 在目標 workspace 建立實作 task。description 必須包含 target repo 與來源討論完整網址 ${BASE}/#/task/<原討論id>；不得在主協作工作區建立實作 task。
+7. 建立後，在原討論回寫完整實作 task 網址 ${BASE}/#/task/<id>。
+8. 交接完成後依法相鄰推進原討論 Todo→Doing→Review→Done；若巡檢時已在 Review，完成必要回寫後推進 Done，避免 crash recovery 卡住。
+9. 結束輸出 3 行內總結。`;
+  }
   const packetByBranch = new Map(verified.map((p) => [p.branch, p]));
   const ci = RUN.members.map((m) => {
     const p = packetByBranch.get(branch(m));
@@ -1247,6 +1325,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   const members = loadMembersFromUsers();
   const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
   const boss = db.prepare('SELECT id, name FROM users WHERE email = ?').get(BOSS_EMAIL) as { id: string; name: string } | undefined;
+  const mainOwner = db.prepare('SELECT id, name FROM users WHERE email = ?').get(MAIN_OWNER_EMAIL) as { id: string; name: string } | undefined;
 
   // 候選 workspace 來自歷次 run 的 report.json（零新狀態檔）；同 workspace 取最新 scenarioKey
   const wsScenario = new Map<string, { key: string; startedAt: string }>();
@@ -1260,9 +1339,10 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     } catch { /* 壞檔跳過 */ }
   }
   // canonical workspace 不能因為安靜太久（沒有最近的 report.json）而從候選名單消失
+  ensureMainWorkspaceCandidate(wsScenario);
   ensureCanonicalWorkspaceCandidates(wsScenario);
 
-  interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; bossPinged: boolean; startedAt: string }
+  interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; ownerNeeded: boolean; startedAt: string }
   const pendings: PendingWs[] = [];
   for (const [wsId, info] of wsScenario) {
     const scenario = scenarioFromStoredKey(info.key);
@@ -1273,19 +1353,24 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     const ws = db.prepare('SELECT status FROM workspaces_read_model WHERE workspace_id = ?').get(wsId) as { status: string } | undefined;
     if (!ws || ws.status !== 'active') continue;
     const tasks = db.prepare("SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND status IN ('Todo','Doing','Review')").all(wsId) as unknown as SweepTask[];
-    const discussions = tasks.filter((t) => t.title.startsWith('[討論]'));
-    const work = tasks.filter((t) => !t.title.startsWith('[討論]'));
-    const bossPinged = !!boss && discussions.some((d) => {
+    const discussions = tasks.filter((t) => t.title.startsWith(MAIN_DISCUSSION_PREFIX));
+    const work = tasks.filter(isSweepWorkTask);
+    const ownerNeeded = wsId === MAIN_WORKSPACE_ID
+      ? !!mainOwner && discussions.some((d) => {
+        const last = db.prepare('SELECT user_id, content FROM comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(d.task_id) as { user_id: string; content: string } | undefined;
+        return mainDiscussionNeedsOwner(d.status, last?.user_id, mainOwner.id, last?.content);
+      })
+      : !!boss && discussions.some((d) => {
       const last = db.prepare('SELECT user_id FROM comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(d.task_id) as { user_id: string } | undefined;
       return last?.user_id === boss.id;
     });
-    if (!work.length && !bossPinged) continue;
-    pendings.push({ wsId, scenario, work, bossPinged, startedAt: info.startedAt });
+    if (!work.length && !ownerNeeded) continue;
+    pendings.push({ wsId, scenario, work, ownerNeeded, startedAt: info.startedAt });
   }
   db.close();
 
   if (!pendings.length) { console.log(`[sweep:${role}] 看板全收乾淨、老闆無新留言，本 tick 零成本結束`); return; }
-  console.log(`[sweep:${role}] ${pendings.length} 個 workspace 有待收工作：${pendings.map((p) => `${p.wsId.slice(0, 8)}(${p.work.length}題${p.bossPinged ? '+老闆留言' : ''})`).join('、')}`);
+  console.log(`[sweep:${role}] ${pendings.length} 個 workspace 有待收工作：${pendings.map((p) => `${p.wsId.slice(0, 8)}(${p.work.length}題${p.ownerNeeded ? '+需 owner' : ''})`).join('、')}`);
 
   // owner 逾時自適應：上一輪 owner 逾時 streak 越高 → 這輪 timeout 越長、owner 收的 workspace 越少
   const ownerState = role === 'team' ? { streak: 0, timedOutWs: [] as string[] } : readOwnerState();
@@ -1300,12 +1385,8 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   if (ownerState.streak > 0) {
     console.log(`[sweep:${role}] 前輪 owner 逾時（streak ${ownerState.streak}）→ 本輪 timeout=${Math.round(ownerTimeoutMs / 60000)}分、owner 收 ${ownerBudget} 個、優先 ${ownerState.timedOutWs.map((x) => x.slice(0, 8)).join(',') || '(無記錄)'}`);
   }
-  // 逾時過的 workspace 排最前（否則減 budget 會跳過它），其次新的優先
-  pendings.sort((a, b) => {
-    const at = ownerState.timedOutWs.includes(a.wsId) ? 1 : 0;
-    const bt = ownerState.timedOutWs.includes(b.wsId) ? 1 : 0;
-    return at !== bt ? bt - at : b.startedAt.localeCompare(a.startedAt);
-  });
+  // 逾時恢復優先，其次 main/canonical 固定收件 workspace，最後才按新舊排序
+  pendings.sort((a, b) => compareSweepCandidates(a, b, ownerState.timedOutWs));
   let ownerSessionsRun = 0;
   const timedOutThisTick: string[] = [];
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
@@ -1313,12 +1394,15 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
 
   for (const p of pendings) {
     if (ownerBudget <= 0 && memberBudget <= 0) break;
-    if (processedRepoRoots.has(p.scenario.repoRoot)) {
+    if (sweepCandidateUsesRepoSlot(p.wsId) && processedRepoRoots.has(p.scenario.repoRoot)) {
       console.log(`[sweep] ${p.wsId.slice(0, 8)} 與本 tick 已處理 workspace 共用 ${p.scenario.repoRoot} branch，延到下個 tick`);
       continue;
     }
-    if (p.scenario.repoRoot === BRAIN_ROOT) ensureBrainRepo();
-    activateScenario(p.scenario, members);
+    if (p.wsId === MAIN_WORKSPACE_ID) activateMainSweepContext(members);
+    else {
+      if (p.scenario.repoRoot === BRAIN_ROOT) ensureBrainRepo();
+      activateScenario(p.scenario, members);
+    }
 
     // member userId 需要重新對應（跨 workspace 不同）
     const ownerCookie = await login(OWNER.email);
@@ -1333,27 +1417,27 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       console.log(`[sweep] ${p.wsId.slice(0, 8)} 沒有目前 runner 可推進的工作，不占用 repo slot`);
       continue;
     }
-    processedRepoRoots.add(p.scenario.repoRoot);
+    if (sweepCandidateUsesRepoSlot(p.wsId)) processedRepoRoots.add(p.scenario.repoRoot);
     const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${p.wsId.slice(0, 8)}`);
     const promptArtifacts: PromptArtifact[] = [];
 
     // verifyBranches 只給 owner 判斷 CI 用；team tick 免跑（省時）
-    if (ownerBudget > 0) {
+    if (ownerBudget > 0 && sweepCandidateUsesRepoSlot(p.wsId)) {
       for (const m of RUN.members) {
         if (branchAhead(m) > 0 && !existsSync(wt(m))) ensureWorktree(m, p.scenario);
       }
     }
-    const anyReviewChanges = ownerBudget > 0 && RUN.members.some(memberHasReviewChanges);
+    const anyReviewChanges = ownerBudget > 0 && sweepCandidateUsesRepoSlot(p.wsId) && RUN.members.some(memberHasReviewChanges);
     const verified = (ownerBudget > 0 && anyReviewChanges) ? await verifyBranches(runDir, p.scenario) : [];
 
     if (ownerBudget > 0) {
       const r = await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'claude', OWNER_REVIEW_MODEL,
         ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
-        { cwd: RUN.repoRoot, tools: OWNER_TOOLS, timeoutMs: ownerTimeoutMs, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
+        { cwd: RUN.repoRoot, tools: p.wsId === MAIN_WORKSPACE_ID ? MAIN_OWNER_TOOLS : OWNER_TOOLS, timeoutMs: ownerTimeoutMs, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
       ownerSessionsRun++;
       if (r.timedOut) timedOutThisTick.push(p.wsId);
       ownerBudget--;
-      abortStaleMerge();
+      if (p.wsId !== MAIN_WORKSPACE_ID) abortStaleMerge();
     }
 
     if (memberBudget > 0) {
@@ -1361,7 +1445,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       const db2 = new DatabaseSync(join(ROOT, 'data/dev.db'));
       const tasks2 = db2.prepare("SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND status IN ('Todo','Doing','Review')").all(p.wsId) as unknown as SweepTask[];
       db2.close();
-      const work2 = tasks2.filter((t) => !t.title.startsWith('[討論]'));
+      const work2 = tasks2.filter(isSweepWorkTask);
       const rejected = eligibleMembers.filter((m) => work2.some((t) => t.assignee_id === m.userId && (t.status === 'Todo' || t.status === 'Doing')));
       const unclaimed = work2.some((t) => !t.assignee_id && t.status === 'Todo');
       const idle = eligibleMembers.filter((m) => !work2.some((t) => t.assignee_id === m.userId));

@@ -4,14 +4,36 @@ import { db } from './db';
 import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 import { currentUserId } from './auth';
+import { MAIN_OWNER_EMAIL, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 
-// ── 角色階層：Owner > Admin > Member > Viewer ──────────────────────
-export const ROLE_RANK = { Viewer: 0, Member: 1, Admin: 2, Owner: 3 } as const;
+// ── 角色階層：Owner > Admin > Member > Commenter > Viewer ─────────
+export const ROLE_RANK = { Viewer: 0, Commenter: 1, Member: 2, Admin: 3, Owner: 4 } as const;
 export type Role = keyof typeof ROLE_RANK;
+
+export const ACCESS_ROLE = {
+  read: 'Viewer',
+  createTask: 'Commenter',
+  createComment: 'Commenter',
+  mutateOwnComment: 'Commenter',
+  mutateTask: 'Member',
+  writeProject: 'Member',
+  writeAttachment: 'Member',
+} as const satisfies Record<string, Role>;
 
 function validateRole(role: unknown): Role {
   if (typeof role !== 'string' || !(role in ROLE_RANK)) throw new CommandError(`role 不合法：${String(role)}`);
   return role as Role;
+}
+
+function userEmail(userId: string, database: DatabaseSync): string | null {
+  const row = database.prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined;
+  return row?.email ?? null;
+}
+
+function requireMainRole(workspaceId: string, userId: string, role: Role, database: DatabaseSync): void {
+  if (workspaceId !== MAIN_WORKSPACE_ID) return;
+  const expected = userEmail(userId, database) === MAIN_OWNER_EMAIL ? 'Owner' : 'Commenter';
+  if (role !== expected) throw new CommandError(`主工作區成員固定為 ${expected}`);
 }
 
 // member aggregate 的 id = workspace_uuid:user_uuid（uuid 不含冒號，放心拆解）。
@@ -54,6 +76,7 @@ function load(workspaceId: string, userId: string, database: DatabaseSync): { st
 // 屬於 domain invariant，跟 workspace.ts 的狀態機驗證一樣要放在 command 裡，不能只靠 HTTP 層）──
 export function inviteMember(actorId: string, workspaceId: string, userId: string, role: unknown, database = db): void {
   const r = validateRole(role);
+  requireMainRole(workspaceId, userId, r, database);
   // 只有 Owner 能任命 Owner；workspace 剛建立、還沒有任何 active 成員時例外（seedOwner bootstrap，
   // 此時查不到任何 Owner 可比對，這條路徑無法從 HTTP 觸發——requirePermission 對 0 成員的 workspace
   // 一定回 403，能走到這裡的只有 seedOwner 的直接呼叫）。
@@ -61,7 +84,7 @@ export function inviteMember(actorId: string, workspaceId: string, userId: strin
     throw new CommandError('只有 Owner 能任命 Owner');
   }
   const { state, version } = load(workspaceId, userId, database);
-  if (state.status !== 'none') throw new CommandError('該使用者已被邀請或已是成員');
+  if (state.status !== 'none' && state.status !== 'removed') throw new CommandError('該使用者已被邀請或已是成員');
   appendEvent('Member', mid(workspaceId, userId), version, 'member.invited', { workspaceId, userId, role: r }, meta(actorId), database);
 }
 
@@ -74,11 +97,10 @@ export function joinWorkspace(actorId: string, workspaceId: string, database = d
 // demo/sim 政策：user01（sim owner）建立的每個 workspace，自動把老闆 user09 加成成員，
 // 讓老闆能總覽所有看板並在 [討論] task 回覆。由 POST /api/workspaces route 於建立後呼叫。
 // 只認這兩個固定 seed 帳號；查不到就靜默略過（非 sim 環境不受影響）。createWorkspace domain 保持純淨。
-const OWNER_SEED_EMAIL = 'user01@test.local';
 const OBSERVER_SEED_EMAIL = 'user09@test.local';
 export function autoAddObserver(creatorId: string, workspaceId: string, database = db): void {
   const observer = database.prepare('SELECT id FROM users WHERE email = ?').get(OBSERVER_SEED_EMAIL) as { id: string } | undefined;
-  const owner = database.prepare('SELECT id FROM users WHERE email = ?').get(OWNER_SEED_EMAIL) as { id: string } | undefined;
+  const owner = database.prepare('SELECT id FROM users WHERE email = ?').get(MAIN_OWNER_EMAIL) as { id: string } | undefined;
   if (!observer || !owner || creatorId !== owner.id || observer.id === creatorId) return;
   try {
     inviteMember(creatorId, workspaceId, observer.id, 'Member', database);
@@ -92,6 +114,10 @@ export function changeMemberRole(actorId: string, workspaceId: string, userId: s
   const r = validateRole(role);
   const { state, version } = load(workspaceId, userId, database);
   if (state.status !== 'active') throw new CommandError('對象不是使用中的成員');
+  if (workspaceId === MAIN_WORKSPACE_ID && userEmail(userId, database) === MAIN_OWNER_EMAIL) {
+    throw new CommandError('不可變更主工作區流程負責人角色');
+  }
+  requireMainRole(workspaceId, userId, r, database);
   const actorRole = getMemberRole(workspaceId, actorId, database);
   // 權限升級：只有 Owner 能任命 Owner。
   if (r === 'Owner' && actorRole !== 'Owner') throw new CommandError('只有 Owner 能任命 Owner');
@@ -105,6 +131,9 @@ export function changeMemberRole(actorId: string, workspaceId: string, userId: s
 }
 
 export function removeMember(actorId: string, workspaceId: string, userId: string, database = db): void {
+  if (workspaceId === MAIN_WORKSPACE_ID) {
+    throw new CommandError('主工作區成員由系統同步，不可手動移除');
+  }
   const { state, version } = load(workspaceId, userId, database);
   if (state.status !== 'invited' && state.status !== 'active') throw new CommandError('對象不是成員');
   if (state.role === 'Owner') {

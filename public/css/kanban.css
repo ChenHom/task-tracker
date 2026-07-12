@@ -41,6 +41,27 @@
   gap: 0.3rem;
 }
 
+.main-workspace-policy {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border-left: 4px solid #176b4d;
+  background: #eef8f2;
+  color: #18352a;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.main-workspace-policy strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.main-workspace-policy span {
+  display: block;
+}
+
 .kanban-board {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -466,4 +487,3 @@
   width: 100%;
   text-align: left;
 }
-

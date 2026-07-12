@@ -2,29 +2,26 @@
 
 **日期：** 2026-07-10
 
-**狀態：** 設計已確認，待實作（現況基準：`4902e287393f48b7fe13f8a0187bda009a2f7b86`）
+**狀態：** 實作完成，待合併後 rollout 驗收
 
-**主工作區：** `11a82028-fc50-466a-a723-e002032cd9a6`（上線時改名為：主協作工作區）
+**主工作區：** `11a82028-fc50-466a-a723-e002032cd9a6`（固定名稱：主協作工作區）
 **流程負責人：** `user01@test.local`
 
 ## 背景
 
-目前 workspace 角色只有 `Viewer / Member / Admin / Owner`：
+實作前，workspace 角色只有 `Viewer / Member / Admin / Owner`：
 
 - `Viewer` 可讀，但不能建立 task 或留言。
 - `Member` 一旦能留言，也同時能修改 task、轉換狀態、操作 project 與附件。
 
-因此系統無法表達「可建立討論與留言，但不可推進工作流程」的使用者。主工作區目前也只有 user01 與 user09 是成員，且 sweep 只把 user09 的特定 `[討論]` 留言視為 owner 工作，無法承載所有 user 的討論入口。
+因此原系統無法表達「可建立討論與留言，但不可推進工作流程」的使用者。當時主工作區也只有 user01 與 user09 是成員，且 sweep 只把 user09 的特定 `[討論]` 留言視為 owner 工作，無法承載所有 user 的討論入口。
 
-## 現況基準（2026-07-11）
+## 實作現況（2026-07-11）
 
-- `4902e28` 已在 `sim/run.ts` 實作 `CANONICAL_WORKSPACE_BY_REPOROOT`、`canonicalWorkspaceForRepoRoot()`、canonical sweep 候選與 `[CROSS-REPO]` prompt；詳見 `docs/superpowers/plans/2026-07-10-crossrepo-workspace-routing.md`。
-- canonical registry 目前只登記 task-tracker repo：`/home/hom/code/task-tracker` → workspace `d9da9945-ce5f-400f-806e-1d75e95e313a`；brain repo 未登記。
-- Commenter、主工作區名稱／成員／規則 task 同步、`task.discussion_started`、前端權限控制及 main-workspace sweep 尚未實作。
-- `data/dev.db` 目前有 30 users，但主工作區只有 user01=Owner、user09=Member；名稱仍是 `Owner→阿哲 收件匣`。
-- 主工作區目前有兩個 legacy Todo：`de228444`（workspace的封存功能）與 `1f369e88`（工作區裡統一使用+8時區的時間）。兩者預設欄位已是 Medium／未指派／無 project／無 due date，但 title 沒有 `[討論]`；若不 backfill，sweep 會誤判為實作工作。
-- `npm test` 已在此基準通過；它驗證現有系統與 canonical routing，不能當成本設計已完成的證據。
-- isolated worktree `feature/commenter-main-workspace` 仍停在 `90d5823`，實作前須先 fast-forward 到包含 `4902e28` 的最新 `master`。
+- Commenter RBAC、主工作區同步／domain policy、前端角色控制與安全 URL renderer 已在 `feature/commenter-main-workspace` 完成並通過自動測試。
+- main-workspace sweep 已重用既有 canonical registry；主工作區是固定候選且不占 repo slot，因此可在同一 tick 接續處理共用 ROOT 的 canonical workspace。
+- canonical registry 目前只登記 task-tracker repo：`/home/hom/code/task-tracker` → workspace `d9da9945-ce5f-400f-806e-1d75e95e313a`；其他 repo 仍按既有 workspace／新增 workspace 流程處理。
+- 正式服務部署、DB 同步結果、完整 HTTP smoke 與 live owner sweep 尚待合併後驗收。
 
 ## 目標
 
@@ -48,7 +45,7 @@
 
 ## 角色模型
 
-角色階層改為：
+角色階層已改為：
 
 ```text
 Viewer < Commenter < Member < Admin < Owner
@@ -209,21 +206,22 @@ UI 依目前使用者在 workspace 的角色收斂控制：
 - 新實作 task 的 description 要保留來源討論 URL 與 target repo，避免重複建立及再次跨 repo 卡死。
 - 目前只有 task-tracker repo 有 canonical workspace；不得因 registry 只有一筆就假設每個主工作區討論都屬於 task-tracker。
 
-留言 rich-text renderer 增加安全的 HTTP(S) URL 自動連結；使用 DOM text/anchor 建構，不接受任意 HTML。內部 `#/task/...` 完整分享 URL 可直接開啟目標 task。
+留言 rich-text renderer 已增加安全的 HTTP(S) URL 自動連結；使用 DOM text/anchor 建構，不接受任意 HTML。內部 `#/task/...` 完整分享 URL 可直接開啟目標 task。
 
 本次不強制 Done 前必須存在特定格式連結。等需要查詢「一個討論產生哪些實作」時，再新增正式 handoff 關聯模型。
 
 ## SIM 與 Sweep
 
 - 主工作區 UUID 永遠加入 owner sweep 候選，不依賴 `sim-logs/report.json`。
-- `4902e28` 已有 `ensureCanonicalWorkspaceCandidates()`；實作時在既有呼叫旁加入 `ensureMainWorkspaceCandidate()`，兩者各呼叫一次，不另做 registry。
+- `ensureMainWorkspaceCandidate()` 已在既有 `ensureCanonicalWorkspaceCandidates()` 呼叫旁加入，兩者各呼叫一次，不另做 registry。
 - main／canonical 候選使用 epoch timestamp 只代表「無歷史時間」，不能因此永遠排在新 workspace 後面。排序優先序固定為：前輪 timeout → 主工作區 → canonical workspace → 其他 workspace 依 startedAt 新到舊。
 - `[規則]` task 不列入 owner/team 待辦，也不可被 member session 認領。
 - 主工作區 `[討論]` task 在以下情況喚醒 owner：
   - status 是 Todo；或
-  - 最新留言作者不是 user01。
-- Doing 且最新留言是 user01 時視為等待其他 user，不重複啟動 owner session。
-- 主工作區 owner prompt 改為：回覆討論、Todo→Doing、判斷 target repo、顯示 canonical directory、在正確 workspace 建立目標工作、回寫 URL、Done。
+  - status 是 Review（恢復中斷的交接）；或
+  - Doing 的最新留言作者不是 user01。
+- Doing 且最新留言是 user01 的一般回覆時視為等待其他 user，不重複啟動 owner session；若該留言含 `[HANDOFF-PENDING]` 或完整 task URL，仍喚醒 owner 以恢復中斷的交接。
+- 主工作區 owner prompt 已改為：回覆討論、Todo→Doing、判斷 target repo、顯示 canonical directory、在正確 workspace 建立目標工作、回寫 URL、Done。
 - 其他 workspace 原有 `[討論]` 行為保持不變。
 - 所有 owner/member prompt 都加入主工作區規則摘要：一般 user 不嘗試改狀態，任何實作不得留在主工作區。
 

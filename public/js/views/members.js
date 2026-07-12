@@ -1,7 +1,7 @@
 'use strict';
 
 import { api } from '../api.js';
-import { state, ROLES } from '../state.js';
+import { state, ROLES, hasRole, MAIN_WORKSPACE_ID } from '../state.js';
 import { el, showError, requireWorkspace } from '../utils.js';
 
 /**
@@ -16,9 +16,11 @@ export const MembersView = {
    */
   async render(container) {
     if (!requireWorkspace(container)) return;
+    const renderWorkspaceId = state.workspaceId;
+    let loadGeneration = 0;
 
     container.innerHTML = `
-      <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 1rem;">
+      <div id="invite-panel" class="sketch-box" hidden style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 1rem;">
         <h2 style="margin-top: 0;">邀請新成員</h2>
         <form id="invite-form" style="display: flex; gap: 0.5rem; flex-wrap: wrap; max-width: 600px;">
           <input type="email" id="invite-email" list="email-suggestions" placeholder="成員 Email 帳號" required style="flex-grow: 1;">
@@ -26,8 +28,9 @@ export const MembersView = {
           <select id="invite-role"></select>
           <button type="submit">邀請加入</button>
         </form>
-        <p id="member-error" class="error" style="display: none; margin-top: 1rem;"></p>
       </div>
+
+      <p id="member-error" class="error" style="display: none; margin-bottom: 1rem;"></p>
 
       <h2 class="red-pen-underline" style="margin-bottom: 1.2rem;">成員清單 (Members)</h2>
       <table>
@@ -49,17 +52,30 @@ export const MembersView = {
       for (const r of ROLES) inviteRoleSelect.appendChild(el('option', { value: r }, r));
       inviteRoleSelect.value = 'Member';
     }
+    let canManageMembers = false;
+    let managementControlsBound = false;
+    let searchTimer = null;
+    let searchAbortController = null;
 
     /**
      * Async loader representing member metadata fetching and list item creation.
      * @returns {Promise<void>}
      */
     async function load() {
+      if (state.workspaceId !== renderWorkspaceId) return;
+      const generation = ++loadGeneration;
       const tbody = document.getElementById('member-tbody');
       if (!tbody) return;
       tbody.textContent = '';
       try {
-        const rows = await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members`);
+        const rows = await api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/members`);
+        if (generation !== loadGeneration || state.workspaceId !== renderWorkspaceId) return;
+        const currentMember = rows.find(m => m.email === state.userEmail);
+        const currentRole = currentMember ? currentMember.role : 'Viewer';
+        canManageMembers = hasRole(currentRole, 'Admin') && renderWorkspaceId !== MAIN_WORKSPACE_ID;
+        const invitePanel = document.getElementById('invite-panel');
+        if (invitePanel) invitePanel.hidden = !canManageMembers;
+        if (canManageMembers) bindManagementControls();
         if (rows.length === 0) {
           tbody.innerHTML = '<tr><td colspan="5" class="muted text-center">（尚無成員）</td></tr>';
           return;
@@ -70,80 +86,90 @@ export const MembersView = {
           tr.appendChild(el('td', {}, m.email));
 
           const roleTd = el('td');
-          const select = el('select', { class: 'member-role-select' });
-          for (const r of ROLES) {
-            const opt = el('option', { value: r }, r);
-            if (r === m.role) opt.selected = true;
-            select.appendChild(opt);
-          }
-          select.addEventListener('change', async () => {
-            try {
-              await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members/${m.user_id}`, {
-                method: 'PATCH',
-                body: { role: select.value },
-              });
-              await load();
-            } catch (err) {
-              showError('member-error', err);
-              await load();
+          if (canManageMembers) {
+            const select = el('select', { class: 'member-role-select' });
+            for (const r of ROLES) {
+              const opt = el('option', { value: r }, r);
+              if (r === m.role) opt.selected = true;
+              select.appendChild(opt);
             }
-          });
-          roleTd.appendChild(select);
+            select.addEventListener('change', async () => {
+              try {
+                await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members/${m.user_id}`, {
+                  method: 'PATCH',
+                  body: { role: select.value },
+                });
+                await load();
+              } catch (err) {
+                showError('member-error', err);
+                await load();
+              }
+            });
+            roleTd.appendChild(select);
+          } else {
+            roleTd.appendChild(el('span', { class: 'member-role-text' }, m.role));
+          }
           tr.appendChild(roleTd);
 
           tr.appendChild(el('td', { class: 'muted member-joined-time' }, new Date(m.joined_at).toLocaleString()));
 
           const actionsTd = el('td', { class: 'member-actions-td' });
-          const removeBtn = el('button', { type: 'button', class: 'btn-danger' }, '移除');
-          removeBtn.addEventListener('click', async () => {
-            if (!confirm(`確定要將成員 ${m.email} 移出此工作區嗎？`)) return;
-            try {
-              await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members/${m.user_id}`, {
-                method: 'DELETE',
-              });
-              await load();
-            } catch (err) {
-              showError('member-error', err);
-            }
-          });
-          actionsTd.appendChild(removeBtn);
+          if (canManageMembers) {
+            const removeBtn = el('button', { type: 'button', class: 'btn-danger' }, '移除');
+            removeBtn.addEventListener('click', async () => {
+              if (!confirm(`確定要將成員 ${m.email} 移出此工作區嗎？`)) return;
+              try {
+                await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members/${m.user_id}`, {
+                  method: 'DELETE',
+                });
+                await load();
+              } catch (err) {
+                showError('member-error', err);
+              }
+            });
+            actionsTd.appendChild(removeBtn);
+          }
           tr.appendChild(actionsTd);
 
           tbody.appendChild(tr);
         }
       } catch (err) {
-        showError('member-error', err);
+        if (generation === loadGeneration && state.workspaceId === renderWorkspaceId) {
+          showError('member-error', err);
+        }
       }
     }
 
-    const inviteForm = document.getElementById('invite-form');
-    if (inviteForm) {
+    function bindManagementControls() {
+      if (managementControlsBound) return;
+      const inviteForm = document.getElementById('invite-form');
+      const inviteEmailInput = document.getElementById('invite-email');
+      const suggestionsDatalist = document.getElementById('email-suggestions');
+      if (!inviteForm || !inviteEmailInput || !suggestionsDatalist) return;
+      managementControlsBound = true;
+
       inviteForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const email = document.getElementById('invite-email').value;
+        if (!canManageMembers) return;
+        const email = inviteEmailInput.value;
         const role = inviteRoleSelect.value;
         try {
           await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/members`, {
             method: 'POST',
             body: { email, role },
           });
-          document.getElementById('invite-email').value = '';
+          inviteEmailInput.value = '';
           await load();
         } catch (err) {
           showError('member-error', err);
         }
       });
-    }
-
-    const inviteEmailInput = document.getElementById('invite-email');
-    const suggestionsDatalist = document.getElementById('email-suggestions');
-    let searchTimer = null;
-    let searchAbortController = null;
-    
-    if (inviteEmailInput && suggestionsDatalist) {
       inviteEmailInput.addEventListener('input', () => {
+        if (!canManageMembers || state.workspaceId !== renderWorkspaceId) return;
+        const searchGeneration = loadGeneration;
         clearTimeout(searchTimer);
         searchTimer = setTimeout(async () => {
+          if (!canManageMembers || state.workspaceId !== renderWorkspaceId || searchGeneration !== loadGeneration) return;
           const val = inviteEmailInput.value.trim();
           if (val.length < 1) {
             suggestionsDatalist.innerHTML = '';
@@ -157,6 +183,7 @@ export const MembersView = {
             const list = await api(`/api/users/search?q=${encodeURIComponent(val)}`, {
               signal: searchAbortController.signal
             });
+            if (!canManageMembers || state.workspaceId !== renderWorkspaceId || searchGeneration !== loadGeneration) return;
             suggestionsDatalist.innerHTML = '';
             for (const item of list) {
               suggestionsDatalist.appendChild(el('option', { value: item.email }, `${item.name} (${item.email})`));

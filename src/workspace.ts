@@ -4,6 +4,7 @@ import { db } from './db';
 import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 import { seedOwner, countActiveMembers } from './member';
+import { MAIN_WORKSPACE_ID, MAIN_WORKSPACE_NAME } from './mainWorkspacePolicy';
 
 export type WorkspaceStatus = 'active' | 'archived' | 'deleted';
 
@@ -58,6 +59,9 @@ export function createWorkspace(actorId: string, name: unknown, database = db): 
 
 export function renameWorkspace(actorId: string, id: string, name: unknown, database = db): void {
   const clean = validateName(name);
+  if (id === MAIN_WORKSPACE_ID && clean !== MAIN_WORKSPACE_NAME) {
+    throw new CommandError('主工作區名稱固定為主協作工作區');
+  }
   const { state, version } = load(id, database);
   if (!state.exists) throw new CommandError('workspace 不存在');
   if (state.status !== 'active') throw new CommandError(`workspace 目前為 ${state.status}，不可改名`);

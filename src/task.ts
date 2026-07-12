@@ -4,6 +4,9 @@ import { db } from './db';
 import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 import { getWorkspaceStatus } from './workspace';
+import { getMemberRole } from './member';
+import { getUserIdByEmail } from './auth';
+import { MAIN_DISCUSSION_PREFIX, MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 
 // ── 值域 ───────────────────────────────────────────────────────────
 const ACTIVE_STATUSES = ['Todo', 'Doing', 'Review', 'Done'] as const;
@@ -70,6 +73,7 @@ function reduce(state: TaskState, e: StoredEvent): TaskState {
     case 'task.created':
       return { exists: true, status: 'Todo', deleted: false };
     case 'task.status_changed':
+    case 'task.discussion_started':
       return { ...state, status: (e.payload as { status: TaskStatus }).status };
     case 'task.archived':
       return { ...state, status: 'Archived' };
@@ -111,8 +115,10 @@ function loadEditableTask(taskId: string, database: DatabaseSync): { state: Task
 export interface CreateTaskInput {
   title?: unknown;
   description?: unknown;
+  status?: unknown;
   priority?: unknown;
   assignee?: unknown;
+  assigneeId?: unknown;
   dueAt?: unknown;
   projectId?: unknown;
 }
@@ -127,12 +133,34 @@ function requireActiveWorkspace(workspaceId: string, database: DatabaseSync): vo
 
 export function createTask(actorId: string, workspaceId: string, input: CreateTaskInput, database = db): string {
   requireActiveWorkspace(workspaceId, database);
-  const title = validateTitle(input.title);
+  const isCommenter = getMemberRole(workspaceId, actorId, database) === 'Commenter';
+  if (
+    isCommenter
+    && Object.keys(input).some((field) => field !== 'title' && field !== 'description')
+  ) {
+    throw new CommandError('Commenter 建立 task 只能提交 title 與 description');
+  }
+
+  let title = validateTitle(input.title);
   const description = validateDescription(input.description);
-  const priority = input.priority == null ? 'Medium' : validatePriority(input.priority);
-  const assigneeId = validateAssignee(input.assignee);
-  const dueAt = validateDueAt(input.dueAt);
-  const projectId = input.projectId == null ? null : String(input.projectId); // Project 是 Phase 6，先允許 null
+  const isMainDiscussion = workspaceId === MAIN_WORKSPACE_ID && title !== MAIN_POLICY_TITLE;
+
+  if (workspaceId === MAIN_WORKSPACE_ID && title === MAIN_POLICY_TITLE) {
+    if (actorId !== getUserIdByEmail(MAIN_OWNER_EMAIL, database)) {
+      throw new CommandError('只有 user01 可以建立主工作區規則 task');
+    }
+    const existing = database
+      .prepare('SELECT 1 FROM tasks_read_model WHERE workspace_id = ? AND title = ? AND status <> ? LIMIT 1')
+      .get(MAIN_WORKSPACE_ID, MAIN_POLICY_TITLE, 'Archived');
+    if (existing) throw new CommandError('主工作區規則 task 已存在');
+  }
+
+  if (isMainDiscussion) title = validateTitle(title.startsWith(MAIN_DISCUSSION_PREFIX) ? title : `${MAIN_DISCUSSION_PREFIX} ${title}`);
+  const useDefaults = isMainDiscussion || isCommenter;
+  const priority = useDefaults ? 'Medium' : input.priority == null ? 'Medium' : validatePriority(input.priority);
+  const assigneeId = useDefaults ? null : validateAssignee(input.assignee);
+  const dueAt = useDefaults ? null : validateDueAt(input.dueAt);
+  const projectId = useDefaults ? null : input.projectId == null ? null : String(input.projectId); // Project 是 Phase 6，先允許 null
   const id = randomUUID();
   appendEvent(
     'Task',
@@ -147,8 +175,14 @@ export function createTask(actorId: string, workspaceId: string, input: CreateTa
 }
 
 export function changeTaskTitle(actorId: string, taskId: string, title: unknown, database = db): void {
-  const clean = validateTitle(title);
+  let clean = validateTitle(title);
   const { version } = loadEditableTask(taskId, database);
+  const task = getTask(taskId, database);
+  if (task?.workspace_id === MAIN_WORKSPACE_ID) {
+    if (task.title === MAIN_POLICY_TITLE) throw new CommandError('主工作區規則 task 標題固定');
+    if (clean === MAIN_POLICY_TITLE) throw new CommandError('一般 task 不可改為主工作區規則 task');
+    clean = validateTitle(clean.startsWith(MAIN_DISCUSSION_PREFIX) ? clean : `${MAIN_DISCUSSION_PREFIX} ${clean}`);
+  }
   appendEvent('Task', taskId, version, 'task.title_changed', { title: clean }, meta(actorId), database);
 }
 
@@ -163,7 +197,47 @@ export function changeTaskStatus(actorId: string, taskId: string, status: unknow
   const target = validateTargetStatus(status);
   const allowed = TRANSITIONS[state.status as ActiveStatus];
   if (!allowed.includes(target)) throw new CommandError(`不允許的狀態轉換：${state.status} → ${target}`);
+
+  if (getTaskWorkspaceId(taskId, database) === MAIN_WORKSPACE_ID) {
+    const ownerId = getUserIdByEmail(MAIN_OWNER_EMAIL, database);
+    if (actorId !== ownerId) throw new CommandError('只有 user01 可以改變主工作區 task 狀態');
+    if (state.status === 'Todo' && target === 'Doing') {
+      appendEvent('Task', taskId, version, 'task.discussion_started', { status: target, assigneeId: ownerId }, meta(actorId), database);
+      return;
+    }
+  }
   appendEvent('Task', taskId, version, 'task.status_changed', { status: target }, meta(actorId), database);
+}
+
+export function normalizeMainDiscussion(actorId: string, taskId: string, database = db): void {
+  const task = getTask(taskId, database);
+  if (!task || task.workspace_id !== MAIN_WORKSPACE_ID || task.title === MAIN_POLICY_TITLE || task.status === 'Archived') {
+    throw new CommandError('不是可正規化的主工作區 task');
+  }
+  if (actorId !== getUserIdByEmail(MAIN_OWNER_EMAIL, database)) {
+    throw new CommandError('只有 user01 可以正規化主工作區 task');
+  }
+
+  const title = task.title.startsWith(MAIN_DISCUSSION_PREFIX) ? task.title : `${MAIN_DISCUSSION_PREFIX} ${task.title}`;
+  const assigneeId = task.status === 'Todo' ? null : task.assignee_id;
+  if (
+    task.title === title
+    && task.priority === 'Medium'
+    && task.assignee_id === assigneeId
+    && task.project_id === null
+    && task.due_at === null
+  ) return;
+
+  const { version } = loadEditableTask(taskId, database);
+  appendEvent(
+    'Task',
+    taskId,
+    version,
+    'task.main_discussion_normalized',
+    { title, priority: 'Medium', assigneeId, projectId: null, dueAt: null },
+    meta(actorId),
+    database,
+  );
 }
 
 export function changeTaskPriority(actorId: string, taskId: string, priority: unknown, database = db): void {
@@ -186,6 +260,12 @@ export function changeTaskDueDate(actorId: string, taskId: string, dueAt: unknow
 
 export function archiveTask(actorId: string, taskId: string, database = db): void {
   const { version } = loadEditableTask(taskId, database); // 已 archived / deleted 都會被擋
+  if (
+    getTaskWorkspaceId(taskId, database) === MAIN_WORKSPACE_ID
+    && actorId !== getUserIdByEmail(MAIN_OWNER_EMAIL, database)
+  ) {
+    throw new CommandError('只有 user01 可以改變主工作區 task 狀態');
+  }
   appendEvent('Task', taskId, version, 'task.archived', {}, meta(actorId), database);
 }
 
@@ -241,9 +321,31 @@ export function registerTaskProjections(): void {
   registerProjection('task.title_changed', (e, database) => setCol('title')(e, database, (e.payload as { title: string }).title));
   registerProjection('task.description_changed', (e, database) => setCol('description')(e, database, (e.payload as { description: string }).description));
   registerProjection('task.status_changed', (e, database) => setCol('status')(e, database, (e.payload as { status: string }).status));
+  registerProjection('task.discussion_started', (e, database) => {
+    const p = e.payload as { status: string; assigneeId: string };
+    database
+      .prepare('UPDATE tasks_read_model SET status = ?, assignee_id = ?, version = ?, updated_at = ? WHERE task_id = ?')
+      .run(p.status, p.assigneeId, e.aggregate_version, e.occurred_at, e.aggregate_id);
+  });
   registerProjection('task.priority_changed', (e, database) => setCol('priority')(e, database, (e.payload as { priority: string }).priority));
   registerProjection('task.assignee_changed', (e, database) => setCol('assignee_id')(e, database, (e.payload as { assigneeId: string | null }).assigneeId));
   registerProjection('task.due_date_changed', (e, database) => setCol('due_at')(e, database, (e.payload as { dueAt: string | null }).dueAt));
+  registerProjection('task.main_discussion_normalized', (e, database) => {
+    const p = e.payload as {
+      title: string;
+      priority: Priority;
+      assigneeId: string | null;
+      projectId: string | null;
+      dueAt: string | null;
+    };
+    database
+      .prepare(
+        `UPDATE tasks_read_model
+            SET title = ?, priority = ?, assignee_id = ?, project_id = ?, due_at = ?, version = ?, updated_at = ?
+          WHERE task_id = ?`,
+      )
+      .run(p.title, p.priority, p.assigneeId, p.projectId, p.dueAt, e.aggregate_version, e.occurred_at, e.aggregate_id);
+  });
   registerProjection('task.archived', (e, database) => setCol('status')(e, database, 'Archived'));
   registerProjection('task.deleted', (e, database) => {
     database.prepare('DELETE FROM tasks_read_model WHERE task_id = ?').run(e.aggregate_id);
