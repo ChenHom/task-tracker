@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { db } from './db';
 import { CommandError } from './eventStore';
 import { getTaskWorkspaceId } from './task';
+import { emitMentionNotifications, deleteNotificationsByComment } from './notification';
 
 // Comment 不走 Event Sourcing（DESIGN 指定）：傳統 CRUD 直接讀寫 comments。
 // 權限分兩層，都在 server 層做：workspace 角色（requirePermission）+ ownership（只能改/刪自己的留言）。
@@ -28,6 +29,12 @@ export function createComment(taskId: string, userId: string, content: unknown, 
   const id = randomUUID();
   const now = new Date().toISOString();
   database.prepare('INSERT INTO comments (comment_id, task_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)').run(id, taskId, userId, clean, now);
+  try {
+    emitMentionNotifications(userId, taskId, id, clean, database);
+  } catch (e) {
+    database.prepare('DELETE FROM comments WHERE comment_id = ?').run(id);
+    throw e;
+  }
   return id;
 }
 
@@ -46,6 +53,7 @@ export function updateComment(commentId: string, content: unknown, database = db
 export function deleteComment(commentId: string, database = db): void {
   const info = database.prepare('DELETE FROM comments WHERE comment_id = ?').run(commentId);
   if (info.changes === 0) throw new CommandError('comment 不存在');
+  deleteNotificationsByComment(commentId, database);
 }
 
 // PATCH / DELETE 用：一次拿到 workspace（權限）與 author（ownership）。

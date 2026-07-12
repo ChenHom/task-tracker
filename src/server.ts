@@ -39,15 +39,16 @@ import {
   applyTaskPatch,
   archiveTask,
   deleteTask,
+  moveTask,
   listTasks,
   getTask,
   getTaskWorkspaceId,
-  moveTask,
   registerTaskProjections,
   type CreateTaskInput,
 } from './task';
 import { createProject, listProjects, renameProject, deleteProject, getProjectWorkspaceId } from './project';
 import { createComment, listComments, updateComment, deleteComment, getCommentContext } from './comment';
+import { registerNotificationProjections, listNotifications, markNotificationRead } from './notification';
 import { createAttachment, listAttachments, readAttachment, deleteAttachment, getAttachmentContext, attachmentMaxBytes } from './attachment';
 import { searchWorkspace } from './search';
 import { getAggregateWorkspace, getAuditTrail } from './audit';
@@ -518,6 +519,27 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  if (req.url === '/api/notifications' && req.method === 'GET') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(listNotifications(userId)));
+    return;
+  }
+
+  const notificationReadMatch = req.url?.match(/^\/api\/notifications\/([^/?]+)\/read$/);
+  if (notificationReadMatch && req.method === 'POST') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    try {
+      markNotificationRead(userId, notificationReadMatch[1]);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
   // ── Project API（傳統 CRUD，不走 ES）───────────────────────────
   const wsProjectsMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/projects$/);
   if (wsProjectsMatch) {
@@ -797,6 +819,7 @@ if (require.main === module) {
   registerWorkspaceProjections();
   registerMemberProjections();
   registerTaskProjections();
+  registerNotificationProjections();
   cleanupExpiredSessions();
   process.on('SIGHUP', () => {
     cleanupExpiredSessions();
