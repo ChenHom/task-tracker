@@ -2,7 +2,7 @@
 
 **日期：** 2026-07-12
 
-**狀態：** 實作完成，待部署驗收
+**狀態：** 已實作並完成部署驗收
 
 ## 範圍
 
@@ -38,3 +38,5 @@
 - Domain 與 HTTP 層已驗證 Commenter 只能 PATCH 自建 task 的 `{ description }`，其他欄位與他人 task 維持拒絕。
 - Frontend fixture 已驗證自建 task 顯示唯讀標題、description textarea 與儲存按鈕，儲存時只發送 `{ description }`；他人 task 無儲存控制。
 - Focused frontend test、`npm test`、`npm run build` 與 `git diff --check` 已在本分支通過。
+- `master` fast-forward 至 `4794674` 後重新 build、restart `task-tracker.service`，`/api/health` 回 HTTP 200。
+- 正式 HTTP smoke：Commenter 自建描述 PATCH 200、標題／狀態 403、他人描述 400；非主工作區既有 Member 的標題／描述 PATCH 均維持 200。

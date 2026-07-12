@@ -79,6 +79,7 @@ If `/tracker/` returns `502`, first check whether `task-tracker.service` is acti
 - `task-tracker.service` restart 後 `/api/health` 回 HTTP 200 與 `{"status":"ok","db":true}`。
 - DB readback：workspace active、1 Owner + 29 Commenter、唯一 `[規則] 主工作區協作與交接`，兩筆 legacy task 已正規化為 `[討論]`。
 - HTTP smoke：discussion `1086ccfd-96f7-485c-b8da-335bb4058269`；Commenter 建立／留言成功、狀態 PATCH 為 403；user01 以單一 `task.discussion_started` 指派自己，建立 canonical task `af06f594-682c-4437-aea5-d71eb354471c`、回寫完整 URL，並完成 Doing → Review → Done。
+- Commenter description smoke：自建 task `15b9852a-9190-4868-b9a2-6023ad744c0a` 的描述 PATCH 為 200，標題／狀態為 403，user03 修改其描述為 400；user02 在非主工作區 `79618d0f-2401-41e5-a858-c4d10dedd338` 仍為 Member，task `a48e1048-feab-4214-b1ac-f195fdaf6f9c` 的標題與描述 PATCH 均為 200。
 - Live AI sweep 與 SIM timers 未啟用，仍需明確人工授權。
 
 ## Sim harness
