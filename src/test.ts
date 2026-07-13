@@ -7,6 +7,7 @@ import './eventStore.test';
 import './workspace.test';
 import './member.test';
 import './mainWorkspace.test';
+import './mainDiscussion.test';
 import './task.test';
 import './project.test';
 import './comment.test';
