@@ -1,6 +1,6 @@
-# 開發任務 v2
+# 開發任務（目前狀態）
 
-> 對應 [DESIGN_V2.md](DESIGN_V2.md)，接續 [TASKS.md](TASKS.md) 已完成的 Phase 0-7。
+> 對應 [design.md](../../design.md)，接續 [history.md](history.md) 已完成的 Phase 0-7。
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
 > 最後巡檢：2026-07-10；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 13 是目前交接。
 
@@ -12,7 +12,7 @@
 - [x] 重複 email 的 SQLite UNIQUE 例外包裝成乾淨的 `CommandError`
 - [x] Seeder 腳本：產生 ≥30 位使用者，固定測試密碼、可預期 email（`user01@test.local` ~ `user30@test.local`）
 - [x] Seeder idempotent（`createUser` 對已存在 email 丟 `CommandError`，seeder catch 掉即跳過）
-- [x] 自我驗證：seeder 跑兩次，`users` 數量不變（[seed.test.ts](src/seed.test.ts) + 實際對 dev.db 跑兩次確認 30 筆）
+- [x] 自我驗證：seeder 跑兩次，`users` 數量不變（[seed.test.ts](../../src/seed.test.ts) + 實際對 dev.db 跑兩次確認 30 筆）
 
 > 實測：seed 出來的帳號可透過 `POST /api/auth/login` 真的登入（`npm run seed` 產生，密碼固定 `test1234`）。
 
@@ -29,11 +29,11 @@
 
 > 實測：以 curl 打 `/api/auth/forgot-password`，存在與不存在的 email 回應一字不差；只有存在時 console 印出重設連結。
 > 用印出的 token 打 `/api/auth/reset-password` 成功改密碼，新密碼可登入、舊密碼失效，同一 token 重打第二次回 400；
-> 重設前建立的 session 在重設後也全部失效（`getSessionUser` 回 null）。單元測試涵蓋 token hash 化、過期、單次使用等情境（[auth.test.ts](src/auth.test.ts)）。
+> 重設前建立的 session 在重設後也全部失效（`getSessionUser` 回 null）。單元測試涵蓋 token hash 化、過期、單次使用等情境（[auth.test.ts](../../src/auth.test.ts)）。
 
 ---
 
-## Phase 10 — Member 邀請 API 　`RBAC` ✅
+## Phase 10 — Member 邀請 API  `RBAC` ✅
 
 - [x] `POST /api/workspaces/:id/members`（邀請，需 Admin+；email 查 `users` 找 user id，找不到回錯誤）
 - [x] `GET /api/workspaces/:id/members`（列出成員+角色）
@@ -51,8 +51,8 @@
 > Owner 在還有其他成員時嘗試自我移除回 400，移除到只剩自己一人後 `archiveWorkspace`（直接呼叫函式驗證，此 phase 未加 HTTP 路由）才成功；
 > 邀請不存在的 email 回 400「找不到該 email 對應的使用者」，不會靜默成功；`POST .../members/join` 與 `PATCH/DELETE .../members/:userId`
 > 這組容易撞在一起的路由分開驗證過，join 不會被當成 `:userId` 吃掉。單元測試涵蓋權限升級（Admin 任命/受任 Owner）、
-> Admin 動既有 Owner 被擋、Owner 自我降級/移除需唯一成員、`countActiveMembers` 本身（[member.test.ts](src/member.test.ts)），
-> 以及 `archiveWorkspace`/`deleteWorkspace` 在非唯一成員時被拒絕（[workspace.test.ts](src/workspace.test.ts)）。
+> Admin 動既有 Owner 被擋、Owner 自我降級/移除需唯一成員、`countActiveMembers` 本身（[member.test.ts](../../src/member.test.ts)），
+> 以及 `archiveWorkspace`/`deleteWorkspace` 在非唯一成員時被拒絕（[workspace.test.ts](../../src/workspace.test.ts)）。
 
 ---
 
@@ -84,10 +84,10 @@
 
 ---
 
-## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex 混合車隊）
+## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex + Antigravity 混合車隊）
 
-- [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-05、join）→ spawn headless 子行程
-- [x] 混合車隊：Owner 開場=Claude Sonnet、中場/收尾/repair=Claude Opus；user02=Claude Haiku；user03=Codex gpt-5.4；user04/05=Codex gpt-5.4-mini
+- [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-06、join）→ spawn headless 子行程
+- [x] 混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna；user06=Antigravity CLI Gemini 3.5 Flash (High)，quota 滿時改用 Claude Sonnet 4.6 (Thinking)
 - [x] 主題 Dogfooding：owner prompt 內嵌本專案真實技術債清單（ponytail: 註記）出題
 - [x] 全員 QA 規則：可重現的系統問題建 `[BUG]` task（重現步驟/預期 vs 實際/原始回應），owner 收尾 triage
 - [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
@@ -97,7 +97,7 @@
 - [x] CI 結果改為 `PASS` / `FAIL` / `SKIP`；缺 tooling 或跨多個子專案不再製造假綠燈，SKIP 必須由 Owner 人工驗證
 - [x] scenario 啟用前驗證 Git top-level/master，commit 前再驗 worktree/branch；legacy `technical-debt` report 明確映射，未知 scenario fail closed
 - [x] `sim-logs/.run.lock` 序列化 manual/timer 流程並回收 dead-PID lock；平行 member 全部 settle 後才解鎖
-- [x] Claude quota probe 只影響 owner 預算；`team` 不做全域 probe，`both` 在 Claude 不可用時仍保留 Codex member 預算
+- [x] Owner runner probe 只影響 owner 預算；`team` 不做全域 probe，member 各自依 runner 執行。user06 僅在 agy 回報 quota exhaustion 且未逾時時切換 fallback；agy 缺少、未登入、一般錯誤或逾時都停工並保留 diff
 - [x] `sim/tsconfig.json` 納入 `npm test`，讓 sim harness 也受 strict TypeScript 檢查
 - [x] `docs/operations.md` 記錄手動模式、scenario、systemd owner/team timers、logs、lock 與權限邊界
 - [x] 跑完整端到端 `--fast` self-directed sprint（`sim-run-1783392991269`）
@@ -117,7 +117,7 @@
 
 ### 跨 workspace 搬移 task（原 `451c2509`，已轉移至 `11983af5` @ workspace `d9da9945`，High）
 
-> `451c2509` 卡在 workspace `11db3331`（scenario=brain，repoRoot 不合）32 小時後人工轉移；本功能規格未變，下列 checklist 仍待實作。詳見 [2026-07-10-crossrepo-workspace-routing.md](superpowers/plans/2026-07-10-crossrepo-workspace-routing.md)。
+> `451c2509` 卡在 workspace `11db3331`（scenario=brain，repoRoot 不合）32 小時後人工轉移；本功能規格未變，下列 checklist 仍待實作。詳見 [2026-07-10-crossrepo-workspace-routing.md](../superpowers/plans/2026-07-10-crossrepo-workspace-routing.md)。
 
 - [ ] `moveTask(actorId, taskId, targetWorkspaceId)` append `task.moved`，payload 含 source/target workspace
 - [ ] projection 同步更新 `workspace_id`，並清掉舊 workspace 所屬的 `project_id`
@@ -176,17 +176,42 @@
 ## Phase 15 — Commenter 與主協作工作區 ✅
 
 - [x] 新增 `Commenter` 角色與 RBAC／API 權限矩陣；可建立 Todo 討論及留言，但不可修改 task、project 或附件
-- [x] 固定主協作工作區名稱、user01 Owner、其他 user Commenter，並由 startup／login 同步修復
+- [x] 固定主協作工作區名稱、user01 Owner、user02-06 與 user09 Commenter；其他 user 不加入，並由 startup／login 同步修復
 - [x] 主工作區討論預設、legacy task 正規化與 `task.discussion_started` 單一事件已由 domain 測試覆蓋
 - [x] 前端依角色收斂控制，並安全自動連結完整 HTTP(S) URL、保留網址尾端中英文標點
 - [x] SIM sweep 固定發現主工作區、排除 policy task、依 target repo 路由，且 main 不占 canonical repo slot
 - [x] feature branch 已通過 `npm test`、`npm run build`、`git diff --check` 與 focused `sim/run.test.ts`
 - [x] 合併至 `master`、build、restart 與正式服務部署驗證
-- [x] DB readback：固定名稱、30 位使用者角色、單一 policy task、legacy task title
+- [x] 主工作區固定成員政策：1 Owner + 6 Commenter（user02-06、user09）；單一 policy task、legacy task title
 - [x] 完整 Commenter／Owner HTTP smoke 與交接流程驗證
 - [x] Commenter 可在任何 workspace 修改自己建立 task 的 description；標題、狀態、屬性、附件與他人 task 仍不可修改
 - [ ] 經明確人工授權執行 live `npm run sim -- --sweep owner`
 
-> 2026-07-12 rollout：`master` merge `efbeb4b` 後 `npm test`、`npm run build`、health check 全數通過。DB 為 1 Owner + 29 Commenter、唯一規則 task，兩筆 legacy task 已加上 `[討論]`。HTTP smoke 驗證 Commenter 可建討論／留言但改狀態為 403，user01 以單一 `task.discussion_started` 完成 Doing 指派，並建立 canonical task、回寫完整 URL、推進 Review → Done。Live AI sweep 未執行。
+> 2026-07-12 rollout：`master` merge `efbeb4b` 後 `npm test`、`npm run build`、health check 全數通過。DB 為 1 Owner + 29 Commenter、唯一規則 task，兩筆 legacy task 已加上 `[討論]`。HTTP smoke 驗證 Commenter 可建討論／留言但改狀態為 403，user01 以單一 `task.discussion_started` 完成 Doing 指派，並建立 canonical task `af06f594-682c-4437-aea5-d71eb354471c`、回寫完整 URL、推進 Review → Done。Live AI sweep 未執行。
 
 > 2026-07-12 description rollout：`master` fast-forward 至 `4794674` 後完整測試、build 與 health check 通過。Commenter 自建 task 描述 PATCH 為 200，標題／狀態為 403，他人描述為 400；user02 在非主工作區仍是 Member，標題與描述 PATCH 均為 200。
+
+> 2026-07-13 主工作區同步收斂為白名單：user01-06 與 user09；startup／login sync 會移除既有但不在白名單內的主工作區成員。
+
+---
+
+## Phase 16 — AI quota 獨立服務整合
+
+- [x] 將 Codex/Claude credentials、usage API、retry 與 cache 搬到 `/home/hom/services/ai-quota`
+- [x] `src/quota.ts` 改為唯讀 `~/.local/state/ai-quota/quota.json`，不再發送外部請求
+- [x] `/api/quota` 保留摘要欄位並新增五小時、七天 `windows`
+- [x] 摘要優先五小時；缺少五小時時 fallback 七天
+- [x] Footer hover/focus 顯示雙視窗額度與台灣重置時間
+- [x] 缺少、損壞或 stale snapshot 不影響 auth/API server，其餘 provider 仍可顯示
+- [x] 安裝/啟用 `ai-quota.timer` 並完成正式 task-tracker HTTP/UI smoke
+
+> 2026-07-13 正式驗收：`ai-quota.timer` active/waiting、Codex/Claude status 均為 `ok`；task-tracker 完整測試與 build 通過，正式 3000 服務健康檢查、登入後 `/api/quota` 與 Playwright footer hover 均通過。Codex 顯示 7 天 fallback，Claude 顯示 5 小時摘要，tooltip 的台灣時間與雙視窗資料符合 API。
+
+## Phase 17 — AGY (Antigravity) provider 整合
+
+- [x] ai-quota 服務新增 agy provider（ai-quota repo `54655a5`：讀 agy CLI token 檔、必要時 refresh access token、`fetchAvailableModels` 取全模型額度、`windows.five_hour` 放 settings.json 目前模型）
+- [x] `src/quota.ts` 讀取 snapshot 的 `providers.agy`，移除 `agy-cli-no-local-quota-source` hardcode；快照缺 agy 時 fallback `ai-quota-agy-missing`（舊快照相容）
+- [x] `src/quota.test.ts` 新增 agy 摘要/windows、stale、缺席 fallback 案例；`docs/api.md` agy 範例更新
+- [x] 前端零改動（footer 已有 AGY 標籤，`seven_day: null` 自然顯示「尚無資料」）
+
+> 2026-07-13 正式驗收：commit `71eb56d` 合入 master，`task-tracker.service` 重啟後 `/api/health` 200；登入 `/api/quota` 回三 provider，agy `remaining=100%`、source 帶 `#model=gemini-3-flash-agent` 註記；Playwright 驗證 footer 顯示 `AGY 5h 100%`、hover tooltip 兩行與台北重置時間正確。緊急停用走 ai-quota unit 檔的 `AI_QUOTA_AGY_DISABLED=1` kill switch。

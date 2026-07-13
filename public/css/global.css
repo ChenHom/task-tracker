@@ -60,6 +60,7 @@ body {
   margin: 0;
   padding: 0;
   line-height: 1.5;
+  overflow-x: hidden;
 }
 
 /* layout structure */
@@ -292,7 +293,7 @@ tr:last-child td {
 @media (max-width: 1024px) {
   #layout-container {
     flex-direction: column;
-    padding: 0 clamp(0px, 2vw, 1rem);
+    padding: 0 clamp(0.8rem, 2vw, 1.5rem);
     margin: 0.5rem auto;
   }
 }
@@ -367,7 +368,7 @@ tr:last-child td {
   /* Adjust layout to not reserve sidebar space */
   #layout-container {
     flex-direction: column;
-    padding: 0 clamp(0px, 2vw, 1rem);
+    padding: 0 clamp(0.8rem, 2vw, 1.2rem);
     margin: 0.5rem auto;
     /* Leave space for toggle button */
     padding-top: 0.2rem;
@@ -434,4 +435,74 @@ tr:last-child td {
   box-shadow: none;
   transform: none;
   cursor: default;
+}
+
+/* Quota Footer */
+.quota-footer {
+  display: flex;
+  justify-content: flex-start;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 1rem 0.5rem 0.5rem;
+  font-size: 0.70rem;
+  color: #9ca3af;
+  white-space: nowrap;
+}
+
+.quota-label { font-weight: 500; }
+.quota-value {
+  margin-left: 0.2rem;
+  font-weight: 400;
+}
+
+.quota-item {
+  position: relative;
+  outline: none;
+}
+
+.quota-item.stale .quota-value::after {
+  content: '*';
+}
+
+.quota-item[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.45rem);
+  z-index: 50;
+  display: none;
+  min-width: 12rem;
+  padding: 0.55rem 0.7rem;
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 3px 3px 0 var(--pencil-color);
+  color: var(--pencil-color);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  text-align: left;
+  white-space: pre-line;
+  font-family: var(--font-cursive);
+}
+
+.quota-item[data-tooltip]:hover::after,
+.quota-item[data-tooltip]:focus::after {
+  display: block;
+}
+
+.quota-item.unavailable .quota-value {
+  font-size: 0.55rem;
+  color: #d1d5db;
+}
+
+.quota-sep { color: #d1d5db; }
+
+@media (max-width: 768px) {
+  .quota-footer {
+    justify-content: flex-start;
+    font-size: 0.60rem;
+  }
+  .quota-item.unavailable .quota-value {
+    font-size: 0.50rem;
+  }
 }

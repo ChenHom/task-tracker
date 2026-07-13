@@ -39,21 +39,23 @@ import {
   applyTaskPatch,
   archiveTask,
   deleteTask,
+  moveTask,
   listTasks,
   getTask,
   getTaskWorkspaceId,
-  moveTask,
   registerTaskProjections,
   type CreateTaskInput,
 } from './task';
 import { createProject, listProjects, renameProject, deleteProject, getProjectWorkspaceId } from './project';
 import { createComment, listComments, updateComment, deleteComment, getCommentContext } from './comment';
+import { registerNotificationProjections, listNotifications, markNotificationRead } from './notification';
 import { createAttachment, listAttachments, readAttachment, deleteAttachment, getAttachmentContext, attachmentMaxBytes } from './attachment';
 import { searchWorkspace } from './search';
 import { getAggregateWorkspace, getAuditTrail } from './audit';
 import { createRateLimiter } from './rateLimit';
 import { clientIp } from './clientIp';
 import { syncMainWorkspace, syncMainWorkspaceUser } from './mainWorkspace';
+import { getQuotaSnapshot } from './quota';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
@@ -229,7 +231,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
         throw new CommandError('token 與 password 為必填');
       }
       const ok = resetPassword(body.token, body.password);
-      if (!ok) throw new CommandError('重設連結無效或已過期');
+      if (!ok) throw new CommandError('重設連結無效或過期');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
@@ -248,6 +250,19 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const emails = searchUserEmails(q);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(emails));
+    return;
+  }
+
+  if (req.url === '/api/quota' && req.method === 'GET') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    try {
+      const snapshot = await getQuotaSnapshot();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(snapshot.providers));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
     return;
   }
 
@@ -302,6 +317,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const userId = requirePermission(req, res, workspaceId, 'Admin');
     if (!userId) return;
     try {
+      const userRow = db.prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined;
+      const userEmail = userRow?.email.trim().toLowerCase();
+      if (userEmail !== 'user01@test.local' && userEmail !== 'user09@test.local') {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '權限不足：只有特定系統管理員 (user01, user09) 能夠封存工作區' }));
+        return;
+      }
       archiveWorkspace(userId, workspaceId);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
@@ -518,6 +540,27 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  if (req.url === '/api/notifications' && req.method === 'GET') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(listNotifications(userId)));
+    return;
+  }
+
+  const notificationReadMatch = req.url?.match(/^\/api\/notifications\/([^/?]+)\/read$/);
+  if (notificationReadMatch && req.method === 'POST') {
+    const userId = requireAuth(req, res);
+    if (!userId) return;
+    try {
+      markNotificationRead(userId, notificationReadMatch[1]);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
   // ── Project API（傳統 CRUD，不走 ES）───────────────────────────
   const wsProjectsMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/projects$/);
   if (wsProjectsMatch) {
@@ -797,6 +840,7 @@ if (require.main === module) {
   registerWorkspaceProjections();
   registerMemberProjections();
   registerTaskProjections();
+  registerNotificationProjections();
   cleanupExpiredSessions();
   process.on('SIGHUP', () => {
     cleanupExpiredSessions();

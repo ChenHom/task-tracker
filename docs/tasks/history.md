@@ -1,7 +1,7 @@
-# 開發任務
+# 開發任務（歷史基線）
 
-> 對應 [DESIGN.md](DESIGN.md)。順序由簡到繁，先把 Event Sourcing 那條線跑通再往上疊。
-> 每個 Phase 標注它練到的主題：ES / CQRS / RBAC / OWASP / 狀態機 / 審計。
+> 對應 [design.md](../../design.md)；保留 Phase 0-7 的原始 build order 與基礎 milestone。
+> 目前 shipped state 與後續 backlog 請改看 [current.md](current.md)。
 
 ---
 
@@ -14,7 +14,7 @@
 
 ---
 
-## Phase 1 — Auth 　`OWASP`
+## Phase 1 — Auth  `OWASP`
 
 先做，其他模組都要靠登入態。
 
@@ -27,11 +27,11 @@
 
 ---
 
-## Phase 2 — Event Sourcing 骨架 　`ES` `CQRS`
+## Phase 2 — Event Sourcing 骨架  `ES` `CQRS`
 
 **最重要**。先用最小 aggregate 把 `append → project → read model` 這條線跑通一次，邏輯先不管對不對。
 
-- [x] `event_store` table（照 DESIGN.md 的欄位）
+- [x] `event_store` table（照 [design.md](../../design.md) 的欄位）
 - [x] `appendEvent(aggregateType, aggregateId, expectedVersion, eventType, payload, metadata)`
   - [x] 樂觀鎖：`expectedVersion` 對不上就拒絕（並發衝突偵測，這是 ES 的核心練習點）
 - [x] `loadEvents(aggregateId)` → 重建 aggregate 現狀
@@ -40,7 +40,7 @@
 
 ---
 
-## Phase 3 — Workspace aggregate 　`ES` `狀態機`
+## Phase 3 — Workspace aggregate  `ES` `狀態機`
 
 事件最少（4 個），拿來驗證 ES 骨架。
 
@@ -51,25 +51,25 @@
 
 ---
 
-## Phase 4 — Member + 權限 　`RBAC`
+## Phase 4 — Member + 權限  `RBAC`
 
 - [x] `member.invited / joined / role_changed / removed`
 - [x] `workspace_members_read_model` projection（權限檢查全靠這張）
 - [x] `requirePermission(workspaceId, minRole)` middleware — 查 members read model
 - [x] 角色階層：Owner > Admin > Member > Viewer
-- [x] 資源同 workspace 檢查（跨 workspace 存取 → 403） <!-- workspace 層已擋；task/comment 等資源層待 Phase 5 帶 workspace_id 後接上 -->
+- [x] 資源同 workspace 檢查（跨 workspace 存取 → 403）
 
 > 建立者自動成為 Owner（`seedOwner`）；`GET /api/workspaces` 已改為只列出「我有 membership」的。
 > `PATCH /api/workspaces/:id`（改名）示範 `requirePermission(id, 'Admin')`。
 
 ---
 
-## Phase 5 — Task aggregate 　`ES` `狀態機`
+## Phase 5 — Task aggregate  `ES` `狀態機`
 
 系統核心，事件最多，留到骨架穩了再做。
 
 - [x] 9 個 `task.*` 事件（created / title_changed / … / archived / deleted）
-- [x] 狀態機：`Todo → Doing → Review → Done → Archived` 只允許合法轉換
+- [x] 狀態機：`Todo → Doing → Review → Done` 只允許合法轉換
 - [x] `tasks_read_model` projection
 - [x] Task API（全部透過 command，不直接改 read model）
 
@@ -81,7 +81,7 @@
 
 ## Phase 6 — CRUD 模組（不走 ES）
 
-DESIGN.md 已定：這幾個一律傳統 CRUD，不要手癢加進 event sourcing。
+[design.md](../../design.md) 已定：這幾個一律傳統 CRUD，不要手癢加進 event sourcing。
 
 - [x] Project — `projects_read_model` 直接 CRUD
 - [x] Comment — `comments` table CRUD
@@ -93,14 +93,14 @@ DESIGN.md 已定：這幾個一律傳統 CRUD，不要手癢加進 event sourcin
 
 ---
 
-## Phase 7 — Audit 　`審計`
+## Phase 7 — Audit  `審計`
 
 不做 `activity_logs`，`event_store` 本身就是 audit log。
 
 - [x] 每個 append 都寫 metadata：`actor_id, ip, user_agent, request_id`
 - [x] `GET /api/audit?aggregate_id=` → 直接查 `event_store`
 
-> metadata 用 `AsyncLocalStorage`（[requestContext.ts](src/requestContext.ts)）per-request 注入，command 簽名不變；`request_id` 也回傳 `X-Request-Id` header。
+> metadata 用 `AsyncLocalStorage`（[requestContext.ts](../../src/requestContext.ts)）per-request 注入，command 簽名不變；`request_id` 也回傳 `X-Request-Id` header。
 > audit 授權：由 aggregate 推回 workspace（Workspace→自身 / Member→拆 id / Task→payload），需 Admin+，跨 workspace 擋。
 
 ---

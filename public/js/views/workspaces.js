@@ -87,6 +87,35 @@ export const WorkspacesView = {
         title.appendChild(document.createTextNode(row.name));
         card.appendChild(title);
 
+        const bodyContent = el('div', { class: 'ws-card-body' });
+        if (statusLower === 'active') {
+          const userEmail = state.userEmail;
+          if (userEmail === 'user01@test.local' || userEmail === 'user09@test.local') {
+            const archiveBtn = el('button', {
+              class: 'btn-danger ws-archive-btn',
+              type: 'button'
+            }, '封存');
+            archiveBtn.addEventListener('click', async (e) => {
+              e.stopPropagation();
+              if (confirm(`確定要封存工作區「${row.name}」嗎？封存後將無法修改任務與成員。`)) {
+                try {
+                  await api(`/api/workspaces/${encodeURIComponent(row.workspace_id)}/archive`, { method: 'POST' });
+                  await syncGlobalWorkspaces();
+                  await load();
+                } catch (err) {
+                  alert(err.message || '封存失敗');
+                }
+              }
+            });
+            bodyContent.appendChild(archiveBtn);
+          }
+        } else if (statusLower === 'archived') {
+          bodyContent.appendChild(el('span', { class: 'muted ws-status-tag' }, '已封存'));
+        } else if (statusLower === 'deleted') {
+          bodyContent.appendChild(el('span', { class: 'muted ws-status-tag' }, '已刪除'));
+        }
+        card.appendChild(bodyContent);
+
         const footer = el('div', { class: 'ws-card-footer muted' }, formatTime(row.created_at));
         card.appendChild(footer);
 

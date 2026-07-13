@@ -317,13 +317,13 @@ Request JSON：
   },
   {
     "provider": "agy",
-    "remaining": null,
-    "resetAt": null,
-    "source": "agy-cli-no-local-quota-source",
-    "unavailable": true,
-    "stale": true,
+    "remaining": "64%",
+    "resetAt": "2026-07-13T23:59:59.000Z",
+    "source": "daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels#model=gemini-3-flash-agent",
+    "unavailable": false,
+    "stale": false,
     "windows": [
-      { "window": "five_hour", "remaining": null, "resetAt": null, "available": false },
+      { "window": "five_hour", "remaining": "64%", "resetAt": "2026-07-13T23:59:59.000Z", "available": true },
       { "window": "seven_day", "remaining": null, "resetAt": null, "available": false }
     ]
   }
@@ -332,7 +332,7 @@ Request JSON：
 
 `remaining` 與 `resetAt` 是摘要欄位：優先使用可用的 `five_hour`，不存在時 fallback `seven_day`。`windows` 永遠依五小時、七天排列；`available: false` 表示該視窗沒有資料。`resetAt` 保持 UTC ISO timestamp，前端固定轉為 `Asia/Taipei`。
 
-資料由獨立的 `/home/hom/services/ai-quota` systemd timer 寫入 `~/.local/state/ai-quota/quota.json`；task-tracker 不讀 provider credentials，也不呼叫外部 usage API。`stale: true` 表示顯示的是最後成功資料或 snapshot 無法取得；`unavailable: true` 只表示該 provider 沒有可顯示視窗，不影響其他 provider。
+資料由獨立的 `/home/hom/services/ai-quota` systemd timer 寫入 `~/.local/state/ai-quota/quota.json`；task-tracker 不讀 provider credentials，也不呼叫外部 usage API。agy（Antigravity 額度）與 codex、claude 共用同一份 snapshot，目前只回報 `five_hour` 視窗，`seven_day` 恆為 unavailable。`stale: true` 表示顯示的是最後成功資料或 snapshot 無法取得；`unavailable: true` 只表示該 provider 沒有可顯示視窗，不影響其他 provider；snapshot 缺 agy 或形狀不符（舊版相容）時，agy 會標記 `unavailable: true` 且 `source` 為 `ai-quota-agy-missing`。
 
 2026-07-13 正式驗證：Codex 僅回七天視窗時，摘要正確 fallback 七天；Claude 五小時視窗為 `100%` 且 `resetAt: null` 時仍視為可用。Footer hover 會同時顯示五小時與七天資料，並將 UTC `resetAt` 固定格式化為 `Asia/Taipei`，API 本身不改寫 timestamp。
 
@@ -497,7 +497,6 @@ target 必須存在且為 active，不能與 source 相同；archived/deleted ta
 ## Notifications
 
 通知由 comment 內容中的 `@Name` 或 `@email-local-part` 觸發；不通知自己，同一留言同一收件人只產生一筆。`source_comment_id` 現行固定回字串，前端可直接拿來做留言錨點。
-
 前端接線與 UI 呈現細節請見 [@mention 與通知 API 前端整合指南](./frontend/mentions-and-notifications.md)。
 
 ### `GET /api/notifications`
@@ -626,5 +625,5 @@ attachment 不存在回 `404`。
 
 - Route dispatch：[`src/server.ts`](../src/server.ts)
 - Domain contracts：[`src/auth.ts`](../src/auth.ts)、[`src/workspace.ts`](../src/workspace.ts)、[`src/member.ts`](../src/member.ts)、[`src/task.ts`](../src/task.ts)
-- CRUD/read models：[`src/project.ts`](../src/project.ts)、[`src/comment.ts`](../src/comment.ts)、[`src/attachment.ts`](../src/attachment.ts)、[`src/search.ts`](../src/search.ts)、[`src/audit.ts`](../src/audit.ts)
+- CRUD/read models：[`src/project.ts`](../src/project.ts)、[`src/comment.ts`](../src/comment.ts)、[`src/attachment.ts`](../src/attachment.ts)、[`src/notification.ts`](../src/notification.ts)、[`src/search.ts`](../src/search.ts)、[`src/audit.ts`](../src/audit.ts)
 - Quota implementation/test：[`src/quota.ts`](../src/quota.ts)、[`src/quota.test.ts`](../src/quota.test.ts)

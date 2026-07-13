@@ -6,6 +6,7 @@ After=network.target
 WorkingDirectory=/home/hom/code/task-tracker
 ExecStart=/home/hom/.nvm/versions/node/v24.3.0/bin/node dist/server.js
 ExecReload=/bin/kill -HUP $MAINPID
+Environment=AI_QUOTA_STATE_PATH=/home/hom/.local/state/ai-quota/quota.json
 Restart=always
 RestartSec=3
 

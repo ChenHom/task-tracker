@@ -27,6 +27,9 @@ const insertUser = db.prepare('INSERT INTO users (id, email, name, password_hash
 insertUser.run('u01', MAIN_OWNER_EMAIL, '阿哲', 'x');
 insertUser.run('u02', 'user02@test.local', '小美', 'x');
 insertUser.run('u03', 'user03@test.local', '阿凱', 'x');
+insertUser.run('u05', 'user05@test.local', '大熊', 'x');
+insertUser.run('u06', 'user06@test.local', '小芸', 'x');
+insertUser.run('u07', 'user07@test.local', '小晴', 'x');
 insertUser.run('u09', 'user09@test.local', '老闆', 'x');
 
 appendEvent(
@@ -60,6 +63,8 @@ appendEvent(
   { actor_id: 'legacy' },
   db,
 );
+inviteMember('u01', MAIN_WORKSPACE_ID, 'u07', 'Commenter', db);
+joinWorkspace('u07', MAIN_WORKSPACE_ID, db);
 
 const legacyTaskId = 'legacy-main-discussion';
 appendEvent(
@@ -97,7 +102,12 @@ assert.throws(
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u01', db), 'Owner');
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u02', db), 'Commenter');
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u03', db), 'Commenter');
+assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u05', db), 'Commenter');
+assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u06', db), 'Commenter');
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u09', db), 'Commenter');
+assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u07', db), null, '主工作區只同步 user01-06 與 user09，其他使用者不得進入');
+syncMainWorkspaceUser('u07', db);
+assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u07', db), null, '非白名單使用者登入時也不得被加入主工作區');
 assert.strictEqual(getTask(legacyTaskId, db)?.title, '[討論] workspace的封存功能');
 assert.strictEqual(loadEvents(legacyTaskId, db).at(-1)?.event_type, 'task.main_discussion_normalized');
 

@@ -16,7 +16,7 @@
 - Prompt artifacts, branch review packets, `report.md`, `report.json`, and in-code scenarios are in use. The harness later added `--fast`, `--sweep`, and the explicit `brain` repo scenario.
 - End-to-end fast-run evidence exists at `sim-logs/sim-run-1783392991269/report.md`: an 18-minute self-directed run with seven Done tasks and four green member branches. A deep run with r2/r3 remains pending.
 - The 2026-07-10 hardening pass added driver-owned member commits, error/timeout commit gating, tri-state CI, Git/path preflight, a global PID lock, owner-only Claude quota gating, early discovery reports, and strict sim TypeScript checking. See [2026-07-10-sim-run-hardening.md](./2026-07-10-sim-run-hardening.md).
-- The unchecked implementation steps below are the original execution recipe, not the live progress tracker. Current status and follow-up work live in [TASKS_V2.md](../../../TASKS_V2.md#phase-12--ai-模擬使用者sim-harnessclaude--codex-混合車隊).
+- The unchecked implementation steps below are the original execution recipe, not the live progress tracker. Current status and follow-up work live in [docs/tasks/current.md](../../tasks/current.md#phase-12--ai-模擬使用者sim-harnessclaude--codex-混合車隊).
 
 ---
 

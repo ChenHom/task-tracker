@@ -29,23 +29,32 @@ const _rawLog = console.log.bind(console);
 console.log = (...args: unknown[]) => _rawLog(`[${new Date().toTimeString().slice(0, 8)}]`, ...args);
 const PASSWORD = 'test1234';
 const MEMBER_TIMEOUT = (FAST ? 7 : 12) * 60 * 1000;
-const OWNER_TIMEOUT = (FAST ? 12 : 25) * 60 * 1000; // opus 審查/協調較久；driver 已把機械工作（跑測試）分擔掉，這是安全上限
+const OWNER_TIMEOUT = (FAST ? 12 : 25) * 60 * 1000; // owner 審查/協調較久；driver 已把機械工作（跑測試）分擔掉，這是安全上限
+
+export type Runner = 'claude' | 'codex' | 'agy';
+
+export interface ModelRoute {
+  runner: Runner;
+  model: string;
+}
 
 interface Member {
   email: string;
   name: string;
   user: string; // email 前綴，branch/worktree 命名用
-  runner: 'claude' | 'codex';
+  runner: Runner;
   model: string;
   profile: string; // 專長描述，注入 prompt 供成員自我認知與 owner 設計難度組合參考
+  fallback?: ModelRoute;
   userId?: string;
 }
 
 interface MemberRunnerConfig {
   email: string;
-  runner: 'claude' | 'codex';
+  runner: Runner;
   model: string;
   profile: string;
+  fallback?: ModelRoute;
 }
 
 export interface PromptArtifact {
@@ -131,14 +140,17 @@ export interface SprintReport {
 
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
 const MEMBER_RUNNERS: MemberRunnerConfig[] = [
-  { email: 'user02@test.local', runner: 'claude', model: 'claude-haiku-4-5-20251001',
+  { email: 'user02@test.local', runner: 'codex', model: 'gpt-5.4-mini',
     profile: '細心，擅長小範圍 auth/安全類修補與補測試，適合範圍明確的小題' },
-  { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.4',
+  { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.6-terra',
     profile: '主力工程師，可承接跨檔案/架構性大題（曾獨力完成 sim harness 四階段強化）' },
   { email: 'user04@test.local', runner: 'codex', model: 'gpt-5.4-mini',
     profile: '中小題穩定，擅長檔案 IO/防護類修補（曾完成 attachment symlink 硬化）' },
-  { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.4-mini',
+  { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.6-luna',
     profile: '中小題，動手前先查核現況避免重工' },
+  { email: 'user06@test.local', runner: 'agy', model: 'Gemini 3.5 Flash (High)',
+    fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' },
+    profile: '前端工程師，擅長原生 JS/CSS、UI 互動、響應式版面與瀏覽器驗證；動手前先檢查現有頁面、API 契約與設計風格，偏好最小範圍修改。會主動驗證登入、表單、錯誤提示、手機版與實際操作流程；遇到後端 API 或權限問題先記錄並回報，不擅自擴大修改後端；在意 API response、錯誤狀態與 loading 狀態變化。' },
 ];
 
 export const BRAIN_ROOT = '/home/hom/code/brain';
@@ -307,6 +319,7 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
         runner: config.runner,
         model: config.model,
         profile: config.profile,
+        fallback: config.fallback,
       };
     });
   } finally {
@@ -457,9 +470,9 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
 export const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git status:*),Bash(git diff:*),Bash(git merge:*),Bash(git add:*),Bash(git commit:*),Read,Write,Edit,Glob,Grep';
 export const MAIN_OWNER_TOOLS = 'Bash(curl:*)';
 const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
-// owner 開場是生成型工作（發想＋開題），交給較快的 sonnet；中場/收尾/repair 是審查判斷，用 opus
+// owner 開場是生成型工作（發想＋開題），交給 Claude Sonnet 5；中場/收尾/repair 是審查判斷，改用 GPT-5.6 Sol
 const OWNER_OPEN_MODEL = 'claude-sonnet-5';
-const OWNER_REVIEW_MODEL = 'claude-opus-4-8';
+const OWNER_REVIEW_MODEL = 'gpt-5.6-sol';
 
 export function createRunDir(root: string, runId: string): string {
   const dir = join(root, runId);
@@ -530,7 +543,12 @@ export function writePromptArtifact(runDir: string, label: string, prompt: strin
   return { label, path, bytes: Buffer.byteLength(prompt, 'utf8') };
 }
 
-export interface SessionResult { timedOut: boolean; errored: boolean }
+export interface SessionResult {
+  timedOut: boolean;
+  errored: boolean;
+  quotaExhausted?: boolean;
+  fallbackUsed?: boolean;
+}
 
 export function commitIfSessionSucceeded(result: SessionResult, commit: () => boolean): boolean {
   return !result.errored && !result.timedOut && commit();
@@ -552,41 +570,103 @@ export async function settleAllOrThrow(tasks: Promise<unknown>[]): Promise<void>
   if (failures.length) throw new AggregateError(failures, `${failures.length} 個平行 member 工作失敗`);
 }
 
-function runSession(
-  label: string,
-  runner: 'claude' | 'codex',
-  model: string,
+export interface RunnerInvocation {
+  command: Runner;
+  args: string[];
+}
+
+export function buildRunnerInvocation(
+  route: ModelRoute,
   prompt: string,
-  opts: { cwd: string; tools: string; timeoutMs: number; runDir?: string; promptArtifacts?: PromptArtifact[]; promptLabel?: string },
-): Promise<SessionResult> {
+  opts: { cwd: string; logFile: string; tools?: string },
+): RunnerInvocation {
+  if (route.runner === 'claude') {
+    return {
+      command: 'claude',
+      args: ['-p', prompt, '--model', route.model, '--allowedTools', opts.tools ?? ''],
+    };
+  }
+  if (route.runner === 'codex') {
+    return {
+      command: 'codex',
+      args: ['exec', '--ephemeral', '--skip-git-repo-check', '-C', opts.cwd,
+        '-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true',
+        '-m', route.model, '--output-last-message', `${opts.logFile}.last`, prompt],
+    };
+  }
+  return {
+    command: 'agy',
+    args: ['--print', '--model', route.model, '--mode', 'accept-edits', prompt],
+  };
+}
+
+export function isQuotaExhaustion(output: string): boolean {
+  return /(quota|rate[ _-]?limit|usage limit|resource exhausted|too many requests|limit reached|exhausted)/i.test(output);
+}
+
+export function shouldFallbackToModel(result: SessionResult, hasFallback: boolean): boolean {
+  return hasFallback && result.errored && !result.timedOut && result.quotaExhausted === true;
+}
+
+interface SessionOptions {
+  cwd: string;
+  tools: string;
+  timeoutMs: number;
+  runDir?: string;
+  promptArtifacts?: PromptArtifact[];
+  promptLabel?: string;
+  fallback?: ModelRoute;
+}
+
+function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opts: SessionOptions): Promise<SessionResult> {
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${label}.log`);
   if (opts.runDir) {
     const artifact = writePromptArtifact(opts.runDir, opts.promptLabel ?? label, prompt);
     opts.promptArtifacts?.push(artifact);
   }
-  const args = runner === 'claude'
-    ? ['-p', prompt, '--model', model, '--allowedTools', opts.tools]
-    : ['exec', '--ephemeral', '--skip-git-repo-check', '-C', opts.cwd,
-       '-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true',
-       '-m', model, '--output-last-message', `${logFile}.last`, prompt];
-  console.log(`[${label}] 開始（${runner}/${model}）`);
+  const invocation = buildRunnerInvocation(route, prompt, { cwd: opts.cwd, logFile, tools: opts.tools });
+  console.log(`[${label}] 開始（${route.runner}/${route.model}）`);
   mkdirSync(NPM_CACHE_DIR, { recursive: true });
   return new Promise((resolve) => {
-    const child = execFile(runner === 'claude' ? 'claude' : 'codex', args,
+    const child = execFile(invocation.command, invocation.args,
       { cwd: opts.cwd, timeout: opts.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 20 * 1024 * 1024,
         env: { ...process.env, npm_config_cache: NPM_CACHE_DIR } },
       (err, stdout, stderr) => {
         // execFile 逾時→送 killSignal(SIGKILL)＋err.killed=true；據此明確判定「逾時」而非額度/API 錯誤
         const e = err as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null;
         const timedOut = !!e && (e.killed === true || e.signal === 'SIGKILL');
+        const output = `${stdout}\n${stderr}\n${err ? String(err) : ''}`;
+        const quotaExhausted = !!err && isQuotaExhaustion(output);
         const errNote = err ? `${String(err)}${timedOut ? ` [KILLED signal=${e?.signal} → 逾時 timeout=${Math.round(opts.timeoutMs / 60000)}分]` : ''}` : 'none';
         writeFileSync(logFile, `PROMPT:\n${prompt}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\nERR:${errNote}\n`);
         const tail = (stdout || '').trim().split('\n').slice(-2).join(' / ');
         const why = timedOut ? `（逾時 ${Math.round(opts.timeoutMs / 60000)} 分被中止）` : err ? `（異常: ${String(err).slice(0, 80)}）` : '';
         console.log(`[${label}] 結束${why} — ${tail.slice(0, 200)}`);
-        resolve({ timedOut, errored: !!err }); // 單一 session 失敗不中斷整場
+        resolve({ timedOut, errored: !!err, quotaExhausted }); // 單一 session 失敗不中斷整場
       });
-    child.stdin?.end(); // codex exec 看到 piped stdin 會等 EOF
+    if (route.runner !== 'claude') child.stdin?.end(); // codex/agy headless 看到 piped stdin 會等 EOF
+  });
+}
+
+function runSession(
+  label: string,
+  runner: Runner,
+  model: string,
+  prompt: string,
+  opts: SessionOptions,
+): Promise<SessionResult> {
+  const primary = { runner, model };
+  return runSessionAttempt(label, primary, prompt, opts).then(async (result) => {
+    if (!shouldFallbackToModel(result, !!opts.fallback)) return result;
+    const fallback = opts.fallback!;
+    console.log(`[${label}] primary quota 已滿，改用 fallback（${fallback.runner}/${fallback.model}）`);
+    const fallbackResult = await runSessionAttempt(
+      `${label}-fallback`,
+      fallback,
+      prompt,
+      { ...opts, fallback: undefined, promptLabel: `${opts.promptLabel ?? label}-fallback` },
+    );
+    return { ...fallbackResult, fallbackUsed: true };
   });
 }
 
@@ -1108,7 +1188,7 @@ async function main(): Promise<void> {
   // 先寫 discovery report；後續任何 session/commit/CI 例外時 sweep 仍找得到這個 workspace，收尾再覆寫完整內容。
   writeReport(runDir, buildSprintReport(wsId, since, tag, tag, scenario.key, promptArtifacts, [], []));
 
-  const memberOpts = (m: Member) => ({ cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: MEMBER_TIMEOUT, runDir, promptArtifacts });
+  const memberOpts = (m: Member) => ({ cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: m.fallback });
   const ownerOpts = { cwd: RUN.repoRoot, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT, runDir, promptArtifacts };
 
   // 一個 member session：只有正常結束才由 driver 提交；失敗 diff 留在 worktree 供人工檢查/下輪續作。
@@ -1144,8 +1224,8 @@ async function main(): Promise<void> {
   await runRound(RUN.members, 1, 1, 5);
 
   if (!FAST) {
-    // 深度模式：中場審查（opus）＋條件式 r2-3
-    await runSession('owner-中場審查', 'claude', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' });
+    // 深度模式：中場審查（GPT-5.6 Sol）＋條件式 r2-3
+    await runSession('owner-中場審查', 'codex', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' });
     for (let r = 2; r <= 3; r++) {
       const active = membersToRun(wsId);
       if (!active.length) { console.log(`[r${r}] 無成員需上線（都已進 Review/Done），跳過`); break; }
@@ -1153,9 +1233,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // 收尾 merge（opus）＋ repair 迴圈（收尾退回的題重修至合格，上限 2 輪）
+  // 收尾 merge（GPT-5.6 Sol）＋ repair 迴圈（收尾退回的題重修至合格，上限 2 輪）
   let verified = await verifyBranches(runDir, scenario);
-  await runSession('owner-收尾合併', 'claude', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' });
+  await runSession('owner-收尾合併', 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' });
   abortStaleMerge();
 
   for (let repair = 1; repair <= 2; repair++) {
@@ -1164,7 +1244,7 @@ async function main(): Promise<void> {
     console.log(`[repair] 第 ${repair} 輪重修：${toFix.map((m) => m.name).join('、')}`);
     await runRound(toFix, 3 + repair, 1, 5);
     verified = await verifyBranches(runDir, scenario);
-    await runSession(`owner-repair${repair}`, 'claude', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` });
+    await runSession(`owner-repair${repair}`, 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` });
     abortStaleMerge();
   }
 
@@ -1195,10 +1275,10 @@ function writeOwnerState(s: SweepOwnerState): void {
 export function sweepBudgets(
   role: 'owner' | 'team' | 'both',
   ownerTimeoutStreak: number,
-  claudeAvailable: boolean,
+  ownerRunnerAvailable: boolean,
 ): { owner: number; member: number } {
   return {
-    owner: role === 'team' || !claudeAvailable ? 0 : Math.max(1, 2 - ownerTimeoutStreak),
+    owner: role === 'team' || !ownerRunnerAvailable ? 0 : Math.max(1, 2 - ownerTimeoutStreak),
     member: role === 'owner' ? 0 : 2,
   };
 }
@@ -1218,14 +1298,16 @@ export function workspaceFitsSweepBudget(
   );
 }
 
-function probeClaudeQuota(): Promise<boolean> {
+function probeOwnerRunner(): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('claude', ['-p', '回覆OK兩字即可', '--model', 'claude-haiku-4-5-20251001'],
+    const child = execFile('codex', ['exec', '--ephemeral', '--skip-git-repo-check', '-C', ROOT,
+      '-s', 'read-only', '-m', OWNER_REVIEW_MODEL, '回覆OK兩字即可'],
       { timeout: 90 * 1000, killSignal: 'SIGKILL' },
       (error, stdout, stderr) => {
         const output = `${stdout ?? ''}${stderr ?? ''}`;
-        resolve(!error && !/session limit|rate limit/i.test(output));
+        resolve(!error && !/session limit|rate limit|quota/i.test(output));
       });
+    child.stdin?.end(); // codex 會等待 piped stdin 的 EOF
   });
 }
 
@@ -1375,11 +1457,11 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   // owner 逾時自適應：上一輪 owner 逾時 streak 越高 → 這輪 timeout 越長、owner 收的 workspace 越少
   const ownerState = role === 'team' ? { streak: 0, timedOutWs: [] as string[] } : readOwnerState();
   const ownerTimeoutMs = Math.min(SWEEP_OWNER_TIMEOUT + ownerState.streak * 6 * 60 * 1000, 30 * 60 * 1000);
-  // team tick 不先探 Claude；每個 member session 自己隔離失敗。owner/both 只用 probe 決定是否略過 owner。
-  const claudeAvailable = role === 'team' ? true : await probeClaudeQuota();
-  if (!claudeAvailable) console.log(`[sweep:${role}] Claude 不可用，本 tick 略過 owner；Codex member 預算不受影響`);
+  // team tick 不先探 owner runner；每個 member session 自己隔離失敗。owner/both 只用 probe 決定是否略過 owner。
+  const ownerRunnerAvailable = role === 'team' ? true : await probeOwnerRunner();
+  if (!ownerRunnerAvailable) console.log(`[sweep:${role}] Codex owner runner 不可用，本 tick 略過 owner；member 預算不受影響`);
   // 預算按 role：owner tick 只跑 owner session、team tick 只跑成員 session（both=手動全掃）。做不完留給下個 tick，自癒
-  const budgets = sweepBudgets(role, ownerState.streak, claudeAvailable);
+  const budgets = sweepBudgets(role, ownerState.streak, ownerRunnerAvailable);
   let ownerBudget = budgets.owner;
   let memberBudget = budgets.member;
   if (ownerState.streak > 0) {
@@ -1412,7 +1494,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       const m = RUN.members.find((x) => x.email === row.email);
       if (m) m.userId = row.user_id;
     }
-    const eligibleMembers = RUN.members.filter((m) => claudeAvailable || m.runner !== 'claude');
+    const eligibleMembers = RUN.members;
     if (!workspaceFitsSweepBudget(ownerBudget, memberBudget, p.work, eligibleMembers.flatMap((m) => m.userId ? [m.userId] : []))) {
       console.log(`[sweep] ${p.wsId.slice(0, 8)} 沒有目前 runner 可推進的工作，不占用 repo slot`);
       continue;
@@ -1431,7 +1513,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     const verified = (ownerBudget > 0 && anyReviewChanges) ? await verifyBranches(runDir, p.scenario) : [];
 
     if (ownerBudget > 0) {
-      const r = await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'claude', OWNER_REVIEW_MODEL,
+      const r = await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'codex', OWNER_REVIEW_MODEL,
         ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
         { cwd: RUN.repoRoot, tools: p.wsId === MAIN_WORKSPACE_ID ? MAIN_OWNER_TOOLS : OWNER_TOOLS, timeoutMs: ownerTimeoutMs, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
       ownerSessionsRun++;
@@ -1457,7 +1539,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
           await sleep(jitter(1, 5));
           const { result } = await runMemberSession(
             () => runSession(`${m.name}-巡檢`, m.runner, m.model, memberPrompt(m, p.wsId, hour, p.scenario),
-              { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep` }),
+              { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: m.fallback }),
             () => commitMemberWork(m, hour),
           );
           if (result.errored || result.timedOut) {

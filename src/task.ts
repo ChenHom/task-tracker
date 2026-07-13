@@ -409,6 +409,7 @@ export function registerTaskProjections(): void {
   registerProjection('task.archived', (e, database) => setCol('status')(e, database, 'Archived'));
   registerProjection('task.deleted', (e, database) => {
     database.prepare('DELETE FROM tasks_read_model WHERE task_id = ?').run(e.aggregate_id);
+    database.prepare('DELETE FROM notifications_read_model WHERE source_task_id = ?').run(e.aggregate_id);
   });
 }
 

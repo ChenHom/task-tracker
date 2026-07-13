@@ -373,10 +373,18 @@ export const KanbanView = {
         }
         midEl.appendChild(metaEl);
 
-        // Assignee mapping
-        if (task.assignee_id) {
-          const name = memberMap.get(task.assignee_id) || '未知成員';
-          midEl.appendChild(el('div', { class: 'task-card-assignee' }, `Assignee: ${name}`));
+        // Creator & Assignee
+        if (task.creator_id || task.assignee_id) {
+          const peopleEl = el('div', { class: 'task-card-people' });
+          if (task.creator_id) {
+            const creatorName = memberMap.get(task.creator_id) || '未知成員';
+            peopleEl.appendChild(el('span', {}, `建：${creatorName}`));
+          }
+          if (task.assignee_id) {
+            const assigneeName = memberMap.get(task.assignee_id) || '未知成員';
+            peopleEl.appendChild(el('span', { class: 'task-card-assignee-label' }, `指：${assigneeName}`));
+          }
+          midEl.appendChild(peopleEl);
         }
 
         // Due date & Last updated time
