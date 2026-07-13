@@ -31,13 +31,36 @@ async function main(): Promise<void> {
     { window: 'seven_day', remaining: '14%', resetAt: '2026-07-14T23:00:00.207Z', available: true },
   ]);
 
+  const agy = snapshot.providers[2];
+  assert.strictEqual(agy.remaining, '64%', 'agy 只有五小時視窗時應直接顯示');
+  assert.strictEqual(agy.resetAt, '2026-07-13T23:59:59.000Z');
+  assert.strictEqual(agy.unavailable, false);
+  assert.strictEqual(agy.stale, false);
+  assert.deepStrictEqual(agy.windows, [
+    { window: 'five_hour', remaining: '64%', resetAt: '2026-07-13T23:59:59.000Z', available: true },
+    { window: 'seven_day', remaining: null, resetAt: null, available: false },
+  ]);
+
   const staleFixture = snapshotFixture();
   staleFixture.providers.codex.status = 'stale';
+  staleFixture.providers.agy.status = 'stale';
   writeFileSync(stateFile, JSON.stringify(staleFixture));
   const stale = await getQuotaSnapshot({ stateFile });
   assert.strictEqual(stale.providers[0].remaining, '78%', 'stale 應保留最後成功資料');
   assert.strictEqual(stale.providers[0].stale, true);
   assert.strictEqual(stale.providers[0].unavailable, false);
+  assert.strictEqual(stale.providers[2].stale, true, 'agy stale 仍應保留 windows 資料');
+  assert.strictEqual(stale.providers[2].remaining, '64%');
+  assert.deepStrictEqual(stale.providers[2].windows, agy.windows);
+
+  const noAgyFixture = snapshotFixture();
+  delete (noAgyFixture.providers as Record<string, unknown>).agy;
+  writeFileSync(stateFile, JSON.stringify(noAgyFixture));
+  const noAgy = await getQuotaSnapshot({ stateFile });
+  assert.strictEqual(noAgy.providers[2].unavailable, true, '快照不含 agy 時應視為 unavailable（部署相容性）');
+  assert.strictEqual(noAgy.providers[2].source, 'ai-quota-agy-missing');
+  assert.strictEqual(noAgy.providers[0].remaining, '78%', '缺 agy 不應影響 codex');
+  assert.strictEqual(noAgy.providers[1].remaining, '100%', '缺 agy 不應影響 claude');
 
   const missing = await getQuotaSnapshot({ stateFile: join(root, 'missing.json') });
   assert.strictEqual(missing.providers.length, 3);
@@ -64,11 +87,18 @@ function snapshotFixture() {
         five_hour: { usedPercent: 0, remainingPercent: 100, resetsAt: null },
         seven_day: { usedPercent: 86, remainingPercent: 14, resetsAt: '2026-07-14T23:00:00.207Z' },
       }),
+      agy: {
+        ...provider('agy', {
+          five_hour: { usedPercent: 36, remainingPercent: 64, resetsAt: '2026-07-13T23:59:59.000Z' },
+          seven_day: null,
+        }),
+        source: 'daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels#model=gemini-3-flash-agent',
+      },
     },
   };
 }
 
-function provider(providerName: 'codex' | 'claude', windows: Record<string, unknown>) {
+function provider(providerName: 'codex' | 'claude' | 'agy', windows: Record<string, unknown>) {
   return {
     provider: providerName,
     status: 'ok',

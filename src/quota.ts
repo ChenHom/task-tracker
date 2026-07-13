@@ -45,9 +45,11 @@ export async function getQuotaSnapshot(deps: QuotaDeps = {}): Promise<QuotaSnaps
   if (!parsed) return unavailableSnapshot(deps.now?.() ?? Date.now());
 
   const providers = ['codex', 'claude'].map((provider) => (
-    mapProvider(provider as 'codex' | 'claude', parsed.providers[provider] as JsonObject)
+    mapProvider(provider as QuotaProvider, parsed.providers[provider] as JsonObject)
   ));
-  providers.push(unavailableQuota('agy', 'agy-cli-no-local-quota-source'));
+  const rawAgy = asObject(parsed.providers.agy);
+  const agyValid = rawAgy && rawAgy.provider === 'agy' && typeof rawAgy.status === 'string' && asObject(rawAgy.windows);
+  providers.push(agyValid ? mapProvider('agy', rawAgy) : unavailableQuota('agy', 'ai-quota-agy-missing'));
   return { cachedAt: parsed.generatedAt, providers };
 }
 
@@ -71,7 +73,7 @@ async function readAiQuotaSnapshot(stateFile: string): Promise<{
   }
 }
 
-function mapProvider(provider: 'codex' | 'claude', raw: JsonObject): QuotaStatus {
+function mapProvider(provider: QuotaProvider, raw: JsonObject): QuotaStatus {
   const rawWindows = asObject(raw.windows);
   const windows = WINDOW_NAMES.map((window) => mapWindow(window, rawWindows?.[window]));
   const selected = windows.find((window) => window.window === 'five_hour' && window.available)
@@ -112,7 +114,7 @@ function unavailableSnapshot(timestamp: number): QuotaSnapshot {
     providers: [
       unavailableQuota('codex', 'ai-quota-state-unavailable'),
       unavailableQuota('claude', 'ai-quota-state-unavailable'),
-      unavailableQuota('agy', 'agy-cli-no-local-quota-source'),
+      unavailableQuota('agy', 'ai-quota-state-unavailable'),
     ],
   };
 }
