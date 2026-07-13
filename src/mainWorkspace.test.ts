@@ -117,6 +117,11 @@ const activePolicies = () =>
   );
 assert.strictEqual(activePolicies().length, 1, '應只有一筆 active policy task');
 assert.strictEqual(activePolicies()[0].description, MAIN_POLICY_DESCRIPTION);
+assert.match(MAIN_POLICY_DESCRIPTION, /先留下 OWNER想法，再通知 user02-06 與 user09/);
+assert.match(MAIN_POLICY_DESCRIPTION, /2 至 7 天/);
+assert.match(MAIN_POLICY_DESCRIPTION, /Todo 直接完成為 Done/);
+assert.match(MAIN_POLICY_DESCRIPTION, /工作區與 TASK 名稱/);
+assert.doesNotMatch(MAIN_POLICY_DESCRIPTION, /完整連結|Doing|Review|缺席名單/);
 
 const afterFirstSync = eventCount();
 syncMainWorkspace(db);
