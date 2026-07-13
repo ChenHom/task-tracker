@@ -1,7 +1,15 @@
 import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
-import { appendEvent, loadEvents, rebuild, registerProjection, resetProjections, ConcurrencyError } from './eventStore';
+import {
+  appendEvent,
+  appendEventInTransaction,
+  loadEvents,
+  rebuild,
+  registerProjection,
+  resetProjections,
+  ConcurrencyError,
+} from './eventStore';
 
 // 獨立 in-memory db + 一張 demo read model，驗證 append → project → read model 這條線。
 const db = new DatabaseSync(':memory:');
@@ -51,6 +59,27 @@ assert.strictEqual(
   2,
   'rebuild 應把 agg-1 的 2 個事件 reduce 成 2',
 );
+
+assert.throws(
+  () => appendEventInTransaction('Demo', 'tx-outside', 0, 'demo.incremented', {}, {}, db),
+  /active transaction|not a function/,
+  'caller 未開 transaction 時不可使用內層 append',
+);
+
+db.exec('BEGIN IMMEDIATE');
+appendEventInTransaction('Demo', 'tx-rollback', 0, 'demo.incremented', {}, {}, db);
+db.exec('ROLLBACK');
+assert.strictEqual(loadEvents('tx-rollback', db).length, 0, '外層 rollback 應移除 event');
+assert.strictEqual(
+  db.prepare('SELECT count FROM demo_rm WHERE aggregate_id = ?').get('tx-rollback'),
+  undefined,
+  '外層 rollback 應一併移除 projection',
+);
+
+db.exec('BEGIN IMMEDIATE');
+appendEventInTransaction('Demo', 'tx-commit', 0, 'demo.incremented', {}, {}, db);
+db.exec('COMMIT');
+assert.strictEqual(loadEvents('tx-commit', db).length, 1, '外層 commit 應保存 event');
 
 // ── projection 一對一：重複註冊同 event_type 應報錯 ──
 assert.throws(() => registerProjection('demo.incremented', () => {}), /已註冊/, '同 event_type 重複註冊 projection 應報錯');
