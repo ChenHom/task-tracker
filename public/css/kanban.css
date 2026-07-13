@@ -211,7 +211,10 @@
 .badge-high { background-color: var(--priority-high); }
 .badge-project { background-color: rgba(139, 92, 246, 0.15); border-color: var(--pencil-color); }
 
-.task-card-assignee {
+.task-card-people {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
   font-size: 0.8rem;
   font-weight: 500;
   color: #374151;
