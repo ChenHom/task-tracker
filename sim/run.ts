@@ -131,7 +131,7 @@ export interface SprintReport {
 
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
 const MEMBER_RUNNERS: MemberRunnerConfig[] = [
-  { email: 'user02@test.local', runner: 'claude', model: 'claude-sonnet-5',
+  { email: 'user02@test.local', runner: 'codex', model: 'gpt-5.3-codex',
     profile: '細心，擅長小範圍 auth/安全類修補與補測試，適合範圍明確的小題' },
   { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.6-terra',
     profile: '主力工程師，可承接跨檔案/架構性大題（曾獨力完成 sim harness 四階段強化）' },
@@ -457,9 +457,9 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
 export const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git status:*),Bash(git diff:*),Bash(git merge:*),Bash(git add:*),Bash(git commit:*),Read,Write,Edit,Glob,Grep';
 export const MAIN_OWNER_TOOLS = 'Bash(curl:*)';
 const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
-// owner 開場是生成型工作（發想＋開題），交給較快的 sonnet；中場/收尾/repair 是審查判斷，用 opus
+// owner 開場是生成型工作（發想＋開題），交給 Claude Sonnet 5；中場/收尾/repair 是審查判斷，改用 GPT-5.6 Sol
 const OWNER_OPEN_MODEL = 'claude-sonnet-5';
-const OWNER_REVIEW_MODEL = 'claude-opus-4-8';
+const OWNER_REVIEW_MODEL = 'gpt-5.6-sol';
 
 export function createRunDir(root: string, runId: string): string {
   const dir = join(root, runId);
@@ -1144,8 +1144,8 @@ async function main(): Promise<void> {
   await runRound(RUN.members, 1, 1, 5);
 
   if (!FAST) {
-    // 深度模式：中場審查（opus）＋條件式 r2-3
-    await runSession('owner-中場審查', 'claude', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' });
+    // 深度模式：中場審查（GPT-5.6 Sol）＋條件式 r2-3
+    await runSession('owner-中場審查', 'codex', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' });
     for (let r = 2; r <= 3; r++) {
       const active = membersToRun(wsId);
       if (!active.length) { console.log(`[r${r}] 無成員需上線（都已進 Review/Done），跳過`); break; }
@@ -1153,9 +1153,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // 收尾 merge（opus）＋ repair 迴圈（收尾退回的題重修至合格，上限 2 輪）
+  // 收尾 merge（GPT-5.6 Sol）＋ repair 迴圈（收尾退回的題重修至合格，上限 2 輪）
   let verified = await verifyBranches(runDir, scenario);
-  await runSession('owner-收尾合併', 'claude', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' });
+  await runSession('owner-收尾合併', 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' });
   abortStaleMerge();
 
   for (let repair = 1; repair <= 2; repair++) {
@@ -1164,7 +1164,7 @@ async function main(): Promise<void> {
     console.log(`[repair] 第 ${repair} 輪重修：${toFix.map((m) => m.name).join('、')}`);
     await runRound(toFix, 3 + repair, 1, 5);
     verified = await verifyBranches(runDir, scenario);
-    await runSession(`owner-repair${repair}`, 'claude', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` });
+    await runSession(`owner-repair${repair}`, 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` });
     abortStaleMerge();
   }
 
@@ -1195,10 +1195,10 @@ function writeOwnerState(s: SweepOwnerState): void {
 export function sweepBudgets(
   role: 'owner' | 'team' | 'both',
   ownerTimeoutStreak: number,
-  claudeAvailable: boolean,
+  ownerRunnerAvailable: boolean,
 ): { owner: number; member: number } {
   return {
-    owner: role === 'team' || !claudeAvailable ? 0 : Math.max(1, 2 - ownerTimeoutStreak),
+    owner: role === 'team' || !ownerRunnerAvailable ? 0 : Math.max(1, 2 - ownerTimeoutStreak),
     member: role === 'owner' ? 0 : 2,
   };
 }
@@ -1218,13 +1218,14 @@ export function workspaceFitsSweepBudget(
   );
 }
 
-function probeClaudeQuota(): Promise<boolean> {
+function probeOwnerRunner(): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('claude', ['-p', '回覆OK兩字即可', '--model', 'claude-haiku-4-5-20251001'],
+    execFile('codex', ['exec', '--ephemeral', '--skip-git-repo-check', '-C', ROOT,
+      '-s', 'read-only', '-m', OWNER_REVIEW_MODEL, '回覆OK兩字即可'],
       { timeout: 90 * 1000, killSignal: 'SIGKILL' },
       (error, stdout, stderr) => {
         const output = `${stdout ?? ''}${stderr ?? ''}`;
-        resolve(!error && !/session limit|rate limit/i.test(output));
+        resolve(!error && !/session limit|rate limit|quota/i.test(output));
       });
   });
 }
@@ -1375,11 +1376,11 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   // owner 逾時自適應：上一輪 owner 逾時 streak 越高 → 這輪 timeout 越長、owner 收的 workspace 越少
   const ownerState = role === 'team' ? { streak: 0, timedOutWs: [] as string[] } : readOwnerState();
   const ownerTimeoutMs = Math.min(SWEEP_OWNER_TIMEOUT + ownerState.streak * 6 * 60 * 1000, 30 * 60 * 1000);
-  // team tick 不先探 Claude；每個 member session 自己隔離失敗。owner/both 只用 probe 決定是否略過 owner。
-  const claudeAvailable = role === 'team' ? true : await probeClaudeQuota();
-  if (!claudeAvailable) console.log(`[sweep:${role}] Claude 不可用，本 tick 略過 owner；Codex member 預算不受影響`);
+  // team tick 不先探 owner runner；每個 member session 自己隔離失敗。owner/both 只用 probe 決定是否略過 owner。
+  const ownerRunnerAvailable = role === 'team' ? true : await probeOwnerRunner();
+  if (!ownerRunnerAvailable) console.log(`[sweep:${role}] Codex owner runner 不可用，本 tick 略過 owner；member 預算不受影響`);
   // 預算按 role：owner tick 只跑 owner session、team tick 只跑成員 session（both=手動全掃）。做不完留給下個 tick，自癒
-  const budgets = sweepBudgets(role, ownerState.streak, claudeAvailable);
+  const budgets = sweepBudgets(role, ownerState.streak, ownerRunnerAvailable);
   let ownerBudget = budgets.owner;
   let memberBudget = budgets.member;
   if (ownerState.streak > 0) {
@@ -1412,7 +1413,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       const m = RUN.members.find((x) => x.email === row.email);
       if (m) m.userId = row.user_id;
     }
-    const eligibleMembers = RUN.members.filter((m) => claudeAvailable || m.runner !== 'claude');
+    const eligibleMembers = RUN.members;
     if (!workspaceFitsSweepBudget(ownerBudget, memberBudget, p.work, eligibleMembers.flatMap((m) => m.userId ? [m.userId] : []))) {
       console.log(`[sweep] ${p.wsId.slice(0, 8)} 沒有目前 runner 可推進的工作，不占用 repo slot`);
       continue;
@@ -1431,7 +1432,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     const verified = (ownerBudget > 0 && anyReviewChanges) ? await verifyBranches(runDir, p.scenario) : [];
 
     if (ownerBudget > 0) {
-      const r = await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'claude', OWNER_REVIEW_MODEL,
+      const r = await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'codex', OWNER_REVIEW_MODEL,
         ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
         { cwd: RUN.repoRoot, tools: p.wsId === MAIN_WORKSPACE_ID ? MAIN_OWNER_TOOLS : OWNER_TOOLS, timeoutMs: ownerTimeoutMs, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
       ownerSessionsRun++;
