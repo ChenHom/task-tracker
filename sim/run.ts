@@ -131,13 +131,13 @@ export interface SprintReport {
 
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
 const MEMBER_RUNNERS: MemberRunnerConfig[] = [
-  { email: 'user02@test.local', runner: 'claude', model: 'claude-haiku-4-5-20251001',
+  { email: 'user02@test.local', runner: 'claude', model: 'claude-sonnet-5',
     profile: '細心，擅長小範圍 auth/安全類修補與補測試，適合範圍明確的小題' },
-  { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.4',
+  { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.6-terra',
     profile: '主力工程師，可承接跨檔案/架構性大題（曾獨力完成 sim harness 四階段強化）' },
   { email: 'user04@test.local', runner: 'codex', model: 'gpt-5.4-mini',
     profile: '中小題穩定，擅長檔案 IO/防護類修補（曾完成 attachment symlink 硬化）' },
-  { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.4-mini',
+  { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.6-luna',
     profile: '中小題，動手前先查核現況避免重工' },
 ];
 

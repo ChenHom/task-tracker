@@ -87,7 +87,7 @@
 ## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex 混合車隊）
 
 - [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-05、join）→ spawn headless 子行程
-- [x] 混合車隊：Owner 開場=Claude Sonnet、中場/收尾/repair=Claude Opus；user02=Claude Haiku；user03=Codex gpt-5.4；user04/05=Codex gpt-5.4-mini
+- [x] 混合車隊：Owner 開場=Claude Sonnet、中場/收尾/repair=Claude Opus；user02=Claude Sonnet 5；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna
 - [x] 主題 Dogfooding：owner prompt 內嵌本專案真實技術債清單（ponytail: 註記）出題
 - [x] 全員 QA 規則：可重現的系統問題建 `[BUG]` task（重現步驟/預期 vs 實際/原始回應），owner 收尾 triage
 - [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
