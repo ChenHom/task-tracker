@@ -1,6 +1,8 @@
 'use strict';
 
 import { api } from './api.js';
+import { el } from './utils.js';
+import { formatQuotaDetails, selectQuotaSummary } from './quota-format.js';
 
 /**
  * Fetches the API quota status and updates the footer display.
@@ -17,7 +19,6 @@ export async function updateQuotaFooter() {
       return;
     }
 
-    // Capitalize provider name for display
     const formatName = (p) => {
       if (p === 'codex') return 'Codex';
       if (p === 'claude') return 'Claude';
@@ -25,26 +26,33 @@ export async function updateQuotaFooter() {
       return p;
     };
 
-    let html = '';
+    footerEl.textContent = '';
     providers.forEach((item, index) => {
       const isUnavailable = !!item.unavailable;
       const providerName = formatName(item.provider);
-      const valueText = isUnavailable ? 'N/A' : (item.remaining || 'N/A');
-      const titleAttr = item.resetAt ? `title="Resets at: ${new Date(item.resetAt).toLocaleString()}"` : '';
-
-      html += `
-        <span class="quota-item ${isUnavailable ? 'unavailable' : ''}" ${titleAttr}>
-          <span class="quota-label">${providerName}</span>
-          <span class="quota-value">${valueText}</span>
-        </span>
-      `;
+      const summary = selectQuotaSummary(item);
+      const valueText = isUnavailable || !summary
+        ? 'N/A'
+        : `${summary.label} ${summary.remaining || 'N/A'}`;
+      const details = formatQuotaDetails(item);
+      const classes = ['quota-item'];
+      if (isUnavailable) classes.push('unavailable');
+      if (item.stale) classes.push('stale');
+      const itemEl = el('span', {
+        class: classes.join(' '),
+        tabindex: '0',
+        'data-tooltip': details,
+        'aria-label': `${providerName} ${details.replaceAll('\n', '；')}`,
+      });
+      itemEl.appendChild(el('span', { class: 'quota-label' }, providerName));
+      itemEl.appendChild(el('span', { class: 'quota-value' }, valueText));
+      footerEl.appendChild(itemEl);
 
       if (index < providers.length - 1) {
-        html += `<span class="quota-sep">·</span>`;
+        footerEl.appendChild(el('span', { class: 'quota-sep', 'aria-hidden': 'true' }, '·'));
       }
     });
 
-    footerEl.innerHTML = html.trim();
     footerEl.style.display = 'flex';
   } catch (err) {
     footerEl.style.display = 'none';

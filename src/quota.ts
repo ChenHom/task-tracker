@@ -1,15 +1,19 @@
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-
-const CACHE_TTL_MS = 3 * 60 * 1000;
-const DEFAULT_CACHE_FILE = join(__dirname, '../.cache/quota.json');
-const CODEX_AUTH_FILE = join(homedir(), '.codex', 'auth.json');
-const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
+import { join } from 'node:path';
 
 const PROVIDERS = ['codex', 'claude', 'agy'] as const;
+const WINDOW_NAMES = ['five_hour', 'seven_day'] as const;
 
 export type QuotaProvider = (typeof PROVIDERS)[number];
+export type QuotaWindowName = (typeof WINDOW_NAMES)[number];
+
+export interface QuotaWindow {
+  window: QuotaWindowName;
+  remaining: string | null;
+  resetAt: string | null;
+  available: boolean;
+}
 
 export interface QuotaStatus {
   provider: QuotaProvider;
@@ -17,6 +21,8 @@ export interface QuotaStatus {
   resetAt: string | null;
   source: string;
   unavailable: boolean;
+  stale: boolean;
+  windows: QuotaWindow[];
 }
 
 export interface QuotaSnapshot {
@@ -24,153 +30,112 @@ export interface QuotaSnapshot {
   providers: QuotaStatus[];
 }
 
-type QuotaFetcher = () => Promise<QuotaStatus>;
-
 export interface QuotaDeps {
-  cacheFile?: string;
+  stateFile?: string;
   now?: () => number;
-  fetchers?: Partial<Record<QuotaProvider, QuotaFetcher>>;
 }
 
 type JsonObject = Record<string, unknown>;
 
 export async function getQuotaSnapshot(deps: QuotaDeps = {}): Promise<QuotaSnapshot> {
-  const cacheFile = deps.cacheFile ?? DEFAULT_CACHE_FILE;
-  const now = deps.now ?? Date.now;
-  const cached = await readQuotaCache(cacheFile);
-  if (cached && now() - Date.parse(cached.cachedAt) < CACHE_TTL_MS) {
-    return cached;
-  }
+  const stateFile = deps.stateFile
+    ?? process.env.AI_QUOTA_STATE_PATH
+    ?? join(homedir(), '.local', 'state', 'ai-quota', 'quota.json');
+  const parsed = await readAiQuotaSnapshot(stateFile);
+  if (!parsed) return unavailableSnapshot(deps.now?.() ?? Date.now());
 
-  const fetchers = {
-    codex: fetchCodexQuota,
-    claude: fetchClaudeQuota,
-    agy: fetchAgyQuota,
-    ...deps.fetchers,
-  } satisfies Record<QuotaProvider, QuotaFetcher>;
-
-  const providers = await Promise.all(
-    PROVIDERS.map(async (provider) => {
-      try {
-        return await fetchers[provider]();
-      } catch {
-        return unavailableQuota(provider, `${provider}-unavailable`);
-      }
-    }),
-  );
-
-  const snapshot = { cachedAt: new Date(now()).toISOString(), providers };
-  await mkdir(dirname(cacheFile), { recursive: true });
-  await writeFile(cacheFile, JSON.stringify(snapshot), 'utf8');
-  return snapshot;
+  const providers = ['codex', 'claude'].map((provider) => (
+    mapProvider(provider as 'codex' | 'claude', parsed.providers[provider] as JsonObject)
+  ));
+  providers.push(unavailableQuota('agy', 'agy-cli-no-local-quota-source'));
+  return { cachedAt: parsed.generatedAt, providers };
 }
 
-async function readQuotaCache(cacheFile: string): Promise<QuotaSnapshot | null> {
+async function readAiQuotaSnapshot(stateFile: string): Promise<{
+  generatedAt: string;
+  providers: JsonObject;
+} | null> {
   try {
-    const raw = await readFile(cacheFile, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<QuotaSnapshot>;
-    if (!parsed || typeof parsed.cachedAt !== 'string' || !Array.isArray(parsed.providers)) return null;
-    if (!parsed.providers.every(isQuotaStatus)) return null;
-    return { cachedAt: parsed.cachedAt, providers: parsed.providers };
+    const root = asObject(JSON.parse(await readFile(stateFile, 'utf8')));
+    const providers = asObject(root?.providers);
+    if (root?.schemaVersion !== 1 || typeof root.generatedAt !== 'string' || !providers) return null;
+    for (const provider of ['codex', 'claude']) {
+      const item = asObject(providers[provider]);
+      if (!item || item.provider !== provider || typeof item.status !== 'string' || !asObject(item.windows)) {
+        return null;
+      }
+    }
+    return { generatedAt: root.generatedAt, providers };
   } catch {
     return null;
   }
 }
 
-function isQuotaStatus(value: unknown): value is QuotaStatus {
-  if (!isObject(value)) return false;
-  return typeof value.provider === 'string'
-    && PROVIDERS.includes(value.provider as QuotaProvider)
-    && (typeof value.remaining === 'string' || value.remaining === null)
-    && (typeof value.resetAt === 'string' || value.resetAt === null)
-    && typeof value.source === 'string'
-    && typeof value.unavailable === 'boolean';
-}
-
-async function fetchCodexQuota(): Promise<QuotaStatus> {
-  const auth = JSON.parse(await readFile(CODEX_AUTH_FILE, 'utf8')) as { tokens?: JsonObject };
-  const accessToken = typeof auth.tokens?.access_token === 'string' ? auth.tokens.access_token : null;
-  const accountId = typeof auth.tokens?.account_id === 'string' ? auth.tokens.account_id : null;
-  if (!accessToken) return unavailableQuota('codex', '~/.codex/auth.json');
-
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${accessToken}`,
-    'OpenAI-Beta': 'codex-1',
-    originator: 'Codex Desktop',
-  };
-  if (accountId) headers['ChatGPT-Account-ID'] = accountId;
-
-  const response = await fetch(CODEX_USAGE_URL, { headers });
-  if (!response.ok) {
-    throw new Error(`codex usage ${response.status}`);
-  }
-
-  const payload = await response.json() as JsonObject;
-  const rateLimit = isObject(payload.rate_limit) ? payload.rate_limit : null;
-  if (!rateLimit) return unavailableQuota('codex', 'codex-usage-missing-rate-limit');
-
-  const primaryWindow = isObject(rateLimit.primary_window) ? rateLimit.primary_window : null;
-  const secondaryWindow = isObject(rateLimit.secondary_window) ? rateLimit.secondary_window : null;
-  const window = primaryWindow ?? secondaryWindow;
-  if (!window) return unavailableQuota('codex', 'codex-usage-missing-window');
+function mapProvider(provider: 'codex' | 'claude', raw: JsonObject): QuotaStatus {
+  const rawWindows = asObject(raw.windows);
+  const windows = WINDOW_NAMES.map((window) => mapWindow(window, rawWindows?.[window]));
+  const selected = windows.find((window) => window.window === 'five_hour' && window.available)
+    ?? windows.find((window) => window.window === 'seven_day' && window.available)
+    ?? null;
+  const stale = raw.status !== 'ok';
 
   return {
-    provider: 'codex',
-    remaining: formatRemaining(window.used_percent),
-    resetAt: resolveResetAt(window),
-    source: primaryWindow ? 'chatgpt.com/backend-api/wham/usage.primary_window' : 'chatgpt.com/backend-api/wham/usage.secondary_window',
-    unavailable: false,
+    provider,
+    remaining: selected?.remaining ?? null,
+    resetAt: selected?.resetAt ?? null,
+    source: typeof raw.source === 'string' ? raw.source : `${provider}-source-unknown`,
+    unavailable: selected === null,
+    stale,
+    windows,
   };
 }
 
-async function fetchClaudeQuota(): Promise<QuotaStatus> {
-  return unavailableQuota('claude', '~/.claude/stats-cache.json');
+function mapWindow(window: QuotaWindowName, value: unknown): QuotaWindow {
+  const raw = asObject(value);
+  const remainingPercent = raw && typeof raw.remainingPercent === 'number' && Number.isFinite(raw.remainingPercent)
+    ? Math.max(0, Math.min(100, raw.remainingPercent))
+    : null;
+  if (remainingPercent === null) {
+    return { window, remaining: null, resetAt: null, available: false };
+  }
+  return {
+    window,
+    remaining: `${Math.round(remainingPercent * 100) / 100}%`,
+    resetAt: typeof raw?.resetsAt === 'string' ? raw.resetsAt : null,
+    available: true,
+  };
 }
 
-async function fetchAgyQuota(): Promise<QuotaStatus> {
-  return unavailableQuota('agy', 'agy-cli-no-local-quota-source');
+function unavailableSnapshot(timestamp: number): QuotaSnapshot {
+  return {
+    cachedAt: new Date(timestamp).toISOString(),
+    providers: [
+      unavailableQuota('codex', 'ai-quota-state-unavailable'),
+      unavailableQuota('claude', 'ai-quota-state-unavailable'),
+      unavailableQuota('agy', 'agy-cli-no-local-quota-source'),
+    ],
+  };
 }
 
 function unavailableQuota(provider: QuotaProvider, source: string): QuotaStatus {
-  return { provider, remaining: null, resetAt: null, source, unavailable: true };
+  return {
+    provider,
+    remaining: null,
+    resetAt: null,
+    source,
+    unavailable: true,
+    stale: true,
+    windows: WINDOW_NAMES.map((window) => ({
+      window,
+      remaining: null,
+      resetAt: null,
+      available: false,
+    })),
+  };
 }
 
-function isObject(value: unknown): value is JsonObject {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function toFiniteNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function formatRemaining(usedPercent: unknown): string | null {
-  const used = toFiniteNumber(usedPercent);
-  if (used === null) return null;
-  const remaining = Math.max(0, Math.min(100, Math.round((100 - used) * 100) / 100));
-  return `${remaining}%`;
-}
-
-function resolveResetAt(window: JsonObject): string | null {
-  const resetAt = normalizeTimestamp(window.reset_at);
-  if (resetAt) return new Date(resetAt).toISOString();
-  const resetAfterSeconds = toFiniteNumber(window.reset_after_seconds);
-  if (resetAfterSeconds === null) return null;
-  return new Date(Date.now() + resetAfterSeconds * 1000).toISOString();
-}
-
-function normalizeTimestamp(value: unknown): number | null {
-  const numeric = toFiniteNumber(value);
-  if (numeric !== null) {
-    return Math.abs(numeric) > 100000000000 ? numeric : numeric * 1000;
-  }
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? null : parsed;
-  }
-  return null;
+function asObject(value: unknown): JsonObject | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as JsonObject
+    : null;
 }

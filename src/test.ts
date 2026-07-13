@@ -16,5 +16,6 @@ import './search.test';
 import './audit.test';
 import './rateLimit.test';
 import './quota.test';
+import './quotaFrontend.test';
 import './server.test';
 import './frontend.test';

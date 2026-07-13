@@ -131,6 +131,12 @@
 - 已加入 sim harness、主協作工作區治理、Commenter 邊界與後續 backlog。
 - live sim、quota、跨 workspace 搬移等工作仍以 [docs/tasks/current.md](docs/tasks/current.md) 為最新交接來源。
 
+### AI Quota Boundary
+
+- Codex 與 Claude 的 credentials、外部 usage requests、retry/backoff 與 snapshot persistence 由獨立 `/home/hom/services/ai-quota` repo 負責。
+- Task-tracker 只讀 `~/.local/state/ai-quota/quota.json`，`/api/quota` 提供五小時與七天視窗；摘要優先五小時、缺少時 fallback 七天。
+- Snapshot/API timestamps 保持 UTC；quota footer 固定以 `Asia/Taipei` 顯示重置時間。
+
 ## Security Baselines
 
 - 密碼雜湊使用 `scrypt`，查詢使用 prepared statements。

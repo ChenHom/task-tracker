@@ -192,3 +192,15 @@
 > 2026-07-12 description rollout：`master` fast-forward 至 `4794674` 後完整測試、build 與 health check 通過。Commenter 自建 task 描述 PATCH 為 200，標題／狀態為 403，他人描述為 400；user02 在非主工作區仍是 Member，標題與描述 PATCH 均為 200。
 
 > 2026-07-13 主工作區同步收斂為白名單：user01-06 與 user09；startup／login sync 會移除既有但不在白名單內的主工作區成員。
+
+---
+
+## Phase 16 — AI quota 獨立服務整合
+
+- [x] 將 Codex/Claude credentials、usage API、retry 與 cache 搬到 `/home/hom/services/ai-quota`
+- [x] `src/quota.ts` 改為唯讀 `~/.local/state/ai-quota/quota.json`，不再發送外部請求
+- [x] `/api/quota` 保留摘要欄位並新增五小時、七天 `windows`
+- [x] 摘要優先五小時；缺少五小時時 fallback 七天
+- [x] Footer hover/focus 顯示雙視窗額度與台灣重置時間
+- [x] 缺少、損壞或 stale snapshot 不影響 auth/API server，其餘 provider 仍可顯示
+- [ ] 安裝/啟用 `ai-quota.timer` 並完成正式 task-tracker HTTP/UI smoke

@@ -293,29 +293,46 @@ Request JSON：
 [
   {
     "provider": "codex",
-    "remaining": "80%",
-    "resetAt": "2026-07-13T05:00:00.000Z",
-    "source": "chatgpt.com/backend-api/wham/usage.primary_window",
-    "unavailable": false
+    "remaining": "78%",
+    "resetAt": "2026-07-19T19:00:07.000Z",
+    "source": "chatgpt.com/backend-api/wham/usage",
+    "unavailable": false,
+    "stale": false,
+    "windows": [
+      { "window": "five_hour", "remaining": null, "resetAt": null, "available": false },
+      { "window": "seven_day", "remaining": "78%", "resetAt": "2026-07-19T19:00:07.000Z", "available": true }
+    ]
   },
   {
     "provider": "claude",
-    "remaining": null,
+    "remaining": "100%",
     "resetAt": null,
-    "source": "~/.claude/stats-cache.json",
-    "unavailable": true
+    "source": "api.anthropic.com/api/oauth/usage",
+    "unavailable": false,
+    "stale": false,
+    "windows": [
+      { "window": "five_hour", "remaining": "100%", "resetAt": null, "available": true },
+      { "window": "seven_day", "remaining": "14%", "resetAt": "2026-07-14T23:00:00.207Z", "available": true }
+    ]
   },
   {
     "provider": "agy",
     "remaining": null,
     "resetAt": null,
     "source": "agy-cli-no-local-quota-source",
-    "unavailable": true
+    "unavailable": true,
+    "stale": true,
+    "windows": [
+      { "window": "five_hour", "remaining": null, "resetAt": null, "available": false },
+      { "window": "seven_day", "remaining": null, "resetAt": null, "available": false }
+    ]
   }
 ]
 ```
 
-`remaining` 是百分比字串或 `null`；`resetAt` 是 UTC ISO timestamp 或 `null`；`unavailable: true` 只代表該 provider 不能取得，不代表整個 API 失敗。server cache 有效期 3 分鐘，預設檔案為 `.cache/quota.json`；API 不回傳內部的 `cachedAt`。cache 或其他非 provider fallback 的內部錯誤回 `500`。
+`remaining` 與 `resetAt` 是摘要欄位：優先使用可用的 `five_hour`，不存在時 fallback `seven_day`。`windows` 永遠依五小時、七天排列；`available: false` 表示該視窗沒有資料。`resetAt` 保持 UTC ISO timestamp，前端固定轉為 `Asia/Taipei`。
+
+資料由獨立的 `/home/hom/services/ai-quota` systemd timer 寫入 `~/.local/state/ai-quota/quota.json`；task-tracker 不讀 provider credentials，也不呼叫外部 usage API。`stale: true` 表示顯示的是最後成功資料或 snapshot 無法取得；`unavailable: true` 只表示該 provider 沒有可顯示視窗，不影響其他 provider。
 
 ## Workspaces and members
 

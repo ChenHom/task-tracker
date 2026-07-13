@@ -10,6 +10,7 @@ This app is managed by a user-level systemd unit:
 - Process: `node dist/server.js`
 - Local upstream: `http://127.0.0.1:3000`
 - LAN entrypoint: `http://192.168.50.109/tracker/`
+- AI quota snapshot: `/home/hom/.local/state/ai-quota/quota.json`
 
 ## Install or update the unit
 
@@ -59,6 +60,18 @@ tail -n 80 /var/log/nginx/error.log
 ```
 
 If `/tracker/` returns `502`, first check whether `task-tracker.service` is active and whether port 3000 answers `/api/health`.
+
+## AI quota dependency
+
+Quota provider polling belongs to the separate `/home/hom/services/ai-quota` repo. Its `ai-quota.timer` runs a one-shot poll every five minutes and writes the shared snapshot; task-tracker only validates and reads that file.
+
+```bash
+systemctl --user status ai-quota.timer ai-quota.service
+systemctl --user list-timers --all ai-quota.timer
+journalctl --user -u ai-quota.service -n 80 --no-pager
+```
+
+If the footer shows `N/A`, inspect the snapshot and timer before changing task-tracker. Stale provider data remains visible with a marker. Reset timestamps stay UTC in JSON/API and are rendered in `Asia/Taipei` by the footer.
 
 ## 主協作工作區
 
