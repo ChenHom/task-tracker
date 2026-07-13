@@ -140,3 +140,212 @@ export function getMainDiscussionWindow(taskId: string, database = db): MainDisc
     dueAt: row.due_at,
   } : null;
 }
+
+export type MainDiscussionOutcome = 'implement' | 'no_implementation' | 'no_consensus';
+
+export interface MainDiscussionConcludedPayload {
+  status: 'Done';
+  outcome: MainDiscussionOutcome;
+  windowOpenedAt: string;
+  windowDueAt: string;
+  ownerThoughtCommentId: string;
+  requestCommentId: string;
+  decisionCommentId: string;
+  confirmationCommentId: string | null;
+  handoffCommentId: string | null;
+  implementationWorkspaceName: string | null;
+  implementationTaskName: string | null;
+}
+
+interface OrderedComment {
+  rowid: number;
+  comment_id: string;
+  user_id: string;
+  content: string;
+}
+
+interface MainTaskContext {
+  workspace_id: string;
+  title: string;
+}
+
+function getMainOwnerId(database: DatabaseSync): string | null {
+  const row = database.prepare(
+    `SELECT u.id
+       FROM users u
+       JOIN workspace_members_read_model m ON m.user_id = u.id
+      WHERE u.email = ? AND m.workspace_id = ? AND m.role = 'Owner'`,
+  ).get(MAIN_OWNER_EMAIL, MAIN_WORKSPACE_ID) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+function getTaskCreatorId(taskId: string, database: DatabaseSync): string | null {
+  const row = database.prepare(
+    `SELECT metadata_json
+       FROM event_store
+      WHERE aggregate_id = ? AND event_type = 'task.created'
+      ORDER BY aggregate_version
+      LIMIT 1`,
+  ).get(taskId) as { metadata_json: string } | undefined;
+  if (!row) return null;
+  try {
+    const metadata = JSON.parse(row.metadata_json) as { actor_id?: unknown };
+    return typeof metadata.actor_id === 'string' && metadata.actor_id ? metadata.actor_id : null;
+  } catch {
+    return null;
+  }
+}
+
+function isMainCommenter(userId: string, database: DatabaseSync): boolean {
+  const row = database.prepare(
+    `SELECT 1
+       FROM workspace_members_read_model
+      WHERE workspace_id = ? AND user_id = ? AND role = 'Commenter'`,
+  ).get(MAIN_WORKSPACE_ID, userId);
+  return Boolean(row);
+}
+
+function isMarker(content: string, marker: string): boolean {
+  return content.startsWith(marker);
+}
+
+function parseDecision(content: string): MainDiscussionOutcome | null {
+  if (isMarker(content, '【未達共識】')) {
+    const fields = [
+      '尚未解決的分歧',
+      '缺少的確認或資訊',
+      '下次重新思考前的建議',
+    ];
+    if (fields.every((field) => lineValue(content, field) !== null)) return 'no_consensus';
+    return null;
+  }
+  if (isMarker(content, '【結論：不實作】')) return 'no_implementation';
+  if (isMarker(content, '【結論】')) return 'implement';
+  return null;
+}
+
+function parseImplementationHandoff(content: string): {
+  workspaceName: string;
+  taskName: string;
+} | null {
+  const match = content.match(/^【實作任務】工作區：(.+?)｜TASK：(.+?)\s*$/u);
+  if (!match) return null;
+  const workspaceName = match[1].trim();
+  const taskName = match[2].trim();
+  if (!workspaceName || !taskName || /https?:\/\//iu.test(content)) return null;
+  return { workspaceName, taskName };
+}
+
+function loadOrderedComments(taskId: string, database: DatabaseSync): OrderedComment[] {
+  return database.prepare(
+    `SELECT rowid, comment_id, user_id, content
+       FROM comments
+      WHERE task_id = ?
+      ORDER BY rowid`,
+  ).all(taskId) as unknown as OrderedComment[];
+}
+
+export function resolveMainDiscussionConclusion(
+  taskId: string,
+  actorId: string,
+  now: Date,
+  database = db,
+): MainDiscussionConcludedPayload {
+  const task = database.prepare(
+    'SELECT workspace_id, title FROM tasks_read_model WHERE task_id = ?',
+  ).get(taskId) as MainTaskContext | undefined;
+  if (!task || task.workspace_id !== MAIN_WORKSPACE_ID || task.title === MAIN_POLICY_TITLE) {
+    throw new CommandError('不是可收尾的主工作區討論');
+  }
+
+  const ownerId = getMainOwnerId(database);
+  if (!ownerId || actorId !== ownerId) throw new CommandError('只有 user01 可以收尾主工作區討論');
+
+  const window = getMainDiscussionWindow(taskId, database);
+  if (!window) throw new CommandError('主工作區討論尚未開啟回覆窗口');
+
+  const dueMs = Date.parse(window.dueAt);
+  const nowMs = now.getTime();
+  if (Number.isNaN(dueMs) || Number.isNaN(nowMs)) throw new CommandError('討論窗口時間不合法');
+  if (nowMs < dueMs) throw new CommandError(`討論期限尚未到達：${window.dueAt}`);
+
+  const comments = loadOrderedComments(taskId, database);
+  const thought = comments.find((comment) => comment.comment_id === window.ownerThoughtCommentId);
+  const request = comments.find((comment) => comment.comment_id === window.requestCommentId);
+  if (!thought || thought.user_id !== ownerId || !isStructuredOwnerThought(thought.content)) {
+    throw new CommandError('收尾前必須保留完整的 OWNER想法');
+  }
+  if (!request || request.user_id !== ownerId || parseWaitHalfDays(request.content) !== window.waitHalfDays) {
+    throw new CommandError('收尾前必須保留合法的全員回覆通知');
+  }
+
+  const laterComments = comments.filter((comment) => comment.rowid > request.rowid);
+  const decisions = laterComments
+    .filter((comment) => comment.user_id === ownerId)
+    .map((comment) => ({ comment, outcome: parseDecision(comment.content) }))
+    .filter((entry): entry is { comment: OrderedComment; outcome: MainDiscussionOutcome } => entry.outcome !== null);
+  const latestDecision = decisions.at(-1);
+  if (!latestDecision) throw new CommandError('尚未留下合法的主工作區結論');
+
+  if (latestDecision.outcome === 'no_consensus') {
+    return {
+      status: 'Done',
+      outcome: latestDecision.outcome,
+      windowOpenedAt: window.openedAt,
+      windowDueAt: window.dueAt,
+      ownerThoughtCommentId: window.ownerThoughtCommentId,
+      requestCommentId: window.requestCommentId,
+      decisionCommentId: latestDecision.comment.comment_id,
+      confirmationCommentId: null,
+      handoffCommentId: null,
+      implementationWorkspaceName: null,
+      implementationTaskName: null,
+    };
+  }
+
+  const creatorId = getTaskCreatorId(taskId, database);
+  const confirmation = laterComments.find((comment) => (
+    comment.rowid > latestDecision.comment.rowid
+    && isMarker(comment.content, '【確認結論】')
+    && (creatorId === ownerId
+      ? isMainCommenter(comment.user_id, database)
+      : comment.user_id === creatorId)
+  ));
+  if (!confirmation) throw new CommandError('尚未取得建立者或 Commenter 的確認結論');
+
+  if (latestDecision.outcome === 'no_implementation') {
+    return {
+      status: 'Done',
+      outcome: latestDecision.outcome,
+      windowOpenedAt: window.openedAt,
+      windowDueAt: window.dueAt,
+      ownerThoughtCommentId: window.ownerThoughtCommentId,
+      requestCommentId: window.requestCommentId,
+      decisionCommentId: latestDecision.comment.comment_id,
+      confirmationCommentId: confirmation.comment_id,
+      handoffCommentId: null,
+      implementationWorkspaceName: null,
+      implementationTaskName: null,
+    };
+  }
+
+  const handoff = laterComments
+    .filter((comment) => comment.rowid > confirmation.rowid && comment.user_id === ownerId)
+    .map((comment) => ({ comment, handoff: parseImplementationHandoff(comment.content) }))
+    .find((entry): entry is { comment: OrderedComment; handoff: { workspaceName: string; taskName: string } } => entry.handoff !== null);
+  if (!handoff) throw new CommandError('尚未留下合法的實作任務交接');
+
+  return {
+    status: 'Done',
+    outcome: latestDecision.outcome,
+    windowOpenedAt: window.openedAt,
+    windowDueAt: window.dueAt,
+    ownerThoughtCommentId: window.ownerThoughtCommentId,
+    requestCommentId: window.requestCommentId,
+    decisionCommentId: latestDecision.comment.comment_id,
+    confirmationCommentId: confirmation.comment_id,
+    handoffCommentId: handoff.comment.comment_id,
+    implementationWorkspaceName: handoff.handoff.workspaceName,
+    implementationTaskName: handoff.handoff.taskName,
+  };
+}

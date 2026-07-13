@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
 import { appendEvent, resetProjections, loadEvents, CommandError } from './eventStore';
+import { createComment } from './comment';
 import { MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 import {
   createTask,
@@ -22,6 +23,16 @@ import {
   registerTaskProjections,
 } from './task';
 import { getMemberRole, getMembershipStatus, inviteMember } from './member';
+
+const OWNER_THOUGHT = `【OWNER想法】
+現況／問題：流程沒有收斂點
+預期價值：讓討論能準時結束
+風險與反對理由：可能壓縮複雜議題
+現行可替代方案：人工提醒
+初步判斷：先採固定窗口
+希望成員確認的問題：兩天是否足夠`;
+const TWO_DAY_REQUEST = `【全員回覆：2天】
+請補充或表示已閱讀。`;
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
@@ -401,33 +412,42 @@ assert.deepStrictEqual(
   { priority: 'Medium', assigneeId: null, projectId: null, dueAt: null },
 );
 
-// ── 主討論 Todo → Doing：狀態與負責人在單一事件內更新 ──
+// ── 主討論只允許 OWNER 在期限與雙方證據完成後 Todo → Done ──
 assert.throws(
   () => changeTaskStatus('main-user', discussionId, 'Doing', db),
   { name: 'CommandError', message: '只有 user01 可以改變主工作區 task 狀態' },
 );
-const beforeStartEvents = loadEvents(discussionId, db);
-changeTaskStatus('main-owner', discussionId, 'Doing', db);
-const started = getTask(discussionId, db)!;
-const afterStartEvents = loadEvents(discussionId, db);
-assert.strictEqual(started.status, 'Doing');
-assert.strictEqual(started.assignee_id, 'main-owner');
-assert.strictEqual(afterStartEvents.length, beforeStartEvents.length + 1, '開始討論只新增一個 event');
-assert.strictEqual(afterStartEvents.at(-1)?.event_type, 'task.discussion_started');
-assert.deepStrictEqual(afterStartEvents.at(-1)?.payload, { status: 'Doing', assigneeId: 'main-owner' });
-
-const beforeStartedNormalize = { eventCount: afterStartEvents.length, version: started.version };
-normalizeMainDiscussion('main-owner', discussionId, db);
-assert.strictEqual(getTask(discussionId, db)?.assignee_id, 'main-owner', 'Doing normalize 保留負責人');
-assert.strictEqual(loadEvents(discussionId, db).length, beforeStartedNormalize.eventCount, '已合規時不追加 event');
-assert.strictEqual(getTask(discussionId, db)?.version, beforeStartedNormalize.version, '已合規時 version 不變');
 assert.throws(
-  () => changeTaskStatus('main-user', discussionId, 'Review', db),
-  { name: 'CommandError', message: '只有 user01 可以改變主工作區 task 狀態' },
+  () => changeTaskStatus('main-owner', discussionId, 'Doing', db),
+  { name: 'CommandError', message: /主工作區討論只允許 Todo/ },
 );
-changeTaskStatus('main-owner', discussionId, 'Review', db);
-assert.strictEqual(getTask(discussionId, db)?.status, 'Review', 'discussion_started replay 後應允許 Doing → Review');
-assert.strictEqual(loadEvents(discussionId, db).at(-1)?.event_type, 'task.status_changed');
+assert.throws(
+  () => changeTaskStatus('main-owner', discussionId, 'Review', db),
+  { name: 'CommandError', message: /主工作區討論只允許 Todo/ },
+);
+const beforeDiscussionEvidence = loadEvents(discussionId, db).length;
+assert.throws(
+  () => changeTaskStatus('main-owner', discussionId, 'Done', db, new Date('2026-07-15T08:00:00.000Z')),
+  { name: 'CommandError', message: /主工作區討論尚未開啟回覆窗口/ },
+);
+assert.strictEqual(loadEvents(discussionId, db).length, beforeDiscussionEvidence, '缺少窗口時不可追加 event');
+
+createComment(discussionId, 'main-owner', OWNER_THOUGHT, db, new Date('2026-07-14T08:00:00.000Z'));
+createComment(discussionId, 'main-owner', TWO_DAY_REQUEST, db, new Date('2026-07-14T08:00:00.000Z'));
+createComment(discussionId, 'main-owner', '【結論】\n採用。', db, new Date('2026-07-14T08:00:00.000Z'));
+createComment(discussionId, 'main-user', '【確認結論】同意。', db, new Date('2026-07-14T08:00:00.000Z'));
+createComment(discussionId, 'main-owner', '【實作任務】工作區：目標工作區｜TASK：實作討論方向', db, new Date('2026-07-14T08:00:00.000Z'));
+changeTaskStatus('main-owner', discussionId, 'Done', db, new Date('2026-07-17T08:00:00.000Z'));
+const concludedDiscussion = getTask(discussionId, db)!;
+assert.strictEqual(concludedDiscussion.status, 'Done');
+assert.strictEqual(concludedDiscussion.assignee_id, null, '收尾不可指派 OWNER');
+assert.strictEqual(loadEvents(discussionId, db).at(-1)?.event_type, 'task.main_discussion_concluded');
+assert.strictEqual((loadEvents(discussionId, db).at(-1)?.payload as { outcome: string }).outcome, 'implement');
+assert.throws(
+  () => changeTaskStatus('main-owner', discussionId, 'Todo', db, new Date('2026-07-18T08:00:00.000Z')),
+  { name: 'CommandError', message: /主工作區討論只允許 Todo/ },
+  'Done 不可回退',
+);
 
 // ── legacy Todo 討論正規化；description/status 保留且第二次完全 no-op ──
 const legacyTodoId = 'legacy-main-todo';
@@ -477,7 +497,7 @@ normalizeMainDiscussion('main-owner', legacyTodoId, db);
 assert.strictEqual(loadEvents(legacyTodoId, db).length, normalizedTodoSnapshot.eventCount);
 assert.strictEqual(getTask(legacyTodoId, db)?.version, normalizedTodoSnapshot.version);
 
-// ── legacy 非 Todo 討論正規化時保留既有負責人 ──
+// ── legacy 非 Todo 討論正規化時回到 Todo 並清空負責人 ──
 const legacyDoingId = 'legacy-main-doing';
 appendEvent(
   'Task',
@@ -513,9 +533,9 @@ assert.deepStrictEqual(
   {
     title: '[討論] 進行中的舊方向',
     description: '進行中內容',
-    status: 'Doing',
+    status: 'Todo',
     priority: 'Medium',
-    assigneeId: 'main-owner',
+    assigneeId: null,
     projectId: null,
     dueAt: null,
   },

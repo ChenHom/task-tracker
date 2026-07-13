@@ -6,6 +6,7 @@ import { createComment, listComments } from './comment';
 import {
   getMainDiscussionWindow,
   recordMainDiscussionWindowForComment,
+  resolveMainDiscussionConclusion,
 } from './mainDiscussion';
 import {
   MAIN_OWNER_EMAIL,
@@ -60,6 +61,40 @@ function addThought(taskId: string, commentId = `${taskId}-thought`, userId = 'o
 function addRequest(taskId: string, content: string, userId = 'owner', commentId = `${taskId}-request`): string {
   addComment(taskId, commentId, userId, content);
   return commentId;
+}
+
+function seedCreatedTask(taskId: string, creatorId: string): void {
+  seedTask(taskId);
+  db.prepare(
+    `INSERT INTO event_store
+       (aggregate_type, aggregate_id, aggregate_version, event_type, payload_json, metadata_json, occurred_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'Task',
+    taskId,
+    1,
+    'task.created',
+    JSON.stringify({ workspaceId: MAIN_WORKSPACE_ID }),
+    JSON.stringify({ actor_id: creatorId }),
+    OPENED_AT,
+  );
+}
+
+function openForConclusion(taskId: string, creatorId: string): { thoughtId: string; requestId: string } {
+  seedCreatedTask(taskId, creatorId);
+  const thoughtId = `${taskId}-thought`;
+  const requestId = `${taskId}-request`;
+  addThought(taskId, thoughtId);
+  addRequest(taskId, TWO_DAY_REQUEST, 'owner', requestId);
+  recordMainDiscussionWindowForComment({
+    taskId,
+    userId: 'owner',
+    commentId: requestId,
+    content: TWO_DAY_REQUEST,
+    createdAt: OPENED_AT,
+  }, db);
+  assert.ok(getMainDiscussionWindow(taskId, db));
+  return { thoughtId, requestId };
 }
 
 seedTask('task-1');
@@ -271,5 +306,116 @@ assert.throws(
 );
 assert.strictEqual(listComments('task-16', db).length, 0, '失敗通知不可留下 comment');
 assert.strictEqual(getMainDiscussionWindow('task-16', db), null, '失敗通知不可留下 window');
+
+const CLOSE_NOW = '2026-07-17T08:00:00.000Z';
+const implementEvidence = openForConclusion('task-implement', 'user02');
+const implementConclusionId = 'task-implement-conclusion';
+const implementConfirmationId = 'task-implement-confirmation';
+const implementHandoffId = 'task-implement-handoff';
+addComment('task-implement', implementConclusionId, 'owner', '【結論】\n採用此方向。');
+addComment('task-implement', implementConfirmationId, 'user02', '【確認結論】同意。');
+addComment('task-implement', implementHandoffId, 'owner', '【實作任務】工作區：Task Tracker｜TASK：加入主工作區收尾守門');
+assert.deepStrictEqual(
+  resolveMainDiscussionConclusion('task-implement', 'owner', new Date(CLOSE_NOW), db),
+  {
+    status: 'Done',
+    outcome: 'implement',
+    windowOpenedAt: OPENED_AT,
+    windowDueAt: '2026-07-16T08:00:00.000Z',
+    ownerThoughtCommentId: implementEvidence.thoughtId,
+    requestCommentId: implementEvidence.requestId,
+    decisionCommentId: implementConclusionId,
+    confirmationCommentId: implementConfirmationId,
+    handoffCommentId: implementHandoffId,
+    implementationWorkspaceName: 'Task Tracker',
+    implementationTaskName: '加入主工作區收尾守門',
+  },
+);
+
+const noImplementationEvidence = openForConclusion('task-no-implementation', 'user02');
+const noImplementationConclusionId = 'task-no-implementation-conclusion';
+const noImplementationConfirmationId = 'task-no-implementation-confirmation';
+addComment('task-no-implementation', noImplementationConclusionId, 'owner', '【結論：不實作】\n沿用現行替代方案。');
+addComment('task-no-implementation', noImplementationConfirmationId, 'user02', '【確認結論】同意。');
+assert.deepStrictEqual(
+  resolveMainDiscussionConclusion('task-no-implementation', 'owner', new Date(CLOSE_NOW), db),
+  {
+    status: 'Done',
+    outcome: 'no_implementation',
+    windowOpenedAt: OPENED_AT,
+    windowDueAt: '2026-07-16T08:00:00.000Z',
+    ownerThoughtCommentId: noImplementationEvidence.thoughtId,
+    requestCommentId: noImplementationEvidence.requestId,
+    decisionCommentId: noImplementationConclusionId,
+    confirmationCommentId: noImplementationConfirmationId,
+    handoffCommentId: null,
+    implementationWorkspaceName: null,
+    implementationTaskName: null,
+  },
+);
+
+const noConsensusEvidence = openForConclusion('task-no-consensus', 'user02');
+const noConsensusId = 'task-no-consensus-decision';
+addComment('task-no-consensus', noConsensusId, 'owner', `【未達共識】
+尚未解決的分歧：對風險仍有不同判斷
+缺少的確認或資訊：需要實際數據
+下次重新思考前的建議：補齊數據後另開新 TASK`);
+assert.deepStrictEqual(
+  resolveMainDiscussionConclusion('task-no-consensus', 'owner', new Date(CLOSE_NOW), db),
+  {
+    status: 'Done',
+    outcome: 'no_consensus',
+    windowOpenedAt: OPENED_AT,
+    windowDueAt: '2026-07-16T08:00:00.000Z',
+    ownerThoughtCommentId: noConsensusEvidence.thoughtId,
+    requestCommentId: noConsensusEvidence.requestId,
+    decisionCommentId: noConsensusId,
+    confirmationCommentId: null,
+    handoffCommentId: null,
+    implementationWorkspaceName: null,
+    implementationTaskName: null,
+  },
+  '沒有成員回覆仍可在期限後走未達共識',
+);
+
+const beforeDeadlineEvidence = openForConclusion('task-before-deadline', 'user02');
+addComment('task-before-deadline', 'task-before-deadline-decision', 'owner', '【未達共識】\n尚未解決的分歧：x\n缺少的確認或資訊：x\n下次重新思考前的建議：x');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-before-deadline', 'owner', new Date('2026-07-15T08:00:00.000Z'), db),
+  { name: 'CommandError', message: '討論期限尚未到達：2026-07-16T08:00:00.000Z' },
+  '截止前不可完成',
+);
+assert.ok(beforeDeadlineEvidence);
+
+const ownerCreatedEvidence = openForConclusion('task-owner-created', 'owner');
+const ownerCreatedConclusionId = 'task-owner-created-conclusion';
+const ownerCreatedConfirmationId = 'task-owner-created-confirmation';
+addComment('task-owner-created', ownerCreatedConclusionId, 'owner', '【結論：不實作】\n沿用現行方案。');
+addComment('task-owner-created', ownerCreatedConfirmationId, 'user03', '【確認結論】已閱讀並同意。');
+assert.strictEqual(
+  resolveMainDiscussionConclusion('task-owner-created', 'owner', new Date(CLOSE_NOW), db).outcome,
+  'no_implementation',
+  'OWNER 自建且 Commenter 確認後可形成不實作以外的結論前置 evidence',
+);
+
+const invalidHandoffEvidence = openForConclusion('task-invalid-handoff', 'user02');
+addComment('task-invalid-handoff', 'task-invalid-handoff-conclusion', 'owner', '【結論】\n採用。');
+addComment('task-invalid-handoff', 'task-invalid-handoff-confirmation', 'user02', '【確認結論】同意。');
+addComment('task-invalid-handoff', 'task-invalid-handoff-link', 'owner', '【實作任務】工作區：https://192.168.50.109/tracker｜TASK：不能提供連結');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-invalid-handoff', 'owner', new Date(CLOSE_NOW), db),
+  CommandError,
+  '實作交接不得是 URL',
+);
+assert.ok(invalidHandoffEvidence);
+
+const editedRequiredEvidence = openForConclusion('task-edited-required', 'user02');
+db.prepare('UPDATE comments SET content = ? WHERE comment_id = ?').run('普通留言', editedRequiredEvidence.requestId);
+addComment('task-edited-required', 'task-edited-required-decision', 'owner', '【未達共識】\n尚未解決的分歧：x\n缺少的確認或資訊：x\n下次重新思考前的建議：x');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-edited-required', 'owner', new Date(CLOSE_NOW), db),
+  CommandError,
+  '必要 request 被修改後不可收尾',
+);
 
 console.log('mainDiscussion.test.ts OK');

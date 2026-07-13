@@ -7,6 +7,10 @@ import { getWorkspaceStatus } from './workspace';
 import { getMemberRole, getMembershipStatus, hasPermission, inviteMember } from './member';
 import { getUserIdByEmail } from './auth';
 import { MAIN_DISCUSSION_PREFIX, MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
+import {
+  resolveMainDiscussionConclusion,
+  type MainDiscussionConcludedPayload,
+} from './mainDiscussion';
 
 // ── 值域 ───────────────────────────────────────────────────────────
 const ACTIVE_STATUSES = ['Todo', 'Doing', 'Review', 'Done'] as const;
@@ -75,6 +79,10 @@ function reduce(state: TaskState, e: StoredEvent): TaskState {
     case 'task.status_changed':
     case 'task.discussion_started':
       return { ...state, status: (e.payload as { status: TaskStatus }).status };
+    case 'task.main_discussion_concluded':
+      return { ...state, status: (e.payload as MainDiscussionConcludedPayload).status };
+    case 'task.main_discussion_normalized':
+      return { ...state, status: (e.payload as { status?: TaskStatus }).status ?? state.status };
     case 'task.archived':
       return { ...state, status: 'Archived' };
     case 'task.deleted':
@@ -200,20 +208,31 @@ export function changeTaskDescription(actorId: string, taskId: string, descripti
   appendEvent('Task', taskId, version, 'task.description_changed', { description: clean }, meta(actorId), database);
 }
 
-export function changeTaskStatus(actorId: string, taskId: string, status: unknown, database = db): void {
+export function changeTaskStatus(
+  actorId: string,
+  taskId: string,
+  status: unknown,
+  database = db,
+  now = new Date(),
+): void {
   const { state, version } = loadEditableTask(taskId, database);
   const target = validateTargetStatus(status);
-  const allowed = TRANSITIONS[state.status as ActiveStatus];
-  if (!allowed.includes(target)) throw new CommandError(`不允許的狀態轉換：${state.status} → ${target}`);
 
   if (getTaskWorkspaceId(taskId, database) === MAIN_WORKSPACE_ID) {
+    const task = getTask(taskId, database)!;
     const ownerId = getUserIdByEmail(MAIN_OWNER_EMAIL, database);
     if (actorId !== ownerId) throw new CommandError('只有 user01 可以改變主工作區 task 狀態');
-    if (state.status === 'Todo' && target === 'Doing') {
-      appendEvent('Task', taskId, version, 'task.discussion_started', { status: target, assigneeId: ownerId }, meta(actorId), database);
-      return;
+    if (task.title === MAIN_POLICY_TITLE) throw new CommandError('主工作區規則 task 不使用討論收尾流程');
+    if (state.status !== 'Todo' || target !== 'Done') {
+      throw new CommandError(`主工作區討論只允許 Todo → Done：${state.status} → ${target}`);
     }
+    const payload = resolveMainDiscussionConclusion(taskId, actorId, now, database);
+    appendEvent('Task', taskId, version, 'task.main_discussion_concluded', payload, meta(actorId), database);
+    return;
   }
+
+  const allowed = TRANSITIONS[state.status as ActiveStatus];
+  if (!allowed.includes(target)) throw new CommandError(`不允許的狀態轉換：${state.status} → ${target}`);
   appendEvent('Task', taskId, version, 'task.status_changed', { status: target }, meta(actorId), database);
 }
 
@@ -227,9 +246,11 @@ export function normalizeMainDiscussion(actorId: string, taskId: string, databas
   }
 
   const title = task.title.startsWith(MAIN_DISCUSSION_PREFIX) ? task.title : `${MAIN_DISCUSSION_PREFIX} ${task.title}`;
-  const assigneeId = task.status === 'Todo' ? null : task.assignee_id;
+  const status = task.status === 'Doing' || task.status === 'Review' ? 'Todo' : task.status;
+  const assigneeId = null;
   if (
     task.title === title
+    && task.status === status
     && task.priority === 'Medium'
     && task.assignee_id === assigneeId
     && task.project_id === null
@@ -242,7 +263,7 @@ export function normalizeMainDiscussion(actorId: string, taskId: string, databas
     taskId,
     version,
     'task.main_discussion_normalized',
-    { title, priority: 'Medium', assigneeId, projectId: null, dueAt: null },
+    { title, status, priority: 'Medium', assigneeId, projectId: null, dueAt: null },
     meta(actorId),
     database,
   );
@@ -381,6 +402,12 @@ export function registerTaskProjections(): void {
       .prepare('UPDATE tasks_read_model SET status = ?, assignee_id = ?, version = ?, updated_at = ? WHERE task_id = ?')
       .run(p.status, p.assigneeId, e.aggregate_version, e.occurred_at, e.aggregate_id);
   });
+  registerProjection('task.main_discussion_concluded', (e, database) => {
+    const p = e.payload as MainDiscussionConcludedPayload;
+    database
+      .prepare('UPDATE tasks_read_model SET status = ?, assignee_id = NULL, version = ?, updated_at = ? WHERE task_id = ?')
+      .run(p.status, e.aggregate_version, e.occurred_at, e.aggregate_id);
+  });
   registerProjection('task.priority_changed', (e, database) => setCol('priority')(e, database, (e.payload as { priority: string }).priority));
   registerProjection('task.assignee_changed', (e, database) => setCol('assignee_id')(e, database, (e.payload as { assigneeId: string | null }).assigneeId));
   registerProjection('task.due_date_changed', (e, database) => setCol('due_at')(e, database, (e.payload as { dueAt: string | null }).dueAt));
@@ -393,6 +420,7 @@ export function registerTaskProjections(): void {
   registerProjection('task.main_discussion_normalized', (e, database) => {
     const p = e.payload as {
       title: string;
+      status?: TaskStatus;
       priority: Priority;
       assigneeId: string | null;
       projectId: string | null;
@@ -401,15 +429,16 @@ export function registerTaskProjections(): void {
     database
       .prepare(
         `UPDATE tasks_read_model
-            SET title = ?, priority = ?, assignee_id = ?, project_id = ?, due_at = ?, version = ?, updated_at = ?
+            SET title = ?, status = COALESCE(?, status), priority = ?, assignee_id = ?, project_id = ?, due_at = ?, version = ?, updated_at = ?
           WHERE task_id = ?`,
       )
-      .run(p.title, p.priority, p.assigneeId, p.projectId, p.dueAt, e.aggregate_version, e.occurred_at, e.aggregate_id);
+      .run(p.title, p.status ?? null, p.priority, p.assigneeId, p.projectId, p.dueAt, e.aggregate_version, e.occurred_at, e.aggregate_id);
   });
   registerProjection('task.archived', (e, database) => setCol('status')(e, database, 'Archived'));
   registerProjection('task.deleted', (e, database) => {
     database.prepare('DELETE FROM tasks_read_model WHERE task_id = ?').run(e.aggregate_id);
     database.prepare('DELETE FROM notifications_read_model WHERE source_task_id = ?').run(e.aggregate_id);
+    database.prepare('DELETE FROM main_discussion_windows WHERE task_id = ?').run(e.aggregate_id);
   });
 }
 
