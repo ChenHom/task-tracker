@@ -327,6 +327,11 @@ assert.match(quotaBlock, /const userId = requireAuth\(req, res\)/, 'quota API �
 
 assert.match(workspacePatchBlock, /requirePermission\(req, res, workspaceId, 'Admin'\)/, 'workspace rename 仍需 Admin');
 assert.match(
+  workspacePatchBlock,
+  /if\s*\(userEmail\s*!==\s*'user01@test\.local'\s*&&\s*userEmail\s*!==\s*'user09@test\.local'\)/,
+  'workspace archive 應限制只有 user01 與 user09 能夠執行',
+);
+assert.match(
   workspaceMembersBlock,
   /if \(req\.method === 'POST'\)\s*{\s*const userId = requirePermission\(req, res, workspaceId, 'Admin'\)/,
   'member invite 仍需 Admin',

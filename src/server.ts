@@ -317,6 +317,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const userId = requirePermission(req, res, workspaceId, 'Admin');
     if (!userId) return;
     try {
+      const userRow = db.prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined;
+      const userEmail = userRow?.email.trim().toLowerCase();
+      if (userEmail !== 'user01@test.local' && userEmail !== 'user09@test.local') {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: '權限不足：只有特定系統管理員 (user01, user09) 能夠封存工作區' }));
+        return;
+      }
       archiveWorkspace(userId, workspaceId);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));

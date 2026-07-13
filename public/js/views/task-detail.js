@@ -60,7 +60,7 @@ export async function openTaskDetailModal(taskId, {
   const canEditDescription = canManageTask
     || (currentRole === 'Commenter' && Boolean(currentUserId) && currentTask.creator_id === currentUserId);
 
-  let titleInput, descInput, unsavedBadge, saveBtn;
+  let titleInput, descInput, unsavedBadge, saveBtn, commUnsavedBadge;
   let overlay, container, closeBtn;
   let escHandler, hashChangeHandler;
   let activeReplyBoxClickCloseHandler; // Track reply box click close handler to prevent memory leaks
@@ -317,7 +317,31 @@ export async function openTaskDetailModal(taskId, {
     unsavedBadge = el('div', { class: 'unsaved-badge-popup' }, '還未');
     saveBtn = el('button', { type: 'button', class: 'detail-save-btn' }, '儲存');
     saveBtn.onclick = async () => {
-      await saveTask();
+      if (unsavedBadge) {
+        unsavedBadge.textContent = '等待';
+        unsavedBadge.offsetHeight;
+        showUnsavedBadge();
+      }
+
+      const savePromise = saveTask();
+      const delayPromise = new Promise(resolve => setTimeout(resolve, 400));
+      const [success] = await Promise.all([savePromise, delayPromise]);
+
+      if (success) {
+        hideUnsavedBadge();
+        await new Promise(resolve => setTimeout(resolve, 400));
+        if (unsavedBadge) {
+          unsavedBadge.textContent = '完成';
+          unsavedBadge.offsetHeight;
+          showUnsavedBadge();
+        }
+      } else {
+        hideUnsavedBadge();
+        await new Promise(resolve => setTimeout(resolve, 400));
+        if (unsavedBadge) {
+          unsavedBadge.textContent = '還未';
+        }
+      }
     };
     saveWrapper.appendChild(unsavedBadge);
     saveWrapper.appendChild(saveBtn);
@@ -372,8 +396,14 @@ export async function openTaskDetailModal(taskId, {
 
     const commWrapper = el('div', { class: 'autocomplete-comm-wrapper' });
     commWrapper.appendChild(commInput);
+    
+    const commSaveWrapper = el('div', { class: 'save-badge-wrapper' });
+    commUnsavedBadge = el('div', { class: 'unsaved-badge-popup' }, '完成');
+    commSaveWrapper.appendChild(commUnsavedBadge);
+    commSaveWrapper.appendChild(commSubmit);
+
     commForm.appendChild(commWrapper);
-    commForm.appendChild(commSubmit);
+    commForm.appendChild(commSaveWrapper);
     commSec.appendChild(commForm);
     bindAutocomplete(commInput, commWrapper, cachedMembers, () => cachedComments, memberMap, cachedTasks);
   }
@@ -514,7 +544,7 @@ export async function openTaskDetailModal(taskId, {
           const actions = el('div', { class: 'comment-actions' });
           const editBtn = el('button', { type: 'button', class: 'btn-secondary' }, '編輯');
           
-          editBtn.onclick = () => {
+          editBtn.onclick = async () => {
             if (editBtn.textContent === '編輯') {
               const input = el('textarea', { class: 'comment-edit-textarea', rows: '7' });
               input.value = c.content;
@@ -539,10 +569,15 @@ export async function openTaskDetailModal(taskId, {
             } else {
               const input = bodyContainer.querySelector('.comment-edit-textarea');
               if (input) {
-                saveEdit(input.value);
+                await saveEdit(input.value);
               }
             }
           };
+
+          const editSaveWrapper = el('div', { class: 'save-badge-wrapper' });
+          const editUnsavedBadge = el('div', { class: 'unsaved-badge-popup' }, '完成');
+          editSaveWrapper.appendChild(editUnsavedBadge);
+          editSaveWrapper.appendChild(editBtn);
 
           /**
            * Submits updated comment content modifications to backend client endpoints.
@@ -555,15 +590,36 @@ export async function openTaskDetailModal(taskId, {
               alert('留言內容不可為空！');
               return;
             }
+            if (editUnsavedBadge) {
+              editUnsavedBadge.textContent = '等待';
+              editUnsavedBadge.style.transform = 'translateX(0)';
+              editUnsavedBadge.style.opacity = '1';
+            }
             try {
               await api(`/api/comments/${c.comment_id}`, { method: 'PATCH', body: { content: val } });
               await loadComments();
+              if (editUnsavedBadge) {
+                editUnsavedBadge.style.transform = 'translateX(100%)';
+                editUnsavedBadge.style.opacity = '0';
+                await new Promise(resolve => setTimeout(resolve, 400));
+                editUnsavedBadge.textContent = '完成';
+                editUnsavedBadge.style.transform = 'translateX(0)';
+                editUnsavedBadge.style.opacity = '1';
+                setTimeout(() => {
+                  editUnsavedBadge.style.transform = 'translateX(100%)';
+                  editUnsavedBadge.style.opacity = '0';
+                }, 1500);
+              }
             } catch (err) {
+              if (editUnsavedBadge) {
+                editUnsavedBadge.style.transform = 'translateX(100%)';
+                editUnsavedBadge.style.opacity = '0';
+              }
               alert(err.message);
             }
           }
 
-          actions.appendChild(editBtn);
+          actions.appendChild(editSaveWrapper);
           const deleteBtn = el('button', { type: 'button', class: 'btn-danger' }, '刪除留言');
           deleteBtn.onclick = async () => {
             if (!confirm('確定要刪除這則留言嗎？')) return;
@@ -606,13 +662,34 @@ export async function openTaskDetailModal(taskId, {
         alert('請輸入留言內容！');
         return;
       }
+      if (commUnsavedBadge) {
+        commUnsavedBadge.textContent = '等待';
+        commUnsavedBadge.style.transform = 'translateX(0)';
+        commUnsavedBadge.style.opacity = '1';
+      }
       try {
         await api(`/api/tasks/${taskId}/comments`, { method: 'POST', body: { content } });
         commInput.value = '';
         commInput.blur();
         commInput.style.height = '38px';
         await loadComments();
+        if (commUnsavedBadge) {
+          commUnsavedBadge.style.transform = 'translateX(100%)';
+          commUnsavedBadge.style.opacity = '0';
+          await new Promise(resolve => setTimeout(resolve, 400));
+          commUnsavedBadge.textContent = '完成';
+          commUnsavedBadge.style.transform = 'translateX(0)';
+          commUnsavedBadge.style.opacity = '1';
+          setTimeout(() => {
+            commUnsavedBadge.style.transform = 'translateX(100%)';
+            commUnsavedBadge.style.opacity = '0';
+          }, 1500);
+        }
       } catch (err) {
+        if (commUnsavedBadge) {
+          commUnsavedBadge.style.transform = 'translateX(100%)';
+          commUnsavedBadge.style.opacity = '0';
+        }
         commErr.textContent = err.message;
         commErr.style.display = 'block';
       }

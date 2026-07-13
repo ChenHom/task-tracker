@@ -90,6 +90,30 @@ class MockElement {
 
   blur() {}
   focus() {}
+
+  querySelector(selector: string): MockElement | null {
+    if (selector.startsWith('.')) {
+      const className = selector.slice(1);
+      const findRec = (node: MockElement): MockElement | null => {
+        if (node.classList && node.classList.contains(className)) return node;
+        for (const child of node.childNodes) {
+          const res = findRec(child);
+          if (res) return res;
+        }
+        return null;
+      };
+      return findRec(this);
+    }
+    const findRecTag = (node: MockElement): MockElement | null => {
+      if (node.tag === selector) return node;
+      for (const child of node.childNodes) {
+        const res = findRecTag(child);
+        if (res) return res;
+      }
+      return null;
+    };
+    return findRecTag(this);
+  }
 }
 
 const mockDocument: any = {
@@ -192,7 +216,7 @@ const sandbox = {
   document: mockDocument,
   window: mockWindow,
   location: mockLocation,
-  alert: () => {},
+  alert: (msg?: any) => {},
   console: console,
   Event,
   URL,
@@ -397,6 +421,34 @@ async function runTests() {
   await new Promise(resolve => setTimeout(resolve, 350));
   assert.strictEqual(unsavedBadge.textContent, '還未', 'Badge text should reset to "還未" after focus transition delay');
 
+  // Test 4.5: Description save on mobile (window.innerWidth <= 768) should trigger unsavedBadge transition
+  mockWindow.innerWidth = 375; // Set to mobile width
+
+  // Trigger Save button click
+  const saveBtnClick = saveBtn.onclick;
+  assert.ok(saveBtnClick, 'Save button should have click handler');
+  
+  // Set new description value
+  descInput.value = 'New Mobile Description';
+  
+  // Mock the api function in sandbox to simulate successful description patch
+  const patchedBodies: any[] = [];
+  sandbox.api = async (url: string, init: any) => {
+    patchedBodies.push(init?.body);
+    assert.strictEqual(unsavedBadge.textContent, '等待', 'Badge text should be "等待" during saving');
+    return [];
+  };
+
+  await saveBtnClick();
+
+  // Verify description change was patched, and badge text is "完成"
+  assert.strictEqual(patchedBodies.length, 1, 'Should patch description once');
+  assert.strictEqual(patchedBodies[0]?.description, 'New Mobile Description', 'Should patch new description');
+  assert.strictEqual(unsavedBadge.textContent, '完成', 'Badge text should be "完成" after saving');
+
+  // Cleanup
+  delete mockWindow.innerWidth;
+
   // Test 5: Verify body.classList.classes for modal-open state and backToTopBtn visibility
   listeners['keydown'] = [];
   mockLocation.hash = '#/task/task-1';
@@ -456,6 +508,86 @@ async function runTests() {
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'select'), null, 'Commenter should not have task attribute selects');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'input'), null, 'Commenter should not have task, date, or upload inputs');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '刪除'), null, 'Commenter should not have attachment delete');
+
+  // Test 6.1: Comment creation badge on mobile (window.innerWidth <= 768)
+  {
+    mockWindow.innerWidth = 375; // Set to mobile
+    
+    const commTextarea = findElement(commenterOverlay, (node) => node.tag === 'textarea' && node.classList.contains('comment-textarea'));
+    const commFormEl = findElement(commenterOverlay, (node) => node.tag === 'form' && node.classList.contains('comment-form'));
+    assert.ok(commTextarea && commFormEl, 'Comment input and form should exist');
+
+    const commUnsavedBadge = findElement(commenterOverlay, (node) => node.tag === 'div' && node.classList.contains('unsaved-badge-popup') && node.textContent === '完成');
+    assert.ok(commUnsavedBadge, 'Comment submit badge should exist');
+    
+    commTextarea.value = 'New mobile comment content';
+    
+    const postedComments: any[] = [];
+    sandbox.api = async (path: string, options?: any) => {
+      if (path.endsWith('/comments')) {
+        if (options?.method === 'POST') {
+          postedComments.push(options.body);
+          assert.strictEqual(commUnsavedBadge.textContent, '等待', 'Comment badge should show "等待" during submit');
+        }
+        return [];
+      }
+      return [];
+    };
+    
+    const mockSubmitEvent = {
+      preventDefault: () => {}
+    };
+    
+    assert.ok(commFormEl.onsubmit, 'Comment form should have an onsubmit handler');
+    await commFormEl.onsubmit(mockSubmitEvent);
+    assert.strictEqual(postedComments.length, 1, 'Should post a comment');
+    assert.strictEqual(postedComments[0]?.content, 'New mobile comment content');
+    assert.strictEqual(commUnsavedBadge.textContent, '完成', 'Comment badge should show "完成" after submit');
+    
+    // Cleanup
+    delete mockWindow.innerWidth;
+  }
+
+  // Test 6.2: Comment edit badge on mobile (window.innerWidth <= 768)
+  {
+    mockWindow.innerWidth = 375; // Set to mobile
+    
+    const editBtn = findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '編輯');
+    assert.ok(editBtn && editBtn.onclick, 'Edit button should exist with click handler');
+    
+    const editUnsavedBadge = findElement(commenterOverlay, (node) => node.tag === 'div' && node.classList.contains('unsaved-badge-popup') && node.textContent === '完成');
+    assert.ok(editUnsavedBadge, 'Edit badge should exist');
+
+    // Trigger edit mode
+    await editBtn.onclick();
+    assert.strictEqual(editBtn.textContent, '儲存', 'Button text should toggle to 儲存');
+    
+    const editInput = findElement(commenterOverlay, (node) => node.tag === 'textarea' && node.classList.contains('comment-edit-textarea'));
+    assert.ok(editInput, 'Edit textarea should exist');
+    editInput.value = 'Updated comment content';
+    
+    const patchedComments: any[] = [];
+    sandbox.api = async (path: string, options?: any) => {
+      if (path.includes('/comments/')) {
+        if (options?.method === 'PATCH') {
+          patchedComments.push(options.body);
+          assert.strictEqual(editUnsavedBadge.textContent, '等待', 'Edit badge should show "等待" during save');
+        }
+        return [];
+      }
+      return [];
+    };
+    
+    // Click Save button to submit edited comment
+    assert.ok(editBtn.onclick, 'Edit/Save button should have a click handler');
+    await editBtn.onclick();
+    assert.strictEqual(patchedComments.length, 1, 'Should patch comment');
+    assert.strictEqual(patchedComments[0]?.content, 'Updated comment content');
+    assert.strictEqual(editUnsavedBadge.textContent, '完成', 'Edit badge should show "完成" after save');
+    
+    // Cleanup
+    delete mockWindow.innerWidth;
+  }
 
   // A Commenter may edit only the description of a task they created.
   bodyChildren.length = 0;
