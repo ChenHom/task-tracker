@@ -3,6 +3,7 @@ import { db } from './db';
 import { CommandError } from './eventStore';
 import { getTaskWorkspaceId } from './task';
 import { emitMentionNotifications, deleteNotificationsByComment } from './notification';
+import { recordMainDiscussionWindowForComment } from './mainDiscussion';
 
 // Comment 不走 Event Sourcing（DESIGN 指定）：傳統 CRUD 直接讀寫 comments。
 // 權限分兩層，都在 server 層做：workspace 角色（requirePermission）+ ownership（只能改/刪自己的留言）。
@@ -23,19 +24,38 @@ export interface CommentRow {
   created_at: string;
 }
 
-export function createComment(taskId: string, userId: string, content: unknown, database = db): string {
-  if (getTaskWorkspaceId(taskId, database) === null) throw new CommandError('task 不存在'); // 不對孤兒 task 留言
+export function createComment(
+  taskId: string,
+  userId: string,
+  content: unknown,
+  database = db,
+  now = new Date(),
+): string {
   const clean = validateContent(content);
   const id = randomUUID();
-  const now = new Date().toISOString();
-  database.prepare('INSERT INTO comments (comment_id, task_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)').run(id, taskId, userId, clean, now);
+  const createdAt = now.toISOString();
+
+  database.exec('BEGIN IMMEDIATE');
   try {
+    if (getTaskWorkspaceId(taskId, database) === null) throw new CommandError('task 不存在'); // 不對孤兒 task 留言
+    database.prepare('INSERT INTO comments (comment_id, task_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)').run(
+      id,
+      taskId,
+      userId,
+      clean,
+      createdAt,
+    );
+    recordMainDiscussionWindowForComment(
+      { taskId, userId, commentId: id, content: clean, createdAt },
+      database,
+    );
     emitMentionNotifications(userId, taskId, id, clean, database);
-  } catch (e) {
-    database.prepare('DELETE FROM comments WHERE comment_id = ?').run(id);
-    throw e;
+    database.exec('COMMIT');
+    return id;
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
   }
-  return id;
 }
 
 export function listComments(taskId: string, database = db): CommentRow[] {

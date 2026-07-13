@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
-import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
+import {
+  appendEvent,
+  appendEventInTransaction,
+  loadEvents,
+  registerProjection,
+  CommandError,
+  type StoredEvent,
+} from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 
 export interface NotificationRow {
@@ -58,10 +65,11 @@ export function emitMentionNotifications(
   const handleIds = extractHandles(content)
     .map((handle) => resolveUserId(handle, database))
     .filter((userId): userId is string => Boolean(userId) && userId !== actorId);
+  const append = database.isTransaction ? appendEventInTransaction : appendEvent;
 
   for (const recipientId of new Set(handleIds)) {
     const notificationId = randomUUID();
-    appendEvent(
+    append(
       'Notification',
       notificationId,
       0,

@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
 import { CommandError } from './eventStore';
+import { createComment, listComments } from './comment';
 import {
   getMainDiscussionWindow,
   recordMainDiscussionWindowForComment,
@@ -256,5 +257,19 @@ assert.ok(recordMainDiscussionWindowForComment({
   content: '【全員回覆：2天】\n請留言表示已閱讀。',
   createdAt: OPENED_AT,
 }, db));
+
+seedTask('task-15');
+createComment('task-15', 'owner', OWNER_THOUGHT, db, new Date(OPENED_AT));
+createComment('task-15', 'owner', TWO_DAY_REQUEST, db, new Date(OPENED_AT));
+assert.ok(getMainDiscussionWindow('task-15', db), '合法通知應由 createComment 建立窗口');
+
+seedTask('task-16');
+assert.throws(
+  () => createComment('task-16', 'owner', TWO_DAY_REQUEST, db, new Date(OPENED_AT)),
+  { name: 'CommandError', message: '全員通知前必須先留下完整的 OWNER想法' },
+  '缺少 thought 的通知應整體失敗',
+);
+assert.strictEqual(listComments('task-16', db).length, 0, '失敗通知不可留下 comment');
+assert.strictEqual(getMainDiscussionWindow('task-16', db), null, '失敗通知不可留下 window');
 
 console.log('mainDiscussion.test.ts OK');

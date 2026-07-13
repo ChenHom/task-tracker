@@ -42,6 +42,23 @@ db.prepare('INSERT INTO tasks_read_model (task_id, workspace_id, title, status, 
 createComment('t2', 'bob', 'other task', db);
 assert.ok(listComments('t1', db).every((c) => c.task_id === 't1'), 'listComments 只回指定 task');
 
+const fixedCommentId = createComment(
+  't2',
+  'bob',
+  'fixed time',
+  db,
+  new Date('2026-07-14T09:00:00.000Z'),
+);
+assert.strictEqual(
+  getCommentContext(fixedCommentId, db)?.task_id,
+  't2',
+  '既有一般留言流程仍可使用同一 API',
+);
+assert.strictEqual(
+  listComments('t2', db).find((row) => row.comment_id === fixedCommentId)?.created_at,
+  '2026-07-14T09:00:00.000Z',
+);
+
 // ── delete → 移除、context 變 null ──
 deleteComment(id, db);
 assert.strictEqual(listComments('t1', db).length, 0);
