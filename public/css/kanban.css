@@ -221,6 +221,9 @@
   word-wrap: break-word;
   word-break: break-all;
 }
+.task-card-assignee-label {
+  margin-left: auto;
+}
 
 .task-card-actions {
   display: flex;

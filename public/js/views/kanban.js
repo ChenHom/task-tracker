@@ -382,7 +382,7 @@ export const KanbanView = {
           }
           if (task.assignee_id) {
             const assigneeName = memberMap.get(task.assignee_id) || '未知成員';
-            peopleEl.appendChild(el('span', { style: 'margin-left:auto' }, `指：${assigneeName}`));
+            peopleEl.appendChild(el('span', { class: 'task-card-assignee-label' }, `指：${assigneeName}`));
           }
           midEl.appendChild(peopleEl);
         }
