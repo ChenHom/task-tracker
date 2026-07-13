@@ -440,7 +440,7 @@ tr:last-child td {
 /* Quota Footer */
 .quota-footer {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: baseline;
   gap: 0.35rem;
   padding: 1rem 0.5rem 0.5rem;
@@ -497,7 +497,7 @@ tr:last-child td {
 
 @media (max-width: 768px) {
   .quota-footer {
-    justify-content: center;
+    justify-content: flex-start;
     font-size: 0.60rem;
   }
   .quota-item.unavailable .quota-value {
