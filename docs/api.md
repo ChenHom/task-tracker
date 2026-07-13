@@ -496,7 +496,8 @@ target 必須存在且為 active，不能與 source 相同；archived/deleted ta
 
 ## Notifications
 
-通知由 comment 內容中的 `@Name` 或 `@email-local-part` 觸發；不通知自己，同一留言同一收件人只產生一筆。
+通知由 comment 內容中的 `@Name` 或 `@email-local-part` 觸發；不通知自己，同一留言同一收件人只產生一筆。`source_comment_id` 現行固定回字串，前端可直接拿來做留言錨點。
+前端接線與 UI 呈現細節請見 [@mention 與通知 API 前端整合指南](./frontend/mentions-and-notifications.md)。
 
 ### `GET /api/notifications`
 
