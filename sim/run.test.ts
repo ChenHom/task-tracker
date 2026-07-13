@@ -45,6 +45,9 @@ import {
 } from './run';
 
 const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
+const ownerProbe = source.match(/function probeOwnerRunner\(\): Promise<boolean> \{[\s\S]*?\n\}/)?.[0];
+assert.ok(ownerProbe?.includes('const child = execFile('), 'owner probe 必須保留 child，才能管理 stdin lifecycle');
+assert.ok(ownerProbe?.includes('child.stdin?.end()'), 'owner probe 必須關閉 Codex stdin，避免等待 EOF 而逾時');
 assert.ok(!source.includes('const MEMBERS: Member[] = ['), 'MEMBERS 不應在 sim/run.ts 寫死 email/name');
 assert.ok(!source.includes('let REPO_ROOT'), 'scenario 狀態不應拆成多個可不同步的 global');
 assert.ok(!source.includes('let WORK_DIR'), 'scenario 狀態不應拆成多個可不同步的 global');
@@ -128,6 +131,11 @@ assert.deepStrictEqual(
   'sim members 應從 users 表讀取 email/name，runner 設定仍由 sim 保留',
 );
 assert.ok(members.every((member) => member.profile.trim().length > 0), '每個 member 都應有 profile 供認領/難度組合參考');
+assert.strictEqual(
+  members.find((member) => member.email === 'user02@test.local')?.model,
+  'gpt-5.4-mini',
+  '小美必須使用可供 ChatGPT Codex 執行的 gpt-5.4-mini',
+);
 
 assert.deepStrictEqual(
   buildRunnerInvocation(

@@ -140,7 +140,7 @@ export interface SprintReport {
 
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
 const MEMBER_RUNNERS: MemberRunnerConfig[] = [
-  { email: 'user02@test.local', runner: 'codex', model: 'gpt-5.3-codex',
+  { email: 'user02@test.local', runner: 'codex', model: 'gpt-5.4-mini',
     profile: '細心，擅長小範圍 auth/安全類修補與補測試，適合範圍明確的小題' },
   { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.6-terra',
     profile: '主力工程師，可承接跨檔案/架構性大題（曾獨力完成 sim harness 四階段強化）' },
@@ -1300,13 +1300,14 @@ export function workspaceFitsSweepBudget(
 
 function probeOwnerRunner(): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('codex', ['exec', '--ephemeral', '--skip-git-repo-check', '-C', ROOT,
+    const child = execFile('codex', ['exec', '--ephemeral', '--skip-git-repo-check', '-C', ROOT,
       '-s', 'read-only', '-m', OWNER_REVIEW_MODEL, '回覆OK兩字即可'],
       { timeout: 90 * 1000, killSignal: 'SIGKILL' },
       (error, stdout, stderr) => {
         const output = `${stdout ?? ''}${stderr ?? ''}`;
         resolve(!error && !/session limit|rate limit|quota/i.test(output));
       });
+    child.stdin?.end(); // codex 會等待 piped stdin 的 EOF
   });
 }
 
