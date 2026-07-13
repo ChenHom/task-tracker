@@ -206,3 +206,12 @@
 - [x] 安裝/啟用 `ai-quota.timer` 並完成正式 task-tracker HTTP/UI smoke
 
 > 2026-07-13 正式驗收：`ai-quota.timer` active/waiting、Codex/Claude status 均為 `ok`；task-tracker 完整測試與 build 通過，正式 3000 服務健康檢查、登入後 `/api/quota` 與 Playwright footer hover 均通過。Codex 顯示 7 天 fallback，Claude 顯示 5 小時摘要，tooltip 的台灣時間與雙視窗資料符合 API。
+
+## Phase 17 — AGY (Antigravity) provider 整合
+
+- [x] ai-quota 服務新增 agy provider（ai-quota repo `54655a5`：讀 agy CLI token 檔、必要時 refresh access token、`fetchAvailableModels` 取全模型額度、`windows.five_hour` 放 settings.json 目前模型）
+- [x] `src/quota.ts` 讀取 snapshot 的 `providers.agy`，移除 `agy-cli-no-local-quota-source` hardcode；快照缺 agy 時 fallback `ai-quota-agy-missing`（舊快照相容）
+- [x] `src/quota.test.ts` 新增 agy 摘要/windows、stale、缺席 fallback 案例；`docs/api.md` agy 範例更新
+- [x] 前端零改動（footer 已有 AGY 標籤，`seven_day: null` 自然顯示「尚無資料」）
+
+> 2026-07-13 正式驗收：commit `71eb56d` 合入 master，`task-tracker.service` 重啟後 `/api/health` 200；登入 `/api/quota` 回三 provider，agy `remaining=100%`、source 帶 `#model=gemini-3-flash-agent` 註記；Playwright 驗證 footer 顯示 `AGY 5h 100%`、hover tooltip 兩行與台北重置時間正確。緊急停用走 ai-quota unit 檔的 `AI_QUOTA_AGY_DISABLED=1` kill switch。
