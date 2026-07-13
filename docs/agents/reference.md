@@ -7,6 +7,7 @@ This is the long-form companion to [AGENTS.md](../../AGENTS.md). `AGENTS.md` sta
 | Need | Read |
 | --- | --- |
 | Current shipped state, verified rollout notes, and remaining backlog | [docs/tasks/current.md](../tasks/current.md) |
+| HTTP API endpoint contracts | [docs/api.md](../api.md) |
 | Single design baseline and current architecture | [design.md](../../design.md) |
 | Deployment, systemd, `/api/health`, logs, main-workspace policy, sim operations | [docs/operations.md](../operations.md) |
 | Quick deploy/unit-file reminder | [deploy/README.md](../../deploy/README.md) |
@@ -38,6 +39,10 @@ Open this when you need:
 - The current definition of done for shipped phases
 - The latest known open items and rollout handoff notes
 - Verified smoke evidence that should not be rediscovered from scratch
+
+### `docs/api.md`
+
+Open this when you need the request, authentication, response schema, cache behavior, or error mapping for an HTTP endpoint. It currently documents `GET /api/quota`; add new endpoint contracts here as they ship.
 
 ### `design.md`
 
