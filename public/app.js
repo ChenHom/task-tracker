@@ -10,6 +10,7 @@ import { state } from './js/state.js';
 import { api, logout } from './js/api.js';
 import { initRouter, setOnRouteCallback } from './js/router.js';
 import { syncGlobalWorkspaces, updateSidebar } from './js/sidebar.js';
+import { updateQuotaFooter } from './js/quota.js';
 
 // Setup routes and register all views via side-effect imports
 import './js/routes.js';
@@ -17,6 +18,12 @@ import './js/routes.js';
 // Set callback to sync sidebar UI on route change
 setOnRouteCallback((prefix) => {
   updateSidebar(prefix);
+  if (prefix !== 'login' && prefix !== 'forgot-password' && prefix !== 'reset-password') {
+    updateQuotaFooter();
+  } else {
+    const footerEl = document.getElementById('quota-footer');
+    if (footerEl) footerEl.style.display = 'none';
+  }
 });
 
 window.addEventListener('DOMContentLoaded', async () => {

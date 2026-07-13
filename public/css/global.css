@@ -435,3 +435,35 @@ tr:last-child td {
   transform: none;
   cursor: default;
 }
+
+/* Quota Footer */
+.quota-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 1rem 0.5rem 0.5rem;
+  font-size: 0.70rem;
+  color: #9ca3af;
+  white-space: nowrap;
+}
+
+.quota-label { font-weight: 500; }
+.quota-value { font-weight: 400; }
+
+.quota-item.unavailable .quota-value {
+  font-size: 0.55rem;
+  color: #d1d5db;
+}
+
+.quota-sep { color: #d1d5db; }
+
+@media (max-width: 768px) {
+  .quota-footer {
+    justify-content: center;
+    font-size: 0.60rem;
+  }
+  .quota-item.unavailable .quota-value {
+    font-size: 0.50rem;
+  }
+}
