@@ -1,6 +1,6 @@
 # 開發任務（目前狀態）
 
-> 自根目錄 `TASKS_V2.md` 搬移。對應 [design.md](../../design.md)，接續 [history.md](history.md) 已完成的 Phase 0-7。
+> 對應 [design.md](../../design.md)，接續 [history.md](history.md) 已完成的 Phase 0-7。
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
 > 最後巡檢：2026-07-10；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 13 是目前交接。
 

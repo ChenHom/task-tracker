@@ -1,6 +1,6 @@
 # 開發任務（歷史基線）
 
-> 自根目錄 `TASKS.md` 搬移。對應 [design.md](../../design.md)；保留 Phase 0-7 的原始 build order 與基礎 milestone。
+> 對應 [design.md](../../design.md)；保留 Phase 0-7 的原始 build order 與基礎 milestone。
 > 目前 shipped state 與後續 backlog 請改看 [current.md](current.md)。
 
 ---
