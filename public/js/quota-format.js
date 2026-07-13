@@ -30,7 +30,6 @@ export function formatQuotaDetails(provider) {
     if (!window?.available || !window.remaining) return `${label}：尚無資料`;
     return `${label}：${window.remaining} · ${formatTaipeiResetTime(window.resetAt)}`;
   });
-  if (provider?.stale) lines.push('資料可能過期');
   return lines.join('\n');
 }
 

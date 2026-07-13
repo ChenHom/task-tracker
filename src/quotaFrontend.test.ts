@@ -35,8 +35,7 @@ async function main(): Promise<void> {
     ],
   }), [
     '5 小時：尚無資料',
-    '7 天：78% · 2026/07/20 03:00',
-    '資料可能過期',
+    '7 天：78% · 2026/07/20 03:00'
   ].join('\n'));
 
   console.log('quotaFrontend.test.ts OK');
