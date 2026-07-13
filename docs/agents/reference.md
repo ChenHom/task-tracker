@@ -42,7 +42,7 @@ Open this when you need:
 
 ### `docs/api.md`
 
-Open this when you need the request, authentication, response schema, cache behavior, or error mapping for an HTTP endpoint. It currently documents `GET /api/quota`; add new endpoint contracts here as they ship.
+Open this when you need the request, authentication, response schema, permission boundary, or error mapping for any HTTP endpoint. It is the complete API reference for the routes implemented in `src/server.ts`.
 
 ### `design.md`
 

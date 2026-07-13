@@ -36,8 +36,10 @@ This repo has no framework-specific agent bootstrap. Read in this order:
 | Area | Routes |
 | --- | --- |
 | Health/Auth | `GET /api/health`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `POST /api/auth/forgot-password`, `POST /api/auth/reset-password` |
-| Workspaces | `GET/POST /api/workspaces`, `PATCH /api/workspaces/:id`, `GET/POST /api/workspaces/:id/members`, `POST /api/workspaces/:id/members/join` |
+| Workspaces | `GET/POST /api/workspaces`, `PATCH /api/workspaces/:id`, `POST /api/workspaces/:id/archive`, `POST /api/workspaces/:id/delete` |
+| Members | `GET/POST /api/workspaces/:id/members`, `POST /api/workspaces/:id/members/join`, `PATCH/DELETE /api/workspaces/:id/members/:userId` |
 | Tasks | `GET/POST /api/workspaces/:id/tasks`, `GET/PATCH/DELETE /api/tasks/:id`, `POST /api/tasks/:id/archive`, `POST /api/tasks/:id/move` |
+| Notifications | `GET /api/notifications`, `POST /api/notifications/:id/read` |
 | Projects | `GET/POST /api/workspaces/:id/projects`, `PATCH/DELETE /api/projects/:id` |
 | Collaboration | `GET/POST /api/tasks/:id/comments`, `PATCH/DELETE /api/comments/:id`, `GET/POST /api/tasks/:id/attachments`, `GET/DELETE /api/attachments/:id` |
 | Read APIs | `GET /api/search`, `GET /api/audit`, `GET /api/quota`, `GET /api/users/search` |
