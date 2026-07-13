@@ -230,6 +230,7 @@ const sandbox = {
     return ranks[role] >= ranks[minimum];
   },
   MAIN_OWNER_EMAIL: 'user01@test.local',
+  MAIN_POLICY_TITLE: '[規則] 主工作區協作與交接',
   navigate: () => {},
   el: (tag: string, attrs: any = {}, ...children: any[]) => {
     const element = new MockElement(tag, attrs);
@@ -710,6 +711,32 @@ async function runTests() {
   assert.ok(findElement(viewerPopup, (node) => node.tag === 'button' && node.textContent === '分享'), 'Viewer should retain comment sharing');
   assert.strictEqual(findElement(viewerPopup, (node) => node.tag === 'button' && node.textContent === '回覆'), null, 'Viewer should not have reply controls');
 
+  // Test 7.1: Main-workspace Owner only sees the direct Todo -> Done control.
+  bodyChildren.length = 0;
+  sandbox.state.userEmail = 'user01@test.local';
+  await openTaskDetailModal('task-1', {
+    cachedTasks: [{
+      task_id: 'task-1',
+      creator_id: 'user-2',
+      title: 'Discussion Task',
+      description: 'Discuss only',
+      status: 'Todo',
+      priority: 'Medium',
+      assignee_id: null,
+      due_at: null
+    }],
+    cachedMembers: [],
+    memberMap: new Map(),
+    memberEmailMap: new Map(),
+    onUpdate: async () => {},
+    currentRole: 'Owner',
+    isMainWorkspace: true
+  });
+  const ownerOverlay = bodyChildren[bodyChildren.length - 1];
+  assert.ok(findElement(ownerOverlay, (node) => node.classList.contains('status-change-btn') && node.textContent === '→ Done'), 'Main Owner should see direct Done control');
+  assert.strictEqual(findElement(ownerOverlay, (node) => node.textContent === '→ Doing'), null, 'Main Owner should not see Doing control');
+  sandbox.state.userEmail = 'test@test.com';
+
   // Test 8: Only absolute HTTP(S) URLs are linkable
   assert.strictEqual(safeHttpUrl('http://example.com/path'), 'http://example.com/path');
   assert.strictEqual(safeHttpUrl('https://example.com/path?x=1#handoff'), 'https://example.com/path?x=1#handoff');
@@ -719,11 +746,16 @@ async function runTests() {
 
   // Keep broad view policy checks source-level; the modal behavior above owns the DOM harness.
   assert.match(stateSource, /ROLE_RANK[\s\S]*Commenter:\s*1[\s\S]*MAIN_WORKSPACE_ID[\s\S]*MAIN_OWNER_EMAIL[\s\S]*MAIN_POLICY_TITLE/);
+  assert.match(stateSource, /MAIN_DISCUSSION_DESCRIPTION_TEMPLATE/);
   assert.match(kanbanSource, /main-workspace-policy/);
   assert.match(kanbanSource, /canCreateTask[\s\S]*canManageTask/);
   assert.match(kanbanSource, /MAIN_POLICY_TITLE[\s\S]*\.sort\(/);
   assert.match(kanbanSource, /const\s+renderWorkspaceId\s*=\s*state\.workspaceId[\s\S]*let\s+loadGeneration\s*=\s*0[\s\S]*async\s+function\s+loadAllData\(\)\s*\{\s*if\s*\(state\.workspaceId\s*!==\s*renderWorkspaceId\)\s*return;[\s\S]*encodeURIComponent\(renderWorkspaceId\)[\s\S]*generation\s*!==\s*loadGeneration[\s\S]*state\.workspaceId\s*!==\s*renderWorkspaceId/);
-  assert.match(kanbanSource, /hasRole\(currentRole,\s*['"]Member['"]\)[\s\S]*:\s*\{\s*title,\s*description:\s*['"]{2}\s*\}/);
+  assert.match(kanbanSource, /hasRole\(currentRole,\s*['"]Member['"]\)[\s\S]*:\s*\{\s*title,\s*description\s*\}/);
+  assert.match(kanbanSource, /MAIN_DISCUSSION_DESCRIPTION_TEMPLATE[\s\S]*column-add-task-description/);
+  assert.match(kanbanSource, /main-discussion-board/);
+  assert.match(kanbanSource, /isMainWorkspace[\s\S]*status === ['"]Todo['"][\s\S]*createStateBtn\(['"]→ Done['"], ['"]Done['"]\)/);
+  assert.doesNotMatch(`${kanbanSource}\n${taskDetailSource}`, /deadline|overdue|absence|reply tracker|等待天數選擇器/iu);
   assert.match(membersSource, /hasRole[\s\S]*MAIN_WORKSPACE_ID[\s\S]*canManageMembers/);
   assert.match(membersSource, /const\s+renderWorkspaceId\s*=\s*state\.workspaceId[\s\S]*let\s+loadGeneration\s*=\s*0[\s\S]*async\s+function\s+load\(\)\s*\{\s*if\s*\(state\.workspaceId\s*!==\s*renderWorkspaceId\)\s*return;[\s\S]*encodeURIComponent\(renderWorkspaceId\)[\s\S]*generation\s*!==\s*loadGeneration[\s\S]*state\.workspaceId\s*!==\s*renderWorkspaceId/);
   assert.match(membersSource, /const\s+searchGeneration\s*=\s*loadGeneration[\s\S]*setTimeout\(async\s*\(\)\s*=>\s*\{\s*if\s*\(!canManageMembers\s*\|\|\s*state\.workspaceId\s*!==\s*renderWorkspaceId\s*\|\|\s*searchGeneration\s*!==\s*loadGeneration\)\s*return;[\s\S]*await\s+api\([\s\S]*if\s*\(!canManageMembers\s*\|\|\s*state\.workspaceId\s*!==\s*renderWorkspaceId\s*\|\|\s*searchGeneration\s*!==\s*loadGeneration\)\s*return;[\s\S]*suggestionsDatalist\.innerHTML/);

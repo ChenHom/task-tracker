@@ -1,7 +1,7 @@
 'use strict';
 
 import { api } from '../api.js';
-import { state, hasRole, MAIN_OWNER_EMAIL } from '../state.js';
+import { state, hasRole, MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE } from '../state.js';
 import { el, formatTime } from '../utils.js';
 
 /**
@@ -744,7 +744,11 @@ export async function openTaskDetailModal(taskId, {
   }
 
   if (canManageTask) {
-    if (currentTask.status === 'Todo') {
+    if (isMainWorkspace) {
+      if (currentTask.title !== MAIN_POLICY_TITLE && currentTask.status === 'Todo') {
+        rightSlot.appendChild(createTransitionBtn('→ Done', 'Done'));
+      }
+    } else if (currentTask.status === 'Todo') {
       rightSlot.appendChild(createTransitionBtn('→ Doing', 'Doing'));
     } else if (currentTask.status === 'Doing') {
       leftSlot.appendChild(createTransitionBtn('← Todo', 'Todo'));
