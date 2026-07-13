@@ -95,6 +95,15 @@ export function runMigrations(db: DatabaseSync): void {
       created_at TEXT NOT NULL DEFAULT ''
     );
 
+    CREATE TABLE IF NOT EXISTS main_discussion_windows (
+      task_id                  TEXT PRIMARY KEY,
+      owner_thought_comment_id TEXT NOT NULL,
+      request_comment_id       TEXT NOT NULL UNIQUE,
+      opened_at                TEXT NOT NULL,
+      wait_half_days           INTEGER NOT NULL CHECK (wait_half_days BETWEEN 4 AND 14),
+      due_at                   TEXT NOT NULL
+    );
+
     -- Notification：comment mention 的收信夾。由 notification.* 事件投影而來。
     CREATE TABLE IF NOT EXISTS notifications_read_model (
       notification_id  TEXT PRIMARY KEY,
