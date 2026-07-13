@@ -19,7 +19,7 @@ export function formatTaipeiResetTime(value) {
     hourCycle: 'h23',
   }).formatToParts(date);
   const part = (type) => parts.find((item) => item.type === type)?.value ?? '';
-  return `${part('year')}/${part('month')}/${part('day')} ${part('hour')}:${part('minute')}（台灣時間）`;
+  return `${part('year')}/${part('month')}/${part('day')} ${part('hour')}:${part('minute')}`;
 }
 
 export function formatQuotaDetails(provider) {
@@ -30,7 +30,7 @@ export function formatQuotaDetails(provider) {
     if (!window?.available || !window.remaining) return `${label}：尚無資料`;
     return `${label}：${window.remaining} · ${formatTaipeiResetTime(window.resetAt)}`;
   });
-  if (provider?.stale) lines.push('資料可能已過期');
+  if (provider?.stale) lines.push('資料可能過期');
   return lines.join('\n');
 }
 

@@ -471,16 +471,18 @@ tr:last-child td {
   bottom: calc(100% + 0.45rem);
   z-index: 50;
   display: none;
-  min-width: 15rem;
+  min-width: 12rem;
   padding: 0.55rem 0.7rem;
-  border: 1px solid var(--pencil-color);
+  border: 2px solid var(--pencil-color);
+  border-radius: 6px;
   background: #ffffff;
-  box-shadow: 2px 2px 0 var(--pencil-color);
+  box-shadow: 3px 3px 0 var(--pencil-color);
   color: var(--pencil-color);
   font-size: 0.72rem;
   line-height: 1.5;
   text-align: left;
   white-space: pre-line;
+  font-family: var(--font-cursive);
 }
 
 .quota-item[data-tooltip]:hover::after,

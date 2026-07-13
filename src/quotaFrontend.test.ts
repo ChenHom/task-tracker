@@ -12,7 +12,7 @@ async function main(): Promise<void> {
 
   assert.strictEqual(
     formatter.formatTaipeiResetTime('2026-07-19T19:00:07.000Z'),
-    '2026/07/20 03:00（台灣時間）',
+    '2026/07/20 03:00',
   );
   assert.strictEqual(formatter.formatTaipeiResetTime(null), '尚無重置時間');
 
@@ -24,7 +24,7 @@ async function main(): Promise<void> {
     ],
   }), [
     '5 小時：100% · 尚無重置時間',
-    '7 天：14% · 2026/07/15 07:00（台灣時間）',
+    '7 天：14% · 2026/07/15 07:00',
   ].join('\n'));
 
   assert.strictEqual(formatter.formatQuotaDetails({
@@ -35,8 +35,8 @@ async function main(): Promise<void> {
     ],
   }), [
     '5 小時：尚無資料',
-    '7 天：78% · 2026/07/20 03:00（台灣時間）',
-    '資料可能已過期',
+    '7 天：78% · 2026/07/20 03:00',
+    '資料可能過期',
   ].join('\n'));
 
   console.log('quotaFrontend.test.ts OK');

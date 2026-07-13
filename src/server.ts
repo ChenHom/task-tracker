@@ -231,7 +231,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
         throw new CommandError('token 與 password 為必填');
       }
       const ok = resetPassword(body.token, body.password);
-      if (!ok) throw new CommandError('重設連結無效或已過期');
+      if (!ok) throw new CommandError('重設連結無效或過期');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
