@@ -450,6 +450,7 @@ target 必須是該 workspace 的 active member，否則回 `404`。Owner 任命
 { "title": "新標題" }
 { "description": "新描述" }
 { "status": "Doing" }
+{ "status": "Done" }
 { "priority": "High" }
 { "assignee": "user-uuid" }
 { "dueAt": "2026-07-20T00:00:00.000Z" }
@@ -458,7 +459,11 @@ target 必須是該 workspace 的 active member，否則回 `404`。Owner 任命
 成功回 `{ "ok": true }`。規則：
 
 - `title`、`description`、`priority`、`assignee`、`dueAt` 都會做型別/長度/日期驗證。
-- status 只允許相鄰流程：`Todo → Doing → Review → Done`，以及一步回退 `Doing → Todo`、`Review → Doing`、`Done → Review`。
+- 一般 workspace 的 status 只允許相鄰流程：`Todo → Doing → Review → Done`，以及一步回退 `Doing → Todo`、`Review → Doing`、`Done → Review`。
+- 主協作 workspace 的非規則 task 不走一般流程，只能由 OWNER 在固定討論窗口截止後，依完整收尾證據一次從 `Todo` 變為 `Done`；不可使用 `Doing`、`Review`，也不可從 `Done` 回退。
+- 主工作區窗口由留言 `【OWNER想法】` 後的 `【全員回覆：N天】` 開啟；`N` 為 `2` 到 `7` 天、以 `0.5` 天遞增。期限從通知留言建立時間起算，一天為連續 24 小時、半天為 12 小時，開啟後不可延長或重開。`N > 2` 時同一留言必須附非空白 `較長期限理由：`。
+- 主工作區在截止前 PATCH `Done` 會回 `400`。截止後必須具備三條收尾路徑之一：`【結論】` + 建立者/共同確認者的 `【確認結論】` + `【實作任務】工作區：...｜TASK：...`；`【結論：不實作】` + `【確認結論】`；或 OWNER 的 `【未達共識】`（含三個必要說明欄位）。
+- 系統不提供窗口、回覆進度、缺席名單或延長期限 API；成員是否回覆由留言紀錄呈現。
 - Commenter 只有在 task creator 是自己時，才能只 PATCH `description`；其他欄位需要 Member。
 - 主協作 workspace 的 task status 只有 user01 能改。
 - archived task、deleted task 或 inactive workspace 的修改會被拒絕。
@@ -540,6 +545,10 @@ target 必須存在且為 active，不能與 source 相同；archived/deleted ta
 ```
 
 content trim 後必須非空、最多 5000 字。成功回 `201`、`{ "id": "comment-uuid" }`；同時可能建立 mention notification。
+
+在主協作 workspace，留言仍使用同一個 endpoint。OWNER 先以六欄格式留下 `【OWNER想法】`，再以 `【全員回覆：N天】` 通知 user02-06 與 user09；合法通知會在同一交易內與 `main_discussion_windows` 保存固定的 `opened_at`、`wait_half_days`、`due_at`。留言失敗時窗口與 mention notification 都不會留下。其他討論與一般 workspace 留言維持原本 CRUD 行為。
+
+主工作區不另外提供窗口查詢或回覆 API，也不由前端新增期限選擇器；截止時間只作為後端 `PATCH /api/tasks/:id` 的收尾守門資料。原討論若要實作，`【實作任務】` 只記錄目標工作區與 TASK 名稱，不產生或儲存 URL。
 
 ### `PATCH /api/comments/:id`
 
