@@ -64,9 +64,9 @@ If `/tracker/` returns `502`, first check whether `task-tracker.service` is acti
 
 - 固定 UUID：`11a82028-fc50-466a-a723-e002032cd9a6`
 - 固定名稱：`主協作工作區`
-- `user01@test.local` 是唯一 Owner；其他內部使用者同步為 Commenter。
+- `user01@test.local` 是唯一 Owner；只有 user02-06 與 user09 同步為 Commenter，其他 user 不會加入。
 - Commenter 在任何 workspace 都可修改自己建立 task 的 description，但不可修改標題、狀態、其他屬性、附件或他人 task。
-- 只有主協作工作區會同步其他內部使用者為 Commenter；其他 workspace 的新成員預設仍為 Member，Owner 可另行調整角色。
+- 只有主協作工作區會同步 user02-06 與 user09 為 Commenter；其他 workspace 的新成員預設仍為 Member，Owner 可另行調整角色。
 - 主協作工作區所有人都可建立 Todo 討論與留言；只有 user01 可改變 task 狀態。
 - user01 將 Todo 移至 Doing 時，單一 `task.discussion_started` event 會同時指派 runtime user01。
 - 決議後先判斷 target repo，再於 canonical／對應 workspace 建立實作 task，並在原討論回寫完整 task URL；實作 task 不留在主協作工作區。
@@ -88,8 +88,9 @@ If `/tracker/` returns `502`, first check whether `task-tracker.service` is acti
 
 - Run commands from `/home/hom/code/task-tracker`.
 - `task-tracker.service` must answer HTTP 200 at `http://localhost:3000/api/health`.
-- Run `npm run seed` once so `user01-05@test.local` exist.
-- The `claude` and `codex` CLIs must be installed, authenticated, and available in `PATH`.
+- Run `npm run seed` once so `user01-06@test.local` and `user09@test.local` exist.
+- The `claude`, `codex`, and `agy` CLIs must be installed, authenticated, and available in `PATH`.
+- `agy` member sessions use headless `agy --print --model <model> --mode accept-edits`; only an explicit quota/rate-limit error may retry with the configured fallback model. Missing CLI, authentication failure, general error, or timeout stops that member session without fallback.
 - A new sprint requires the selected scenario repo to be on `master` with a clean main worktree.
 
 ### Manual start

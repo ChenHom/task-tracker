@@ -7,6 +7,7 @@ import {
   getMemberRole,
   inviteMember,
   joinWorkspace,
+  removeMainWorkspaceMember,
 } from './member';
 import {
   MAIN_OWNER_EMAIL,
@@ -17,6 +18,16 @@ import {
 } from './mainWorkspacePolicy';
 import { changeTaskDescription, createTask, listTasks, normalizeMainDiscussion } from './task';
 import { getWorkspaceStatus, renameWorkspace } from './workspace';
+
+const MAIN_WORKSPACE_SYNC_EMAILS = new Set([
+  MAIN_OWNER_EMAIL,
+  'user02@test.local',
+  'user03@test.local',
+  'user04@test.local',
+  'user05@test.local',
+  'user06@test.local',
+  'user09@test.local',
+]);
 
 function mainOwner(database: DatabaseSync): string {
   if (getWorkspaceStatus(MAIN_WORKSPACE_ID, database) !== 'active') {
@@ -49,9 +60,16 @@ function ensureCommenter(ownerId: string, userId: string, database: DatabaseSync
   }
 }
 
+function isMainWorkspaceSyncUser(userId: string, database: DatabaseSync): boolean {
+  const row = database.prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined;
+  return !!row && MAIN_WORKSPACE_SYNC_EMAILS.has(row.email);
+}
+
 export function syncMainWorkspaceUser(userId: string, database = db): void {
   const ownerId = mainOwner(database);
-  if (userId !== ownerId) ensureCommenter(ownerId, userId, database);
+  if (userId === ownerId) return;
+  if (isMainWorkspaceSyncUser(userId, database)) ensureCommenter(ownerId, userId, database);
+  else removeMainWorkspaceMember(ownerId, userId, database);
 }
 
 export function syncMainWorkspace(database = db): void {
@@ -65,7 +83,9 @@ export function syncMainWorkspace(database = db): void {
 
   const users = database.prepare('SELECT id FROM users').all() as unknown as Array<{ id: string }>;
   for (const user of users) {
-    if (user.id !== ownerId) ensureCommenter(ownerId, user.id, database);
+    if (user.id === ownerId) continue;
+    if (isMainWorkspaceSyncUser(user.id, database)) ensureCommenter(ownerId, user.id, database);
+    else removeMainWorkspaceMember(ownerId, user.id, database);
   }
 
   const tasks = listTasks(MAIN_WORKSPACE_ID, database);

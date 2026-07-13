@@ -147,6 +147,21 @@ export function removeMember(actorId: string, workspaceId: string, userId: strin
   appendEvent('Member', mid(workspaceId, userId), version, 'member.removed', { workspaceId, userId }, meta(actorId), database);
 }
 
+// 主工作區同步專用：移除不在系統白名單內的 legacy/既有成員；一般 API 仍禁止手動移除主工作區成員。
+export function removeMainWorkspaceMember(actorId: string, userId: string, database = db): void {
+  const { state, version } = load(MAIN_WORKSPACE_ID, userId, database);
+  if (state.status !== 'invited' && state.status !== 'active') return;
+  appendEvent(
+    'Member',
+    mid(MAIN_WORKSPACE_ID, userId),
+    version,
+    'member.removed',
+    { workspaceId: MAIN_WORKSPACE_ID, userId },
+    meta(actorId),
+    database,
+  );
+}
+
 // workspace 建立時 bootstrap owner。繞過權限（此時還沒有任何成員可查）。
 export function seedOwner(workspaceId: string, userId: string, database = db): void {
   // ponytail: 跨 aggregate 無 saga——workspace.created 與 owner 加入是兩批 append，非原子。

@@ -84,10 +84,10 @@
 
 ---
 
-## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex 混合車隊）
+## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex + Antigravity 混合車隊）
 
-- [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-05、join）→ spawn headless 子行程
-- [x] 混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna
+- [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-06、join）→ spawn headless 子行程
+- [x] 混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna；user06=Antigravity CLI Gemini 3.5 Flash (High)，quota 滿時改用 Claude Sonnet 4.6 (Thinking)
 - [x] 主題 Dogfooding：owner prompt 內嵌本專案真實技術債清單（ponytail: 註記）出題
 - [x] 全員 QA 規則：可重現的系統問題建 `[BUG]` task（重現步驟/預期 vs 實際/原始回應），owner 收尾 triage
 - [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
@@ -97,7 +97,7 @@
 - [x] CI 結果改為 `PASS` / `FAIL` / `SKIP`；缺 tooling 或跨多個子專案不再製造假綠燈，SKIP 必須由 Owner 人工驗證
 - [x] scenario 啟用前驗證 Git top-level/master，commit 前再驗 worktree/branch；legacy `technical-debt` report 明確映射，未知 scenario fail closed
 - [x] `sim-logs/.run.lock` 序列化 manual/timer 流程並回收 dead-PID lock；平行 member 全部 settle 後才解鎖
-- [x] Claude quota probe 只影響 owner 預算；`team` 不做全域 probe，`both` 在 Claude 不可用時仍保留 Codex member 預算
+- [x] Owner runner probe 只影響 owner 預算；`team` 不做全域 probe，member 各自依 runner 執行。user06 僅在 agy 回報 quota exhaustion 且未逾時時切換 fallback；agy 缺少、未登入、一般錯誤或逾時都停工並保留 diff
 - [x] `sim/tsconfig.json` 納入 `npm test`，讓 sim harness 也受 strict TypeScript 檢查
 - [x] `docs/operations.md` 記錄手動模式、scenario、systemd owner/team timers、logs、lock 與權限邊界
 - [x] 跑完整端到端 `--fast` self-directed sprint（`sim-run-1783392991269`）
@@ -176,13 +176,13 @@
 ## Phase 15 — Commenter 與主協作工作區 ✅
 
 - [x] 新增 `Commenter` 角色與 RBAC／API 權限矩陣；可建立 Todo 討論及留言，但不可修改 task、project 或附件
-- [x] 固定主協作工作區名稱、user01 Owner、其他 user Commenter，並由 startup／login 同步修復
+- [x] 固定主協作工作區名稱、user01 Owner、user02-06 與 user09 Commenter；其他 user 不加入，並由 startup／login 同步修復
 - [x] 主工作區討論預設、legacy task 正規化與 `task.discussion_started` 單一事件已由 domain 測試覆蓋
 - [x] 前端依角色收斂控制，並安全自動連結完整 HTTP(S) URL、保留網址尾端中英文標點
 - [x] SIM sweep 固定發現主工作區、排除 policy task、依 target repo 路由，且 main 不占 canonical repo slot
 - [x] feature branch 已通過 `npm test`、`npm run build`、`git diff --check` 與 focused `sim/run.test.ts`
 - [x] 合併至 `master`、build、restart 與正式服務部署驗證
-- [x] DB readback：固定名稱、30 位使用者角色、單一 policy task、legacy task title
+- [x] 主工作區固定成員政策：1 Owner + 6 Commenter（user02-06、user09）；單一 policy task、legacy task title
 - [x] 完整 Commenter／Owner HTTP smoke 與交接流程驗證
 - [x] Commenter 可在任何 workspace 修改自己建立 task 的 description；標題、狀態、屬性、附件與他人 task 仍不可修改
 - [ ] 經明確人工授權執行 live `npm run sim -- --sweep owner`
@@ -190,3 +190,5 @@
 > 2026-07-12 rollout：`master` merge `efbeb4b` 後 `npm test`、`npm run build`、health check 全數通過。DB 為 1 Owner + 29 Commenter、唯一規則 task，兩筆 legacy task 已加上 `[討論]`。HTTP smoke 驗證 Commenter 可建討論／留言但改狀態為 403，user01 以單一 `task.discussion_started` 完成 Doing 指派，並建立 canonical task `af06f594-682c-4437-aea5-d71eb354471c`、回寫完整 URL、推進 Review → Done。Live AI sweep 未執行。
 
 > 2026-07-12 description rollout：`master` fast-forward 至 `4794674` 後完整測試、build 與 health check 通過。Commenter 自建 task 描述 PATCH 為 200，標題／狀態為 403，他人描述為 400；user02 在非主工作區仍是 Member，標題與描述 PATCH 均為 200。
+
+> 2026-07-13 主工作區同步收斂為白名單：user01-06 與 user09；startup／login sync 會移除既有但不在白名單內的主工作區成員。

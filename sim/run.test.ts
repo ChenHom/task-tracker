@@ -10,6 +10,7 @@ import {
   allChecksPass,
   assertPathWithin,
   BRAIN_ROOT,
+  buildRunnerInvocation,
   brainChecks,
   canonicalWorkspaceDirectory,
   canonicalWorkspaceForRepoRoot,
@@ -33,12 +34,14 @@ import {
   runMemberSession,
   scenarioFromStoredKey,
   settleAllOrThrow,
+  shouldFallbackToModel,
   sweepCandidateUsesRepoSlot,
   sweepBudgets,
   validateGitRootFacts,
   withRunLock,
   workspaceFitsSweepBudget,
   writePromptArtifact,
+  isQuotaExhaustion,
 } from './run';
 
 const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
@@ -109,6 +112,7 @@ insert.run('u2', 'user02@test.local', '小美', 'hash');
 insert.run('u3', 'user03@test.local', '阿凱', 'hash');
 insert.run('u4', 'user04@test.local', '婷婷', 'hash');
 insert.run('u5', 'user05@test.local', '大熊', 'hash');
+insert.run('u6', 'user06@test.local', '小芸', 'hash');
 db.close();
 
 const members = loadMembersFromUsers(dbPath);
@@ -119,10 +123,42 @@ assert.deepStrictEqual(
     { email: 'user03@test.local', name: '阿凱', user: 'user03', runner: 'codex' },
     { email: 'user04@test.local', name: '婷婷', user: 'user04', runner: 'codex' },
     { email: 'user05@test.local', name: '大熊', user: 'user05', runner: 'codex' },
+    { email: 'user06@test.local', name: '小芸', user: 'user06', runner: 'agy' },
   ],
   'sim members 應從 users 表讀取 email/name，runner 設定仍由 sim 保留',
 );
 assert.ok(members.every((member) => member.profile.trim().length > 0), '每個 member 都應有 profile 供認領/難度組合參考');
+
+assert.deepStrictEqual(
+  buildRunnerInvocation(
+    { runner: 'agy', model: 'Gemini 3.5 Flash (High)' },
+    '前端 task prompt',
+    { cwd: '/tmp/user06', logFile: '/tmp/user06.log' },
+  ),
+  {
+    command: 'agy',
+    args: ['--print', '--model', 'Gemini 3.5 Flash (High)', '--mode', 'accept-edits', '前端 task prompt'],
+  },
+  'agy runner 應使用 headless print + accept-edits',
+);
+assert.strictEqual(isQuotaExhaustion('HTTP 429: quota exhausted'), true, 'quota 錯誤應可辨識');
+assert.strictEqual(isQuotaExhaustion('agy binary not found'), false, 'agy 不存在不可誤判為 quota');
+assert.strictEqual(isQuotaExhaustion('authentication failed'), false, '登入失敗不可誤判為 quota');
+assert.strictEqual(
+  shouldFallbackToModel({ timedOut: false, errored: true, quotaExhausted: true }, true),
+  true,
+  'primary quota 滿且有 fallback 才切換模型',
+);
+assert.strictEqual(
+  shouldFallbackToModel({ timedOut: false, errored: true, quotaExhausted: false }, true),
+  false,
+  'agy 一般錯誤不可 fallback',
+);
+assert.strictEqual(
+  shouldFallbackToModel({ timedOut: true, errored: true, quotaExhausted: true }, true),
+  false,
+  'timeout 不可 fallback',
+);
 
 const runRoot = mkdtempSync(join(tmpdir(), 'task-tracker-sim-run-'));
 const runDir = createRunDir(runRoot, 'sim-run-test');
