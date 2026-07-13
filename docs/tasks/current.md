@@ -1,6 +1,6 @@
-# 開發任務 v2
+# 開發任務（目前狀態）
 
-> 對應 [DESIGN_V2.md](DESIGN_V2.md)，接續 [TASKS.md](TASKS.md) 已完成的 Phase 0-7。
+> 自根目錄 `TASKS_V2.md` 搬移。對應 [design.md](../../design.md)，接續 [history.md](history.md) 已完成的 Phase 0-7。
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
 > 最後巡檢：2026-07-10；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 13 是目前交接。
 
@@ -12,7 +12,7 @@
 - [x] 重複 email 的 SQLite UNIQUE 例外包裝成乾淨的 `CommandError`
 - [x] Seeder 腳本：產生 ≥30 位使用者，固定測試密碼、可預期 email（`user01@test.local` ~ `user30@test.local`）
 - [x] Seeder idempotent（`createUser` 對已存在 email 丟 `CommandError`，seeder catch 掉即跳過）
-- [x] 自我驗證：seeder 跑兩次，`users` 數量不變（[seed.test.ts](src/seed.test.ts) + 實際對 dev.db 跑兩次確認 30 筆）
+- [x] 自我驗證：seeder 跑兩次，`users` 數量不變（[seed.test.ts](../../src/seed.test.ts) + 實際對 dev.db 跑兩次確認 30 筆）
 
 > 實測：seed 出來的帳號可透過 `POST /api/auth/login` 真的登入（`npm run seed` 產生，密碼固定 `test1234`）。
 
@@ -29,11 +29,11 @@
 
 > 實測：以 curl 打 `/api/auth/forgot-password`，存在與不存在的 email 回應一字不差；只有存在時 console 印出重設連結。
 > 用印出的 token 打 `/api/auth/reset-password` 成功改密碼，新密碼可登入、舊密碼失效，同一 token 重打第二次回 400；
-> 重設前建立的 session 在重設後也全部失效（`getSessionUser` 回 null）。單元測試涵蓋 token hash 化、過期、單次使用等情境（[auth.test.ts](src/auth.test.ts)）。
+> 重設前建立的 session 在重設後也全部失效（`getSessionUser` 回 null）。單元測試涵蓋 token hash 化、過期、單次使用等情境（[auth.test.ts](../../src/auth.test.ts)）。
 
 ---
 
-## Phase 10 — Member 邀請 API 　`RBAC` ✅
+## Phase 10 — Member 邀請 API  `RBAC` ✅
 
 - [x] `POST /api/workspaces/:id/members`（邀請，需 Admin+；email 查 `users` 找 user id，找不到回錯誤）
 - [x] `GET /api/workspaces/:id/members`（列出成員+角色）
@@ -51,8 +51,8 @@
 > Owner 在還有其他成員時嘗試自我移除回 400，移除到只剩自己一人後 `archiveWorkspace`（直接呼叫函式驗證，此 phase 未加 HTTP 路由）才成功；
 > 邀請不存在的 email 回 400「找不到該 email 對應的使用者」，不會靜默成功；`POST .../members/join` 與 `PATCH/DELETE .../members/:userId`
 > 這組容易撞在一起的路由分開驗證過，join 不會被當成 `:userId` 吃掉。單元測試涵蓋權限升級（Admin 任命/受任 Owner）、
-> Admin 動既有 Owner 被擋、Owner 自我降級/移除需唯一成員、`countActiveMembers` 本身（[member.test.ts](src/member.test.ts)），
-> 以及 `archiveWorkspace`/`deleteWorkspace` 在非唯一成員時被拒絕（[workspace.test.ts](src/workspace.test.ts)）。
+> Admin 動既有 Owner 被擋、Owner 自我降級/移除需唯一成員、`countActiveMembers` 本身（[member.test.ts](../../src/member.test.ts)），
+> 以及 `archiveWorkspace`/`deleteWorkspace` 在非唯一成員時被拒絕（[workspace.test.ts](../../src/workspace.test.ts)）。
 
 ---
 
@@ -117,7 +117,7 @@
 
 ### 跨 workspace 搬移 task（原 `451c2509`，已轉移至 `11983af5` @ workspace `d9da9945`，High）
 
-> `451c2509` 卡在 workspace `11db3331`（scenario=brain，repoRoot 不合）32 小時後人工轉移；本功能規格未變，下列 checklist 仍待實作。詳見 [2026-07-10-crossrepo-workspace-routing.md](superpowers/plans/2026-07-10-crossrepo-workspace-routing.md)。
+> `451c2509` 卡在 workspace `11db3331`（scenario=brain，repoRoot 不合）32 小時後人工轉移；本功能規格未變，下列 checklist 仍待實作。詳見 [2026-07-10-crossrepo-workspace-routing.md](../superpowers/plans/2026-07-10-crossrepo-workspace-routing.md)。
 
 - [ ] `moveTask(actorId, taskId, targetWorkspaceId)` append `task.moved`，payload 含 source/target workspace
 - [ ] projection 同步更新 `workspace_id`，並清掉舊 workspace 所屬的 `project_id`
@@ -187,6 +187,6 @@
 - [x] Commenter 可在任何 workspace 修改自己建立 task 的 description；標題、狀態、屬性、附件與他人 task 仍不可修改
 - [ ] 經明確人工授權執行 live `npm run sim -- --sweep owner`
 
-> 2026-07-12 rollout：`master` merge `efbeb4b` 後 `npm test`、`npm run build`、health check 全數通過。DB 為 1 Owner + 29 Commenter、唯一規則 task，兩筆 legacy task 已加上 `[討論]`。HTTP smoke 驗證 Commenter 可建討論／留言但改狀態為 403，user01 以單一 `task.discussion_started` 完成 Doing 指派，並建立 canonical task、回寫完整 URL、推進 Review → Done。Live AI sweep 未執行。
+> 2026-07-12 rollout：`master` merge `efbeb4b` 後 `npm test`、`npm run build`、health check 全數通過。DB 為 1 Owner + 29 Commenter、唯一規則 task，兩筆 legacy task 已加上 `[討論]`。HTTP smoke 驗證 Commenter 可建討論／留言但改狀態為 403，user01 以單一 `task.discussion_started` 完成 Doing 指派，並建立 canonical task `af06f594-682c-4437-aea5-d71eb354471c`、回寫完整 URL、推進 Review → Done。Live AI sweep 未執行。
 
 > 2026-07-12 description rollout：`master` fast-forward 至 `4794674` 後完整測試、build 與 health check 通過。Commenter 自建 task 描述 PATCH 為 200，標題／狀態為 403，他人描述為 400；user02 在非主工作區仍是 Member，標題與描述 PATCH 均為 200。

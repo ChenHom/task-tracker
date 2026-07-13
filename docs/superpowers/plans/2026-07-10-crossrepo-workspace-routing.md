@@ -67,7 +67,7 @@ $ node --import tsx sim/run.test.ts
 
 ## 已知限制 / Deferred
 
-- `moveTask`（Phase 13 正式功能，`POST /api/tasks/:id/move`）仍未實作——本次是複製＋留連結的權宜解法，不是用真正的搬移 API；`TASKS_V2.md` Phase 13 checklist 保留給後續真正開發，未打勾。
+- `moveTask`（Phase 13 正式功能，`POST /api/tasks/:id/move`）仍未實作——本次是複製＋留連結的權宜解法，不是用真正的搬移 API；`docs/tasks/current.md` 的 Phase 13 checklist 保留給後續真正開發，未打勾。
 - `CANONICAL_WORKSPACE_BY_REPOROOT` 目前只登記 task-tracker 本體一筆，單向（沙盒 → 本體）；未來若真的出現第二種需要互轉的 repo，再加一行即可，成本比照新增一個 scenario。
 - `sim-sweep-owner.timer`／`sim-sweep-team.timer` 目前仍是暫停狀態（使用者於本次會談稍早要求），待使用者確認後可 `systemctl --user enable --now` 恢復。
 - 兩個空殼 self-directed workspace（`465bfd2d`、`ca9c9bb7`，皆 0 task）尚未清理，非必要但可選（減少未來人工判斷 canonical workspace 時的雜訊）。
@@ -77,4 +77,4 @@ $ node --import tsx sim/run.test.ts
 - `sim/run.ts`
 - `sim/run.test.ts`
 - `docs/superpowers/plans/2026-07-10-commenter-main-workspace-implementation.md`
-- `TASKS_V2.md`（Phase 13 標頭已同步更新轉移紀錄）
+- `docs/tasks/current.md`（Phase 13 標頭已同步更新轉移紀錄）

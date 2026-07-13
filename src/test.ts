@@ -15,5 +15,6 @@ import './attachment.test';
 import './search.test';
 import './audit.test';
 import './rateLimit.test';
+import './quota.test';
 import './server.test';
 import './frontend.test';

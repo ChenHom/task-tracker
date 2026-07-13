@@ -254,6 +254,7 @@ const taskCommentsBlock = routeBlock('const taskCommentsMatch =', 'const comment
 const commentBlock = routeBlock('const commentMatch =', 'const taskAttachMatch =');
 const taskAttachmentsBlock = routeBlock('const taskAttachMatch =', 'const attachMatch =');
 const attachmentBlock = routeBlock('const attachMatch =', '// ── Search API');
+const quotaBlock = routeBlock("if (req.url === '/api/quota' && req.method === 'GET')", "if (req.url === '/api/workspaces')");
 const auditBlock = routeBlock('// ── Audit API', 'const filePath =');
 
 assert.match(
@@ -322,6 +323,7 @@ assert.match(
   'single attachment GET 應使用 read 權限',
 );
 assert.match(attachmentBlock, /requirePermission\(req, res, ctx\.workspace_id, ACCESS_ROLE\.writeAttachment\)/, 'attachment DELETE 應使用 writeAttachment 權限');
+assert.match(quotaBlock, /const userId = requireAuth\(req, res\)/, 'quota API 應要求登入');
 
 assert.match(workspacePatchBlock, /requirePermission\(req, res, workspaceId, 'Admin'\)/, 'workspace rename 仍需 Admin');
 assert.match(

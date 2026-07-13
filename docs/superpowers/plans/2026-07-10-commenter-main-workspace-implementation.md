@@ -43,7 +43,7 @@
 - Modify `src/frontend.test.ts`: Commenter UI 與 URL protocol 驗證。
 - Modify `sim/run.ts`: 在既有 canonical routing 上增加固定主工作區 sweep 候選、規則 task 排除、owner 喚醒條件及依 target repo 選 workspace 的新 prompt。
 - Modify `sim/run.test.ts`: 主工作區候選、task 分類、owner 喚醒與 canonical directory 共存測試。
-- Modify `TASKS_V2.md`: 新增並完成 Phase 15 驗收紀錄。
+- Modify `docs/tasks/current.md`: 新增並完成 Phase 15 驗收紀錄。
 - Modify `docs/operations.md`: 主協作工作區政策、同步、sweep 與故障檢查。
 - Modify `docs/superpowers/specs/2026-07-10-commenter-main-workspace-design.md`: 驗收後把狀態改為已完成。
 
@@ -1144,7 +1144,7 @@ git commit -m "feat(sim): sweep main workspace discussions"
 ### Task 7: Verify The Feature Branch And Prepare Integration Docs
 
 **Files:**
-- Modify: `TASKS_V2.md`
+- Modify: `docs/tasks/current.md`
 - Modify: `docs/operations.md`
 - Modify: `docs/superpowers/specs/2026-07-10-commenter-main-workspace-design.md:3-8`
 
@@ -1168,7 +1168,7 @@ Expected: the empty-`Map` assertions prove both main and canonical workspaces ar
 
 - [ ] **Step 3: Document only branch-verified work**
 
-Append `Phase 15 - Commenter 與主協作工作區治理` to `TASKS_V2.md`. Check RBAC, synchronization, domain rules, UI, URL handoff, sweep unit tests, `npm test`, and build. Keep deployment, DB read-back, HTTP smoke, and live owner sweep unchecked.
+Append `Phase 15 - Commenter 與主協作工作區治理` to `docs/tasks/current.md`. Check RBAC, synchronization, domain rules, UI, URL handoff, sweep unit tests, `npm test`, and build. Keep deployment, DB read-back, HTTP smoke, and live owner sweep unchecked.
 
 Add this operations section:
 
@@ -1203,7 +1203,7 @@ Expected: tests/build/diff check exit 0; status lists only the intended Task 7 d
 - [ ] **Step 5: Commit Task 7**
 
 ```bash
-git add TASKS_V2.md docs/operations.md docs/superpowers/specs/2026-07-10-commenter-main-workspace-design.md
+git add docs/tasks/current.md docs/operations.md docs/superpowers/specs/2026-07-10-commenter-main-workspace-design.md
 git commit -m "docs: document main collaboration workflow"
 ```
 
@@ -1216,7 +1216,7 @@ Use `superpowers:finishing-a-development-branch` to review and integrate the fea
 ### Task 8: Post-Merge Rollout And HTTP Smoke
 
 **Files:**
-- Modify after verification: `TASKS_V2.md`
+- Modify after verification: `docs/tasks/current.md`
 - Modify after verification: `docs/superpowers/specs/2026-07-10-commenter-main-workspace-design.md`
 
 - [ ] **Step 1: Confirm the implementation is integrated into a clean master**
@@ -1364,12 +1364,12 @@ The pure sweep tests are mandatory and already run. Because `sim-sweep-owner.tim
 
 - [ ] **Step 5: Record verified rollout results**
 
-After Steps 1-3 pass, check the deployment, DB read-back, and HTTP smoke entries in `TASKS_V2.md`. Change the design spec status to `已實作並驗收`. Keep live owner sweep unchecked when Step 4 was not authorized.
+After Steps 1-3 pass, check the deployment, DB read-back, and HTTP smoke entries in `docs/tasks/current.md`. Change the design spec status to `已實作並驗收`. Keep live owner sweep unchecked when Step 4 was not authorized.
 
 Run `git diff --check`, then commit only those follow-up documentation changes:
 
 ```bash
-git add TASKS_V2.md docs/superpowers/specs/2026-07-10-commenter-main-workspace-design.md
+git add docs/tasks/current.md docs/superpowers/specs/2026-07-10-commenter-main-workspace-design.md
 git commit -m "docs: record main workspace rollout verification"
 ```
 
