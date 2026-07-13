@@ -203,4 +203,6 @@
 - [x] 摘要優先五小時；缺少五小時時 fallback 七天
 - [x] Footer hover/focus 顯示雙視窗額度與台灣重置時間
 - [x] 缺少、損壞或 stale snapshot 不影響 auth/API server，其餘 provider 仍可顯示
-- [ ] 安裝/啟用 `ai-quota.timer` 並完成正式 task-tracker HTTP/UI smoke
+- [x] 安裝/啟用 `ai-quota.timer` 並完成正式 task-tracker HTTP/UI smoke
+
+> 2026-07-13 正式驗收：`ai-quota.timer` active/waiting、Codex/Claude status 均為 `ok`；task-tracker 完整測試與 build 通過，正式 3000 服務健康檢查、登入後 `/api/quota` 與 Playwright footer hover 均通過。Codex 顯示 7 天 fallback，Claude 顯示 5 小時摘要，tooltip 的台灣時間與雙視窗資料符合 API。

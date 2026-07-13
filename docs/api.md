@@ -334,6 +334,8 @@ Request JSON：
 
 資料由獨立的 `/home/hom/services/ai-quota` systemd timer 寫入 `~/.local/state/ai-quota/quota.json`；task-tracker 不讀 provider credentials，也不呼叫外部 usage API。`stale: true` 表示顯示的是最後成功資料或 snapshot 無法取得；`unavailable: true` 只表示該 provider 沒有可顯示視窗，不影響其他 provider。
 
+2026-07-13 正式驗證：Codex 僅回七天視窗時，摘要正確 fallback 七天；Claude 五小時視窗為 `100%` 且 `resetAt: null` 時仍視為可用。Footer hover 會同時顯示五小時與七天資料，並將 UTC `resetAt` 固定格式化為 `Asia/Taipei`，API 本身不改寫 timestamp。
+
 ## Workspaces and members
 
 ### `GET /api/workspaces`
