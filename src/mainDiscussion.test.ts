@@ -266,7 +266,10 @@ assert.throws(
     content: TWO_DAY_REQUEST,
     createdAt: OPENED_AT,
   }, db),
-  CommandError,
+  {
+    name: 'CommandError',
+    message: '全員通知前必須先留下完整的 OWNER想法，缺少：風險與反對理由、現行可替代方案、初步判斷、希望成員確認的問題',
+  },
 );
 
 const duplicateRequest = addRequest('task-1', TWO_DAY_REQUEST, 'owner', 'task-1-request-2');

@@ -75,6 +75,16 @@ assert.ok(
 );
 assert.ok(source.includes('未登記，人工介入選定'), '主工作區 prompt 必須標示未登記 repo 需要人工介入');
 assert.ok(source.includes('【OWNER想法】'), '主工作區 prompt 必須先提出 OWNER 想法');
+for (const field of [
+  '現況／問題：',
+  '預期價值：',
+  '風險與反對理由：',
+  '現行可替代方案：',
+  '初步判斷：',
+  '希望成員確認的問題：',
+]) {
+  assert.ok(source.includes(field), `主工作區 OWNER prompt 必須提供六欄模板：${field}`);
+}
 assert.ok(source.includes('【全員回覆：2天】'), '主工作區 prompt 必須使用固定回覆窗口');
 assert.ok(source.includes('@user02 @user03 @user04 @user05 @user06 @user09'), '主工作區 prompt 必須通知六位 Commenter');
 assert.ok(source.includes('Todo→Done'), '主工作區 prompt 必須只完成 Todo → Done');
