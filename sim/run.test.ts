@@ -135,7 +135,14 @@ assert.ok(
   '一般 run 與 owner/team sweep 的每條自動 session 路徑都必須經 notification gate wrapper',
 );
 assert.ok(source.includes("if (role !== 'owner')"), 'team/both sweep 必須啟動全成員通知巡檢');
-assert.ok(/runNotificationSweep\(\s*RUN\.members/.test(source), '通知巡檢必須覆蓋所有設定成員');
+assert.ok(
+  /runNotificationSweep\(\s*members/.test(source),
+  '通知巡檢必須使用 sweep 開頭已載入的 members',
+);
+assert.ok(
+  !/runNotificationSweep\(\s*RUN\.members/.test(source),
+  '通知巡檢不得使用尚未 activate scenario 的 RUN.members',
+);
 assert.ok(source.includes('notification sweep 未完成，略過一般 session'), '通知巡檢失敗時不得進一般 member session');
 assert.ok(source.includes('const readyToRun = toRun.filter'), '一般派工仍須保留 claim-based toRun 並套用通知結果');
 

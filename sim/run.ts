@@ -1796,7 +1796,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   let notificationResults = new Map<string, NotificationSweepResult>();
   if (role !== 'owner') {
     const results = await runNotificationSweep(
-      RUN.members,
+      members,
       (member) => runNotificationSweepForMember({
         member,
         request: api,
