@@ -41,6 +41,11 @@ import {
   workspaceFitsSweepBudget,
   writePromptArtifact,
   isQuotaExhaustion,
+  notificationGatePrompt,
+  processNotificationGate,
+  runNotificationGatedSession,
+  type NotificationGateActor,
+  type NotificationGateRequest,
 } from './run';
 
 const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
@@ -122,6 +127,274 @@ const mainPromptSource = source.slice(
 );
 assert.ok(!mainPromptSource.includes('${BASE}/#/task/<id>'), '主工作區 prompt 不得回寫 URL');
 assert.ok(!mainPromptSource.includes('HANDOFF-PENDING'), '主工作區 prompt 不得使用 handoff marker');
+assert.ok(
+  (source.match(/runActorSessionWithNotificationGate\(/g)?.length ?? 0) >= 8,
+  '一般 run 與 owner/team sweep 的每條自動 session 路徑都必須經 notification gate wrapper',
+);
+
+// Notification gate contract (injected HTTP client keeps these tests offline).
+const gateActor = {
+  id: 'u2', email: 'user02@test.local', name: '小美',
+} satisfies NotificationGateActor;
+type GateResponse = { status: number; body: unknown };
+function fakeGateRequest(queue: Record<string, GateResponse[]>): { request: NotificationGateRequest; calls: string[] } {
+  const calls: string[] = [];
+  const request: NotificationGateRequest = async (path, init = {}) => {
+    const method = init.method ?? 'GET';
+    const key = `${method} ${path}`;
+    calls.push(key);
+    const responses = queue[key] ?? [];
+    const response = responses.shift();
+    if (!response) throw new Error(`fake response missing: ${key}`);
+    return response;
+  };
+  return { request, calls };
+}
+const unreadNotification = (notificationId: string, taskId: string, commentId: string) => ({
+  notification_id: notificationId, recipient_id: gateActor.id, source_task_id: taskId,
+  source_comment_id: commentId, snippet: '請確認', created_at: '2026-07-14T03:59:00.000Z', read_at: null,
+});
+const readNotification = (notificationId: string, taskId: string, commentId: string) => ({
+  ...unreadNotification(notificationId, taskId, commentId), read_at: '2026-07-14T04:00:00.000Z',
+});
+const gateTask = (taskId: string, workspaceId: string) => ({
+  task_id: taskId, workspace_id: workspaceId, creator_id: 'creator', project_id: null,
+  title: '通知來源', description: '說明', status: 'Todo', priority: 'Medium',
+  assignee_id: null, due_at: null, version: 1, updated_at: '2026-07-14T03:58:00.000Z',
+});
+const gateComment = (taskId: string, commentId: string, userId = 'owner', content = '請確認', createdAt = '2026-07-14T03:59:00.000Z') => ({
+  comment_id: commentId, task_id: taskId, user_id: userId, content, created_at: createdAt,
+});
+
+async function runNotificationGateTests(): Promise<void> {
+  const empty = fakeGateRequest({
+    'GET /api/notifications': [{ status: 200, body: [] }],
+  });
+  const noUnread = await processNotificationGate({
+    actor: gateActor,
+    cookie: 'session=test',
+    request: empty.request,
+    runPreflight: async () => { throw new Error('不該啟動 preflight'); },
+    log: () => undefined,
+    snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(noUnread, { ready: true, snapshotIds: [] });
+
+  let regularRuns = 0;
+  const skipped = await runNotificationGatedSession(
+    async () => ({ ready: false, snapshotIds: ['n-main'] }),
+    async () => { regularRuns++; return { errored: false, timedOut: false, quotaExhausted: false }; },
+  );
+  assert.strictEqual(skipped, null);
+  assert.strictEqual(regularRuns, 0, 'gate 未清空時不得進入一般 session');
+
+  const general = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-general', 'task-general', 'comment-general')] },
+      { status: 200, body: [readNotification('n-general', 'task-general', 'comment-general')] },
+    ],
+    'GET /api/tasks/task-general': [{ status: 200, body: gateTask('task-general', 'workspace-general') }],
+    'GET /api/tasks/task-general/comments': [{ status: 200, body: [gateComment('task-general', 'comment-general')] }],
+    'POST /api/notifications/n-general/read': [{ status: 200, body: { ok: true } }],
+  });
+  let preflightPrompt = '';
+  const generalResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: general.request,
+    runPreflight: async (prompt) => { preflightPrompt = prompt; return { errored: false, timedOut: false }; },
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(generalResult, { ready: true, snapshotIds: ['n-general'] });
+  assert.ok(preflightPrompt.includes('task-general'));
+  assert.deepStrictEqual(general.calls, [
+    'GET /api/notifications', 'GET /api/tasks/task-general', 'GET /api/tasks/task-general/comments',
+    'POST /api/notifications/n-general/read', 'GET /api/notifications',
+  ]);
+
+  const main = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-main', 'task-main', 'comment-main')] },
+      { status: 200, body: [{ ...unreadNotification('n-main', 'task-main', 'comment-main'), read_at: '2026-07-14T04:02:00.000Z' }] },
+    ],
+    'GET /api/tasks/task-main': [{ status: 200, body: gateTask('task-main', MAIN_WORKSPACE_ID) }],
+    'GET /api/tasks/task-main/comments': [
+      { status: 200, body: [gateComment('task-main', 'comment-main')] },
+      { status: 200, body: [
+        gateComment('task-main', 'comment-main'),
+        gateComment('task-main', 'reply-main', gateActor.id, '已閱讀，目前無補充。', '2026-07-14T04:01:00.000Z'),
+      ] },
+    ],
+    'POST /api/notifications/n-main/read': [{ status: 200, body: { ok: true } }],
+  });
+  const mainResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: main.request,
+    runPreflight: async () => ({ errored: false, timedOut: false }),
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(mainResult, { ready: true, snapshotIds: ['n-main'] });
+  assert.ok(main.calls.indexOf('GET /api/tasks/task-main/comments') < main.calls.indexOf('POST /api/notifications/n-main/read'));
+
+  const missingReply = fakeGateRequest({
+    'GET /api/notifications': [{ status: 200, body: [unreadNotification('n-missing', 'task-missing', 'comment-missing')] }],
+    'GET /api/tasks/task-missing': [{ status: 200, body: gateTask('task-missing', MAIN_WORKSPACE_ID) }],
+    'GET /api/tasks/task-missing/comments': [
+      { status: 200, body: [gateComment('task-missing', 'comment-missing')] },
+      { status: 200, body: [gateComment('task-missing', 'comment-missing')] },
+    ],
+  });
+  const missingReplyResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: missingReply.request,
+    runPreflight: async () => ({ errored: false, timedOut: false }),
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(missingReplyResult, { ready: false, snapshotIds: ['n-missing'] });
+  assert.ok(!missingReply.calls.some((call) => call.includes('/read')));
+
+  const selfMention = fakeGateRequest({
+    'GET /api/notifications': [{ status: 200, body: [unreadNotification('n-self', 'task-self', 'comment-self')] }],
+    'GET /api/tasks/task-self': [{ status: 200, body: gateTask('task-self', MAIN_WORKSPACE_ID) }],
+    'GET /api/tasks/task-self/comments': [
+      { status: 200, body: [gateComment('task-self', 'comment-self')] },
+      { status: 200, body: [gateComment('task-self', 'reply-self', gateActor.id, '@小美 請確認', '2026-07-14T04:01:00.000Z')] },
+    ],
+  });
+  const selfMentionResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: selfMention.request,
+    runPreflight: async () => ({ errored: false, timedOut: false }),
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(selfMentionResult, { ready: false, snapshotIds: ['n-self'] });
+  assert.ok(!selfMention.calls.some((call) => call.includes('/read')));
+
+  const unavailableLogs: string[] = [];
+  const unavailable = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-gone', 'task-gone', 'comment-gone')] },
+      { status: 200, body: [{ ...unreadNotification('n-gone', 'task-gone', 'comment-gone'), read_at: '2026-07-14T04:01:00.000Z' }] },
+    ],
+    'GET /api/tasks/task-gone': [{ status: 404, body: { error: 'task 不存在' } }],
+    'POST /api/notifications/n-gone/read': [{ status: 200, body: { ok: true } }],
+  });
+  const unavailableResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: unavailable.request,
+    runPreflight: async () => { throw new Error('unavailable 不該啟動 preflight'); },
+    log: (line) => unavailableLogs.push(line), snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(unavailableResult, { ready: true, snapshotIds: ['n-gone'] });
+  assert.ok(unavailableLogs.some((line) => line.includes('notification=n-gone') && line.includes('task=task-gone') && line.includes('status=404')));
+
+  const failedSource = fakeGateRequest({
+    'GET /api/notifications': [{ status: 200, body: [unreadNotification('n-500', 'task-500', 'comment-500')] }],
+    'GET /api/tasks/task-500': [{ status: 500, body: { error: 'server error' } }],
+  });
+  const failedResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: failedSource.request,
+    runPreflight: async () => ({ errored: false, timedOut: false }),
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(failedResult, { ready: false, snapshotIds: ['n-500'] });
+  assert.ok(!failedSource.calls.some((call) => call.includes('/read')));
+
+  const commentsGoneLogs: string[] = [];
+  const commentsGone = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-comments-gone', 'task-comments-gone', 'comment-gone')] },
+      { status: 200, body: [{ ...unreadNotification('n-comments-gone', 'task-comments-gone', 'comment-gone'), read_at: '2026-07-14T04:01:00.000Z' }] },
+    ],
+    'GET /api/tasks/task-comments-gone': [{ status: 200, body: gateTask('task-comments-gone', 'workspace-general') }],
+    'GET /api/tasks/task-comments-gone/comments': [{ status: 403, body: { error: '禁止' } }],
+    'POST /api/notifications/n-comments-gone/read': [{ status: 200, body: { ok: true } }],
+  });
+  const commentsGoneResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: commentsGone.request,
+    runPreflight: async () => { throw new Error('來源失效不該啟動 preflight'); },
+    log: (line) => commentsGoneLogs.push(line), snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(commentsGoneResult, { ready: true, snapshotIds: ['n-comments-gone'] });
+  assert.ok(commentsGoneLogs.some((line) => line.includes('status=403')));
+
+  const missingSourceComment = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-comment-missing', 'task-comment-missing', 'comment-missing')] },
+      { status: 200, body: [{ ...unreadNotification('n-comment-missing', 'task-comment-missing', 'comment-missing'), read_at: '2026-07-14T04:01:00.000Z' }] },
+    ],
+    'GET /api/tasks/task-comment-missing': [{ status: 200, body: gateTask('task-comment-missing', 'workspace-general') }],
+    'GET /api/tasks/task-comment-missing/comments': [{ status: 200, body: [gateComment('task-comment-missing', 'different-comment')] }],
+    'POST /api/notifications/n-comment-missing/read': [{ status: 200, body: { ok: true } }],
+  });
+  const missingSourceCommentResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: missingSourceComment.request,
+    runPreflight: async () => { throw new Error('缺少留言不該啟動 preflight'); },
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(missingSourceCommentResult, { ready: true, snapshotIds: ['n-comment-missing'] });
+
+  const malformed = fakeGateRequest({
+    'GET /api/notifications': [{ status: 200, body: { not: 'array' } }],
+  });
+  const malformedResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: malformed.request,
+    runPreflight: async () => ({ errored: false, timedOut: false }),
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(malformedResult, { ready: false, snapshotIds: [] });
+
+  const preflightFailed = fakeGateRequest({
+    'GET /api/notifications': [{ status: 200, body: [unreadNotification('n-preflight-failed', 'task-preflight-failed', 'comment-preflight-failed')] }],
+    'GET /api/tasks/task-preflight-failed': [{ status: 200, body: gateTask('task-preflight-failed', 'workspace-general') }],
+    'GET /api/tasks/task-preflight-failed/comments': [{ status: 200, body: [gateComment('task-preflight-failed', 'comment-preflight-failed')] }],
+  });
+  const preflightFailedResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: preflightFailed.request,
+    runPreflight: async () => ({ errored: true, timedOut: false }),
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(preflightFailedResult, { ready: false, snapshotIds: ['n-preflight-failed'] });
+  assert.ok(!preflightFailed.calls.some((call) => call.includes('/read')));
+
+  const multiple = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [
+        unreadNotification('n-one', 'task-one', 'comment-one'),
+        unreadNotification('n-two', 'task-two', 'comment-two'),
+        readNotification('n-old', 'task-old', 'comment-old'),
+      ] },
+      { status: 200, body: [
+        { ...unreadNotification('n-one', 'task-one', 'comment-one'), read_at: '2026-07-14T04:02:00.000Z' },
+        { ...unreadNotification('n-two', 'task-two', 'comment-two'), read_at: '2026-07-14T04:02:00.000Z' },
+        unreadNotification('n-new', 'task-new', 'comment-new'),
+      ] },
+    ],
+    'GET /api/tasks/task-one': [{ status: 200, body: gateTask('task-one', 'workspace-general') }],
+    'GET /api/tasks/task-one/comments': [{ status: 200, body: [gateComment('task-one', 'comment-one')] }],
+    'GET /api/tasks/task-two': [{ status: 200, body: gateTask('task-two', 'workspace-general') }],
+    'GET /api/tasks/task-two/comments': [{ status: 200, body: [gateComment('task-two', 'comment-two')] }],
+    'POST /api/notifications/n-one/read': [{ status: 200, body: { ok: true } }],
+    'POST /api/notifications/n-two/read': [{ status: 200, body: { ok: true } }],
+  });
+  const multipleResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: multiple.request,
+    runPreflight: async () => ({ errored: false, timedOut: false }),
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(multipleResult, { ready: true, snapshotIds: ['n-one', 'n-two'] });
+  assert.strictEqual(multiple.calls.filter((call) => call.includes('/read')).length, 2);
+
+  const prompt = notificationGatePrompt({
+    actor: gateActor,
+    jar: '/tmp/notification.jar',
+    sources: [{
+      notification: unreadNotification('n-prompt', 'task-prompt', 'comment-prompt'),
+      task: gateTask('task-prompt', MAIN_WORKSPACE_ID),
+      sourceComment: gateComment('task-prompt', 'comment-prompt'),
+      comments: [gateComment('task-prompt', 'comment-prompt')],
+    }],
+  });
+  assert.ok(prompt.includes('通知前置處理'));
+  assert.ok(prompt.includes('已閱讀，目前無補充。'));
+  assert.ok(prompt.includes('不得呼叫 POST /api/notifications'));
+  assert.ok(prompt.includes('不得在留言中 @ 自己'));
+  assert.ok(!prompt.includes('@小美'), 'prompt 指令不得組出 actor 自己的 handle');
+}
 
 const dir = mkdtempSync(join(tmpdir(), 'task-tracker-sim-'));
 const dbPath = join(dir, 'dev.db');
@@ -423,6 +696,7 @@ releaseAfterStale();
 assert.ok(!existsSync(lockPath));
 
 async function runAsyncPolicyTests(): Promise<void> {
+  await runNotificationGateTests();
   let calls = 0;
   const success = await runMemberSession(
     async () => ({ timedOut: false, errored: false }),

@@ -106,6 +106,14 @@ sqlite3 data/dev.db "SELECT task_id, opened_at, wait_half_days, due_at FROM main
 
 ## Sim harness
 
+### Notification preflight
+
+Every automated Owner and configured member session (`user01`, `user02`–`user06`) first snapshots its own unread `GET /api/notifications` rows. The driver reads the source task/comment and runs a dedicated API-only notification session before ordinary board work.
+
+Main-workspace sources require a new post-snapshot comment by that actor; when there is no addition the required text is `已閱讀，目前無補充。`. The driver, not the AI session, marks a notification read after this verification. Normal-workspace sources may be read without a compulsory reply. A `403`/`404` or deleted source is logged and marked read; malformed data, network/5xx failures, a failed preflight, or missing/invalid main reply stay unread and skip that actor's ordinary session for this run.
+
+The snapshot is bounded to login time. Notifications received later wait for the next actor session. The runner never creates a self-mention in notification handling. `user09` is not currently a sim runner, so this automation does not consume that account's notifications. This is not a frontend inbox and does not authorize running a live sweep.
+
 ### Prerequisites
 
 - Run commands from `/home/hom/code/task-tracker`.

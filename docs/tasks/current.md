@@ -97,6 +97,7 @@
 - [x] CI 結果改為 `PASS` / `FAIL` / `SKIP`；缺 tooling 或跨多個子專案不再製造假綠燈，SKIP 必須由 Owner 人工驗證
 - [x] scenario 啟用前驗證 Git top-level/master，commit 前再驗 worktree/branch；legacy `technical-debt` report 明確映射，未知 scenario fail closed
 - [x] `sim-logs/.run.lock` 序列化 manual/timer 流程並回收 dead-PID lock；平行 member 全部 settle 後才解鎖
+- [x] 每個既有自動 Owner／member session 先處理登入當下的未讀通知；主工作區需驗證新的非自我 mention 留言後才已讀，來源 403/404 會記錄並清除，其他失敗保留未讀並跳過該 actor 的一般工作（不含前端通知 UI 或 user09 runner）
 - [x] Owner runner probe 只影響 owner 預算；`team` 不做全域 probe，member 各自依 runner 執行。user06 僅在 agy 回報 quota exhaustion 且未逾時時切換 fallback；agy 缺少、未登入、一般錯誤或逾時都停工並保留 diff
 - [x] `sim/tsconfig.json` 納入 `npm test`，讓 sim harness 也受 strict TypeScript 檢查
 - [x] `docs/operations.md` 記錄手動模式、scenario、systemd owner/team timers、logs、lock 與權限邊界

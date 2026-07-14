@@ -367,7 +367,10 @@ function activateMainSweepContext(members: Member[]): void {
 }
 
 // ── HTTP helpers（bootstrap 用，不經 LLM）────────────────────────────
-async function api(path: string, init: RequestInit = {}, cookie?: string): Promise<{ status: number; body: any }> {
+export interface ApiResult { status: number; body: any }
+export type NotificationGateRequest = (path: string, init?: RequestInit, cookie?: string) => Promise<ApiResult>;
+
+async function api(path: string, init: RequestInit = {}, cookie?: string): Promise<ApiResult> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(init.headers as any) };
   if (cookie) headers['Cookie'] = cookie;
   const res = await fetch(BASE + path, { ...init, headers });
@@ -387,6 +390,201 @@ async function login(email: string): Promise<string> {
   const m = (res.headers.get('set-cookie') ?? '').match(/session=[^;]+/);
   if (!m) throw new Error(`login ${email} 沒拿到 session cookie`);
   return m[0];
+}
+
+export interface NotificationGateActor { id?: string; email: string; name: string }
+interface NotificationRow {
+  notification_id: string;
+  recipient_id: string;
+  source_task_id: string;
+  source_comment_id: string;
+  snippet?: string;
+  read_at: string | null;
+}
+interface NotificationTask {
+  task_id: string;
+  workspace_id: string;
+  title: string;
+  description: string;
+}
+interface NotificationComment {
+  comment_id: string;
+  task_id: string;
+  user_id: string;
+  content: string;
+  created_at: string;
+}
+interface ResolvedNotification {
+  notification: NotificationRow;
+  task: NotificationTask;
+  sourceComment: NotificationComment;
+  comments: NotificationComment[];
+}
+export interface NotificationGateResult { ready: boolean; snapshotIds: string[] }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function parseNotificationRows(value: unknown): NotificationRow[] {
+  if (!Array.isArray(value) || !value.every((row) => isRecord(row)
+    && typeof row.notification_id === 'string'
+    && typeof row.recipient_id === 'string'
+    && typeof row.source_task_id === 'string'
+    && typeof row.source_comment_id === 'string'
+    && (typeof row.read_at === 'string' || row.read_at === null))) {
+    throw new Error('notifications response 格式不合法');
+  }
+  return value as NotificationRow[];
+}
+
+function parseNotificationTask(value: unknown): NotificationTask {
+  if (!isRecord(value)
+    || typeof value.task_id !== 'string'
+    || typeof value.workspace_id !== 'string'
+    || typeof value.title !== 'string'
+    || typeof value.description !== 'string') {
+    throw new Error('task response 格式不合法');
+  }
+  return value as unknown as NotificationTask;
+}
+
+function parseNotificationComments(value: unknown): NotificationComment[] {
+  if (!Array.isArray(value) || !value.every((comment) => isRecord(comment)
+    && typeof comment.comment_id === 'string'
+    && typeof comment.task_id === 'string'
+    && typeof comment.user_id === 'string'
+    && typeof comment.content === 'string'
+    && typeof comment.created_at === 'string')) {
+    throw new Error('comments response 格式不合法');
+  }
+  return value as unknown as NotificationComment[];
+}
+
+function isUnavailableStatus(status: number): boolean {
+  return status === 403 || status === 404;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+}
+
+function hasSelfMention(content: string, actor: Pick<NotificationGateActor, 'email' | 'name'>): boolean {
+  const local = actor.email.split('@')[0];
+  const handles = [actor.name, local, actor.email]
+    .filter(Boolean)
+    .map(escapeRegExp);
+  return handles.some((handle) => new RegExp(`@${handle}(?=$|[\\s.,，。！？!?;；:：)\\]}>])`, 'iu').test(content));
+}
+
+async function markNotificationRead(
+  input: { notificationId: string; request: NotificationGateRequest; cookie: string },
+): Promise<void> {
+  const response = await input.request(`/api/notifications/${encodeURIComponent(input.notificationId)}/read`, { method: 'POST' }, input.cookie);
+  if (response.status !== 200) throw new Error(`notification ${input.notificationId} read 失敗: HTTP ${response.status}`);
+}
+
+async function finalNotificationReadback(
+  snapshotIds: Set<string>,
+  request: NotificationGateRequest,
+  cookie: string,
+): Promise<void> {
+  const response = await request('/api/notifications', {}, cookie);
+  if (response.status !== 200) throw new Error(`通知 readback 失敗: HTTP ${response.status}`);
+  const rows = parseNotificationRows(response.body);
+  const pending = rows.filter((row) => snapshotIds.has(row.notification_id) && row.read_at === null);
+  if (pending.length) throw new Error(`通知仍未讀: ${pending.map((row) => row.notification_id).join(',')}`);
+}
+
+export async function processNotificationGate(input: {
+  actor: NotificationGateActor;
+  cookie: string;
+  request: NotificationGateRequest;
+  runPreflight: (prompt: string) => Promise<SessionResult>;
+  log: (line: string) => void;
+  snapshotAt: string;
+  jar?: string;
+}): Promise<NotificationGateResult> {
+  let snapshot: NotificationRow[];
+  try {
+    const response = await input.request('/api/notifications', {}, input.cookie);
+    if (response.status !== 200) throw new Error(`通知 snapshot 失敗: HTTP ${response.status}`);
+    snapshot = parseNotificationRows(response.body).filter((row) => row.read_at === null);
+  } catch (error) {
+    input.log(`[notification] gate failed: ${String(error)}`);
+    return { ready: false, snapshotIds: [] };
+  }
+
+  const snapshotIds = snapshot.map((row) => row.notification_id);
+  if (!snapshot.length) return { ready: true, snapshotIds: [] };
+
+  const recipients = new Set(snapshot.map((row) => row.recipient_id));
+  const actorId = [...recipients][0];
+  if (recipients.size !== 1 || (input.actor.id && input.actor.id !== actorId)) {
+    input.log('[notification] gate failed: snapshot recipient 不一致');
+    return { ready: false, snapshotIds };
+  }
+  const actor = { ...input.actor, id: actorId };
+  const snapshotSet = new Set(snapshotIds);
+  const resolved: ResolvedNotification[] = [];
+
+  try {
+    for (const notification of snapshot) {
+      const taskResponse = await input.request(`/api/tasks/${encodeURIComponent(notification.source_task_id)}`, {}, input.cookie);
+      if (isUnavailableStatus(taskResponse.status)) {
+        input.log(`[notification] unavailable notification=${notification.notification_id} task=${notification.source_task_id} status=${taskResponse.status}`);
+        await markNotificationRead({ notificationId: notification.notification_id, request: input.request, cookie: input.cookie });
+        continue;
+      }
+      if (taskResponse.status !== 200) throw new Error(`task ${notification.source_task_id} 讀取失敗: HTTP ${taskResponse.status}`);
+      const task = parseNotificationTask(taskResponse.body);
+
+      const commentsResponse = await input.request(`/api/tasks/${encodeURIComponent(notification.source_task_id)}/comments`, {}, input.cookie);
+      if (isUnavailableStatus(commentsResponse.status)) {
+        input.log(`[notification] unavailable notification=${notification.notification_id} task=${notification.source_task_id} status=${commentsResponse.status}`);
+        await markNotificationRead({ notificationId: notification.notification_id, request: input.request, cookie: input.cookie });
+        continue;
+      }
+      if (commentsResponse.status !== 200) throw new Error(`task ${notification.source_task_id} comments 讀取失敗: HTTP ${commentsResponse.status}`);
+      const comments = parseNotificationComments(commentsResponse.body);
+      const sourceComment = comments.find((comment) => comment.comment_id === notification.source_comment_id);
+      if (!sourceComment) {
+        input.log(`[notification] unavailable notification=${notification.notification_id} task=${notification.source_task_id} status=404`);
+        await markNotificationRead({ notificationId: notification.notification_id, request: input.request, cookie: input.cookie });
+        continue;
+      }
+      resolved.push({ notification, task, sourceComment, comments });
+    }
+
+    if (resolved.length) {
+      const preflight = await input.runPreflight(notificationGatePrompt({ actor, jar: input.jar ?? '', sources: resolved }));
+      if (preflight.errored || preflight.timedOut) throw new Error('通知 preflight session 失敗');
+
+      const mainTaskIds = new Set(resolved
+        .filter((source) => source.task.workspace_id === MAIN_WORKSPACE_ID)
+        .map((source) => source.task.task_id));
+      for (const taskId of mainTaskIds) {
+        const commentsResponse = await input.request(`/api/tasks/${encodeURIComponent(taskId)}/comments`, {}, input.cookie);
+        if (commentsResponse.status !== 200) throw new Error(`主工作區 task ${taskId} 留言驗證失敗: HTTP ${commentsResponse.status}`);
+        const comments = parseNotificationComments(commentsResponse.body);
+        const recentActorComments = comments.filter((comment) => comment.task_id === taskId
+          && comment.user_id === actor.id && comment.created_at > input.snapshotAt);
+        if (!recentActorComments.length || recentActorComments.some((comment) => hasSelfMention(comment.content, actor))) {
+          throw new Error(`主工作區 task ${taskId} 缺少合格的新留言`);
+        }
+      }
+
+      for (const source of resolved) {
+        await markNotificationRead({ notificationId: source.notification.notification_id, request: input.request, cookie: input.cookie });
+      }
+    }
+
+    await finalNotificationReadback(snapshotSet, input.request, input.cookie);
+    return { ready: true, snapshotIds };
+  } catch (error) {
+    input.log(`[notification] gate failed: ${String(error)}`);
+    return { ready: false, snapshotIds };
+  }
 }
 
 const git = (args: string[], cwd = RUN.repoRoot) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -549,6 +747,47 @@ export async function runMemberSession(
   return { result, committed: commitIfSessionSucceeded(result, commit) };
 }
 
+export async function runNotificationGatedSession(
+  gate: () => Promise<NotificationGateResult>,
+  runNormal: () => Promise<SessionResult>,
+): Promise<SessionResult | null> {
+  const result = await gate();
+  return result.ready ? runNormal() : null;
+}
+
+async function runActorSessionWithNotificationGate(input: {
+  label: string;
+  actor: Pick<NotificationGateActor, 'email' | 'name'>;
+  jar: string;
+  runner: Runner;
+  model: string;
+  preflightOptions: SessionOptions;
+  normal: () => Promise<SessionResult>;
+}): Promise<SessionResult | null> {
+  let cookie: string;
+  try {
+    cookie = await login(input.actor.email);
+  } catch (error) {
+    console.log(`[${input.label}] notification gate login 失敗，略過一般 session：${String(error)}`);
+    return null;
+  }
+  return runNotificationGatedSession(
+    () => processNotificationGate({
+      actor: input.actor,
+      cookie,
+      request: api,
+      jar: input.jar,
+      runPreflight: (prompt) => runSession(
+        `${input.label}-通知`, input.runner, input.model, prompt,
+        { ...input.preflightOptions, promptLabel: `${input.label}-notification` },
+      ),
+      log: (line) => console.log(`[${input.label}] ${line}`),
+      snapshotAt: new Date().toISOString(),
+    }),
+    input.normal,
+  );
+}
+
 export async function settleAllOrThrow(tasks: Promise<unknown>[]): Promise<void> {
   const results = await Promise.allSettled(tasks);
   const failures = results
@@ -695,6 +934,34 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 - 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層
 - 主協作工作區（${MAIN_WORKSPACE_ID}）只放討論；非 user01 不改狀態，實作 task 必須建立在目標工作區。
 - 若這個 task 需要改的原始碼其實屬於別的 repo（不是你現在這個 repoRoot）：不要用 [ESCALATE]（那是給環境/權限問題，處理不了 repo 不合）。改用 [CROSS-REPO] 開頭留言說明是誰的 repo，並依下方跨 repo 判斷規則處理。`;
+
+export function notificationGatePrompt(input: {
+  actor: NotificationGateActor;
+  jar: string;
+  sources: ResolvedNotification[];
+}): string {
+  const sourceText = input.sources.map((source, index) => [
+    `## 通知 ${index + 1}`,
+    `notification_id: ${source.notification.notification_id}`,
+    `task_id: ${source.task.task_id}`,
+    `workspace_id: ${source.task.workspace_id}`,
+    `title: ${source.task.title}`,
+    `description: ${source.task.description}`,
+    `來源留言: ${source.sourceComment.content}`,
+    `目前留言:\n${source.comments.map((comment) => `- ${comment.created_at} ${comment.content}`).join('\n')}`,
+  ].join('\n')).join('\n\n');
+  return `你是「${input.actor.name}」（${input.actor.email}）。這是通知前置處理；只處理下列來源，不做一般巡檢、認領、狀態變更、程式碼修改或其他 task。
+${API_RULES(input.jar)}
+
+${sourceText}
+
+規則：
+- 主協作工作區來源：每個不同 task 至少 POST 一則新的留言；沒有補充時，內容必須完全是「已閱讀，目前無補充。」；有補充時寫具體問題、風險或建議。
+- 一般工作區來源：先讀內容，再依內容決定是否留下必要回覆；不要求每筆都留言。
+- 不得呼叫 POST /api/notifications/:id/read；runner 會在驗證後處理。
+- 不得在留言中 @ 自己，也不得為了確認身份加入任何指向自己的 @ 提及。
+結束時只輸出一行處理摘要。`;
+}
 
 function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario): string {
   // jar 必須落在成員自己的 worktree 內：LOG_DIR 固定在 task-tracker 底下，跨到別的 repo 或
@@ -1180,10 +1447,20 @@ async function main(): Promise<void> {
 
   // 一個 member session：只有正常結束才由 driver 提交；失敗 diff 留在 worktree 供人工檢查/下輪續作。
   const memberSession = async (m: Member, round: number) => {
-    const { result } = await runMemberSession(
-      () => runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` }),
-      () => commitMemberWork(m, round),
-    );
+    const gated = await runActorSessionWithNotificationGate({
+      label: `${m.name}-r${round}`,
+      actor: m,
+      jar: join(wt(m), `.jar-notification-${m.user}.txt`),
+      runner: m.runner,
+      model: m.model,
+      preflightOptions: memberOpts(m),
+      normal: () => runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` }),
+    });
+    if (!gated) {
+      console.log(`[${m.name}-r${round}] notification gate 未完成，略過一般 session`);
+      return;
+    }
+    const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, round));
     if (result.errored || result.timedOut) console.log(`[${m.name}-r${round}] session 未成功，保留未提交 diff，不進入 branch commit`);
   };
   // 一輪：成員並行，登入用小 jitter 錯開避免同秒撞認領
@@ -1199,8 +1476,12 @@ async function main(): Promise<void> {
 
   // owner 開場（sonnet + driver 預蒐材料）→ 發想主題、改名 workspace、開無主 task
   const material = exploreMaterial(scenario);
-  const ownerOpen = await runSession('owner-開場', 'claude', OWNER_OPEN_MODEL, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' });
-  if (ownerOpen.errored || ownerOpen.timedOut) {
+  const ownerOpen = await runActorSessionWithNotificationGate({
+    label: 'owner-開場', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+    runner: 'claude', model: OWNER_OPEN_MODEL, preflightOptions: ownerOpts,
+    normal: () => runSession('owner-開場', 'claude', OWNER_OPEN_MODEL, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' }),
+  });
+  if (!ownerOpen || ownerOpen.errored || ownerOpen.timedOut) {
     try { printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, []); }
     catch (error) { console.log(`[owner-開場] 失敗報告寫入異常：${String(error)}`); }
     finally { cleanupUnstartedRun(tag); }
@@ -1212,7 +1493,11 @@ async function main(): Promise<void> {
 
   if (!FAST) {
     // 深度模式：中場審查（GPT-5.6 Sol）＋條件式 r2-3
-    await runSession('owner-中場審查', 'codex', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' });
+    await runActorSessionWithNotificationGate({
+      label: 'owner-中場審查', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+      runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
+      normal: () => runSession('owner-中場審查', 'codex', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' }),
+    });
     for (let r = 2; r <= 3; r++) {
       const active = membersToRun(wsId);
       if (!active.length) { console.log(`[r${r}] 無成員需上線（都已進 Review/Done），跳過`); break; }
@@ -1222,7 +1507,11 @@ async function main(): Promise<void> {
 
   // 收尾 merge（GPT-5.6 Sol）＋ repair 迴圈（收尾退回的題重修至合格，上限 2 輪）
   let verified = await verifyBranches(runDir, scenario);
-  await runSession('owner-收尾合併', 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' });
+  await runActorSessionWithNotificationGate({
+    label: 'owner-收尾合併', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+    runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
+    normal: () => runSession('owner-收尾合併', 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' }),
+  });
   abortStaleMerge();
 
   for (let repair = 1; repair <= 2; repair++) {
@@ -1231,7 +1520,11 @@ async function main(): Promise<void> {
     console.log(`[repair] 第 ${repair} 輪重修：${toFix.map((m) => m.name).join('、')}`);
     await runRound(toFix, 3 + repair, 1, 5);
     verified = await verifyBranches(runDir, scenario);
-    await runSession(`owner-repair${repair}`, 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` });
+    await runActorSessionWithNotificationGate({
+      label: `owner-repair${repair}`, actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+      runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
+      normal: () => runSession(`owner-repair${repair}`, 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` }),
+    });
     abortStaleMerge();
   }
 
@@ -1507,11 +1800,27 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     const verified = (ownerBudget > 0 && anyReviewChanges) ? await verifyBranches(runDir, p.scenario) : [];
 
     if (ownerBudget > 0) {
-      const r = await runSession(`owner-巡檢-${p.wsId.slice(0, 8)}`, 'codex', OWNER_REVIEW_MODEL,
-        ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
-        { cwd: RUN.repoRoot, tools: p.wsId === MAIN_WORKSPACE_ID ? MAIN_OWNER_TOOLS : OWNER_TOOLS, timeoutMs: ownerTimeoutMs, runDir, promptArtifacts, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` });
+      const ownerLabel = `owner-巡檢-${p.wsId.slice(0, 8)}`;
+      const ownerSessionOptions = {
+        cwd: RUN.repoRoot,
+        tools: p.wsId === MAIN_WORKSPACE_ID ? MAIN_OWNER_TOOLS : OWNER_TOOLS,
+        timeoutMs: ownerTimeoutMs,
+        runDir,
+        promptArtifacts,
+      };
+      const r = await runActorSessionWithNotificationGate({
+        label: ownerLabel,
+        actor: OWNER,
+        jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+        runner: 'codex',
+        model: OWNER_REVIEW_MODEL,
+        preflightOptions: ownerSessionOptions,
+        normal: () => runSession(ownerLabel, 'codex', OWNER_REVIEW_MODEL,
+          ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
+          { ...ownerSessionOptions, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` }),
+      });
       ownerSessionsRun++;
-      if (r.timedOut) timedOutThisTick.push(p.wsId);
+      if (r?.timedOut) timedOutThisTick.push(p.wsId);
       ownerBudget--;
       if (p.wsId !== MAIN_WORKSPACE_ID) abortStaleMerge();
     }
@@ -1532,11 +1841,21 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         const hour = new Date().getHours();
         await settleAllOrThrow(toRun.map(async (m) => {
           await sleep(jitter(1, 5));
-          const { result } = await runMemberSession(
-            () => runSession(`${m.name}-巡檢`, m.runner, m.model, memberPrompt(m, p.wsId, hour, p.scenario),
+          const gated = await runActorSessionWithNotificationGate({
+            label: `${m.name}-巡檢`,
+            actor: m,
+            jar: join(wt(m), `.jar-notification-${m.user}.txt`),
+            runner: m.runner,
+            model: m.model,
+            preflightOptions: { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: m.fallback },
+            normal: () => runSession(`${m.name}-巡檢`, m.runner, m.model, memberPrompt(m, p.wsId, hour, p.scenario),
               { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: m.fallback }),
-            () => commitMemberWork(m, hour),
-          );
+          });
+          if (!gated) {
+            console.log(`[${m.name}-巡檢] notification gate 未完成，略過一般 session`);
+            return;
+          }
+          const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, hour));
           if (result.errored || result.timedOut) {
             console.log(`[${m.name}-巡檢] session 未成功，保留未提交 diff，不進入 branch commit`);
           }
