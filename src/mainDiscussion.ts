@@ -37,7 +37,12 @@ function lineValue(content: string, label: string): string | null {
 
 function isStructuredOwnerThought(content: string): boolean {
   if (!/^【OWNER想法】(?:\r?\n|$)/u.test(content)) return false;
-  return REQUIRED_THOUGHT_FIELDS.every((label) => lineValue(content, label) !== null);
+  return missingOwnerThoughtFields(content).length === 0;
+}
+
+function missingOwnerThoughtFields(content: string): readonly string[] {
+  if (!/^【OWNER想法】(?:\r?\n|$)/u.test(content)) return REQUIRED_THOUGHT_FIELDS;
+  return REQUIRED_THOUGHT_FIELDS.filter((label) => lineValue(content, label) === null);
 }
 
 function parseWaitHalfDays(content: string): number | null {
@@ -97,7 +102,13 @@ export function recordMainDiscussionWindowForComment(
     content: string;
   }>;
   const thought = prior.find((row) => row.user_id === owner.id && isStructuredOwnerThought(row.content));
-  if (!thought) throw new CommandError('全員通知前必須先留下完整的 OWNER想法');
+  if (!thought) {
+    const incompleteThought = prior.find((row) => row.user_id === owner.id && /^【OWNER想法】(?:\r?\n|$)/u.test(row.content));
+    if (incompleteThought) {
+      throw new CommandError(`全員通知前必須先留下完整的 OWNER想法，缺少：${missingOwnerThoughtFields(incompleteThought.content).join('、')}`);
+    }
+    throw new CommandError('全員通知前必須先留下完整的 OWNER想法');
+  }
 
   const openedAtMs = Date.parse(input.createdAt);
   if (Number.isNaN(openedAtMs)) throw new CommandError('留言建立時間不合法');

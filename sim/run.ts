@@ -1347,7 +1347,14 @@ workspace：${wsId}。
 ${API_RULES(jar)}
 主協作討論巡檢：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks，忽略「${MAIN_POLICY_TITLE}」，它不是工作項目；逐一讀取 status=Todo 的「${MAIN_DISCUSSION_PREFIX}」討論及留言。
-2. TASK 建立後盡量在 24 小時內，先獨立 POST 完整的「【OWNER想法】」留言，全面評估價值、風險、反對理由與現行替代方案。
+2. TASK 建立後盡量在 24 小時內，先獨立 POST 完整的「【OWNER想法】」留言；必須逐行照以下六欄填寫，欄名不可省略：
+【OWNER想法】
+現況／問題：<目前情況與待解問題>
+預期價值：<要解決的價值>
+風險與反對理由：<風險、反對理由與代價>
+現行可替代方案：<不實作時的替代作法>
+初步判斷：<OWNER 的暫定判斷>
+希望成員確認的問題：<希望 Commenter 回覆的問題>
 3. 再獨立 POST「【全員回覆：2天】」，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。只有近期成員已有大量事務才使用 2.5 至 7 天，並在同一留言填寫較長期限理由。
 4. 從通知 comment.created_at 加上 N * 24 小時計算截止時間；一天 24 小時、半天 12 小時。期限固定，不延長、不縮短；全員提前回覆也保持 Todo。
 5. 等待期間讀取留言並推動 OWNER 與建立者雙方確認；一般 TASK 由建立者確認，OWNER 自建則由任一 Commenter 確認。到期前不得 PATCH status。
