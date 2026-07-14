@@ -58,6 +58,56 @@ function currentVersion(aggregateId: string, database: DatabaseSync): number {
   return row.v ?? 0; // 沒有事件 → 版本 0
 }
 
+function appendEventRecord(
+  aggregateType: string,
+  aggregateId: string,
+  expectedVersion: number,
+  eventType: string,
+  payload: unknown,
+  metadata: unknown,
+  database: DatabaseSync,
+): StoredEvent {
+  const actual = currentVersion(aggregateId, database);
+  if (actual !== expectedVersion) throw new ConcurrencyError(aggregateId, expectedVersion, actual);
+
+  const version = expectedVersion + 1;
+  const occurredAt = new Date().toISOString();
+  const info = database
+    .prepare(
+      `INSERT INTO event_store
+         (aggregate_type, aggregate_id, aggregate_version, event_type, payload_json, metadata_json, occurred_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(aggregateType, aggregateId, version, eventType, JSON.stringify(payload), JSON.stringify(metadata), occurredAt);
+
+  const event: StoredEvent = {
+    id: Number(info.lastInsertRowid),
+    aggregate_type: aggregateType,
+    aggregate_id: aggregateId,
+    aggregate_version: version,
+    event_type: eventType,
+    payload,
+    metadata,
+    occurred_at: occurredAt,
+  };
+
+  projections.get(eventType)?.(event, database);
+  return event;
+}
+
+export function appendEventInTransaction(
+  aggregateType: string,
+  aggregateId: string,
+  expectedVersion: number,
+  eventType: string,
+  payload: unknown,
+  metadata: unknown = {},
+  database = db,
+): StoredEvent {
+  if (!database.isTransaction) throw new Error('appendEventInTransaction requires an active transaction');
+  return appendEventRecord(aggregateType, aggregateId, expectedVersion, eventType, payload, metadata, database);
+}
+
 // append 一個事件並同步跑它的 projection。expectedVersion 對不上就丟 ConcurrencyError。
 export function appendEvent(
   aggregateType: string,
@@ -73,33 +123,7 @@ export function appendEvent(
   // 不可巢狀呼叫（SQLite 不支援巢狀 BEGIN）——目前 command handler 都是單層，需要時再上 savepoint。
   database.exec('BEGIN IMMEDIATE');
   try {
-    const actual = currentVersion(aggregateId, database);
-    if (actual !== expectedVersion) throw new ConcurrencyError(aggregateId, expectedVersion, actual);
-
-    const version = expectedVersion + 1;
-    const occurredAt = new Date().toISOString();
-    const info = database
-      .prepare(
-        `INSERT INTO event_store
-           (aggregate_type, aggregate_id, aggregate_version, event_type, payload_json, metadata_json, occurred_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(aggregateType, aggregateId, version, eventType, JSON.stringify(payload), JSON.stringify(metadata), occurredAt);
-
-    const event: StoredEvent = {
-      id: Number(info.lastInsertRowid),
-      aggregate_type: aggregateType,
-      aggregate_id: aggregateId,
-      aggregate_version: version,
-      event_type: eventType,
-      payload,
-      metadata,
-      occurred_at: occurredAt,
-    };
-
-    // 同步 projection：與 append 同一 transaction，read model 與事件一起 commit / 一起 rollback。
-    projections.get(eventType)?.(event, database);
-
+    const event = appendEventRecord(aggregateType, aggregateId, expectedVersion, eventType, payload, metadata, database);
     database.exec('COMMIT');
     return event;
   } catch (e) {

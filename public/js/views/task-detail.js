@@ -1,7 +1,7 @@
 'use strict';
 
 import { api } from '../api.js';
-import { state, hasRole, MAIN_OWNER_EMAIL } from '../state.js';
+import { state, hasRole, MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE } from '../state.js';
 import { el, formatTime } from '../utils.js';
 
 /**
@@ -620,7 +620,7 @@ export async function openTaskDetailModal(taskId, {
           }
 
           actions.appendChild(editSaveWrapper);
-          const deleteBtn = el('button', { type: 'button', class: 'btn-danger' }, '刪除留言');
+          const deleteBtn = el('button', { type: 'button', class: 'btn-danger' }, '刪除');
           deleteBtn.onclick = async () => {
             if (!confirm('確定要刪除這則留言嗎？')) return;
             try {
@@ -744,7 +744,11 @@ export async function openTaskDetailModal(taskId, {
   }
 
   if (canManageTask) {
-    if (currentTask.status === 'Todo') {
+    if (isMainWorkspace) {
+      if (currentTask.title !== MAIN_POLICY_TITLE && currentTask.status === 'Todo') {
+        rightSlot.appendChild(createTransitionBtn('→ Done', 'Done'));
+      }
+    } else if (currentTask.status === 'Todo') {
       rightSlot.appendChild(createTransitionBtn('→ Doing', 'Doing'));
     } else if (currentTask.status === 'Doing') {
       leftSlot.appendChild(createTransitionBtn('← Todo', 'Todo'));

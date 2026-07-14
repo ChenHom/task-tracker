@@ -215,3 +215,13 @@
 - [x] 前端零改動（footer 已有 AGY 標籤，`seven_day: null` 自然顯示「尚無資料」）
 
 > 2026-07-13 正式驗收：commit `71eb56d` 合入 master，`task-tracker.service` 重啟後 `/api/health` 200；登入 `/api/quota` 回三 provider，agy `remaining=100%`、source 帶 `#model=gemini-3-flash-agent` 註記；Playwright 驗證 footer 顯示 `AGY 5h 100%`、hover tooltip 兩行與台北重置時間正確。緊急停用走 ai-quota unit 檔的 `AI_QUOTA_AGY_DISABLED=1` kill switch。
+
+## Phase 18 — 主工作區固定期限共識收斂 ✅
+
+- [x] 主工作區維持 user01-06 與 user09 的固定成員政策；所有成員都可建立 Todo 討論，新增 task 描述預填 OWNER 評估方向範本
+- [x] OWNER 先留下結構化 `【OWNER想法】`，再以 `【全員回覆：N天】` 開啟固定 2–7 天窗口；半天為 12 小時、一天為連續 24 小時，期限不可延長或重開，超過 2 天需說明理由
+- [x] 留言與窗口在同一 transaction 保存；通知失敗會完整 rollback，不新增窗口查詢、回覆進度、缺席或期限 UI
+- [x] 後端以 `task.main_discussion_concluded` 驗證並記錄實作、不實作、未達共識三種收尾；主工作區只允許 OWNER 在期限後 `Todo -> Done`
+- [x] 實作收尾只在原討論記錄目標工作區與 TASK 名稱，不產生 URL；未達共識記錄三項說明後完成，日後另開新的主工作區 task
+- [x] OWNER sweep、主工作區政策、API／設計／營運文件與前端看板已同步新流程；一般 workspace 維持原 Todo → Doing → Review → Done
+- [x] focused tests、`npm test`、`npm run build`、`git diff --check` 與正式服務 health check 完成

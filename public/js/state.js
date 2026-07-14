@@ -15,6 +15,9 @@ export const hasRole = (role, minimum) => ROLE_RANK[role] >= ROLE_RANK[minimum];
 export const MAIN_WORKSPACE_ID = '11a82028-fc50-466a-a723-e002032cd9a6';
 export const MAIN_OWNER_EMAIL = 'user01@test.local';
 export const MAIN_POLICY_TITLE = '[規則] 主工作區協作與交接';
+export const MAIN_DISCUSSION_DESCRIPTION_TEMPLATE = `問題／優化想法：
+目前情況或影響：
+希望改善的結果：`;
 
 /**
  * Valid workflow statuses for a task.

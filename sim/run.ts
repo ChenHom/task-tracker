@@ -215,22 +215,9 @@ export function isSweepWorkTask(task: { title: string }): boolean {
   return task.title !== MAIN_POLICY_TITLE && !task.title.startsWith(MAIN_DISCUSSION_PREFIX);
 }
 
-export function mainDiscussionNeedsOwner(
-  status: string,
-  latestCommentUserId: string | undefined,
-  ownerId: string,
-  latestCommentContent?: string,
-): boolean {
-  return status === 'Todo'
-    || status === 'Review'
-    || latestCommentUserId !== ownerId
-    || (status === 'Doing' && (
-      latestCommentContent?.includes(MAIN_HANDOFF_PENDING) === true
-      || latestCommentContent?.includes(`${BASE}/#/task/`) === true
-    ));
+export function mainDiscussionNeedsOwner(status: string): boolean {
+  return status === 'Todo';
 }
-
-export const MAIN_HANDOFF_PENDING = '[HANDOFF-PENDING]';
 
 export function canonicalWorkspaceDirectory(): string {
   const entries = Object.entries(CANONICAL_WORKSPACE_BY_REPOROOT);
@@ -1359,16 +1346,18 @@ function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchRevi
 workspace：${wsId}。
 ${API_RULES(jar)}
 主協作討論巡檢：
-1. GET ${BASE}/api/workspaces/${wsId}/tasks，忽略「${MAIN_POLICY_TITLE}」，它不是工作項目；逐一讀取 status=Todo/Doing/Review 的「${MAIN_DISCUSSION_PREFIX}」討論及留言。
-2. Todo 討論先 PATCH status=Doing；系統會自動指派 user01。Doing 討論以留言回覆與收斂方向，不要在主協作工作區指派 member，也不要在這裡建立實作 task 或改 code。
-3. 達成決議後，先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
+1. GET ${BASE}/api/workspaces/${wsId}/tasks，忽略「${MAIN_POLICY_TITLE}」，它不是工作項目；逐一讀取 status=Todo 的「${MAIN_DISCUSSION_PREFIX}」討論及留言。
+2. TASK 建立後盡量在 24 小時內，先獨立 POST 完整的「【OWNER想法】」留言，全面評估價值、風險、反對理由與現行替代方案。
+3. 再獨立 POST「【全員回覆：2天】」，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。只有近期成員已有大量事務才使用 2.5 至 7 天，並在同一留言填寫較長期限理由。
+4. 從通知 comment.created_at 加上 N * 24 小時計算截止時間；一天 24 小時、半天 12 小時。期限固定，不延長、不縮短；全員提前回覆也保持 Todo。
+5. 等待期間讀取留言並推動 OWNER 與建立者雙方確認；一般 TASK 由建立者確認，OWNER 自建則由任一 Commenter 確認。到期前不得 PATCH status。
+6. 到期後依 implement、no implementation、no consensus 三條路徑留下精確 marker；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
+7. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
 ${canonicalWorkspaceDirectory()}
-4. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
-5. 一旦決議形成，在任何 owner 決議或 handoff 留言前，先 POST 一則「${MAIN_HANDOFF_PENDING} target repo: <絕對路徑>」。marker 後不要再貼其他 owner 留言，直到回寫實作 task URL，讓中途 crash 可由下輪巡檢接手。
-6. 建立前先檢查原討論留言與目標 workspace，包括 ${MAIN_HANDOFF_PENDING} marker 與既有來源 URL；若已有同一來源網址的實作 task 就沿用，避免重試時重複建立。否則使用既有 task API 在目標 workspace 建立實作 task。description 必須包含 target repo 與來源討論完整網址 ${BASE}/#/task/<原討論id>；不得在主協作工作區建立實作 task。
-7. 建立後，在原討論回寫完整實作 task 網址 ${BASE}/#/task/<id>。
-8. 交接完成後依法相鄰推進原討論 Todo→Doing→Review→Done；若巡檢時已在 Review，完成必要回寫後推進 Done，避免 crash recovery 卡住。
-9. 結束輸出 3 行內總結。`;
+8. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
+9. 建立前先檢查原討論留言與目標 workspace 是否已有同名實作 task，避免 crash retry 重複建立；需要時才使用既有 task API 在目標 workspace 建立實作 task，不得在主協作工作區建立實作 task。
+10. 建立後，在原討論留下純文字「【實作任務】工作區：<工作區名稱>｜TASK：<TASK 名稱>」，不提供 URL；再 PATCH 原討論 status=Done。
+11. 結束輸出 3 行內總結。`;
   }
   const packetByBranch = new Map(verified.map((p) => [p.branch, p]));
   const ci = RUN.members.map((m) => {
@@ -1434,14 +1423,12 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     }
     const ws = db.prepare('SELECT status FROM workspaces_read_model WHERE workspace_id = ?').get(wsId) as { status: string } | undefined;
     if (!ws || ws.status !== 'active') continue;
-    const tasks = db.prepare("SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND status IN ('Todo','Doing','Review')").all(wsId) as unknown as SweepTask[];
+    const statusFilter = wsId === MAIN_WORKSPACE_ID ? "status = 'Todo'" : "status IN ('Todo','Doing','Review')";
+    const tasks = db.prepare(`SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND ${statusFilter}`).all(wsId) as unknown as SweepTask[];
     const discussions = tasks.filter((t) => t.title.startsWith(MAIN_DISCUSSION_PREFIX));
     const work = tasks.filter(isSweepWorkTask);
     const ownerNeeded = wsId === MAIN_WORKSPACE_ID
-      ? !!mainOwner && discussions.some((d) => {
-        const last = db.prepare('SELECT user_id, content FROM comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(d.task_id) as { user_id: string; content: string } | undefined;
-        return mainDiscussionNeedsOwner(d.status, last?.user_id, mainOwner.id, last?.content);
-      })
+      ? !!mainOwner && discussions.some((d) => mainDiscussionNeedsOwner(d.status))
       : !!boss && discussions.some((d) => {
       const last = db.prepare('SELECT user_id FROM comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(d.task_id) as { user_id: string } | undefined;
       return last?.user_id === boss.id;
@@ -1525,7 +1512,8 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     if (memberBudget > 0) {
       // owner 剛動過看板，重查現況再派工：被退回的優先，其次有無主 Todo 時派沒事做的成員去認領
       const db2 = new DatabaseSync(join(ROOT, 'data/dev.db'));
-      const tasks2 = db2.prepare("SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND status IN ('Todo','Doing','Review')").all(p.wsId) as unknown as SweepTask[];
+      const statusFilter2 = p.wsId === MAIN_WORKSPACE_ID ? "status = 'Todo'" : "status IN ('Todo','Doing','Review')";
+      const tasks2 = db2.prepare(`SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND ${statusFilter2}`).all(p.wsId) as unknown as SweepTask[];
       db2.close();
       const work2 = tasks2.filter(isSweepWorkTask);
       const rejected = eligibleMembers.filter((m) => work2.some((t) => t.assignee_id === m.userId && (t.status === 'Todo' || t.status === 'Doing')));

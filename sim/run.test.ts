@@ -25,7 +25,6 @@ import {
   hasReviewChanges,
   isSweepWorkTask,
   loadMembersFromUsers,
-  MAIN_HANDOFF_PENDING,
   mainDiscussionNeedsOwner,
   MAIN_OWNER_TOOLS,
   MEMBER_TOOLS,
@@ -75,8 +74,11 @@ assert.ok(
   '所有 agent prompt 都必須知道主工作區邊界',
 );
 assert.ok(source.includes('未登記，人工介入選定'), '主工作區 prompt 必須標示未登記 repo 需要人工介入');
-assert.ok(source.includes('${BASE}/#/task/<id>'), '主工作區 prompt 必須回寫完整 task URL');
-assert.ok(source.includes('Todo→Doing→Review→Done'), '主工作區 prompt 必須要求合法相鄰狀態轉移');
+assert.ok(source.includes('【OWNER想法】'), '主工作區 prompt 必須先提出 OWNER 想法');
+assert.ok(source.includes('【全員回覆：2天】'), '主工作區 prompt 必須使用固定回覆窗口');
+assert.ok(source.includes('@user02 @user03 @user04 @user05 @user06 @user09'), '主工作區 prompt 必須通知六位 Commenter');
+assert.ok(source.includes('Todo→Done'), '主工作區 prompt 必須只完成 Todo → Done');
+assert.ok(source.includes('不追逐、不列缺席者'), '主工作區 prompt 不得追蹤缺席者');
 assert.ok(source.includes('只用 curl/API 操作，不得編輯、提交或合併任何程式碼'), '主工作區 owner session 必須是 API-only');
 assert.ok(source.includes('${canonicalWorkspaceDirectory()}'), '主工作區 prompt 必須嵌入 canonical repo/workspace 對照');
 assert.ok(source.includes('先從討論內容辨識 target repo'), '主工作區 prompt 必須先辨識目標 repo');
@@ -104,7 +106,12 @@ assert.ok(
   'main owner runSession 必須使用 curl-only tools',
 );
 assert.ok(source.includes('if (p.wsId !== MAIN_WORKSPACE_ID) abortStaleMerge();'), 'main owner session 後不得操作 git merge 狀態');
-assert.ok(source.includes('${MAIN_HANDOFF_PENDING} target repo:'), 'main prompt 必須先留下 durable handoff marker');
+const mainPromptSource = source.slice(
+  source.indexOf('if (wsId === MAIN_WORKSPACE_ID)'),
+  source.indexOf('const packetByBranch', source.indexOf('if (wsId === MAIN_WORKSPACE_ID)')),
+);
+assert.ok(!mainPromptSource.includes('${BASE}/#/task/<id>'), '主工作區 prompt 不得回寫 URL');
+assert.ok(!mainPromptSource.includes('HANDOFF-PENDING'), '主工作區 prompt 不得使用 handoff marker');
 
 const dir = mkdtempSync(join(tmpdir(), 'task-tracker-sim-'));
 const dbPath = join(dir, 'dev.db');
@@ -344,19 +351,10 @@ assert.strictEqual(isSweepWorkTask({ title: MAIN_POLICY_TITLE }), false);
 assert.strictEqual(isSweepWorkTask({ title: '[討論] 方向' }), false);
 assert.strictEqual(isSweepWorkTask({ title: '實作功能' }), true);
 
-assert.strictEqual(mainDiscussionNeedsOwner('Todo', 'u01', 'u01'), true);
-assert.strictEqual(mainDiscussionNeedsOwner('Doing', undefined, 'u01'), true);
-assert.strictEqual(mainDiscussionNeedsOwner('Doing', 'u02', 'u01'), true);
-assert.strictEqual(mainDiscussionNeedsOwner('Doing', 'u01', 'u01', '一般討論回覆'), false);
-assert.strictEqual(
-  mainDiscussionNeedsOwner('Doing', 'u01', 'u01', `${MAIN_HANDOFF_PENDING} target repo: /home/hom/code/example`),
-  true,
-);
-assert.strictEqual(
-  mainDiscussionNeedsOwner('Doing', 'u01', 'u01', '已建立 http://localhost:3000/#/task/implementation-id'),
-  true,
-);
-assert.strictEqual(mainDiscussionNeedsOwner('Review', 'u01', 'u01'), true);
+assert.strictEqual(mainDiscussionNeedsOwner('Todo'), true);
+assert.strictEqual(mainDiscussionNeedsOwner('Done'), false);
+assert.strictEqual(mainDiscussionNeedsOwner('Doing'), false);
+assert.strictEqual(mainDiscussionNeedsOwner('Review'), false);
 
 const directory = canonicalWorkspaceDirectory();
 assert.match(directory, new RegExp(ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));

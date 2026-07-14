@@ -6,7 +6,8 @@ import {
   hasRole,
   MAIN_WORKSPACE_ID,
   MAIN_OWNER_EMAIL,
-  MAIN_POLICY_TITLE
+  MAIN_POLICY_TITLE,
+  MAIN_DISCUSSION_DESCRIPTION_TEMPLATE
 } from '../state.js';
 import { navigate } from '../router.js';
 import { el, showError, formatTime, requireWorkspace } from '../utils.js';
@@ -69,9 +70,9 @@ export const KanbanView = {
           <strong>主工作區協作規則</strong>
           <span>只討論，不在主工作區實作。</span>
           <span>所有人可新增 Todo 與留言。</span>
-          <span>只有 user01 可調整任務狀態。</span>
-          <span>開始處理時自動指派給 user01。</span>
-          <span>決議先判斷 target repo，再於 canonical 或對應 workspace 建立 task 並回寫連結。</span>
+          <span>user01 先留下方向，再通知成員討論。</span>
+          <span>期限後直接完成討論；實作另開於目標工作區。</span>
+          <span>原討論只記錄工作區與 TASK 名稱。</span>
         </section>
       ` : ''}
 
@@ -150,6 +151,14 @@ export const KanbanView = {
             required: 'true',
             class: 'column-add-task-input'
           });
+          const descriptionInput = isMainWorkspace
+            ? el('textarea', {
+                class: 'column-add-task-description',
+                rows: '4',
+                'aria-label': '討論描述'
+              })
+            : null;
+          if (descriptionInput) descriptionInput.value = MAIN_DISCUSSION_DESCRIPTION_TEMPLATE;
           const submitBtn = el('button', { type: 'submit', class: 'column-add-task-submit' }, '確認');
           const cancelBtn = el('button', {
             type: 'button',
@@ -159,6 +168,7 @@ export const KanbanView = {
           cancelBtn.onclick = () => { formSlot.textContent = ''; };
 
           form.appendChild(input);
+          if (descriptionInput) form.appendChild(descriptionInput);
           form.appendChild(submitBtn);
           form.appendChild(cancelBtn);
 
@@ -169,19 +179,20 @@ export const KanbanView = {
 
             const filterVal = document.getElementById('project-filter-select').value;
             const projectId = (filterVal && filterVal !== 'all' && filterVal !== 'none') ? filterVal : null;
+            const description = descriptionInput ? descriptionInput.value : '';
 
             try {
               const body = hasRole(currentRole, 'Member')
                 ? {
                     title,
-                    description: '',
+                    description,
                     priority: 'Medium',
                     status: colStatus,
                     projectId,
                     assigneeId: null,
                     dueAt: null
                   }
-                : { title, description: '' };
+                : { title, description };
               await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/tasks`, {
                 method: 'POST',
                 body
@@ -406,7 +417,11 @@ export const KanbanView = {
           const flowEl = el('div', { class: 'task-card-flow' });
           const flowLeft = el('div', { class: 'flow-left' });
           const flowRight = el('div', { class: 'flow-right' });
-          if (task.status === 'Todo') {
+          if (isMainWorkspace) {
+            if (task.title !== MAIN_POLICY_TITLE && task.status === 'Todo') {
+              flowRight.appendChild(createStateBtn('→ Done', 'Done'));
+            }
+          } else if (task.status === 'Todo') {
             flowRight.appendChild(createStateBtn('→ Doing', 'Doing'));
           } else if (task.status === 'Doing') {
             flowLeft.appendChild(createStateBtn('← Todo', 'Todo'));

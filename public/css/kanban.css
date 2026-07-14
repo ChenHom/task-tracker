@@ -397,6 +397,7 @@
   border: 1px solid #ccc;
   border-radius: 4px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .column-add-task-input {
@@ -407,6 +408,16 @@
   border: 1px solid #ccc;
   border-radius: 3px;
   min-width: 0;
+}
+
+.column-add-task-description {
+  flex: 1 0 100%;
+  min-height: 5.5rem;
+  resize: vertical;
+  font: inherit;
+  padding: 0.2rem 0.3rem;
+  border: 1px solid #ccc;
+  border-radius: 3px;
 }
 
 .column-add-task-submit {

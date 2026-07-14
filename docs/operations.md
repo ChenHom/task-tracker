@@ -80,11 +80,18 @@ If the footer shows `N/A`, inspect the snapshot and timer before changing task-t
 - `user01@test.local` 是唯一 Owner；只有 user02-06 與 user09 同步為 Commenter，其他 user 不會加入。
 - Commenter 在任何 workspace 都可修改自己建立 task 的 description，但不可修改標題、狀態、其他屬性、附件或他人 task。
 - 只有主協作工作區會同步 user02-06 與 user09 為 Commenter；其他 workspace 的新成員預設仍為 Member，Owner 可另行調整角色。
-- 主協作工作區所有人都可建立 Todo 討論與留言；只有 user01 可改變 task 狀態。
-- user01 將 Todo 移至 Doing 時，單一 `task.discussion_started` event 會同時指派 runtime user01。
-- 決議後先判斷 target repo，再於 canonical／對應 workspace 建立實作 task，並在原討論回寫完整 task URL；實作 task 不留在主協作工作區。
+- 主協作工作區所有人都可建立 Todo 討論與留言；user01 先留下 `【OWNER想法】`，再通知 user02-06 與 user09。
+- 合法 `【全員回覆：N天】` 會從通知留言時間開啟固定窗口，`N` 為 2–7 天、以半天（12 小時）遞增；預設盡量使用 2 天，超過 2 天需在同一留言說明較長期限理由。窗口到期前不移動 task，開啟後不延長、不重開。
+- 到期後只有 user01 能以 `【結論】`/`【結論：不實作】`/`【未達共識】` 的完整證據將主工作區 task 由 Todo 直接移到 Done；未達共識需留下分歧、缺少資訊與下次建議，不要求建立者再確認。
+- 有共識且要實作時，在目標工作區另建 TASK；原討論只記 `【實作任務】工作區：...｜TASK：...`，不產生或儲存 URL。主工作區不使用 Doing、Review，也不追蹤缺席名單或提供期限/回覆 UI。
 - `[規則] 主工作區協作與交接` 是政策提示，不是 sweep work。
-- Server startup 會修復固定名稱、成員角色、規則 task 與 legacy 討論；成功登入時也會同步該使用者。
+- Server startup 會修復固定名稱、成員角色、規則 task 與 legacy 討論；成功登入時也會同步該使用者。既有 legacy `task.discussion_started` 事件只供歷史 replay，新的主工作區收尾使用 `task.main_discussion_concluded`。
+
+窗口 readback（UTC）可用：
+
+```bash
+sqlite3 data/dev.db "SELECT task_id, opened_at, wait_half_days, due_at FROM main_discussion_windows ORDER BY opened_at DESC LIMIT 20;"
+```
 
 ### 2026-07-12 rollout 驗收
 
