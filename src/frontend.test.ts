@@ -775,7 +775,7 @@ async function runTests() {
   assert.match(kanbanSource, /<div class="kanban-column col-doing">[\s\S]*?<div class="kanban-column col-review">/);
   assert.doesNotMatch(kanbanSource, /main-discussion-board/);
   assert.doesNotMatch(kanbanCssSource, /\.kanban-board\.main-discussion-board/);
-  assert.match(taskDetailCssSource, /\.comment-actions\s*\{[\s\S]*?flex-direction:\s*column/);
+  assert.match(taskDetailCssSource, /\.comment-actions\s*\{[\s\S]*?flex-direction:\s*row-reverse/);
   assert.match(taskDetailCssSource, /@media \(max-width: 768px\)[\s\S]*?\.comment-actions\s*\{[\s\S]*?flex-direction:\s*column/);
   assert.match(kanbanSource, /isMainWorkspace[\s\S]*status === ['"]Todo['"][\s\S]*createStateBtn\(['"]→ Done['"], ['"]Done['"]\)/);
   assert.doesNotMatch(`${kanbanSource}\n${taskDetailSource}`, /deadline|overdue|absence|reply tracker|等待天數選擇器/iu);

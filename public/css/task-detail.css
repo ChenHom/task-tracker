@@ -79,9 +79,9 @@
 }
 .comment-actions {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-end;
+  flex-direction: row-reverse;
+  justify-content: space-between;
+  align-items: center;
   gap: 0.4rem;
   margin-top: 0.4rem;
 }
