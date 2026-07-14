@@ -420,7 +420,22 @@ interface ResolvedNotification {
   sourceComment: NotificationComment;
   comments: NotificationComment[];
 }
-export interface NotificationGateResult { ready: boolean; snapshotIds: string[] }
+export interface NotificationGateResult {
+  ready: boolean;
+  snapshotIds: string[];
+  preflightStarted: boolean;
+}
+
+export type NotificationSweepMember = Pick<Member, 'email' | 'name' | 'user' | 'runner' | 'model' | 'fallback'>;
+
+export interface NotificationSweepResult {
+  actor: string;
+  ready: boolean;
+  unreadCount: number;
+  preflightStarted: boolean;
+}
+
+export type NotificationSweepRunner = (member: NotificationSweepMember) => Promise<NotificationSweepResult>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -505,6 +520,7 @@ export async function processNotificationGate(input: {
   snapshotAt: string;
   jar?: string;
 }): Promise<NotificationGateResult> {
+  let preflightStarted = false;
   let snapshot: NotificationRow[];
   try {
     const response = await input.request('/api/notifications', {}, input.cookie);
@@ -512,17 +528,17 @@ export async function processNotificationGate(input: {
     snapshot = parseNotificationRows(response.body).filter((row) => row.read_at === null);
   } catch (error) {
     input.log(`[notification] gate failed: ${String(error)}`);
-    return { ready: false, snapshotIds: [] };
+    return { ready: false, snapshotIds: [], preflightStarted };
   }
 
   const snapshotIds = snapshot.map((row) => row.notification_id);
-  if (!snapshot.length) return { ready: true, snapshotIds: [] };
+  if (!snapshot.length) return { ready: true, snapshotIds: [], preflightStarted };
 
   const recipients = new Set(snapshot.map((row) => row.recipient_id));
   const actorId = [...recipients][0];
   if (recipients.size !== 1 || (input.actor.id && input.actor.id !== actorId)) {
     input.log('[notification] gate failed: snapshot recipient 不一致');
-    return { ready: false, snapshotIds };
+    return { ready: false, snapshotIds, preflightStarted };
   }
   const actor = { ...input.actor, id: actorId };
   const snapshotSet = new Set(snapshotIds);
@@ -557,6 +573,7 @@ export async function processNotificationGate(input: {
     }
 
     if (resolved.length) {
+      preflightStarted = true;
       const preflight = await input.runPreflight(notificationGatePrompt({ actor, jar: input.jar ?? '', sources: resolved }));
       if (preflight.errored || preflight.timedOut) throw new Error('通知 preflight session 失敗');
 
@@ -580,11 +597,70 @@ export async function processNotificationGate(input: {
     }
 
     await finalNotificationReadback(snapshotSet, input.request, input.cookie);
-    return { ready: true, snapshotIds };
+    return { ready: true, snapshotIds, preflightStarted };
   } catch (error) {
     input.log(`[notification] gate failed: ${String(error)}`);
-    return { ready: false, snapshotIds };
+    return { ready: false, snapshotIds, preflightStarted };
   }
+}
+
+export interface NotificationSweepForMemberInput {
+  member: NotificationSweepMember;
+  request: NotificationGateRequest;
+  loginActor: (email: string) => Promise<string>;
+  runPreflight: (prompt: string) => Promise<SessionResult>;
+  log: (line: string) => void;
+  snapshotAt?: string;
+  jar?: string;
+}
+
+export async function runNotificationSweepForMember(
+  input: NotificationSweepForMemberInput,
+): Promise<NotificationSweepResult> {
+  let cookie: string;
+  try {
+    cookie = await input.loginActor(input.member.email);
+  } catch (error) {
+    input.log(`[notification-sweep:${input.member.user}] login 失敗：${String(error)}`);
+    return { actor: input.member.email, ready: false, unreadCount: 0, preflightStarted: false };
+  }
+
+  const gate = await processNotificationGate({
+    actor: input.member,
+    cookie,
+    request: input.request,
+    runPreflight: input.runPreflight,
+    log: input.log,
+    snapshotAt: input.snapshotAt ?? new Date().toISOString(),
+    jar: input.jar,
+  });
+  const result = {
+    actor: input.member.email,
+    ready: gate.ready,
+    unreadCount: gate.snapshotIds.length,
+    preflightStarted: gate.preflightStarted,
+  };
+  input.log(`[notification-sweep:${input.member.user}] 結束 — 未讀 ${result.unreadCount}，${result.ready ? '完成' : '未完成'}`);
+  return result;
+}
+
+export async function runNotificationSweep(
+  members: readonly NotificationSweepMember[],
+  runOne: NotificationSweepRunner,
+  log: (line: string) => void,
+): Promise<NotificationSweepResult[]> {
+  const results: NotificationSweepResult[] = [];
+  for (const member of members) {
+    log(`[notification-sweep:${member.user}] 開始`);
+    try {
+      results.push(await runOne(member));
+    } catch (error) {
+      const result = { actor: member.email, ready: false, unreadCount: 0, preflightStarted: false };
+      results.push(result);
+      log(`[notification-sweep:${member.user}] 失敗：${String(error)}`);
+    }
+  }
+  return results;
 }
 
 const git = (args: string[], cwd = RUN.repoRoot) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -654,6 +730,7 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
 // Claude Code 的 Bash 權限用冒號前綴語法 Bash(<cmd>:*)（實測：空格版 Bash(curl *) 會卡在權限批准）
 export const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git status:*),Bash(git diff:*),Bash(git merge:*),Bash(git add:*),Bash(git commit:*),Read,Write,Edit,Glob,Grep';
 export const MAIN_OWNER_TOOLS = 'Bash(curl:*)';
+export const NOTIFICATION_TOOLS = 'Bash(curl:*)';
 const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
 // owner 開場是生成型工作（發想＋開題），交給 Claude Sonnet 5；中場/收尾/repair 是審查判斷，改用 GPT-5.6 Sol
 const OWNER_OPEN_MODEL = 'claude-sonnet-5';
@@ -1713,6 +1790,37 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   ensureMainWorkspaceCandidate(wsScenario);
   ensureCanonicalWorkspaceCandidates(wsScenario);
 
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${role}`);
+  const promptArtifacts: PromptArtifact[] = [];
+  let notificationResults = new Map<string, NotificationSweepResult>();
+  if (role !== 'owner') {
+    const results = await runNotificationSweep(
+      RUN.members,
+      (member) => runNotificationSweepForMember({
+        member,
+        request: api,
+        loginActor: login,
+        jar: join(runDir, `.jar-notification-${member.user}.txt`),
+        runPreflight: (prompt) => runSession(
+          `${member.user}-notification-sweep`, member.runner, member.model, prompt,
+          {
+            cwd: RUN.repoRoot,
+            tools: NOTIFICATION_TOOLS,
+            timeoutMs: SWEEP_MEMBER_TIMEOUT,
+            runDir,
+            promptArtifacts,
+            promptLabel: `${member.user}-notification-sweep`,
+            fallback: member.fallback,
+          },
+        ),
+        log: (line) => console.log(`[${member.user}] ${line}`),
+      }),
+      (line) => console.log(line),
+    );
+    notificationResults = new Map(results.map((result) => [result.actor, result]));
+  }
+
   interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; ownerNeeded: boolean; startedAt: string }
   const pendings: PendingWs[] = [];
   for (const [wsId, info] of wsScenario) {
@@ -1738,7 +1846,10 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   }
   db.close();
 
-  if (!pendings.length) { console.log(`[sweep:${role}] 看板全收乾淨、老闆無新留言，本 tick 零成本結束`); return; }
+  if (!pendings.length) {
+    console.log(`[sweep:${role}] 看板全收乾淨、老闆無新留言；通知巡檢已完成，本 tick 結束`);
+    return;
+  }
   console.log(`[sweep:${role}] ${pendings.length} 個 workspace 有待收工作：${pendings.map((p) => `${p.wsId.slice(0, 8)}(${p.work.length}題${p.ownerNeeded ? '+需 owner' : ''})`).join('、')}`);
 
   // owner 逾時自適應：上一輪 owner 逾時 streak 越高 → 這輪 timeout 越長、owner 收的 workspace 越少
@@ -1758,7 +1869,6 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   pendings.sort((a, b) => compareSweepCandidates(a, b, ownerState.timedOutWs));
   let ownerSessionsRun = 0;
   const timedOutThisTick: string[] = [];
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
   const processedRepoRoots = new Set<string>();
 
   for (const p of pendings) {
@@ -1787,8 +1897,6 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       continue;
     }
     if (sweepCandidateUsesRepoSlot(p.wsId)) processedRepoRoots.add(p.scenario.repoRoot);
-    const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${p.wsId.slice(0, 8)}`);
-    const promptArtifacts: PromptArtifact[] = [];
 
     // verifyBranches 只給 owner 判斷 CI 用；team tick 免跑（省時）
     if (ownerBudget > 0 && sweepCandidateUsesRepoSlot(p.wsId)) {
@@ -1836,10 +1944,18 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       const unclaimed = work2.some((t) => !t.assignee_id && t.status === 'Todo');
       const idle = eligibleMembers.filter((m) => !work2.some((t) => t.assignee_id === m.userId));
       const toRun = [...rejected, ...(unclaimed ? idle : [])].slice(0, memberBudget);
-      if (toRun.length) {
-        for (const m of toRun) ensureWorktree(m, p.scenario);
+      const readyToRun = toRun.filter((m) => {
+        const notification = notificationResults.get(m.email);
+        if (notification && !notification.ready) {
+          console.log(`[${m.name}-巡檢] notification sweep 未完成，略過一般 session`);
+          return false;
+        }
+        return true;
+      });
+      if (readyToRun.length) {
+        for (const m of readyToRun) ensureWorktree(m, p.scenario);
         const hour = new Date().getHours();
-        await settleAllOrThrow(toRun.map(async (m) => {
+        await settleAllOrThrow(readyToRun.map(async (m) => {
           await sleep(jitter(1, 5));
           const gated = await runActorSessionWithNotificationGate({
             label: `${m.name}-巡檢`,
@@ -1860,7 +1976,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
             console.log(`[${m.name}-巡檢] session 未成功，保留未提交 diff，不進入 branch commit`);
           }
         }));
-        memberBudget -= toRun.length;
+        memberBudget -= readyToRun.length;
       }
     }
     console.log(`[sweep] ${p.wsId.slice(0, 8)} 處理完（剩餘預算 owner:${ownerBudget} member:${memberBudget}）`);

@@ -226,3 +226,11 @@
 - [x] 實作收尾只在原討論記錄目標工作區與 TASK 名稱，不產生 URL；未達共識記錄三項說明後完成，日後另開新的主工作區 task
 - [x] OWNER sweep、主工作區政策、API／設計／營運文件與前端看板已同步新流程；一般 workspace 維持原 Todo → Doing → Review → Done
 - [x] focused tests、`npm test`、`npm run build`、`git diff --check` 與正式服務 health check 完成
+
+## Phase 19 — 全成員通知巡檢
+
+- [x] `team`／`both` sweep 每 tick 依序檢查 user02–user06 未讀通知，不受一般 TASK claim 派工限制
+- [x] 零未讀不啟動 AI；有未讀沿用主工作區留言驗證、禁止自我 mention 與 driver 標已讀規則
+- [x] 通知巡檢不占用一般 member budget、不建立 worktree、不 commit；失敗成員本 tick 跳過一般工作
+- [x] focused tests、完整測試與 build
+- [ ] live readback（需另取得人工 live sweep 授權）

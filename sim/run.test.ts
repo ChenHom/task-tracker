@@ -43,9 +43,12 @@ import {
   isQuotaExhaustion,
   notificationGatePrompt,
   processNotificationGate,
+  runNotificationSweep,
+  runNotificationSweepForMember,
   runNotificationGatedSession,
   type NotificationGateActor,
   type NotificationGateRequest,
+  type NotificationSweepMember,
 } from './run';
 
 const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
@@ -131,6 +134,10 @@ assert.ok(
   (source.match(/runActorSessionWithNotificationGate\(/g)?.length ?? 0) >= 8,
   '一般 run 與 owner/team sweep 的每條自動 session 路徑都必須經 notification gate wrapper',
 );
+assert.ok(source.includes("if (role !== 'owner')"), 'team/both sweep 必須啟動全成員通知巡檢');
+assert.ok(/runNotificationSweep\(\s*RUN\.members/.test(source), '通知巡檢必須覆蓋所有設定成員');
+assert.ok(source.includes('notification sweep 未完成，略過一般 session'), '通知巡檢失敗時不得進一般 member session');
+assert.ok(source.includes('const readyToRun = toRun.filter'), '一般派工仍須保留 claim-based toRun 並套用通知結果');
 
 // Notification gate contract (injected HTTP client keeps these tests offline).
 const gateActor = {
@@ -178,11 +185,11 @@ async function runNotificationGateTests(): Promise<void> {
     log: () => undefined,
     snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(noUnread, { ready: true, snapshotIds: [] });
+  assert.deepStrictEqual(noUnread, { ready: true, snapshotIds: [], preflightStarted: false });
 
   let regularRuns = 0;
   const skipped = await runNotificationGatedSession(
-    async () => ({ ready: false, snapshotIds: ['n-main'] }),
+    async () => ({ ready: false, snapshotIds: ['n-main'], preflightStarted: false }),
     async () => { regularRuns++; return { errored: false, timedOut: false, quotaExhausted: false }; },
   );
   assert.strictEqual(skipped, null);
@@ -203,7 +210,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async (prompt) => { preflightPrompt = prompt; return { errored: false, timedOut: false }; },
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(generalResult, { ready: true, snapshotIds: ['n-general'] });
+  assert.deepStrictEqual(generalResult, { ready: true, snapshotIds: ['n-general'], preflightStarted: true });
   assert.ok(preflightPrompt.includes('task-general'));
   assert.deepStrictEqual(general.calls, [
     'GET /api/notifications', 'GET /api/tasks/task-general', 'GET /api/tasks/task-general/comments',
@@ -230,7 +237,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => ({ errored: false, timedOut: false }),
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(mainResult, { ready: true, snapshotIds: ['n-main'] });
+  assert.deepStrictEqual(mainResult, { ready: true, snapshotIds: ['n-main'], preflightStarted: true });
   assert.ok(main.calls.indexOf('GET /api/tasks/task-main/comments') < main.calls.indexOf('POST /api/notifications/n-main/read'));
 
   const missingReply = fakeGateRequest({
@@ -246,7 +253,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => ({ errored: false, timedOut: false }),
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(missingReplyResult, { ready: false, snapshotIds: ['n-missing'] });
+  assert.deepStrictEqual(missingReplyResult, { ready: false, snapshotIds: ['n-missing'], preflightStarted: true });
   assert.ok(!missingReply.calls.some((call) => call.includes('/read')));
 
   const selfMention = fakeGateRequest({
@@ -262,7 +269,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => ({ errored: false, timedOut: false }),
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(selfMentionResult, { ready: false, snapshotIds: ['n-self'] });
+  assert.deepStrictEqual(selfMentionResult, { ready: false, snapshotIds: ['n-self'], preflightStarted: true });
   assert.ok(!selfMention.calls.some((call) => call.includes('/read')));
 
   const unavailableLogs: string[] = [];
@@ -279,7 +286,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => { throw new Error('unavailable 不該啟動 preflight'); },
     log: (line) => unavailableLogs.push(line), snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(unavailableResult, { ready: true, snapshotIds: ['n-gone'] });
+  assert.deepStrictEqual(unavailableResult, { ready: true, snapshotIds: ['n-gone'], preflightStarted: false });
   assert.ok(unavailableLogs.some((line) => line.includes('notification=n-gone') && line.includes('task=task-gone') && line.includes('status=404')));
 
   const failedSource = fakeGateRequest({
@@ -291,7 +298,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => ({ errored: false, timedOut: false }),
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(failedResult, { ready: false, snapshotIds: ['n-500'] });
+  assert.deepStrictEqual(failedResult, { ready: false, snapshotIds: ['n-500'], preflightStarted: false });
   assert.ok(!failedSource.calls.some((call) => call.includes('/read')));
 
   const commentsGoneLogs: string[] = [];
@@ -309,7 +316,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => { throw new Error('來源失效不該啟動 preflight'); },
     log: (line) => commentsGoneLogs.push(line), snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(commentsGoneResult, { ready: true, snapshotIds: ['n-comments-gone'] });
+  assert.deepStrictEqual(commentsGoneResult, { ready: true, snapshotIds: ['n-comments-gone'], preflightStarted: false });
   assert.ok(commentsGoneLogs.some((line) => line.includes('status=403')));
 
   const missingSourceComment = fakeGateRequest({
@@ -326,7 +333,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => { throw new Error('缺少留言不該啟動 preflight'); },
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(missingSourceCommentResult, { ready: true, snapshotIds: ['n-comment-missing'] });
+  assert.deepStrictEqual(missingSourceCommentResult, { ready: true, snapshotIds: ['n-comment-missing'], preflightStarted: false });
 
   const malformed = fakeGateRequest({
     'GET /api/notifications': [{ status: 200, body: { not: 'array' } }],
@@ -336,7 +343,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => ({ errored: false, timedOut: false }),
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(malformedResult, { ready: false, snapshotIds: [] });
+  assert.deepStrictEqual(malformedResult, { ready: false, snapshotIds: [], preflightStarted: false });
 
   const preflightFailed = fakeGateRequest({
     'GET /api/notifications': [{ status: 200, body: [unreadNotification('n-preflight-failed', 'task-preflight-failed', 'comment-preflight-failed')] }],
@@ -348,7 +355,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => ({ errored: true, timedOut: false }),
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(preflightFailedResult, { ready: false, snapshotIds: ['n-preflight-failed'] });
+  assert.deepStrictEqual(preflightFailedResult, { ready: false, snapshotIds: ['n-preflight-failed'], preflightStarted: true });
   assert.ok(!preflightFailed.calls.some((call) => call.includes('/read')));
 
   const multiple = fakeGateRequest({
@@ -376,8 +383,70 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => ({ errored: false, timedOut: false }),
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(multipleResult, { ready: true, snapshotIds: ['n-one', 'n-two'] });
+  assert.deepStrictEqual(multipleResult, { ready: true, snapshotIds: ['n-one', 'n-two'], preflightStarted: true });
   assert.strictEqual(multiple.calls.filter((call) => call.includes('/read')).length, 2);
+
+  const sweepMember: NotificationSweepMember = {
+    email: gateActor.email, name: gateActor.name, user: 'user02', runner: 'codex', model: 'test-model',
+  };
+  const sweepEmpty = fakeGateRequest({
+    'GET /api/notifications': [{ status: 200, body: [] }],
+  });
+  let emptyPreflightRuns = 0;
+  const sweepEmptyResult = await runNotificationSweepForMember({
+    member: sweepMember,
+    request: sweepEmpty.request,
+    loginActor: async () => 'session=test',
+    runPreflight: async () => { emptyPreflightRuns++; return { errored: false, timedOut: false }; },
+    log: () => undefined,
+    snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(sweepEmptyResult, {
+    actor: gateActor.email, ready: true, unreadCount: 0, preflightStarted: false,
+  });
+  assert.strictEqual(emptyPreflightRuns, 0, '零未讀不得啟動通知 AI session');
+
+  const sweepGeneral = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-sweep-general', 'task-sweep-general', 'comment-sweep-general')] },
+      { status: 200, body: [{ ...unreadNotification('n-sweep-general', 'task-sweep-general', 'comment-sweep-general'), read_at: '2026-07-14T04:01:00.000Z' }] },
+    ],
+    'GET /api/tasks/task-sweep-general': [{ status: 200, body: gateTask('task-sweep-general', 'workspace-general') }],
+    'GET /api/tasks/task-sweep-general/comments': [{ status: 200, body: [gateComment('task-sweep-general', 'comment-sweep-general')] }],
+    'POST /api/notifications/n-sweep-general/read': [{ status: 200, body: { ok: true } }],
+  });
+  let generalPreflightRuns = 0;
+  const sweepGeneralResult = await runNotificationSweepForMember({
+    member: sweepMember,
+    request: sweepGeneral.request,
+    loginActor: async () => 'session=test',
+    runPreflight: async () => { generalPreflightRuns++; return { errored: false, timedOut: false }; },
+    log: () => undefined,
+    snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(sweepGeneralResult, {
+    actor: gateActor.email, ready: true, unreadCount: 1, preflightStarted: true,
+  });
+  assert.strictEqual(generalPreflightRuns, 1);
+
+  const sweepMainMissingReply = fakeGateRequest({
+    'GET /api/notifications': [{ status: 200, body: [unreadNotification('n-sweep-main', 'task-sweep-main', 'comment-sweep-main')] }],
+    'GET /api/tasks/task-sweep-main': [{ status: 200, body: gateTask('task-sweep-main', MAIN_WORKSPACE_ID) }],
+    'GET /api/tasks/task-sweep-main/comments': [
+      { status: 200, body: [gateComment('task-sweep-main', 'comment-sweep-main')] },
+      { status: 200, body: [gateComment('task-sweep-main', 'comment-sweep-main')] },
+    ],
+  });
+  const sweepMainResult = await runNotificationSweepForMember({
+    member: sweepMember,
+    request: sweepMainMissingReply.request,
+    loginActor: async () => 'session=test',
+    runPreflight: async () => ({ errored: false, timedOut: false }),
+    log: () => undefined,
+    snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.strictEqual(sweepMainResult.ready, false);
+  assert.ok(!sweepMainMissingReply.calls.some((call) => call.includes('/read')));
 
   const prompt = notificationGatePrompt({
     actor: gateActor,
@@ -394,6 +463,28 @@ async function runNotificationGateTests(): Promise<void> {
   assert.ok(prompt.includes('不得呼叫 POST /api/notifications'));
   assert.ok(prompt.includes('不得在留言中 @ 自己'));
   assert.ok(!prompt.includes('@小美'), 'prompt 指令不得組出 actor 自己的 handle');
+
+  const sweepMembers: NotificationSweepMember[] = ['user02', 'user03', 'user04', 'user05', 'user06'].map((user) => ({
+    email: `${user}@test.local`, name: user, user, runner: 'codex', model: 'test-model',
+  }));
+  const seen: string[] = [];
+  const sweepResults = await runNotificationSweep(
+    sweepMembers,
+    async (member) => {
+      seen.push(member.email);
+      if (member.user === 'user03') throw new Error('user03 notification failed');
+      return { actor: member.email, ready: true, unreadCount: 0, preflightStarted: false };
+    },
+    () => undefined,
+  );
+  assert.deepStrictEqual(seen, sweepMembers.map((member) => member.email));
+  assert.deepStrictEqual(sweepResults.map((result) => ({ actor: result.actor, ready: result.ready })), [
+    { actor: 'user02@test.local', ready: true },
+    { actor: 'user03@test.local', ready: false },
+    { actor: 'user04@test.local', ready: true },
+    { actor: 'user05@test.local', ready: true },
+    { actor: 'user06@test.local', ready: true },
+  ]);
 }
 
 const dir = mkdtempSync(join(tmpdir(), 'task-tracker-sim-'));
