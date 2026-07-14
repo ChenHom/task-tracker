@@ -606,7 +606,7 @@ p.error {
   position: relative;
   flex-grow: 1;
   display: flex;
-  margin: 0;
+  /* margin: 0; */
 }
 
 .autocomplete-edit-wrapper {
