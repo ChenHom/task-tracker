@@ -210,6 +210,7 @@ code = code.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
 code = code.replace(/export\s+async\s+function\s+openTaskDetailModal/g, 'globalThis.openTaskDetailModal = async function openTaskDetailModal');
 code = code.replace(/export\s+function\s+safeHttpUrl/g, 'function safeHttpUrl');
 code += '\nglobalThis.safeHttpUrl = typeof safeHttpUrl === "function" ? safeHttpUrl : undefined;';
+code += '\nglobalThis.renderRichText = typeof renderRichText === "function" ? renderRichText : undefined;';
 
 // 3. Create sandbox
 const sandbox = {
@@ -256,6 +257,16 @@ vm.runInContext(code, sandbox);
 
 const openTaskDetailModal = sandbox.globalThis.openTaskDetailModal;
 const safeHttpUrl = sandbox.globalThis.safeHttpUrl;
+const renderRichText = sandbox.globalThis.renderRichText;
+
+const localPartMention = renderRichText('@user02', [{
+  user_id: 'user-02',
+  name: '小美',
+  email: 'user02@test.local'
+}], [], []);
+assert.strictEqual(localPartMention.childNodes.length, 1, 'email local-part mention should render as one element');
+assert.strictEqual(localPartMention.childNodes[0].className, 'rich-mention', 'email local-part mention should use mention styling');
+assert.strictEqual(localPartMention.childNodes[0].textContent, '@小美', 'email local-part mention should display the member name');
 
 function findElement(el: MockElement, predicate: (element: MockElement) => boolean): MockElement | null {
   if (predicate(el)) return el;
@@ -681,13 +692,16 @@ async function runTests() {
     cachedTasks: [{
       task_id: 'task-1',
       title: 'Read Only Task',
-      description: 'Read only description',
+      description: '請 @user02 確認唯讀描述。',
       status: 'Todo',
       priority: 'Low',
       assignee_id: null,
       due_at: null
     }],
-    cachedMembers: [{ user_id: 'user-1', name: 'Tester', email: 'test@test.com' }],
+    cachedMembers: [
+      { user_id: 'user-1', name: 'Tester', email: 'test@test.com' },
+      { user_id: 'user-02', name: '小美', email: 'user02@test.local' }
+    ],
     memberMap: new Map([['user-1', 'Tester']]),
     memberEmailMap: new Map([['user-1', 'test@test.com']]),
     onUpdate: async () => {},
@@ -697,6 +711,9 @@ async function runTests() {
 
   const viewerOverlay = bodyChildren[bodyChildren.length - 1];
   assert.ok(findElement(viewerOverlay, (node) => node.textContent === 'Read Only Task'), 'Viewer should see the task title');
+  const readOnlyDescriptionMention = findElement(viewerOverlay, (node) => node.classList.contains('task-readonly-description'));
+  assert.ok(readOnlyDescriptionMention, 'Viewer should see the read-only task description');
+  assert.ok(findElement(readOnlyDescriptionMention, (node) => node.classList.contains('rich-mention') && node.textContent === '@小美'), 'Read-only task descriptions should display local-part mentions using member names');
   assert.ok(findElement(viewerOverlay, (node) => node.textContent === 'handoff.txt (1.0 KB)' && node.tag === 'a'), 'Viewer should retain attachment downloads');
   const urlLink = findElement(viewerOverlay, (node) => node.classList.contains('rich-url-link'));
   assert.ok(urlLink, 'Viewer should see safe handoff URLs as links');

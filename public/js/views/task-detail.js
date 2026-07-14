@@ -348,7 +348,13 @@ export async function openTaskDetailModal(taskId, {
     saveBtnGroup.appendChild(saveWrapper);
     contentSec.appendChild(saveBtnGroup);
   } else {
-    contentSec.appendChild(el('div', { class: 'task-readonly-description' }, currentTask.description || '（無描述）'));
+    const description = el('div', { class: 'task-readonly-description' });
+    if (currentTask.description) {
+      description.appendChild(renderRichText(currentTask.description, cachedMembers, cachedComments, cachedTasks));
+    } else {
+      description.textContent = '（無描述）';
+    }
+    contentSec.appendChild(description);
   }
   
   leftEl.appendChild(contentSec);
@@ -1202,7 +1208,7 @@ function renderRichText(text, cachedMembers, cachedComments, cachedTasks) {
       if (punctuation) fragment.appendChild(document.createTextNode(punctuation));
     } else if (part.startsWith('@')) {
       const nameOrEmail = part.slice(1);
-      const member = cachedMembers.find(m => m.name === nameOrEmail || m.email === nameOrEmail || m.user_id === nameOrEmail);
+      const member = cachedMembers.find(m => m.name === nameOrEmail || m.email === nameOrEmail || m.user_id === nameOrEmail || m.email?.split('@', 1)[0]?.toLowerCase() === nameOrEmail.toLowerCase());
       if (member) {
         const mentionEl = el('span', {
           class: 'rich-mention',
