@@ -620,7 +620,7 @@ export async function openTaskDetailModal(taskId, {
           }
 
           actions.appendChild(editSaveWrapper);
-          const deleteBtn = el('button', { type: 'button', class: 'btn-danger' }, '刪除留言');
+          const deleteBtn = el('button', { type: 'button', class: 'btn-danger' }, '刪除');
           deleteBtn.onclick = async () => {
             if (!confirm('確定要刪除這則留言嗎？')) return;
             try {

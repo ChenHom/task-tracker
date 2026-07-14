@@ -271,6 +271,8 @@ async function runTests() {
   const kanbanSource = readFileSync(join(__dirname, '../public/js/views/kanban.js'), 'utf8');
   const membersSource = readFileSync(join(__dirname, '../public/js/views/members.js'), 'utf8');
   const taskDetailSource = readFileSync(join(__dirname, '../public/js/views/task-detail.js'), 'utf8');
+  const kanbanCssSource = readFileSync(join(__dirname, '../public/css/kanban.css'), 'utf8');
+  const taskDetailCssSource = readFileSync(join(__dirname, '../public/css/task-detail.css'), 'utf8');
 
   // State should canonicalize both legacy and newly assigned email identities.
   const sessionValues = new Map<string, string>([['user_email', ' USER01@TEST.LOCAL ']]);
@@ -503,12 +505,11 @@ async function runTests() {
   assert.ok(findElement(commenterOverlay, (node) => node.textContent === 'Discussion Task'), 'Commenter should see the task title');
   assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '留言'), 'Commenter should have comment submit');
   assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '編輯'), 'Commenter should edit their own comment');
-  assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '刪除留言'), 'Commenter should delete their own comment');
+  assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '刪除'), 'Commenter should delete their own comment');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '儲存'), null, 'Commenter should not have task save');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.classList.contains('status-change-btn')), null, 'Commenter should not have status controls');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'select'), null, 'Commenter should not have task attribute selects');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'input'), null, 'Commenter should not have task, date, or upload inputs');
-  assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '刪除'), null, 'Commenter should not have attachment delete');
 
   // Test 6.1: Comment creation badge on mobile (window.innerWidth <= 768)
   {
@@ -702,7 +703,7 @@ async function runTests() {
   assert.strictEqual(urlLink.href, 'https://example.com/run/1');
   assert.strictEqual(urlLink.rel, 'noopener noreferrer');
   assert.ok(findElement(viewerOverlay, (node) => node.tag === '#text' && node.textContent === '.。'), 'Trailing URL punctuation should remain text');
-  assert.strictEqual(findElement(viewerOverlay, (node) => node.tag === 'button' && ['留言', '編輯', '刪除留言', '刪除'].includes(node.textContent)), null, 'Viewer should not have comment or attachment mutations');
+  assert.strictEqual(findElement(viewerOverlay, (node) => node.tag === 'button' && (['留言', '編輯'].includes(node.textContent) || node.classList.contains('btn-danger'))), null, 'Viewer should not have comment or attachment mutations');
 
   const serial = findElement(viewerOverlay, (node) => node.classList.contains('comment-serial'));
   assert.ok(serial && serial.onclick, 'Viewer should retain the comment share menu');
@@ -753,7 +754,12 @@ async function runTests() {
   assert.match(kanbanSource, /const\s+renderWorkspaceId\s*=\s*state\.workspaceId[\s\S]*let\s+loadGeneration\s*=\s*0[\s\S]*async\s+function\s+loadAllData\(\)\s*\{\s*if\s*\(state\.workspaceId\s*!==\s*renderWorkspaceId\)\s*return;[\s\S]*encodeURIComponent\(renderWorkspaceId\)[\s\S]*generation\s*!==\s*loadGeneration[\s\S]*state\.workspaceId\s*!==\s*renderWorkspaceId/);
   assert.match(kanbanSource, /hasRole\(currentRole,\s*['"]Member['"]\)[\s\S]*:\s*\{\s*title,\s*description\s*\}/);
   assert.match(kanbanSource, /MAIN_DISCUSSION_DESCRIPTION_TEMPLATE[\s\S]*column-add-task-description/);
-  assert.match(kanbanSource, /main-discussion-board/);
+  assert.doesNotMatch(kanbanSource, /\$\{isMainWorkspace \? '' : `[\s\S]*?col-doing/);
+  assert.match(kanbanSource, /<div class="kanban-column col-doing">[\s\S]*?<div class="kanban-column col-review">/);
+  assert.doesNotMatch(kanbanSource, /main-discussion-board/);
+  assert.doesNotMatch(kanbanCssSource, /\.kanban-board\.main-discussion-board/);
+  assert.match(taskDetailCssSource, /\.comment-actions\s*\{[\s\S]*?flex-direction:\s*column/);
+  assert.match(taskDetailCssSource, /@media \(max-width: 768px\)[\s\S]*?\.comment-actions\s*\{[\s\S]*?flex-direction:\s*column/);
   assert.match(kanbanSource, /isMainWorkspace[\s\S]*status === ['"]Todo['"][\s\S]*createStateBtn\(['"]→ Done['"], ['"]Done['"]\)/);
   assert.doesNotMatch(`${kanbanSource}\n${taskDetailSource}`, /deadline|overdue|absence|reply tracker|等待天數選擇器/iu);
   assert.match(membersSource, /hasRole[\s\S]*MAIN_WORKSPACE_ID[\s\S]*canManageMembers/);

@@ -79,6 +79,8 @@
 }
 .comment-actions {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
   justify-content: flex-end;
   gap: 0.4rem;
   margin-top: 0.4rem;
@@ -513,6 +515,8 @@ p.error {
   }
   .comment-actions {
     width: 100%;
+    flex-direction: column;
+    align-items: stretch;
   }
   .comment-actions button {
     width: 100%;
@@ -627,6 +631,5 @@ p.error {
 .rich-task-link:hover {
   color: #059669;
 }
-
 
 

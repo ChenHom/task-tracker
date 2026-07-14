@@ -75,14 +75,6 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
-.kanban-board.main-discussion-board {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.kanban-board.main-discussion-board.show-archived-col {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .kanban-column {
   min-height: 500px;
   background: rgba(255, 255, 255, 0.7);

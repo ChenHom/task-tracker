@@ -79,24 +79,22 @@ export const KanbanView = {
       <p id="task-error" class="error" style="display: none; margin-bottom: 1.5rem;"></p>
 
       <!-- 4/5 Column Kanban Board -->
-      <div class="kanban-board${isMainWorkspace ? ' main-discussion-board' : ''}" id="kanban-board-el" style="position: relative;">
+      <div class="kanban-board" id="kanban-board-el" style="position: relative;">
         <div class="kanban-column col-todo">
           <div class="kanban-column-title"><span>Todo</span><span class="inline-add-btn-slot" id="add-btn-Todo"></span></div>
           <div class="inline-add-form-slot" id="add-form-Todo"></div>
           <div class="kanban-cards" id="cards-Todo"></div>
         </div>
-        ${isMainWorkspace ? '' : `
-          <div class="kanban-column col-doing">
-            <div class="kanban-column-title"><span>Doing</span><span class="inline-add-btn-slot" id="add-btn-Doing"></span></div>
-            <div class="inline-add-form-slot" id="add-form-Doing"></div>
-            <div class="kanban-cards" id="cards-Doing"></div>
-          </div>
-          <div class="kanban-column col-review">
-            <div class="kanban-column-title"><span>Review</span><span class="inline-add-btn-slot" id="add-btn-Review"></span></div>
-            <div class="inline-add-form-slot" id="add-form-Review"></div>
-            <div class="kanban-cards" id="cards-Review"></div>
-          </div>
-        `}
+        <div class="kanban-column col-doing">
+          <div class="kanban-column-title"><span>Doing</span><span class="inline-add-btn-slot" id="add-btn-Doing"></span></div>
+          <div class="inline-add-form-slot" id="add-form-Doing"></div>
+          <div class="kanban-cards" id="cards-Doing"></div>
+        </div>
+        <div class="kanban-column col-review">
+          <div class="kanban-column-title"><span>Review</span><span class="inline-add-btn-slot" id="add-btn-Review"></span></div>
+          <div class="inline-add-form-slot" id="add-form-Review"></div>
+          <div class="kanban-cards" id="cards-Review"></div>
+        </div>
         <div class="kanban-column col-done">
           <div class="kanban-column-title"><span>Done</span></div>
           <div class="kanban-cards" id="cards-Done"></div>
