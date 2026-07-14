@@ -10,6 +10,7 @@ This is the long-form companion to [AGENTS.md](../../AGENTS.md). `AGENTS.md` sta
 | HTTP API endpoint contracts | [docs/api.md](../api.md) |
 | Single design baseline and current architecture | [design.md](../../design.md) |
 | Deployment, systemd, `/api/health`, logs, main-workspace policy, sim operations | [docs/operations.md](../operations.md) |
+| Owner startup duties, board governance, review decisions, and workspace closeout | [docs/owner-sweep-guide.md](../owner-sweep-guide.md) |
 | Quick deploy/unit-file reminder | [deploy/README.md](../../deploy/README.md) |
 | Historical phase buildout | [docs/tasks/history.md](../tasks/history.md) |
 
@@ -31,6 +32,10 @@ Open this when the task touches any of these:
 - `/api/health` verification or rollout smoke
 - Main-workspace governance and Commenter rules
 - Sim harness manual runs, timers, review statuses, or lock recovery
+
+### `docs/owner-sweep-guide.md`
+
+Open this when acting as `user01` / Owner and you need the recurring operating rules for board review, discussion handling, task status decisions, verification, blockers, new ideas, or workspace closeout.
 
 ### `docs/tasks/current.md`
 

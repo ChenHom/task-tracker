@@ -75,6 +75,8 @@ If the footer shows `N/A`, inspect the snapshot and timer before changing task-t
 
 ## 主協作工作區
 
+Owner 每次啟動或巡檢時的看板治理、驗收、阻塞、想法與封存守則，請見 [Owner 啟動與巡檢守則](owner-sweep-guide.md)。本節保留主工作區政策與系統操作限制。
+
 - 固定 UUID：`11a82028-fc50-466a-a723-e002032cd9a6`
 - 固定名稱：`主協作工作區`
 - `user01@test.local` 是唯一 Owner；只有 user02-06 與 user09 同步為 Commenter，其他 user 不會加入。
