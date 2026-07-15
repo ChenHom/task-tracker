@@ -70,6 +70,20 @@ class MockElement {
         board.appendChild(colArchived);
         this.appendChild(board);
       }
+      if (val.includes('id="ws-list-container"')) {
+        const wsList = new MockElement('div', { id: 'ws-list-container' });
+        this.appendChild(wsList);
+      }
+      if (val.includes('id="ws-pagination"')) {
+        const pagination = new MockElement('div', { id: 'ws-pagination' });
+        this.appendChild(pagination);
+      }
+      if (val.includes('id="create-ws-form"')) {
+        const createForm = new MockElement('form', { id: 'create-ws-form' });
+        const wsInput = new MockElement('input', { id: 'ws-name-input' });
+        createForm.appendChild(wsInput);
+        this.appendChild(createForm);
+      }
     }
   }
 
@@ -243,11 +257,16 @@ const mockWindow: any = {
     if (windowListeners[event]) {
       windowListeners[event] = windowListeners[event].filter(cb => cb !== callback);
     }
+  },
+  get location() {
+    return mockLocation;
   }
 };
 
 let currentHash = '#/task/task-1';
 const mockLocation: any = {
+  origin: 'http://localhost',
+  pathname: '/',
   get hash() {
     return currentHash;
   },
@@ -289,6 +308,11 @@ let kanbanCode = readFileSync(join(__dirname, '../public/js/views/kanban.js'), '
 kanbanCode = kanbanCode.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
 kanbanCode = kanbanCode.replace(/export\s+const\s+KanbanView\s*=\s*/g, 'globalThis.KanbanView = ');
 
+// 2.6 Read and transform public/js/views/workspaces.js
+let workspacesCode = readFileSync(join(__dirname, '../public/js/views/workspaces.js'), 'utf8');
+workspacesCode = workspacesCode.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
+workspacesCode = workspacesCode.replace(/export\s+const\s+WorkspacesView\s*=\s*/g, 'globalThis.WorkspacesView = ');
+
 // 3. Create sandbox
 const sandbox = {
   document: mockDocument,
@@ -313,7 +337,7 @@ const sandbox = {
   MAIN_POLICY_TITLE: '[規則] 主工作區協作與交接',
   MAIN_WORKSPACE_ID: '11a82028-fc50-466a-a723-e002032cd9a6',
   MAIN_DISCUSSION_DESCRIPTION_TEMPLATE: '',
-  navigate: () => {},
+  navigate: (hash?: string) => {},
   el: (tag: string, attrs: any = {}, ...children: any[]) => {
     const element = new MockElement(tag, attrs);
     for (const child of children) {
@@ -326,6 +350,12 @@ const sandbox = {
     return element;
   },
   requireWorkspace: () => true,
+  syncGlobalWorkspaces: async () => {},
+  navigator: {
+    clipboard: {
+      writeText: async (text: string) => {}
+    }
+  },
   showError: () => {},
   formatTime: () => '',
   Promise: Promise,
@@ -337,11 +367,13 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
 vm.runInContext(kanbanCode, sandbox);
+vm.runInContext(workspacesCode, sandbox);
 
 const openTaskDetailModal = sandbox.globalThis.openTaskDetailModal;
 const safeHttpUrl = sandbox.globalThis.safeHttpUrl;
 const renderRichText = sandbox.globalThis.renderRichText;
 const KanbanView = sandbox.globalThis.KanbanView;
+const WorkspacesView = sandbox.globalThis.WorkspacesView;
 
 const localPartMention = renderRichText('@user02', [{
   user_id: 'user-02',
@@ -600,7 +632,7 @@ async function runTests() {
   assert.ok(findElement(commenterOverlay, (node) => node.textContent === 'Discussion Task'), 'Commenter should see the task title');
   assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '留言'), 'Commenter should have comment submit');
   assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '編輯'), 'Commenter should edit their own comment');
-  assert.ok(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '刪除'), 'Commenter should delete their own comment');
+  assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '刪除'), null, 'Commenter should not delete their own comment as deletion is removed');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'button' && node.textContent === '儲存'), null, 'Commenter should not have task save');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.classList.contains('status-change-btn')), null, 'Commenter should not have status controls');
   assert.strictEqual(findElement(commenterOverlay, (node) => node.tag === 'select'), null, 'Commenter should not have task attribute selects');
@@ -962,6 +994,114 @@ async function runTests() {
     // Cleanup from bodyChildren
     const idx2 = bodyChildren.indexOf(kanbanContainer2);
     if (idx2 !== -1) bodyChildren.splice(idx2, 1);
+  }
+
+  // Test 10: WorkspacesView data-short-id rendering
+  {
+    const wsContainer = new MockElement('div');
+    bodyChildren.push(wsContainer);
+
+    sandbox.api = async (url: string) => {
+      if (url === '/api/workspaces') {
+        return [
+          { workspace_id: '11111111-2222-3333-4444-555555555555', name: 'WS 1', status: 'Active' },
+          { workspace_id: '88888888-9999-0000-1111-222222222222', name: 'WS 2', status: 'Archived' }
+        ];
+      }
+      return [];
+    };
+
+    await WorkspacesView.render(wsContainer);
+
+    // Wait for the async load() inside render
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    const wsListContainer = findElement(wsContainer, (el) => el.id === 'ws-list-container');
+    assert.ok(wsListContainer, 'ws-list-container should be rendered');
+
+    // Retrieve all workspace cards
+    const cards: MockElement[] = [];
+    const collectCards = (node: MockElement) => {
+      if (node.classList && node.classList.contains('workspace-card')) {
+        cards.push(node);
+      }
+      for (const child of node.childNodes) {
+        collectCards(child);
+      }
+    };
+    collectCards(wsListContainer);
+
+    assert.strictEqual(cards.length, 2, 'Should render 2 workspace cards');
+    assert.strictEqual(cards[0]['data-short-id'], '::11111111', 'First workspace card should have short ID ::11111111');
+    assert.strictEqual(cards[1]['data-short-id'], '::88888888', 'Second workspace card should have short ID ::88888888');
+
+    // Test clicking the ID pseudo-element to open popup
+    cards[0].getBoundingClientRect = () => ({
+      left: 100,
+      top: 100,
+      width: 200,
+      height: 200
+    } as any);
+
+    let copiedText = '';
+    sandbox.navigator.clipboard.writeText = async (text: string) => {
+      copiedText = text;
+    };
+
+    let navigatedHash = '';
+    sandbox.navigate = (hash?: string) => {
+      navigatedHash = hash || '';
+    };
+
+    // Trigger click on the pseudo-element area (e.g. left + 50, top + 15)
+    const clickEvent = {
+      clientX: 150,
+      clientY: 115,
+      pageX: 150,
+      pageY: 115,
+      stopPropagation: () => {},
+      preventDefault: () => {}
+    };
+
+    const clickHandlers = cards[0].eventListeners['click'];
+    assert.ok(clickHandlers && clickHandlers.length > 0, 'Card should have a click event handler');
+    clickHandlers[0](clickEvent);
+
+    // Verify popup is appended
+    const popup = bodyChildren.find(el => el.id === 'task-action-popup');
+    assert.ok(popup, 'Action popup should be created');
+
+    const openBtn = findElement(popup, (el) => el.tag === 'button' && el.textContent === '開啟');
+    const shareBtn = findElement(popup, (el) => el.tag === 'button' && el.textContent === '分享');
+    const copyIdBtn = findElement(popup, (el) => el.tag === 'button' && el.textContent === '複製 id');
+    assert.ok(openBtn && shareBtn && copyIdBtn, 'Should have 開啟, 分享, and 複製 id buttons');
+
+    // Click "開啟"
+    openBtn.onclick!({} as any);
+    assert.strictEqual(sandbox.state.workspaceId, '11111111-2222-3333-4444-555555555555', 'Workspace ID should be selected');
+    assert.strictEqual(navigatedHash, '#/tasks', 'Should navigate to tasks page');
+
+    // Re-trigger click to test "分享"
+    clickHandlers[0](clickEvent);
+    const popup2 = bodyChildren.find(el => el.id === 'task-action-popup');
+    assert.ok(popup2);
+    const shareBtn2 = findElement(popup2, (el) => el.tag === 'button' && el.textContent === '分享');
+    assert.ok(shareBtn2);
+    await shareBtn2.onclick!({} as any);
+    assert.ok(copiedText.includes('#/workspaces'), 'Share URL should point to workspaces view');
+
+    // Re-trigger click to test "複製 id"
+    clickHandlers[0](clickEvent);
+    const popup3 = bodyChildren.find(el => el.id === 'task-action-popup');
+    assert.ok(popup3);
+    const copyIdBtn2 = findElement(popup3, (el) => el.tag === 'button' && el.textContent === '複製 id');
+    assert.ok(copyIdBtn2);
+    await copyIdBtn2.onclick!({} as any);
+    assert.strictEqual(copiedText, '11111111-2222-3333-4444-555555555555', 'Should copy the exact workspace ID');
+
+    // Cleanup from bodyChildren
+    const idx = bodyChildren.indexOf(wsContainer);
+    if (idx !== -1) bodyChildren.splice(idx, 1);
   }
 
   console.log('frontend.test.ts OK');

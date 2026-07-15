@@ -68,7 +68,10 @@ export const WorkspacesView = {
         } else if (statusLower === 'deleted') {
           cardClass += ' status-deleted';
         }
-        const card = el('div', { class: cardClass });
+        const card = el('div', {
+          class: cardClass,
+          'data-short-id': `::${row.workspace_id.split('-')[0]}`
+        });
         
         const title = el('h3', { class: 'ws-card-title' });
         
@@ -119,11 +122,84 @@ export const WorkspacesView = {
         const footer = el('div', { class: 'ws-card-footer muted' }, formatTime(row.created_at));
         card.appendChild(footer);
 
-        card.addEventListener('click', () => {
+        card.addEventListener('click', (e) => {
           if (statusLower === 'deleted') {
             alert('此工作區已被刪除，無法進入。');
             return;
           }
+
+          // Check if clicked the ::before pseudo-element in the top-left area
+          const rect = card.getBoundingClientRect();
+          const isClickOnPseudo = (
+            e.clientX >= rect.left + 8 &&
+            e.clientX <= rect.left + 95 &&
+            e.clientY >= rect.top + 5 &&
+            e.clientY <= rect.top + 28
+          );
+
+          if (isClickOnPseudo) {
+            e.stopPropagation();
+            e.preventDefault();
+
+            // Remove any existing task action popup
+            const oldPopup = document.getElementById('task-action-popup');
+            if (oldPopup) oldPopup.remove();
+
+            const popup = el('div', {
+              id: 'task-action-popup',
+              class: 'task-action-popup'
+            });
+            popup.style.left = `${e.pageX}px`;
+            popup.style.top = `${e.pageY}px`;
+
+            const openBtn = el('button', { type: 'button', class: 'btn-secondary' }, '開啟');
+            openBtn.onclick = () => {
+              state.workspaceId = row.workspace_id;
+              state.workspaceName = row.name;
+              navigate('#/tasks');
+              popup.remove();
+            };
+
+            const shareBtn = el('button', { type: 'button', class: 'btn-secondary' }, '分享');
+            shareBtn.onclick = async () => {
+              const shareUrl = `${window.location.origin}${window.location.pathname}#/workspaces`;
+              try {
+                await navigator.clipboard.writeText(shareUrl);
+                alert('分享連結已複製到剪貼簿！');
+              } catch (err) {
+                alert(`分享連結：${shareUrl}`);
+              }
+              popup.remove();
+            };
+
+            const copyIdBtn = el('button', { type: 'button', class: 'btn-secondary' }, '複製 id');
+            copyIdBtn.onclick = async () => {
+              try {
+                await navigator.clipboard.writeText(row.workspace_id);
+                alert('工作區 ID 已複製到剪貼簿！');
+              } catch (err) {
+                alert(`工作區 ID：${row.workspace_id}`);
+              }
+              popup.remove();
+            };
+
+            popup.appendChild(openBtn);
+            popup.appendChild(shareBtn);
+            popup.appendChild(copyIdBtn);
+            document.body.appendChild(popup);
+
+            const closeHandler = (clickEv) => {
+              if (!popup.contains(clickEv.target)) {
+                popup.remove();
+                document.removeEventListener('click', closeHandler);
+              }
+            };
+            setTimeout(() => {
+              document.addEventListener('click', closeHandler);
+            }, 0);
+            return;
+          }
+
           state.workspaceId = row.workspace_id;
           state.workspaceName = row.name;
           navigate('#/tasks');
