@@ -632,17 +632,6 @@ export async function openTaskDetailModal(taskId, {
           }
 
           actions.appendChild(editSaveWrapper);
-          const deleteBtn = el('button', { type: 'button', class: 'btn-danger' }, '刪除');
-          deleteBtn.onclick = async () => {
-            if (!confirm('確定要刪除這則留言嗎？')) return;
-            try {
-              await api(`/api/comments/${c.comment_id}`, { method: 'DELETE' });
-              await loadComments();
-            } catch (err) {
-              alert(err.message);
-            }
-          };
-          actions.appendChild(deleteBtn);
           item.appendChild(actions);
         }
         commList.appendChild(item);

@@ -2,7 +2,7 @@ import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
 import { CommandError } from './eventStore';
-import { createComment, listComments, updateComment, deleteComment, getCommentContext } from './comment';
+import { createComment, listComments, updateComment, getCommentContext } from './comment';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
@@ -34,7 +34,6 @@ assert.throws(() => createComment('t1', 'alice', '   ', db), CommandError, '純�
 assert.throws(() => createComment('t1', 'alice', 42 as unknown, db), CommandError, '非字串 content 應拒');
 assert.throws(() => createComment('no-task', 'alice', 'x', db), CommandError, '不存在的 task 不可留言');
 assert.throws(() => updateComment('no-such', 'x', db), CommandError, 'update 不存在的 comment 應拒');
-assert.throws(() => deleteComment('no-such', db), CommandError, 'delete 不存在的 comment 應拒');
 
 // ── listComments 只回該 task ──
 db.prepare('INSERT INTO tasks_read_model (task_id, workspace_id, title, status, priority, version) VALUES (?, ?, ?, ?, ?, ?)')
@@ -58,10 +57,5 @@ assert.strictEqual(
   listComments('t2', db).find((row) => row.comment_id === fixedCommentId)?.created_at,
   '2026-07-14T09:00:00.000Z',
 );
-
-// ── delete → 移除、context 變 null ──
-deleteComment(id, db);
-assert.strictEqual(listComments('t1', db).length, 0);
-assert.strictEqual(getCommentContext(id, db), null, 'deleted comment 查不到 context（→ 404）');
 
 console.log('comment.test.ts OK');

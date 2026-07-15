@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { db } from './db';
 import { CommandError } from './eventStore';
 import { getTaskWorkspaceId } from './task';
-import { emitMentionNotifications, deleteNotificationsByComment } from './notification';
+import { emitMentionNotifications } from './notification';
 import { recordMainDiscussionWindowForComment } from './mainDiscussion';
 
 // Comment 不走 Event Sourcing（DESIGN 指定）：傳統 CRUD 直接讀寫 comments。
@@ -70,13 +70,7 @@ export function updateComment(commentId: string, content: unknown, database = db
   if (info.changes === 0) throw new CommandError('comment 不存在');
 }
 
-export function deleteComment(commentId: string, database = db): void {
-  const info = database.prepare('DELETE FROM comments WHERE comment_id = ?').run(commentId);
-  if (info.changes === 0) throw new CommandError('comment 不存在');
-  deleteNotificationsByComment(commentId, database);
-}
-
-// PATCH / DELETE 用：一次拿到 workspace（權限）與 author（ownership）。
+// PATCH 用：一次拿到 workspace（權限）與 author（ownership）。留言不可刪除，只能編輯。
 // JOIN task read model 取 workspace_id；task 已被刪則查不到 → null → 404。
 export interface CommentContext {
   comment_id: string;

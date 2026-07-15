@@ -47,7 +47,7 @@ import {
   type CreateTaskInput,
 } from './task';
 import { createProject, listProjects, renameProject, deleteProject, getProjectWorkspaceId } from './project';
-import { createComment, listComments, updateComment, deleteComment, getCommentContext } from './comment';
+import { createComment, listComments, updateComment, getCommentContext } from './comment';
 import { registerNotificationProjections, listNotifications, markNotificationRead } from './notification';
 import { createAttachment, listAttachments, readAttachment, deleteAttachment, getAttachmentContext, attachmentMaxBytes } from './attachment';
 import { searchWorkspace } from './search';
@@ -646,9 +646,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
   }
 
-  // 單一 comment：workspace 角色(Commenter) + ownership（只能改/刪自己的留言）。
+  // 單一 comment：workspace 角色(Commenter) + ownership（只能改自己的留言）。留言不可刪除，只能編輯。
   const commentMatch = req.url?.match(/^\/api\/comments\/([^/?]+)$/);
-  if (commentMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+  if (commentMatch && req.method === 'DELETE') {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: '留言不可刪除，只能編輯' }));
+    return;
+  }
+  if (commentMatch && req.method === 'PATCH') {
     const commentId = commentMatch[1];
     const ctx = getCommentContext(commentId);
     if (!ctx) {
@@ -659,18 +664,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const userId = requirePermission(req, res, ctx.workspace_id, ACCESS_ROLE.mutateOwnComment);
     if (!userId) return;
     if (ctx.user_id !== userId) {
-      // ponytail: 只允許作者本人。版主刪他人留言（Admin+ moderation）等有需求再加。
+      // ponytail: 只允許作者本人。版主編輯他人留言（Admin+ moderation）等有需求再加。
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: '只能修改自己的留言' }));
       return;
     }
     try {
-      if (req.method === 'DELETE') {
-        deleteComment(commentId);
-      } else {
-        const body = (await readJson(req).catch(() => null)) as { content?: unknown } | null;
-        updateComment(commentId, body?.content);
-      }
+      const body = (await readJson(req).catch(() => null)) as { content?: unknown } | null;
+      updateComment(commentId, body?.content);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {

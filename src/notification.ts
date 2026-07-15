@@ -110,10 +110,6 @@ export function registerNotificationProjections(): void {
   });
 }
 
-export function deleteNotificationsByComment(commentId: string, database = db): void {
-  database.prepare('DELETE FROM notifications_read_model WHERE source_comment_id = ?').run(commentId);
-}
-
 export function deleteNotificationsByTask(taskId: string, database = db): void {
   database.prepare('DELETE FROM notifications_read_model WHERE source_task_id = ?').run(taskId);
 }
