@@ -4,7 +4,7 @@ import { runMigrations } from './schema';
 import { resetProjections } from './eventStore';
 import { registerWorkspaceProjections, createWorkspace, archiveWorkspace } from './workspace';
 import { registerMemberProjections } from './member';
-import { registerTaskProjections, createTask, changeTaskStatus } from './task';
+import { registerTaskProjections, createTask, changeTaskAssignee, changeTaskStatus } from './task';
 import { runWithRequestContext } from './requestContext';
 import { getAggregateWorkspace, getAuditTrail } from './audit';
 
@@ -32,15 +32,16 @@ assert.deepStrictEqual(
 let taskId = '';
 runWithRequestContext({ ip: '5.6.7.8', userAgent: 'app', requestId: 'req-2' }, () => {
   taskId = createTask('bob', wsId, { title: 'T' }, db);
+  changeTaskAssignee('bob', taskId, 'alice', db);
   changeTaskStatus('bob', taskId, 'Doing', db);
 });
 const taskTrail = getAuditTrail(taskId, db);
 assert.deepStrictEqual(
   taskTrail.map((e) => e.event_type),
-  ['task.created', 'task.status_changed'],
+  ['task.created', 'task.assignee_changed', 'task.status_changed'],
   'audit trail 依版本序完整',
 );
-assert.strictEqual((taskTrail[1].metadata as { actor_id: string }).actor_id, 'bob', '記錄操作者');
+assert.strictEqual((taskTrail[2].metadata as { actor_id: string }).actor_id, 'bob', '記錄操作者');
 
 // ── getAggregateWorkspace：三種 aggregate 都能推回 workspace（授權用）──
 assert.strictEqual(getAggregateWorkspace(wsId, db), wsId, 'Workspace aggregate → 自身 id');
