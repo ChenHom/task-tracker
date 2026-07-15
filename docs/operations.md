@@ -114,11 +114,19 @@ Main-workspace sources require a new post-snapshot comment by that actor; when t
 
 The snapshot is bounded to login time. Notifications received later wait for the next actor session. The runner never creates a self-mention in notification handling. `user09` is not currently a sim runner, so this automation does not consume that account's notifications. This is not a frontend inbox and does not authorize running a live sweep.
 
+每筆未讀 notification 都是獨立處理單位：同一 task 的三筆通知會各自建立 bounded prompt、各自呼叫 AI、各自驗證留言並 read back。內容重複時，後續通知仍須由 AI 閱讀判斷，但可只留下固定的 `已閱讀，目前無補充。`（或等價的無補充訊息）；不得把多筆通知合成一筆。每個 prompt 上限 16,000 字元，超長留言會保留來源留言並明確省略其餘 context，固定規則與來源仍超限時 fail closed 並保留未讀。
+
 #### 全成員通知巡檢
 
 `--sweep team` 與 `--sweep both` 每個 tick 會依序巡檢目前設定的 user02–user06，與成員是否有 Todo/Doing 任務無關。每位成員都會登入並 snapshot 自己的未讀通知；零未讀只寫入 `notification-sweep` 結束紀錄，不啟動 AI。若有未讀，才啟動 dedicated API-only notification session，沿用上方來源讀取、主工作區回覆驗證、不得 @自己與 driver 標已讀規則。
 
 通知巡檢不建立 worktree、不 commit，也不占用一般 member task budget。登入、API、preflight 或主工作區留言驗證失敗時，該成員的未讀保留，且本 tick 跳過該成員的一般工作；其他成員照常繼續。`--sweep owner` 不啟動 user02–user06 通知巡檢；user01 仍由 owner session 的既有 gate 處理，user09 目前不在 sim runner 範圍。
+
+#### SIM managed roster 與派工
+
+自動成員同步只套用在 `CANONICAL_WORKSPACE_BY_REPOROOT` 登記的 task-tracker canonical workspace，以及本次 bootstrap 新建的 SIM workspace；不會回填主協作工作區、歷史 workspace 或其他既有一般 workspace。同步會補缺少的 user02–user06、把 Viewer/Commenter 升為 Member，保留既有 Member/Admin/Owner；局部 invite/join 失敗時該帳號不進 eligible roster，其他已就緒成員仍可運作。主協作工作區的 user06 仍維持 Commenter。
+
+Owner 依成員 profile 與目前 Todo/Doing 負載直接 PATCH `assignee_id`，並在每次派工留下 `【OWNER派工】`（負責人、專長理由、下一個可驗收成果）。Scheduler 只啟動 eligible runner 名下的 Todo/Doing；依 Doing 優先、同狀態最舊 `updated_at`、email tie-break 選最多 3 位 member（`memberBudget=3`）。無 assignee 的 Todo 採嚴格模式：不啟動任何 member、沒有 timeout 自行認領或 fallback；沒有合適 runner 時由 Owner 留 `[ESCALATE]`。
 
 ### Prerequisites
 

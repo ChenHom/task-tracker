@@ -234,3 +234,13 @@
 - [x] 通知巡檢不占用一般 member budget、不建立 worktree、不 commit；失敗成員本 tick 跳過一般工作
 - [x] focused tests、完整測試與 build
 - [ ] live readback（需另取得人工 live sweep 授權）
+
+## Phase 20 — SIM Owner 派工與通知處理規則
+
+- [x] 每筆 notification 獨立建立 bounded prompt、獨立由 AI 閱讀判斷、獨立 readback；重複內容仍逐筆處理，可由後筆留下固定無補充訊息
+- [x] prompt 以 16,000 字元 fail-closed 上限保護，保留完整來源留言並對 context 做明確省略
+- [x] managed roster 只同步 canonical task-tracker workspace 與本次新建 SIM workspace；補缺 user02–user06、修正 Viewer/Commenter 為 Member，保留更高角色，不觸碰主協作／歷史 workspace
+- [x] Owner 依 profile／負載派工並留下 `【OWNER派工】`；member 只處理自己名下任務
+- [x] 無 assignee Todo 嚴格等待，不啟動 member、無 timeout claim/fallback；scheduler `memberBudget=3`
+- [x] focused `src/task.test.ts`、`sim/run.test.ts` 與兩份 TypeScript check 通過
+- [ ] live readback（需另取得人工 live sweep 授權）
