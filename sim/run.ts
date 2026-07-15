@@ -1,5 +1,5 @@
 // AI 團隊真實 sprint sim（Claude + Codex 混合車隊，真討論/真實作/真審查）
-// owner 自主探勘發想主題、開無主 task；成員依專長認領；審過的 branch merge 進該 scenario 的 repo。
+// owner 自主探勘發想主題、依專長與負載派工；scheduler 只推進已指派 task；審過的 branch merge 進該 scenario 的 repo。
 // 用法：npm run sim                       — 深度一場（開場→r1→中場審查→r2-3→收尾 merge→repair→統計）
 //       npm run sim -- --fast             — 壓縮一場（開場→r1→收尾 merge→repair→統計），目標 ~15-20 分
 //       npm run sim -- --scenario brain   — 改在 /home/hom/code/brain 開創/延續主題專案（與 --fast 可組合）
@@ -233,6 +233,42 @@ export function eligibleManagedRunners<T extends ManagedRosterMember>(members: r
   return members.filter((member) => configured.has(member.email) && !!member.userId && MANAGED_MEMBER_ROLES.has(member.role ?? ''));
 }
 
+export interface SweepMemberCandidate {
+  email: string;
+  userId?: string;
+}
+
+export interface SweepAssignedTask {
+  status: string;
+  assignee_id: string | null;
+  updated_at?: string | null;
+}
+
+export function selectAssignedMembers<T extends SweepMemberCandidate>(
+  tasks: readonly SweepAssignedTask[],
+  members: readonly T[],
+  memberBudget: number,
+  blockedUserIds: readonly string[] = [],
+): T[] {
+  if (memberBudget <= 0) return [];
+  const blocked = new Set(blockedUserIds);
+  return members
+    .map((member) => {
+      if (!member.userId || blocked.has(member.userId)) return null;
+      const own = tasks.filter((task) => task.assignee_id === member.userId && (task.status === 'Todo' || task.status === 'Doing'));
+      if (!own.length) return null;
+      const doing = own.some((task) => task.status === 'Doing');
+      const oldest = own
+        .map((task) => task.updated_at ?? '9999-12-31T23:59:59.999Z')
+        .sort()[0];
+      return { member, doing, oldest };
+    })
+    .filter((candidate): candidate is { member: T; doing: boolean; oldest: string } => candidate !== null)
+    .sort((a, b) => Number(b.doing) - Number(a.doing) || a.oldest.localeCompare(b.oldest) || a.member.email.localeCompare(b.member.email))
+    .slice(0, memberBudget)
+    .map((candidate) => candidate.member);
+}
+
 interface ManagedRosterApiRow {
   user_id: string;
   email: string;
@@ -417,7 +453,7 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
   }
 }
 
-// 一則舊技術債題目文字，當 owner 開題的「格式範例」（保留範例價值，不再寫死指派——改認領制）
+// 一則舊技術債題目文字，當 owner 開題的「格式範例」。
 const TASK_FORMAT_EXAMPLE =
   'title:「session cookie 加 Secure flag」【小】\n' +
   'description:「src/auth.ts 的 sessionCookie()/clearSessionCookie() 目前沒有 Secure 屬性（見 ponytail 註記）。加環境變數開關（COOKIE_SECURE=1 時附加 Secure），本機 http dev 預設不開。驗收：auth.test.ts 補一條開關行為的 assert，npx tsc --noEmit + npx tsx src/auth.test.ts 通過。」';
@@ -1197,21 +1233,13 @@ ${API_RULES(jar)}
 ${doneDef}
 - 絕對不要執行 npm run sim（含 --smoke / --fast）：那會遞迴啟動一整場新的真實 AI sprint（呼叫 claude/codex CLI）
 - 一般工作不要執行 git，session 成功後由 driver 代 commit。只有 owner 最新審查明確指出 merge conflict 並要求同步 master 時，才可依序 git status → git merge master → 解衝突 → git add 衝突檔 → git commit 完成 merge；禁止 rebase/reset/checkout，也不要提交其他工作
-本次流程（這是認領制看板：task 開出來時沒有指派，誰適合誰認領）：
-1. 登入後 GET ${BASE}/api/workspaces/${wsId}/tasks
-2. 決定要做哪一題，優先序：
-   a.（最優先）assignee_id=${m.userId} 且 status=Doing、有 owner 審查意見的 → 先 GET 該 task 的 comments 讀意見，回覆你的理解，照意見修正
-   b. assignee_id=${m.userId} 且 status 還在 Todo/Doing 的（你先前認領未完成的）
-   c.（認領新題）assignee_id 為 null 且 status=Todo 的無主題，挑一個「最合你專長」的
-3. 認領協議（只在 2c 走這步，避免和隊友撞題）：
-   - 先 GET /api/tasks/<id> 確認 assignee_id 仍是 null
-   - PATCH /api/tasks/<id> {"assignee":"${m.userId}"} 認領
-   - 再 GET 一次確認 assignee_id 現在是你；若不是（被隊友搶先），放棄這題、回步驟 2 重新挑
-   - 認領後留言：為什麼你選這題（扣連你的專長）、實作計畫
-4. PATCH {"status":"Doing"}（若還在 Todo）
-5. 實作 → 跑驗證（改檔+驗證即可，不要 commit）
-6. 完成留言：做法摘要、驗證實際結果（driver 會在 session 成功後補 commit；branch ${branch(m)}）→ PATCH {"status":"Review"}
-7. 一次只做一題；做完進 Review 才可回步驟 2 認領下一題。若沒有可做也沒有可認領的題：讀一個隊友 task 的留言串，留一則有實質內容的意見，然後總結下線
+  本次流程（Owner 已依專長與負載派工；你只能處理自己名下的 task）：
+  1. 登入後 GET ${BASE}/api/workspaces/${wsId}/tasks
+  2. 只從 assignee_id=${m.userId} 的 Todo/Doing 選一題：Doing 且有 owner 審查意見的優先，其次是自己最舊的 Todo；無 assignee Todo 不可處理
+  3. 先 GET 該 task comments 讀 owner 意見；若是 Todo 才 PATCH {"status":"Doing"}，不得 PATCH assignee
+  4. 實作 → 跑驗證（改檔+驗證即可，不要 commit）
+  5. 完成留言：做法摘要、驗證實際結果（driver 會在 session 成功後補 commit；branch ${branch(m)}）→ PATCH {"status":"Review"}
+  6. 一次只做一題；名下沒有 Todo/Doing 時直接總結下線，不得認領無主題或評論其他 task
 ⚠️ 若這題卡在「需要修改的原始碼不在你目前工作目錄底下」這類環境/scenario 不一致（不是 code 邏輯問題），且上一則留言已經講過同樣結論、環境沒有變化：這輪不要重新實測探針指令、不要重寫一次完整解釋，留言最多一句「環境阻塞未變，維持現狀」即可，把時間留給步驟 7 那類還能做的事。第一次發現這種不一致時，先用 [CROSS-REPO] 開頭留言講清楚（不要含糊帶過、也不要當成已知阻塞就不講）。
 結束時輸出一行總結。`;
 }
@@ -1220,13 +1248,24 @@ function ownerOpenPrompt(wsId: string, scenario: Scenario, material: string): st
   const jar = join(RUN.repoRoot, '.jar-owner.txt'); // 落在 owner 自己的 cwd 內，理由同 memberPrompt
   const byName: Record<string, string> = {};
   for (const m of RUN.members) byName[m.name] = m.userId!;
-  const roster = RUN.members.map((m) => `- ${m.name}（user_id ${m.userId}）：${m.profile}`).join('\n');
+  const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
+  const workloadRows = db.prepare(
+    `SELECT assignee_id, status, count(*) AS count
+       FROM tasks_read_model
+      WHERE workspace_id = ? AND status IN ('Todo', 'Doing')
+      GROUP BY assignee_id, status`,
+  ).all(wsId) as Array<{ assignee_id: string | null; status: string; count: number }>;
+  db.close();
+  const workload = (userId: string | undefined, status: string) => workloadRows.find((row) => row.assignee_id === userId && row.status === status)?.count ?? 0;
+  const roster = RUN.members.map((m) => `- ${m.name}（user_id ${m.userId}）：${m.profile}；目前 Todo=${workload(m.userId, 'Todo')}、Doing=${workload(m.userId, 'Doing')}`).join('\n');
 
   if (scenario.key === 'product-ideation') {
     const items = PRODUCT_DISCOVERY_BACKLOG(byName).map((task, index) => `${index + 1}. title:「${task.title}」 assignee:${task.assignee}\n   說明素材：${task.desc}`).join('\n');
     return `你是「${OWNER.name}」（${OWNER.email}），task-tracker 的 Owner。開一個真實的 ${scenario.title}：這輪只做產品探索，不要求成員改 repo code。
 workspace：${wsId}。
 ${API_RULES(jar)}
+eligible 成員與目前負載：
+${roster}
 本次要做的事（只用 curl，不改 code）：
 1. POST ${BASE}/api/workspaces/${wsId}/projects {"name":"${scenario.title}"}
 2. 照下表建產品探索 task（POST ${BASE}/api/workspaces/${wsId}/tasks，欄位 title/description/priority/assignee/projectId）。
@@ -1252,7 +1291,7 @@ ${items}
 - 避開大工程（FTS5 全文檢索、multipart 上傳、DB migration 工具這類），難度以【小】為主、最多一題【中】
 - 每題標難度【小/中/大】`;
 
-  return `你是「${OWNER.name}」（${OWNER.email}），Owner。開一個真實的 sprint（認領制：你只開題、不指派，成員自己認領）。
+  return `你是「${OWNER.name}」（${OWNER.email}），Owner。開一個真實的 sprint；你必須依 eligible 成員 profile 與目前負載直接派工，scheduler 不會替你認領。
 workspace：${wsId}（目前名稱是暫定的「${scenario.title}」）。目前目錄是主 repo。
 ${missionLine}
 
@@ -1260,7 +1299,7 @@ ${missionLine}
 ${material}
 === 材料結束 ===
 
-團隊成員（僅供你設計難度組合的參考，${isBrain ? '' : '注意各人擅長領域，'}不要指派任何 task 給特定人）：
+eligible 團隊成員（必須從中選擇 assignee）：
 ${roster}
 
 ${API_RULES(jar)}
@@ -1268,12 +1307,12 @@ ${crossRepoRule(scenario)}
 本次要做的事（只用 curl／git 讀取，不改 code）：
 1. 歸納主題後，PATCH ${BASE}/api/workspaces/${wsId} {"name":"<你定的主題名稱，寫清楚主題，例如『前端錯誤處理一致性』>"} 把 workspace 改名為主題
 2. POST ${BASE}/api/workspaces/${wsId}/projects {"name":"<同主題名稱>"}，取得 project id
-3. 建 3-5 個 task（POST ${BASE}/api/workspaces/${wsId}/tasks，欄位 title/description/priority/projectId）：
+3. 建 3-5 個 task（POST ${BASE}/api/workspaces/${wsId}/tasks，欄位 title/description/priority/assignee/projectId）：
    ${topicRules}
-   ⚠️ 認領制：建 task 時 assignee 一律「留空/不填」，讓成員自己認領
+   ⚠️ 嚴格派工：每題建立時必須填一位 eligible user_id 作 assignee；依 profile 與 Todo/Doing 負載分配，原則上一人一題，無合適人選才留下無 assignee 並留言 [ESCALATE]
    task 格式範例（可參考語氣與詳細度）：
    ${TASK_FORMAT_EXAMPLE}
-4. 每個 task 留一則說明留言：為什麼這題重要、實作提示、預期會踩到的陷阱（你是資深工程師，給有價值的提醒）
+4. 每個 task 留一則「【OWNER派工】」說明留言：負責人、專長理由、下一個可驗收成果、為什麼這題重要與實作提示
 結束時輸出一行總結（主題是什麼、開了幾題、難度分佈）。`;
 }
 
@@ -1288,15 +1327,15 @@ ${API_RULES(jar)}
 ${crossRepoRule(scenario)}
 本次流程：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks
-2. 對每個 status=Review 的 task（認領制：從 task 的 assignee_id 對照上表看是誰做的、對應哪條 branch）：
+2. 對每個 status=Review 的 task（從 task 的 assignee_id 對照上表看是誰做的、對應哪條 branch）：
    a. GET 它的 comments 了解實作者說了什麼
    b. 用 git diff master...<該成員的 branch> -- 看實際改動（也可 Read 檔案），認真審：正確性、測試是否真的驗到行為、有沒有多餘改動
    c. 合格 → 留言具體肯定＋「中場審查通過，收尾時合併」（狀態保持 Review）
    d. 不合格 → 留言具體問題（引用檔案與行為）→ PATCH {"status":"Doing"} 退回
-3. 對「還沒被任何人認領」（assignee_id 為 null、還在 Todo）的 task：留言分析為什麼沒人領（題目太大？說明不清楚？），補充說明讓它更好認領，或點名建議哪位成員的專長適合（只是建議，不要強制指派）
+3. 對 assignee_id 為 null 且還在 Todo 的實作 task：依 eligible profile 與目前負載 PATCH assignee，並留下「【OWNER派工】」（負責人、專長理由、下一個可驗收成果）；沒有合適人選才留「[ESCALATE]」，不要等待 member 自行認領
 4. 留言含 [ESCALATE] 的 task：能給指導就留言具體指導；屬於環境/基礎設施問題你也解不了的 → 留言「已上報 harness 上層處理」並保持該 task 現狀。若同一個環境/scenario 不一致的阻塞已經連續多輪判定過（上一則留言結論相同、環境沒變化）：不需要每輪重新分析，留言一句「阻塞未變」即可，不要重複整段診斷
    留言含 [CROSS-REPO] 的 task：依上方跨 repo 判斷規則處理（有登記 canonical workspace 就協助/確認轉移已完成；沒登記就留言請人工指定，不要重複講）
-結束時輸出審查總結（幾件過、幾件退、退的原因、幾件無人認領、幾件上報）。`;
+結束時輸出審查總結（幾件過、幾件退、退的原因、幾件待 Owner 派工、幾件上報）。`;
 }
 
 function ownerClosePrompt(wsId: string, tag: string, verified: BranchReviewPacket[], scenario: Scenario): string {
@@ -1324,7 +1363,7 @@ ${API_RULES(jar)}
 ${integrationStep}
 4. CI 顯示 SKIP（未附 tooling）的 branch：不可當成 PASS。人工審 diff、task 驗收證據與成員實際執行的檢查；證據足夠才可 merge，否則留言缺少的驗證並 PATCH {"status":"Doing"}
 5. CI 顯示 FAIL 的 branch：不要 merge，直接在 task 留言「具體」問題（引用檔案/行為，讓成員知道要修什麼）+ PATCH {"status":"Doing"} 退回——這題會進入重修
-6. 還在 Todo/Doing 或無人認領的 task：留言說明現況；[BUG]/[ESCALATE] task：triage 留言、解不了的標「已上報 harness 上層處理」
+6. 還在 Todo/Doing 或無 assignee 的實作 task：依 eligible profile 與負載補上「【OWNER派工】」；沒有合適人選才留「[ESCALATE]」，不得交給 member 自行認領；[BUG]/[ESCALATE] task 另外 triage
 7. 輸出 sprint 總結（5 行內：合了幾件、退了幾件、學到什麼）
 （回退錨點 tag：${tag}，僅供你知道，不要動它）`;
 }
@@ -1609,17 +1648,17 @@ async function verifyBranches(runDir: string, scenario: Scenario): Promise<Branc
 }
 
 // 看板永遠在 task-tracker DB（不論 scenario 的 code repo 是哪個）
-function queryTasks(wsId: string): Array<{ assignee_id: string | null; status: string }> {
+function queryTasks(wsId: string): Array<SweepAssignedTask> {
   const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
-  try { return db.prepare('SELECT assignee_id, status FROM tasks_read_model WHERE workspace_id = ?').all(wsId) as Array<{ assignee_id: string | null; status: string }>; }
+  try { return db.prepare('SELECT assignee_id, status, updated_at FROM tasks_read_model WHERE workspace_id = ?').all(wsId) as unknown as SweepAssignedTask[]; }
   finally { db.close(); }
 }
 
-// 條件輪：只讓「有無主題可認領」或「名下還有 Todo/Doing」的成員上線，消滅儀式性空轉 session
+// 條件輪：只讓 Owner 已指派且名下還有 Todo/Doing 的成員上線，無主 Todo 嚴格等待 Owner。
+// 無 assignee Todo 不啟動任何 member，沒有 timeout claim 或 fallback。
 function membersToRun(wsId: string): Member[] {
   const tasks = queryTasks(wsId);
-  const unclaimed = tasks.some((t) => !t.assignee_id && t.status === 'Todo');
-  return RUN.members.filter((m) => unclaimed || tasks.some((t) => t.assignee_id === m.userId && (t.status === 'Todo' || t.status === 'Doing')));
+  return selectAssignedMembers(tasks, RUN.members, Number.MAX_SAFE_INTEGER);
 }
 
 // repair：owner 收尾把不合格題退回 Doing，找出名下有被退回題的成員來重修
@@ -1677,18 +1716,11 @@ async function main(): Promise<void> {
     const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, round));
     if (result.errored || result.timedOut) console.log(`[${m.name}-r${round}] session 未成功，保留未提交 diff，不進入 branch commit`);
   };
-  // 一輪：成員並行，登入用小 jitter 錯開避免同秒撞認領
+  // 一輪：成員並行，登入用小 jitter 錯開；成員名單只來自 Owner 已派工。
   const runRound = async (members: Member[], round: number, minJit: number, maxJit: number) =>
     settleAllOrThrow(members.map(async (m) => { await sleep(jitter(minJit, maxJit)); await memberSession(m, round); }));
 
-  if (SMOKE) {
-    await memberSession(RUN.members[0], 1); // haiku
-    await memberSession(RUN.members[2], 1); // codex（驗證 driver 代 commit）
-    printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, []);
-    return;
-  }
-
-  // owner 開場（sonnet + driver 預蒐材料）→ 發想主題、改名 workspace、開無主 task
+  // owner 開場（sonnet + driver 預蒐材料）→ 發想主題、改名 workspace、依專長與負載派工
   const material = exploreMaterial(scenario);
   const ownerOpen = await runActorSessionWithNotificationGate({
     label: 'owner-開場', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
@@ -1702,8 +1734,20 @@ async function main(): Promise<void> {
     throw new Error(`owner 開場 session 失敗，未派 member；workspace ${wsId} 與 report 保留，乾淨 worktree/branch 已移除`);
   }
 
-  // 第 1 輪：全員上線認領
-  await runRound(RUN.members, 1, 1, 5);
+  if (SMOKE) {
+    const smokeTasks = queryTasks(wsId).filter((task) => task.assignee_id && (task.status === 'Todo' || task.status === 'Doing'));
+    const smokeAssigneeIds = new Set(smokeTasks.map((task) => task.assignee_id));
+    if (smokeAssigneeIds.size < 2) {
+      throw new Error(`smoke fail closed：Owner 必須先建立至少兩筆不同 eligible assignee task，目前 ${smokeAssigneeIds.size} 位`);
+    }
+    const smokeMembers = selectAssignedMembers(smokeTasks, RUN.members, 2);
+    await runRound(smokeMembers, 1, 0, 0);
+    printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, []);
+    return;
+  }
+
+  // 第 1 輪：只讓 Owner 已派工成員上線
+  await runRound(membersToRun(wsId), 1, 1, 5);
 
   if (!FAST) {
     // 深度模式：中場審查（GPT-5.6 Sol）＋條件式 r2-3
@@ -1746,7 +1790,7 @@ async function main(): Promise<void> {
 }
 
 // ── Sweep：定時巡檢（systemd timer 觸發 --sweep owner/team）─────────────
-// 把看板上未完成的工作收乾淨＋回應老闆留言＋推進無主 Todo。額度死了就直接退出
+// 把看板上未完成的工作收乾淨＋回應老闆留言＋推進 Owner 已派工 Todo/Doing。額度死了就直接退出
 // ——timer 下個小時自己會再敲門，這就是「限額到了自動等下次」，零重試機制、零狀態。
 const SWEEP_OWNER_TIMEOUT = 12 * 60 * 1000;
 const SWEEP_MEMBER_TIMEOUT = 7 * 60 * 1000;
@@ -1773,7 +1817,7 @@ export function sweepBudgets(
 ): { owner: number; member: number } {
   return {
     owner: role === 'team' || !ownerRunnerAvailable ? 0 : Math.max(1, 2 - ownerTimeoutStreak),
-    member: role === 'owner' ? 0 : 2,
+    member: role === 'owner' ? 0 : 3,
   };
 }
 
@@ -1787,8 +1831,7 @@ export function workspaceFitsSweepBudget(
   if (memberBudget <= 0) return false;
   const eligible = new Set(eligibleUserIds);
   return tasks.some((task) =>
-    (!task.assignee_id && task.status === 'Todo' && eligible.size > 0)
-    || (!!task.assignee_id && eligible.has(task.assignee_id) && (task.status === 'Todo' || task.status === 'Doing')),
+    !!task.assignee_id && eligible.has(task.assignee_id) && (task.status === 'Todo' || task.status === 'Doing'),
   );
 }
 
@@ -1844,7 +1887,7 @@ function ensureWorktree(m: Member, scenario: Scenario): void {
   validateMemberWorktree(m);
 }
 
-interface SweepTask { task_id: string; title: string; status: string; assignee_id: string | null }
+interface SweepTask extends SweepAssignedTask { task_id: string; title: string }
 
 function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string): string {
   const jar = join(RUN.repoRoot, '.jar-owner-sweep.txt');
@@ -1893,15 +1936,15 @@ ${API_RULES(jar)}
 ${crossRepoRule(scenario)}
 2. [討論] task（title 以「[討論]」開頭）——這是你與老闆（${bossName}，真人）的對話串：
    - 不存在 → 建一個（title「[討論] 方向與下一步」，priority Low，不指派），留言 3-5 行提案接下來的方向，請老闆回覆
-   - 存在 → 讀留言。最新一則若是老闆說的且你還沒回應：先回覆他；他核准/指示的方向就開成具體 task 前，先套用上方跨 repo 判斷規則決定要在哪個 workspace 開（認領制：不指派、寫清楚範圍與驗收）
+   - 存在 → 讀留言。最新一則若是老闆說的且你還沒回應：先回覆他；他核准/指示的方向就開成具體 task 前，先套用上方跨 repo 判斷規則決定要在哪個 workspace 開，並由 Owner 依 eligible profile/負載直接填 assignee
    - [討論] task 永遠保持 Todo，不要推進狀態
 3. status=Review 的 task 對照 CI 摘要：
    - CI 全 PASS → git merge --no-ff <branch> -m "merge: <task 標題>" → 留言（附 merge hash）→ PATCH {"status":"Done"}
      ⚠️ 遇衝突「絕對不要手動解」（上一場 owner 就是手動解衝突逾時被強制中止）：git merge --abort → 留言列出衝突檔案、請該成員 merge master → PATCH {"status":"Doing"}
    - CI 有 SKIP → 不可當成 PASS；人工審 diff、task 驗收證據與成員實際檢查，證據足夠才可 merge，否則留言缺少的驗證並退回 Doing
    - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
-   - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"} 再 PATCH {"status":"Todo"}，並 PATCH {"assignee":null} 讓人重新認領
-4. status=Doing 沒動靜的：催辦留言。無主 Todo 沒人領的：補充說明讓它更好認領。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）：先檢查是否已用 [CROSS-REPO] 轉移過——沒轉移過，依上方跨 repo 判斷規則轉移，不要原地跳過；已轉移過、且上一輪已有相同結論、環境沒有變化，才可以不催辦、不重新診斷，跳過即可
+   - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"}，保留原 assignee 等待 Owner 後續決定
+4. status=Doing 沒動靜的：催辦留言。無 assignee Todo 的實作 task：依 eligible profile/負載 PATCH assignee，留下「【OWNER派工】」（負責人、專長理由、下一個可驗收成果）；沒有 eligible runner 才留「[ESCALATE]」，不等待 member 自行認領。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）：先檢查是否已用 [CROSS-REPO] 轉移過——沒轉移過，依上方跨 repo 判斷規則轉移；已轉移過、且上一輪已有相同結論、環境沒有變化，才可以跳過
 5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task
 6. 結束輸出 3 行內總結（合了幾件、退了幾件、老闆有無新指示）`;
 }
@@ -2096,24 +2139,21 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     }
 
     if (memberBudget > 0) {
-      // owner 剛動過看板，重查現況再派工：被退回的優先，其次有無主 Todo 時派沒事做的成員去認領
+      // owner 剛動過看板，重查現況；scheduler 僅選 Owner 已指派的成員。
       const db2 = new DatabaseSync(join(ROOT, 'data/dev.db'));
       const statusFilter2 = p.wsId === MAIN_WORKSPACE_ID ? "status = 'Todo'" : "status IN ('Todo','Doing','Review')";
-      const tasks2 = db2.prepare(`SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND ${statusFilter2}`).all(p.wsId) as unknown as SweepTask[];
+      const tasks2 = db2.prepare(`SELECT task_id, title, status, assignee_id, updated_at FROM tasks_read_model WHERE workspace_id = ? AND ${statusFilter2}`).all(p.wsId) as unknown as SweepTask[];
       db2.close();
       const work2 = tasks2.filter(isSweepWorkTask);
-      const rejected = eligibleMembers.filter((m) => work2.some((t) => t.assignee_id === m.userId && (t.status === 'Todo' || t.status === 'Doing')));
-      const unclaimed = work2.some((t) => !t.assignee_id && t.status === 'Todo');
-      const idle = eligibleMembers.filter((m) => !work2.some((t) => t.assignee_id === m.userId));
-      const toRun = [...rejected, ...(unclaimed ? idle : [])].slice(0, memberBudget);
-      const readyToRun = toRun.filter((m) => {
+      const blockedUserIds = eligibleMembers.filter((m) => {
         const notification = notificationResults.get(m.email);
         if (notification && !notification.ready) {
           console.log(`[${m.name}-巡檢] notification sweep 未完成，略過一般 session`);
-          return false;
+          return true;
         }
-        return true;
-      });
+        return false;
+      }).flatMap((m) => m.userId ? [m.userId] : []);
+      const readyToRun = selectAssignedMembers(work2, eligibleMembers, memberBudget, blockedUserIds);
       if (readyToRun.length) {
         for (const m of readyToRun) ensureWorktree(m, p.scenario);
         const hour = new Date().getHours();

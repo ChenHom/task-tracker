@@ -34,6 +34,7 @@ import {
   ROOT,
   runMemberSession,
   scenarioFromStoredKey,
+  selectAssignedMembers,
   settleAllOrThrow,
   shouldFallbackToModel,
   sweepCandidateUsesRepoSlot,
@@ -152,7 +153,9 @@ assert.ok(
   '通知巡檢不得使用尚未 activate scenario 的 RUN.members',
 );
 assert.ok(source.includes('notification sweep 未完成，略過一般 session'), '通知巡檢失敗時不得進一般 member session');
-assert.ok(source.includes('const readyToRun = toRun.filter'), '一般派工仍須保留 claim-based toRun 並套用通知結果');
+assert.ok(source.includes('selectAssignedMembers'), '一般派工必須由 assigned member selector 決定');
+assert.ok(source.includes('無 assignee Todo 不啟動'), 'scheduler 必須嚴格等待 Owner 指派');
+assert.ok(!source.includes('認領制看板'), 'member prompt 不得再使用認領制');
 
 // Notification gate contract (injected HTTP client keeps these tests offline).
 const gateActor = {
@@ -908,14 +911,43 @@ assert.strictEqual(sweepCandidateUsesRepoSlot('ordinary'), true);
 
 assert.deepStrictEqual(sweepBudgets('owner', 0, true), { owner: 2, member: 0 });
 assert.deepStrictEqual(sweepBudgets('owner', 0, false), { owner: 0, member: 0 });
-assert.deepStrictEqual(sweepBudgets('team', 0, false), { owner: 0, member: 2 });
-assert.deepStrictEqual(sweepBudgets('both', 0, false), { owner: 0, member: 2 });
+assert.deepStrictEqual(sweepBudgets('team', 0, false), { owner: 0, member: 3 });
+assert.deepStrictEqual(sweepBudgets('both', 0, false), { owner: 0, member: 3 });
 assert.strictEqual(workspaceFitsSweepBudget(0, 2, [], ['codex-id']), false);
 assert.strictEqual(workspaceFitsSweepBudget(0, 2, [{ status: 'Review', assignee_id: 'codex-id' }], ['codex-id']), false);
 assert.strictEqual(workspaceFitsSweepBudget(0, 2, [{ status: 'Doing', assignee_id: 'claude-id' }], ['codex-id']), false);
 assert.strictEqual(workspaceFitsSweepBudget(0, 2, [{ status: 'Doing', assignee_id: 'codex-id' }], ['codex-id']), true);
 assert.strictEqual(workspaceFitsSweepBudget(0, 2, [{ status: 'Todo', assignee_id: null }], []), false);
-assert.strictEqual(workspaceFitsSweepBudget(0, 2, [{ status: 'Todo', assignee_id: null }], ['codex-id']), true);
+assert.strictEqual(workspaceFitsSweepBudget(0, 2, [{ status: 'Todo', assignee_id: null }], ['codex-id']), false);
+
+const selectorMembers = [
+  { email: 'a@test.local', userId: 'u-a' },
+  { email: 'b@test.local', userId: 'u-b' },
+  { email: 'c@test.local', userId: 'u-c' },
+  { email: 'd@test.local', userId: 'u-d' },
+];
+const selectorTasks = [
+  { status: 'Todo', assignee_id: 'u-a', updated_at: '2026-07-14T01:00:00.000Z' },
+  { status: 'Doing', assignee_id: 'u-b', updated_at: '2026-07-14T04:00:00.000Z' },
+  { status: 'Doing', assignee_id: 'u-c', updated_at: '2026-07-14T03:00:00.000Z' },
+  { status: 'Todo', assignee_id: 'u-d', updated_at: '2026-07-14T00:00:00.000Z' },
+  { status: 'Todo', assignee_id: 'invalid', updated_at: '2026-07-14T00:00:00.000Z' },
+];
+assert.deepStrictEqual(
+  selectAssignedMembers(selectorTasks, selectorMembers, 3).map((member) => member.userId),
+  ['u-c', 'u-b', 'u-d'],
+  'Doing 優先，再依最舊 active task，不能依固定 roster 順序飢餓',
+);
+assert.deepStrictEqual(
+  selectAssignedMembers(selectorTasks, selectorMembers, 3, ['u-c']).map((member) => member.userId),
+  ['u-b', 'u-d', 'u-a'],
+  'notification blocked member 不占 budget，其他 assigned member 遞補',
+);
+assert.deepStrictEqual(
+  selectAssignedMembers([{ status: 'Todo', assignee_id: null, updated_at: '2026-07-14T00:00:00.000Z' }], selectorMembers, 3),
+  [],
+  '無 assignee Todo 不啟動任何 member',
+);
 
 assert.doesNotThrow(() => assertPathWithin('/tmp/sim-root', '/tmp/sim-root/sim-work/user02', 'worktree'));
 assert.throws(() => assertPathWithin('/tmp/sim-root', '/tmp/other/user02', 'worktree'), /worktree/);
