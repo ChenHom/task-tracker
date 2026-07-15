@@ -51,10 +51,15 @@ function validateTargetStatus(s: unknown): ActiveStatus {
   return s as ActiveStatus;
 }
 function validateAssignee(a: unknown): string | null {
-  // ponytail: 只驗格式；不檢查 assignee 是否為該 workspace member，要嚴謹就查 workspace_members_read_model。
   if (a == null) return null;
   if (typeof a !== 'string' || !a.trim()) throw new CommandError('assignee 必須是 user id 或 null');
   return a.trim();
+}
+
+function requireActiveAssignee(workspaceId: string, assigneeId: string, database: DatabaseSync): void {
+  if (!getMemberRole(workspaceId, assigneeId, database)) {
+    throw new CommandError('assignee 必須是 workspace active member');
+  }
 }
 function validateDueAt(d: unknown): string | null {
   if (d == null) return null;
@@ -171,6 +176,7 @@ export function createTask(actorId: string, workspaceId: string, input: CreateTa
   const useDefaults = isMainDiscussion || isCommenter;
   const priority = useDefaults ? 'Medium' : input.priority == null ? 'Medium' : validatePriority(input.priority);
   const assigneeId = useDefaults ? null : validateAssignee(input.assignee);
+  if (assigneeId) requireActiveAssignee(workspaceId, assigneeId, database);
   const dueAt = useDefaults ? null : validateDueAt(input.dueAt);
   const projectId = useDefaults ? null : input.projectId == null ? null : String(input.projectId); // Project 是 Phase 6，先允許 null
   const id = randomUUID();
@@ -233,6 +239,11 @@ export function changeTaskStatus(
 
   const allowed = TRANSITIONS[state.status as ActiveStatus];
   if (!allowed.includes(target)) throw new CommandError(`不允許的狀態轉換：${state.status} → ${target}`);
+  if (target === 'Doing') {
+    const task = getTask(taskId, database)!;
+    if (!task.assignee_id) throw new CommandError('Todo → Doing 必須先指派 active workspace member');
+    requireActiveAssignee(task.workspace_id, task.assignee_id, database);
+  }
   appendEvent('Task', taskId, version, 'task.status_changed', { status: target }, meta(actorId), database);
 }
 
@@ -278,6 +289,10 @@ export function changeTaskPriority(actorId: string, taskId: string, priority: un
 export function changeTaskAssignee(actorId: string, taskId: string, assignee: unknown, database = db): void {
   const clean = validateAssignee(assignee);
   const { version } = loadEditableTask(taskId, database);
+  if (clean) {
+    const task = getTask(taskId, database)!;
+    requireActiveAssignee(task.workspace_id, clean, database);
+  }
   appendEvent('Task', taskId, version, 'task.assignee_changed', { assigneeId: clean }, meta(actorId), database);
 }
 

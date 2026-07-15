@@ -22,7 +22,7 @@ import {
   normalizeMainDiscussion,
   registerTaskProjections,
 } from './task';
-import { getMemberRole, getMembershipStatus, inviteMember } from './member';
+import { getMemberRole, getMembershipStatus, inviteMember, joinWorkspace, registerMemberProjections } from './member';
 
 const OWNER_THOUGHT = `【OWNER想法】
 現況／問題：流程沒有收斂點
@@ -38,6 +38,7 @@ const db = new DatabaseSync(':memory:');
 runMigrations(db);
 resetProjections();
 registerTaskProjections();
+registerMemberProjections();
 
 const WS = 'ws-1';
 const COMMENTER_WS = 'ws-commenter';
@@ -56,13 +57,26 @@ seedWs(MOVE_ARCHIVED_WS, 'archived');
 seedWs(MAIN_WORKSPACE_ID);
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-owner', MAIN_OWNER_EMAIL, 'Main Owner', 'x');
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-user', 'user02@test.local', 'Main User', 'x');
+for (const [id, email, name] of [
+  ['u1', 'u1@test.local', 'User One'],
+  ['bob', 'bob@test.local', 'Bob'],
+  ['carol', 'carol@test.local', 'Carol'],
+  ['mover', 'mover@test.local', 'Mover'],
+  ['target-only', 'target-only@test.local', 'Target Only'],
+  ['invite-assignee', 'invite-assignee@test.local', 'Invite Assignee'],
+  ['pending-assignee', 'pending-assignee@test.local', 'Pending Assignee'],
+] as const) {
+  db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run(id, email, name, 'x');
+}
 const insertMember = db.prepare(
   'INSERT INTO workspace_members_read_model (workspace_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)',
 );
 insertMember.run(MAIN_WORKSPACE_ID, 'main-owner', 'Owner', 't');
 insertMember.run(MAIN_WORKSPACE_ID, 'main-user', 'Commenter', 't');
+for (const userId of ['u1', 'bob', 'carol']) insertMember.run(WS, userId, 'Member', 't');
 insertMember.run(COMMENTER_WS, 'main-user', 'Commenter', 't');
 insertMember.run(MOVE_SOURCE_WS, 'mover', 'Member', 't');
+for (const userId of ['invite-assignee', 'pending-assignee']) insertMember.run(MOVE_SOURCE_WS, userId, 'Member', 't');
 insertMember.run(MOVE_TARGET_WS, 'mover', 'Member', 't');
 insertMember.run(MOVE_TARGET_WS, 'target-only', 'Member', 't');
 insertMember.run(MOVE_ARCHIVED_WS, 'mover', 'Member', 't');
@@ -82,6 +96,25 @@ assert.strictEqual(t.workspace_id, WS);
 assert.strictEqual(t.version, 1, 'created → version 1');
 assert.strictEqual(getTaskWorkspaceId(id, db), WS, 'getTaskWorkspaceId 回歸屬 workspace');
 
+// ── assignee membership 與 Todo → Doing 守門 ──
+assert.throws(
+  () => createTask('u1', WS, { title: 'Unknown assignee', assignee: 'not-a-member' }, db),
+  /assignee 必須是 workspace active member/,
+);
+const unassignedDoingId = createTask('u1', WS, { title: 'Needs assignment' }, db);
+assert.throws(
+  () => changeTaskStatus('u1', unassignedDoingId, 'Doing', db),
+  /Todo → Doing 必須先指派 active workspace member/,
+);
+changeTaskAssignee('u1', unassignedDoingId, 'u1', db);
+changeTaskStatus('u1', unassignedDoingId, 'Doing', db);
+assert.strictEqual(one(unassignedDoingId).status, 'Doing');
+const invalidPatchAssigneeId = createTask('u1', WS, { title: 'Invalid patch assignee' }, db);
+assert.throws(
+  () => changeTaskAssignee('u1', invalidPatchAssigneeId, 'not-a-member', db),
+  /assignee 必須是 workspace active member/,
+);
+
 // ── create 帶完整欄位 ──
 const id2 = createTask('u1', WS, { title: 'Full', description: 'desc', priority: 'High', assignee: 'bob', dueAt: '2026-08-01' }, db);
 t = one(id2);
@@ -90,12 +123,13 @@ assert.strictEqual(t.assignee_id, 'bob');
 assert.strictEqual(t.due_at, new Date('2026-08-01').toISOString(), 'due_at 正規化成 ISO');
 
 // ── 狀態機：合法前進 Todo → Doing → Review → Done ──
+changeTaskAssignee('u1', id, 'u1', db);
 changeTaskStatus('u1', id, 'Doing', db);
 assert.strictEqual(one(id).status, 'Doing');
 changeTaskStatus('u1', id, 'Review', db);
 changeTaskStatus('u1', id, 'Done', db);
 assert.strictEqual(one(id).status, 'Done');
-assert.strictEqual(one(id).version, 4, 'created + 3 status_changed → version 4');
+assert.strictEqual(one(id).version, 5, 'created + assignee + 3 status_changed → version 5');
 
 // ── 狀態機：合法回退 Done → Review → Doing → Todo ──
 changeTaskStatus('u1', id, 'Review', db);
@@ -234,6 +268,13 @@ const pendingInviteResult = moveTask('mover', pendingInviteTaskId, MOVE_TARGET_W
 assert.deepStrictEqual(pendingInviteResult, { invitedAssignee: true });
 assert.strictEqual(loadEvents(`${MOVE_TARGET_WS}:pending-assignee`, db).length, pendingInviteEventsBefore, '既有 pending invite 不應重複追加事件');
 assert.strictEqual(getMembershipStatus(MOVE_TARGET_WS, 'pending-assignee', db), 'invited');
+assert.throws(
+  () => changeTaskStatus('mover', pendingInviteTaskId, 'Doing', db),
+  /assignee 必須是 workspace active member/,
+);
+joinWorkspace('pending-assignee', MOVE_TARGET_WS, db);
+changeTaskStatus('mover', pendingInviteTaskId, 'Doing', db);
+assert.strictEqual(getTask(pendingInviteTaskId, db)?.status, 'Doing');
 
 // ── Commenter 建立 task 只能送 title / description，規則適用所有 workspace ──
 assert.throws(
