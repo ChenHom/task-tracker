@@ -97,6 +97,10 @@ assert.ok(source.includes('【全員回覆：2天】'), '主工作區 prompt 必
 assert.ok(source.includes('@user02 @user03 @user04 @user05 @user06 @user09'), '主工作區 prompt 必須通知六位 Commenter');
 assert.ok(source.includes('Todo→Done'), '主工作區 prompt 必須只完成 Todo → Done');
 assert.ok(source.includes('不追逐、不列缺席者'), '主工作區 prompt 不得追蹤缺席者');
+assert.ok(
+  source.includes('沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言'),
+  '主工作區 owner 無變化時必須保持靜默，不能重複張貼期限或 Todo 摘要',
+);
 assert.ok(source.includes('只用 curl/API 操作，不得編輯、提交或合併任何程式碼'), '主工作區 owner session 必須是 API-only');
 assert.ok(source.includes('${canonicalWorkspaceDirectory()}'), '主工作區 prompt 必須嵌入 canonical repo/workspace 對照');
 assert.ok(source.includes('先從討論內容辨識 target repo'), '主工作區 prompt 必須先辨識目標 repo');

@@ -1727,14 +1727,15 @@ ${API_RULES(jar)}
 希望成員確認的問題：<希望 Commenter 回覆的問題>
 3. 再獨立 POST「【全員回覆：2天】」，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。只有近期成員已有大量事務才使用 2.5 至 7 天，並在同一留言填寫較長期限理由。
 4. 從通知 comment.created_at 加上 N * 24 小時計算截止時間；一天 24 小時、半天 12 小時。期限固定，不延長、不縮短；全員提前回覆也保持 Todo。
-5. 等待期間讀取留言並推動 OWNER 與建立者雙方確認；一般 TASK 由建立者確認，OWNER 自建則由任一 Commenter 確認。到期前不得 PATCH status。
-6. 到期後依 implement、no implementation、no consensus 三條路徑留下精確 marker；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
-7. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
+5. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、截止尚未到、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或全員通知、阻塞／範圍／決策變化，或到期收斂時才留言。
+6. 等待期間讀取留言並推動 OWNER 與建立者雙方確認；一般 TASK 由建立者確認，OWNER 自建則由任一 Commenter 確認。到期前不得 PATCH status。
+7. 到期後依 implement、no implementation、no consensus 三條路徑留下精確 marker；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
+8. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
 ${canonicalWorkspaceDirectory()}
-8. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
-9. 建立前先檢查原討論留言與目標 workspace 是否已有同名實作 task，避免 crash retry 重複建立；需要時才使用既有 task API 在目標 workspace 建立實作 task，不得在主協作工作區建立實作 task。
-10. 建立後，在原討論留下純文字「【實作任務】工作區：<工作區名稱>｜TASK：<TASK 名稱>」，不提供 URL；再 PATCH 原討論 status=Done。
-11. 結束輸出 3 行內總結。`;
+9. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
+10. 建立前先檢查原討論留言與目標 workspace 是否已有同名實作 task，避免 crash retry 重複建立；需要時才使用既有 task API 在目標 workspace 建立實作 task，不得在主協作工作區建立實作 task。
+11. 建立後，在原討論留下純文字「【實作任務】工作區：<工作區名稱>｜TASK：<TASK 名稱>」，不提供 URL；再 PATCH 原討論 status=Done。
+12. 結束輸出 3 行內總結。`;
   }
   const packetByBranch = new Map(verified.map((p) => [p.branch, p]));
   const ci = RUN.members.map((m) => {
