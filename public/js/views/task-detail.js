@@ -384,10 +384,16 @@ export async function openTaskDetailModal(taskId, {
       const newHeight = Math.min(commInput.scrollHeight, 150);
       commInput.style.height = `${newHeight}px`;
     });
+    commInput.addEventListener('focus', () => {
+      commForm.classList.add('focused');
+    });
     commInput.addEventListener('blur', () => {
       setTimeout(() => {
         commInput.style.height = '38px';
       }, 150);
+      setTimeout(() => {
+        commForm.classList.remove('focused');
+      }, 200);
     });
     commInput.addEventListener('keydown', (e) => {
       if (window.innerWidth > 768 && e.key === 'Enter' && !e.shiftKey) {
