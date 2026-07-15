@@ -399,6 +399,7 @@ interface NotificationRow {
   source_task_id: string;
   source_comment_id: string;
   snippet?: string;
+  created_at: string;
   read_at: string | null;
 }
 interface NotificationTask {
@@ -414,12 +415,13 @@ interface NotificationComment {
   content: string;
   created_at: string;
 }
-interface ResolvedNotification {
+export interface ResolvedNotification {
   notification: NotificationRow;
   task: NotificationTask;
   sourceComment: NotificationComment;
   comments: NotificationComment[];
 }
+export const MAX_NOTIFICATION_PROMPT_CHARS = 16_000;
 export interface NotificationGateResult {
   ready: boolean;
   snapshotIds: string[];
@@ -447,6 +449,7 @@ function parseNotificationRows(value: unknown): NotificationRow[] {
     && typeof row.recipient_id === 'string'
     && typeof row.source_task_id === 'string'
     && typeof row.source_comment_id === 'string'
+    && typeof row.created_at === 'string'
     && (typeof row.read_at === 'string' || row.read_at === null))) {
     throw new Error('notifications response 格式不合法');
   }
@@ -515,7 +518,7 @@ export async function processNotificationGate(input: {
   actor: NotificationGateActor;
   cookie: string;
   request: NotificationGateRequest;
-  runPreflight: (prompt: string) => Promise<SessionResult>;
+  runPreflight: (prompt: string, notificationId?: string) => Promise<SessionResult>;
   log: (line: string) => void;
   snapshotAt: string;
   jar?: string;
@@ -525,7 +528,9 @@ export async function processNotificationGate(input: {
   try {
     const response = await input.request('/api/notifications', {}, input.cookie);
     if (response.status !== 200) throw new Error(`通知 snapshot 失敗: HTTP ${response.status}`);
-    snapshot = parseNotificationRows(response.body).filter((row) => row.read_at === null);
+    snapshot = parseNotificationRows(response.body)
+      .filter((row) => row.read_at === null)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.notification_id.localeCompare(b.notification_id));
   } catch (error) {
     input.log(`[notification] gate failed: ${String(error)}`);
     return { ready: false, snapshotIds: [], preflightStarted };
@@ -542,10 +547,9 @@ export async function processNotificationGate(input: {
   }
   const actor = { ...input.actor, id: actorId };
   const snapshotSet = new Set(snapshotIds);
-  const resolved: ResolvedNotification[] = [];
-
-  try {
-    for (const notification of snapshot) {
+  let allProcessed = true;
+  for (const notification of snapshot) {
+    try {
       const taskResponse = await input.request(`/api/tasks/${encodeURIComponent(notification.source_task_id)}`, {}, input.cookie);
       if (isUnavailableStatus(taskResponse.status)) {
         input.log(`[notification] unavailable notification=${notification.notification_id} task=${notification.source_task_id} status=${taskResponse.status}`);
@@ -569,35 +573,34 @@ export async function processNotificationGate(input: {
         await markNotificationRead({ notificationId: notification.notification_id, request: input.request, cookie: input.cookie });
         continue;
       }
-      resolved.push({ notification, task, sourceComment, comments });
-    }
-
-    if (resolved.length) {
+      const resolved = { notification, task, sourceComment, comments } satisfies ResolvedNotification;
+      const beforeCommentIds = new Set(comments.map((comment) => comment.comment_id));
       preflightStarted = true;
-      const preflight = await input.runPreflight(notificationGatePrompt({ actor, jar: input.jar ?? '', sources: resolved }));
+      const preflight = await input.runPreflight(
+        notificationGatePrompt({ actor, jar: input.jar ?? '', source: resolved }),
+        notification.notification_id,
+      );
       if (preflight.errored || preflight.timedOut) throw new Error('通知 preflight session 失敗');
 
-      const mainTaskIds = new Set(resolved
-        .filter((source) => source.task.workspace_id === MAIN_WORKSPACE_ID)
-        .map((source) => source.task.task_id));
-      for (const taskId of mainTaskIds) {
-        const commentsResponse = await input.request(`/api/tasks/${encodeURIComponent(taskId)}/comments`, {}, input.cookie);
-        if (commentsResponse.status !== 200) throw new Error(`主工作區 task ${taskId} 留言驗證失敗: HTTP ${commentsResponse.status}`);
+      if (task.workspace_id === MAIN_WORKSPACE_ID) {
+        const commentsResponse = await input.request(`/api/tasks/${encodeURIComponent(task.task_id)}/comments`, {}, input.cookie);
+        if (commentsResponse.status !== 200) throw new Error(`主工作區 task ${task.task_id} 留言驗證失敗: HTTP ${commentsResponse.status}`);
         const comments = parseNotificationComments(commentsResponse.body);
-        const recentActorComments = comments.filter((comment) => comment.task_id === taskId
-          && comment.user_id === actor.id && comment.created_at > input.snapshotAt);
+        const recentActorComments = comments.filter((comment) => comment.task_id === task.task_id
+          && comment.user_id === actor.id && !beforeCommentIds.has(comment.comment_id));
         if (!recentActorComments.length || recentActorComments.some((comment) => hasSelfMention(comment.content, actor))) {
-          throw new Error(`主工作區 task ${taskId} 缺少合格的新留言`);
+          throw new Error(`主工作區 notification ${notification.notification_id} 缺少合格的新留言`);
         }
       }
-
-      for (const source of resolved) {
-        await markNotificationRead({ notificationId: source.notification.notification_id, request: input.request, cookie: input.cookie });
-      }
+      await markNotificationRead({ notificationId: notification.notification_id, request: input.request, cookie: input.cookie });
+    } catch (error) {
+      allProcessed = false;
+      input.log(`[notification] notification=${notification.notification_id} failed: ${String(error)}`);
     }
-
+  }
+  try {
     await finalNotificationReadback(snapshotSet, input.request, input.cookie);
-    return { ready: true, snapshotIds, preflightStarted };
+    return { ready: allProcessed, snapshotIds, preflightStarted };
   } catch (error) {
     input.log(`[notification] gate failed: ${String(error)}`);
     return { ready: false, snapshotIds, preflightStarted };
@@ -854,9 +857,9 @@ async function runActorSessionWithNotificationGate(input: {
       cookie,
       request: api,
       jar: input.jar,
-      runPreflight: (prompt) => runSession(
-        `${input.label}-通知`, input.runner, input.model, prompt,
-        { ...input.preflightOptions, promptLabel: `${input.label}-notification` },
+      runPreflight: (prompt, notificationId) => runSession(
+        `${input.label}-通知-${notificationId ?? 'unknown'}`, input.runner, input.model, prompt,
+        { ...input.preflightOptions, promptLabel: `${input.label}-notification-${notificationId ?? 'unknown'}` },
       ),
       log: (line) => console.log(`[${input.label}] ${line}`),
       snapshotAt: new Date().toISOString(),
@@ -1015,29 +1018,49 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 export function notificationGatePrompt(input: {
   actor: NotificationGateActor;
   jar: string;
-  sources: ResolvedNotification[];
+  source: ResolvedNotification;
 }): string {
-  const sourceText = input.sources.map((source, index) => [
-    `## 通知 ${index + 1}`,
-    `notification_id: ${source.notification.notification_id}`,
-    `task_id: ${source.task.task_id}`,
-    `workspace_id: ${source.task.workspace_id}`,
-    `title: ${source.task.title}`,
-    `description: ${source.task.description}`,
-    `來源留言: ${source.sourceComment.content}`,
-    `目前留言:\n${source.comments.map((comment) => `- ${comment.created_at} ${comment.content}`).join('\n')}`,
-  ].join('\n')).join('\n\n');
-  return `你是「${input.actor.name}」（${input.actor.email}）。這是通知前置處理；只處理下列來源，不做一般巡檢、認領、狀態變更、程式碼修改或其他 task。
+  const source = input.source;
+  const description = source.task.description.length > 2_000
+    ? `${source.task.description.slice(0, 2_000)}\n[description 已省略 ${source.task.description.length - 2_000} 字]`
+    : source.task.description;
+  const orderedComments = [...source.comments].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.comment_id.localeCompare(b.comment_id));
+  const sourceIndex = orderedComments.findIndex((comment) => comment.comment_id === source.sourceComment.comment_id);
+  const contextCandidates = [
+    ...orderedComments.slice(-6).reverse(),
+    ...(sourceIndex >= 0 ? orderedComments.slice(Math.max(0, sourceIndex - 2), sourceIndex + 3) : []),
+  ].filter((comment, index, all) => all.findIndex((candidate) => candidate.comment_id === comment.comment_id) === index
+    && comment.comment_id !== source.sourceComment.comment_id);
+  const fixed = `你是「${input.actor.name}」（${input.actor.email}）。這是單筆通知前置處理；只處理這一筆來源，不做一般巡檢、認領、狀態變更、程式碼修改或其他 task。
 ${API_RULES(input.jar)}
 
-${sourceText}
+## 通知
+notification_id: ${source.notification.notification_id}
+task_id: ${source.task.task_id}
+workspace_id: ${source.task.workspace_id}
+title: ${source.task.title}
+description: ${description}
+來源留言（完整保留）: ${source.sourceComment.content}
 
 規則：
-- 主協作工作區來源：每個不同 task 至少 POST 一則新的留言；沒有補充時，內容必須完全是「已閱讀，目前無補充。」；有補充時寫具體問題、風險或建議。
-- 一般工作區來源：先讀內容，再依內容決定是否留下必要回覆；不要求每筆都留言。
+- 主協作工作區來源：這一筆通知必須 POST 一則新的留言；沒有補充時，內容必須完全是「已閱讀，目前無補充。」；有補充時寫具體問題、風險或建議。
+- 一般工作區來源：先讀內容，再依內容決定是否留下必要回覆；不要求留言，但仍要獨立閱讀與判斷。
 - 不得呼叫 POST /api/notifications/:id/read；runner 會在驗證後處理。
 - 不得在留言中 @ 自己，也不得為了確認身份加入任何指向自己的 @ 提及。
 結束時只輸出一行處理摘要。`;
+  if (fixed.length > MAX_NOTIFICATION_PROMPT_CHARS) throw new Error('notification prompt 固定內容超過 16,000 字元');
+  let prompt = fixed;
+  let omitted = 0;
+  for (const comment of contextCandidates) {
+    const line = `\ncontext comment ${comment.comment_id}: ${comment.created_at} ${comment.content}`;
+    if ((prompt + line).length <= MAX_NOTIFICATION_PROMPT_CHARS) prompt += line;
+    else omitted++;
+  }
+  if (omitted) {
+    const omission = `\n[已省略 ${omitted} 則留言；需要時請用 API 重新讀取]`;
+    if ((prompt + omission).length <= MAX_NOTIFICATION_PROMPT_CHARS) prompt += omission;
+  }
+  return prompt;
 }
 
 function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario): string {

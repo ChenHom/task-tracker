@@ -168,12 +168,12 @@ function fakeGateRequest(queue: Record<string, GateResponse[]>): { request: Noti
   };
   return { request, calls };
 }
-const unreadNotification = (notificationId: string, taskId: string, commentId: string) => ({
+const unreadNotification = (notificationId: string, taskId: string, commentId: string, createdAt = '2026-07-14T03:59:00.000Z') => ({
   notification_id: notificationId, recipient_id: gateActor.id, source_task_id: taskId,
-  source_comment_id: commentId, snippet: '請確認', created_at: '2026-07-14T03:59:00.000Z', read_at: null,
+  source_comment_id: commentId, snippet: '請確認', created_at: createdAt, read_at: null,
 });
-const readNotification = (notificationId: string, taskId: string, commentId: string) => ({
-  ...unreadNotification(notificationId, taskId, commentId), read_at: '2026-07-14T04:00:00.000Z',
+const readNotification = (notificationId: string, taskId: string, commentId: string, createdAt?: string) => ({
+  ...unreadNotification(notificationId, taskId, commentId, createdAt), read_at: '2026-07-14T04:00:00.000Z',
 });
 const gateTask = (taskId: string, workspaceId: string) => ({
   task_id: taskId, workspace_id: workspaceId, creator_id: 'creator', project_id: null,
@@ -397,6 +397,53 @@ async function runNotificationGateTests(): Promise<void> {
   assert.deepStrictEqual(multipleResult, { ready: true, snapshotIds: ['n-one', 'n-two'], preflightStarted: true });
   assert.strictEqual(multiple.calls.filter((call) => call.includes('/read')).length, 2);
 
+  const independent = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [
+        unreadNotification('n-a', 'task-same', 'comment-a', '2026-07-14T03:59:00.000Z'),
+        unreadNotification('n-b', 'task-same', 'comment-b', '2026-07-14T04:00:00.000Z'),
+        unreadNotification('n-c', 'task-same', 'comment-c', '2026-07-14T04:01:00.000Z'),
+      ] },
+      { status: 200, body: [
+        readNotification('n-a', 'task-same', 'comment-a'),
+        unreadNotification('n-b', 'task-same', 'comment-b'),
+        readNotification('n-c', 'task-same', 'comment-c'),
+      ] },
+    ],
+    'GET /api/tasks/task-same': [
+      { status: 200, body: gateTask('task-same', 'workspace-general') },
+      { status: 200, body: gateTask('task-same', 'workspace-general') },
+      { status: 200, body: gateTask('task-same', 'workspace-general') },
+    ],
+    'GET /api/tasks/task-same/comments': [
+      { status: 200, body: [gateComment('task-same', 'comment-a')] },
+      { status: 200, body: [gateComment('task-same', 'comment-b')] },
+      { status: 200, body: [gateComment('task-same', 'comment-c')] },
+    ],
+    'POST /api/notifications/n-a/read': [{ status: 200, body: { ok: true } }],
+    'POST /api/notifications/n-c/read': [{ status: 200, body: { ok: true } }],
+  });
+  const independentPrompts: string[] = [];
+  let independentRuns = 0;
+  const independentResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: independent.request,
+    runPreflight: async (prompt) => {
+      independentRuns++;
+      independentPrompts.push(prompt);
+      return independentRuns === 2 ? { errored: true, timedOut: false } : { errored: false, timedOut: false };
+    },
+    log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(independentResult, { ready: false, snapshotIds: ['n-a', 'n-b', 'n-c'], preflightStarted: true });
+  assert.strictEqual(independentRuns, 3, '同 task 三筆通知必須各自呼叫 AI，第二筆失敗不可阻止第三筆');
+  assert.strictEqual(independentPrompts.length, 3);
+  assert.ok(independentPrompts[0].includes('n-a') && !independentPrompts[0].includes('n-b'));
+  assert.ok(independentPrompts[1].includes('n-b') && !independentPrompts[1].includes('n-a'));
+  assert.ok(independentPrompts[2].includes('n-c') && !independentPrompts[2].includes('n-a'));
+  assert.deepStrictEqual(independent.calls.filter((call) => call.includes('/read')), [
+    'POST /api/notifications/n-a/read', 'POST /api/notifications/n-c/read',
+  ]);
+
   const sweepMember: NotificationSweepMember = {
     email: gateActor.email, name: gateActor.name, user: 'user02', runner: 'codex', model: 'test-model',
   };
@@ -462,18 +509,33 @@ async function runNotificationGateTests(): Promise<void> {
   const prompt = notificationGatePrompt({
     actor: gateActor,
     jar: '/tmp/notification.jar',
-    sources: [{
+    source: {
       notification: unreadNotification('n-prompt', 'task-prompt', 'comment-prompt'),
       task: gateTask('task-prompt', MAIN_WORKSPACE_ID),
       sourceComment: gateComment('task-prompt', 'comment-prompt'),
       comments: [gateComment('task-prompt', 'comment-prompt')],
-    }],
+    },
   });
   assert.ok(prompt.includes('通知前置處理'));
   assert.ok(prompt.includes('已閱讀，目前無補充。'));
   assert.ok(prompt.includes('不得呼叫 POST /api/notifications'));
   assert.ok(prompt.includes('不得在留言中 @ 自己'));
   assert.ok(!prompt.includes('@小美'), 'prompt 指令不得組出 actor 自己的 handle');
+
+  const longSource = 'S'.repeat(5000);
+  const boundedPrompt = notificationGatePrompt({
+    actor: gateActor,
+    jar: '/tmp/notification.jar',
+    source: {
+      notification: unreadNotification('n-bounded', 'task-bounded', 'comment-bounded'),
+      task: { ...gateTask('task-bounded', 'workspace-general'), description: 'D'.repeat(5000) },
+      sourceComment: gateComment('task-bounded', 'comment-bounded', 'owner', longSource),
+      comments: Array.from({ length: 20 }, (_, index) => gateComment('task-bounded', `context-${index}`, 'owner', `context-${index}-${'C'.repeat(3000)}`, `2026-07-14T04:${String(index).padStart(2, '0')}:00.000Z`)),
+    },
+  });
+  assert.ok(Buffer.byteLength(boundedPrompt, 'utf8') <= 16_000, 'bounded prompt 不得超過 16,000 bytes');
+  assert.ok(boundedPrompt.includes(longSource), 'source comment 必須完整保留');
+  assert.ok(boundedPrompt.includes('已省略'), 'context 截減必須明確標記');
 
   const sweepMembers: NotificationSweepMember[] = ['user02', 'user03', 'user04', 'user05', 'user06'].map((user) => ({
     email: `${user}@test.local`, name: user, user, runner: 'codex', model: 'test-model',
