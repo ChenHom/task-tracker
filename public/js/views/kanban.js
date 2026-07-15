@@ -30,6 +30,8 @@ export const KanbanView = {
     const renderWorkspaceId = state.workspaceId;
     let loadGeneration = 0;
 
+    const savedShowArchived = sessionStorage.getItem(`kanban_filter_show_archived_${renderWorkspaceId}`) === 'true';
+
     // Check if we are opening a specific task via `#/task/:taskId`
     // The router registers both 'tasks' and 'task' view.
     // When prefix is 'task', rest[0] contains the task ID.
@@ -58,7 +60,7 @@ export const KanbanView = {
           </label>
           
           <label class="toggle-archived-label">
-            <input type="checkbox" id="toggle-archived-checkbox">
+            <input type="checkbox" id="toggle-archived-checkbox"${savedShowArchived ? ' checked' : ''}>
             <span class="desktop-text">顯示已歸檔</span>
             <span class="mobile-text">已歸檔</span>
           </label>
@@ -260,7 +262,7 @@ export const KanbanView = {
         // 填充篩選選單
         const filterSelect = document.getElementById('project-filter-select');
         if (filterSelect) {
-          const prevFilterVal = filterSelect.value;
+          const prevFilterVal = sessionStorage.getItem(`kanban_filter_project_${renderWorkspaceId}`) || filterSelect.value || 'all';
           filterSelect.innerHTML = `
             <option value="all">所有專案</option>
             <option value="none">無專案</option>
@@ -273,6 +275,8 @@ export const KanbanView = {
           }
           if (prevFilterVal && Array.from(filterSelect.options).some(o => o.value === prevFilterVal)) {
             filterSelect.value = prevFilterVal;
+          } else {
+            filterSelect.value = 'all';
           }
         }
 
@@ -612,7 +616,7 @@ export const KanbanView = {
 
     // 事件綁定：專案篩選與封存切換
     const filterSelect = document.getElementById('project-filter-select');
-    let lastSelectedProject = filterSelect ? filterSelect.value : 'all';
+    let lastSelectedProject = filterSelect ? filterSelect.value : (sessionStorage.getItem(`kanban_filter_project_${state.workspaceId}`) || 'all');
 
     if (filterSelect) {
       filterSelect.addEventListener('change', async () => {
@@ -632,6 +636,7 @@ export const KanbanView = {
               await loadAllData();
               filterSelect.value = res.id;
               lastSelectedProject = res.id;
+              sessionStorage.setItem(`kanban_filter_project_${state.workspaceId}`, res.id);
               renderKanbanCards(cachedTasks, projectMap, memberMap);
             } catch (err) {
               alert('建立專案失敗：' + err.message);
@@ -642,6 +647,7 @@ export const KanbanView = {
           }
         } else {
           lastSelectedProject = val;
+          sessionStorage.setItem(`kanban_filter_project_${state.workspaceId}`, val);
           renderKanbanCards(cachedTasks, projectMap, memberMap);
         }
       });
@@ -650,6 +656,7 @@ export const KanbanView = {
     const toggleArchivedCheckbox = document.getElementById('toggle-archived-checkbox');
     if (toggleArchivedCheckbox) {
       toggleArchivedCheckbox.addEventListener('change', () => {
+        sessionStorage.setItem(`kanban_filter_show_archived_${state.workspaceId}`, toggleArchivedCheckbox.checked);
         renderKanbanCards(cachedTasks, projectMap, memberMap);
       });
     }
