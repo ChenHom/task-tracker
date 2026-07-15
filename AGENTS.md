@@ -41,7 +41,7 @@ This repo has no framework-specific agent bootstrap. Read in this order:
 | Tasks | `GET/POST /api/workspaces/:id/tasks`, `GET/PATCH/DELETE /api/tasks/:id`, `POST /api/tasks/:id/archive`, `POST /api/tasks/:id/move` |
 | Notifications | `GET /api/notifications`, `POST /api/notifications/:id/read` |
 | Projects | `GET/POST /api/workspaces/:id/projects`, `PATCH/DELETE /api/projects/:id` |
-| Collaboration | `GET/POST /api/tasks/:id/comments`, `PATCH/DELETE /api/comments/:id`, `GET/POST /api/tasks/:id/attachments`, `GET/DELETE /api/attachments/:id` |
+| Collaboration | `GET/POST /api/tasks/:id/comments`, `PATCH /api/comments/:id`（DELETE 固定 405）, `GET/POST /api/tasks/:id/attachments`, `GET/DELETE /api/attachments/:id` |
 | Read APIs | `GET /api/search`, `GET /api/audit`, `GET /api/quota`, `GET /api/users/search` |
 
 ## Where Details Live

@@ -37,7 +37,7 @@ HTTP `401`。
 | 最低角色 | 能力 |
 | --- | --- |
 | `Viewer` | 讀取 workspace、task、project、comment、attachment、search |
-| `Commenter` | 建立 task、建立 comment、修改/刪除自己的 comment、修改自己建立 task 的 description |
+| `Commenter` | 建立 task、建立 comment、修改自己的 comment、修改自己建立 task 的 description |
 | `Member` | 修改/刪除/archive/move task、建立/修改/刪除 project、上傳/刪除 attachment |
 | `Admin` | workspace 改名/archive/delete、成員邀請/列表/角色/移除、audit |
 | `Owner` | `Admin` 能力，以及 Owner 專屬的 Owner 任命/移交規則 |
@@ -87,7 +87,7 @@ HTTP `401`。
 | Projects | GET/POST | `/api/workspaces/:id/projects` | Viewer / Member | list / `201` |
 | Project | PATCH/DELETE | `/api/projects/:id` | Member | `200` |
 | Comments | GET/POST | `/api/tasks/:id/comments` | Viewer / Commenter | list / `201` |
-| Comment | PATCH/DELETE | `/api/comments/:id` | Commenter + author | `200` |
+| Comment | PATCH | `/api/comments/:id` | Commenter + author | `200` |
 | Attachments | GET/POST | `/api/tasks/:id/attachments` | Viewer / Member | list / `201` |
 | Attachment | GET/DELETE | `/api/attachments/:id` | Viewer / Member | file / `200` |
 | Search | GET | `/api/search?workspace=:id&q=...` | Viewer | `200` search object |
@@ -556,7 +556,7 @@ content trim 後必須非空、最多 5000 字。成功回 `201`、`{ "id": "com
 
 ### `DELETE /api/comments/:id`
 
-需要 comment 所屬 workspace 的 `Commenter`，且只能是原作者。無 body；成功回 `{ "ok": true }`，並刪除由該 comment 產生的 notifications。comment 不存在回 `404`，非作者回 `403`。
+留言不可刪除，只能透過 `PATCH /api/comments/:id` 編輯。此 endpoint 一律回 `405`：`{ "error": "留言不可刪除，只能編輯" }`，不讀取 comment、不修改 notifications。
 
 ## Attachments
 

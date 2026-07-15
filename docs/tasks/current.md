@@ -2,7 +2,7 @@
 
 > 對應 [design.md](../../design.md)，接續 [history.md](history.md) 已完成的 Phase 0-7。
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
-> 最後巡檢：2026-07-10；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 13 是目前交接。
+> 最後巡檢：2026-07-15；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 20-21 為目前最新交付。
 
 ---
 
@@ -248,7 +248,7 @@
 ## Phase 21 — 留言不可刪除，只能編輯 ✅
 
 - [x] 移除 `deleteComment`（`src/comment.ts`）與其唯一呼叫者用到的 `deleteNotificationsByComment`（`src/notification.ts`）
-- [x] `DELETE /api/comments/:id` 改回 405（`src/server.ts`），PATCH 編輯邏輯不變
+- [x] `DELETE /api/comments/:id` 固定回 405（`src/server.ts`），PATCH 編輯邏輯不變
 - [x] 前端留言操作區移除「刪除」按鈕，只留「編輯」（`public/js/views/task-detail.js`）
 - [x] `src/comment.test.ts` 移除對應刪除測試案例
 
@@ -258,6 +258,6 @@
 > migration 把「加欄位」與「一次性回填」包在同一個 try/catch，回填本身出錯會被誤判成「欄位已存在」而吞掉，
 > 造成所有既存留言 fail-open 成可刪除。確認需求後改採更簡單方向：留言完全不可刪除、只能編輯，因此零 schema 異動。
 >
-> 實測：`npx tsc --noEmit` 乾淨；`npx tsx src/comment.test.ts` 與全套 `node --import tsx src/test.ts` 通過
-> （`audit.test.ts` 既有失敗與本次改動無關，`git stash` 驗證改動前後皆同樣失敗）；另起 `PORT=3999` 乾淨 server
+> 實測：`npx tsc --noEmit`、`npm run build` 與 `npx tsx src/comment.test.ts` 通過；`node --import tsx src/test.ts`
+> 目前停在 `frontend.test.ts:603`，原因是該測試仍期待已移除的「刪除」按鈕，尚未同步測試契約。另起 `PORT=3999` 乾淨 server
 > 對 `DELETE /api/comments/whatever` 實測回 `405 {"error":"留言不可刪除，只能編輯"}`。commit `5b01859`。
