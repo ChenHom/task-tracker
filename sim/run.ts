@@ -47,6 +47,7 @@ interface Member {
   profile: string; // 專長描述，注入 prompt 供成員自我認知與 owner 設計難度組合參考
   fallback?: ModelRoute;
   userId?: string;
+  role?: string;
 }
 
 interface MemberRunnerConfig {
@@ -209,6 +210,108 @@ export function ensureMainWorkspaceCandidate(
   if (!candidates.has(MAIN_WORKSPACE_ID)) {
     candidates.set(MAIN_WORKSPACE_ID, { key: 'self-directed', startedAt: '1970-01-01T00:00:00.000Z' });
   }
+}
+
+export interface ManagedRosterMember {
+  email: string;
+  userId?: string;
+  role?: string;
+}
+
+const MANAGED_MEMBER_ROLES = new Set(['Member', 'Admin', 'Owner']);
+
+export function isManagedRosterWorkspace(
+  workspaceId: string,
+  newlyCreated: boolean,
+  managedWorkspaceIds = Object.values(CANONICAL_WORKSPACE_BY_REPOROOT),
+): boolean {
+  return newlyCreated || managedWorkspaceIds.includes(workspaceId);
+}
+
+export function eligibleManagedRunners<T extends ManagedRosterMember>(members: readonly T[]): T[] {
+  const configured = new Set(MEMBER_RUNNERS.map((member) => member.email));
+  return members.filter((member) => configured.has(member.email) && !!member.userId && MANAGED_MEMBER_ROLES.has(member.role ?? ''));
+}
+
+interface ManagedRosterApiRow {
+  user_id: string;
+  email: string;
+  role: string;
+}
+
+export async function reconcileManagedRoster(input: {
+  workspaceId: string;
+  ownerCookie: string;
+  members: readonly ManagedRosterMember[];
+  request: NotificationGateRequest;
+  loginActor: (email: string) => Promise<string>;
+  managedWorkspaceIds?: string[];
+  newlyCreated: boolean;
+  log: (line: string) => void;
+}): Promise<ManagedRosterMember[]> {
+  const working = input.members.map((member) => ({ ...member }));
+  if (!isManagedRosterWorkspace(input.workspaceId, input.newlyCreated, input.managedWorkspaceIds)) return eligibleManagedRunners(working);
+
+  const path = `/api/workspaces/${encodeURIComponent(input.workspaceId)}/members`;
+  const readActive = async (): Promise<ManagedRosterApiRow[] | null> => {
+    const response = await input.request(path, {}, input.ownerCookie);
+    if (response.status !== 200 || !Array.isArray(response.body)) {
+      input.log(`[roster] workspace=${input.workspaceId} members read 失敗: HTTP ${response.status}`);
+      return null;
+    }
+    return response.body as ManagedRosterApiRow[];
+  };
+  let active = await readActive();
+  if (!active) return [];
+  let changed = false;
+  const activeByEmail = () => new Map(active!.map((row) => [row.email, row]));
+
+  for (const member of working) {
+    const current = activeByEmail().get(member.email);
+    if (current) {
+      member.userId = current.user_id;
+      member.role = current.role;
+      if (current.role === 'Viewer' || current.role === 'Commenter') {
+        const response = await input.request(`${path}/${encodeURIComponent(current.user_id)}`, {
+          method: 'PATCH', body: JSON.stringify({ role: 'Member' }),
+        }, input.ownerCookie);
+        if (response.status === 200) {
+          member.role = 'Member';
+          changed = true;
+        }
+        else input.log(`[roster] workspace=${input.workspaceId} role change ${member.email} 失敗: HTTP ${response.status}`);
+      }
+      continue;
+    }
+
+    const invite = await input.request(path, {
+      method: 'POST', body: JSON.stringify({ email: member.email, role: 'Member' }),
+    }, input.ownerCookie);
+    if (invite.status !== 200 && invite.status !== 201 && invite.status !== 400) {
+      input.log(`[roster] workspace=${input.workspaceId} invite ${member.email} 失敗: HTTP ${invite.status}`);
+      continue;
+    }
+    try {
+      const cookie = await input.loginActor(member.email);
+      const joined = await input.request(`${path}/join`, { method: 'POST' }, cookie);
+      if (joined.status !== 200) {
+        input.log(`[roster] workspace=${input.workspaceId} join ${member.email} 失敗: HTTP ${joined.status}`);
+        continue;
+      }
+      changed = true;
+    } catch (error) {
+      input.log(`[roster] workspace=${input.workspaceId} join ${member.email} 失敗: ${String(error)}`);
+    }
+  }
+
+  if (!changed) return working;
+  active = await readActive();
+  if (!active) return eligibleManagedRunners(working);
+  const refreshed = new Map(active.map((row) => [row.email, row]));
+  return working.map((member) => {
+    const row = refreshed.get(member.email);
+    return row ? { ...member, userId: row.user_id, role: row.role } : member;
+  });
 }
 
 export function isSweepWorkTask(task: { title: string }): boolean {
@@ -720,10 +823,21 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
     const join_ = await api(`/api/workspaces/${wsId}/members/join`, { method: 'POST' }, mc);
     if (join_.status !== 200) throw new Error(`${m.email} join 失敗: ${JSON.stringify(join_.body)}`);
   }
-  const list = await api(`/api/workspaces/${wsId}/members`, {}, ownerCookie);
-  for (const row of list.body as { user_id: string; email: string }[]) {
-    const m = RUN.members.find((x) => x.email === row.email);
-    if (m) m.userId = row.user_id;
+  const roster = await reconcileManagedRoster({
+    workspaceId: wsId,
+    ownerCookie,
+    members: RUN.members,
+    request: api,
+    loginActor: login,
+    newlyCreated: true,
+    log: (line) => console.log(line),
+  });
+  for (const m of RUN.members) {
+    const row = roster.find((member) => member.email === m.email);
+    if (row) {
+      m.userId = row.userId;
+      m.role = row.role;
+    }
   }
   console.log(`[bootstrap] tag=${tag} workspace=${wsId} 成員就位，worktrees 建於 sim-work/`);
   return { wsId, tag };
@@ -1910,12 +2024,36 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     // member userId 需要重新對應（跨 workspace 不同）
     const ownerCookie = await login(OWNER.email);
     const list = await api(`/api/workspaces/${p.wsId}/members`, {}, ownerCookie);
-    for (const m of RUN.members) delete m.userId;
-    for (const row of (list.body ?? []) as { user_id: string; email: string }[]) {
-      const m = RUN.members.find((x) => x.email === row.email);
-      if (m) m.userId = row.user_id;
+    for (const m of RUN.members) {
+      delete m.userId;
+      delete m.role;
     }
-    const eligibleMembers = RUN.members;
+    for (const row of (list.body ?? []) as { user_id: string; email: string; role: string }[]) {
+      const m = RUN.members.find((x) => x.email === row.email);
+      if (m) {
+        m.userId = row.user_id;
+        m.role = row.role;
+      }
+    }
+    if (isManagedRosterWorkspace(p.wsId, false)) {
+      const roster = await reconcileManagedRoster({
+        workspaceId: p.wsId,
+        ownerCookie,
+        members: RUN.members,
+        request: api,
+        loginActor: login,
+        newlyCreated: false,
+        log: (line) => console.log(line),
+      });
+      for (const m of RUN.members) {
+        const row = roster.find((member) => member.email === m.email);
+        if (row) {
+          m.userId = row.userId;
+          m.role = row.role;
+        }
+      }
+    }
+    const eligibleMembers = eligibleManagedRunners(RUN.members);
     if (!workspaceFitsSweepBudget(ownerBudget, memberBudget, p.work, eligibleMembers.flatMap((m) => m.userId ? [m.userId] : []))) {
       console.log(`[sweep] ${p.wsId.slice(0, 8)} 沒有目前 runner 可推進的工作，不占用 repo slot`);
       continue;

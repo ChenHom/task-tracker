@@ -20,10 +20,12 @@ import {
   dirtyReviewChecks,
   ensureCanonicalWorkspaceCandidates,
   ensureMainWorkspaceCandidate,
+  eligibleManagedRunners,
   formatReportMarkdown,
   formatReviewPacket,
   hasReviewChanges,
   isSweepWorkTask,
+  isManagedRosterWorkspace,
   loadMembersFromUsers,
   mainDiscussionNeedsOwner,
   MAIN_OWNER_TOOLS,
@@ -43,12 +45,14 @@ import {
   isQuotaExhaustion,
   notificationGatePrompt,
   processNotificationGate,
+  reconcileManagedRoster,
   runNotificationSweep,
   runNotificationSweepForMember,
   runNotificationGatedSession,
   type NotificationGateActor,
   type NotificationGateRequest,
   type NotificationSweepMember,
+  type ManagedRosterMember,
 } from './run';
 
 const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
@@ -591,6 +595,84 @@ assert.strictEqual(
   '小美必須使用可供 ChatGPT Codex 執行的 gpt-5.4-mini',
 );
 
+async function runRosterTests(): Promise<void> {
+const rosterMembers: ManagedRosterMember[] = [
+  { email: 'user02@test.local', userId: 'u2', role: 'Member' },
+  { email: 'user03@test.local', userId: 'u3', role: 'Commenter' },
+  { email: 'user04@test.local', userId: 'u4', role: 'Admin' },
+  { email: 'user05@test.local', userId: 'u5', role: 'Owner' },
+  { email: 'user06@test.local', userId: 'u6' },
+];
+assert.strictEqual(isManagedRosterWorkspace('canonical', false, ['canonical']), true);
+assert.strictEqual(isManagedRosterWorkspace('bootstrap', true, []), true);
+assert.strictEqual(isManagedRosterWorkspace(MAIN_WORKSPACE_ID, false, ['canonical']), false);
+assert.strictEqual(isManagedRosterWorkspace('history', false, ['canonical']), false);
+
+const rosterSync = fakeGateRequest({
+  'GET /api/workspaces/canonical/members': [{ status: 200, body: [
+    { user_id: 'u2', email: 'user02@test.local', role: 'Member' },
+    { user_id: 'u3', email: 'user03@test.local', role: 'Commenter' },
+    { user_id: 'u4', email: 'user04@test.local', role: 'Admin' },
+    { user_id: 'u5', email: 'user05@test.local', role: 'Owner' },
+  ] }, { status: 200, body: [
+    { user_id: 'u2', email: 'user02@test.local', role: 'Member' },
+    { user_id: 'u3', email: 'user03@test.local', role: 'Member' },
+    { user_id: 'u4', email: 'user04@test.local', role: 'Admin' },
+    { user_id: 'u5', email: 'user05@test.local', role: 'Owner' },
+    { user_id: 'u6', email: 'user06@test.local', role: 'Member' },
+  ] }],
+  'PATCH /api/workspaces/canonical/members/u3': [{ status: 200, body: { ok: true } }],
+  'POST /api/workspaces/canonical/members': [{ status: 201, body: { ok: true } }],
+  'POST /api/workspaces/canonical/members/join': [{ status: 200, body: { ok: true } }],
+});
+const rosterSynced = await reconcileManagedRoster({
+  workspaceId: 'canonical', ownerCookie: 'session=owner', members: rosterMembers,
+  request: rosterSync.request, loginActor: async () => 'session=member',
+  managedWorkspaceIds: ['canonical'], newlyCreated: false, log: () => undefined,
+});
+assert.deepStrictEqual(eligibleManagedRunners(rosterSynced).map((member) => member.email), [
+  'user02@test.local', 'user03@test.local', 'user04@test.local', 'user05@test.local', 'user06@test.local',
+]);
+assert.deepStrictEqual(rosterSync.calls.filter((call) => call.includes('/members')), [
+  'GET /api/workspaces/canonical/members',
+  'PATCH /api/workspaces/canonical/members/u3',
+  'POST /api/workspaces/canonical/members',
+  'POST /api/workspaces/canonical/members/join',
+  'GET /api/workspaces/canonical/members',
+]);
+
+const rosterIdempotent = fakeGateRequest({
+  'GET /api/workspaces/canonical/members': [{ status: 200, body: [
+    { user_id: 'u2', email: 'user02@test.local', role: 'Member' },
+    { user_id: 'u3', email: 'user03@test.local', role: 'Member' },
+    { user_id: 'u4', email: 'user04@test.local', role: 'Admin' },
+    { user_id: 'u5', email: 'user05@test.local', role: 'Owner' },
+    { user_id: 'u6', email: 'user06@test.local', role: 'Member' },
+  ] }],
+});
+await reconcileManagedRoster({
+  workspaceId: 'canonical', ownerCookie: 'session=owner', members: rosterMembers,
+  request: rosterIdempotent.request, loginActor: async () => 'session=member',
+  managedWorkspaceIds: ['canonical'], newlyCreated: false, log: () => undefined,
+});
+assert.deepStrictEqual(rosterIdempotent.calls, ['GET /api/workspaces/canonical/members']);
+
+const rosterPartial = fakeGateRequest({
+  'GET /api/workspaces/canonical/members': [{ status: 200, body: [
+    { user_id: 'u2', email: 'user02@test.local', role: 'Member' },
+  ] }, { status: 200, body: [
+    { user_id: 'u2', email: 'user02@test.local', role: 'Member' },
+  ] }],
+  'POST /api/workspaces/canonical/members': [{ status: 500, body: { error: 'temporarily unavailable' } }],
+});
+const partialResult = await reconcileManagedRoster({
+  workspaceId: 'canonical', ownerCookie: 'session=owner', members: [rosterMembers[0], rosterMembers[4]],
+  request: rosterPartial.request, loginActor: async () => 'session=member',
+  managedWorkspaceIds: ['canonical'], newlyCreated: false, log: () => undefined,
+});
+assert.deepStrictEqual(eligibleManagedRunners(partialResult).map((member) => member.email), ['user02@test.local']);
+}
+
 assert.deepStrictEqual(
   buildRunnerInvocation(
     { runner: 'agy', model: 'Gemini 3.5 Flash (High)' },
@@ -860,6 +942,7 @@ releaseAfterStale();
 assert.ok(!existsSync(lockPath));
 
 async function runAsyncPolicyTests(): Promise<void> {
+  await runRosterTests();
   await runNotificationGateTests();
   let calls = 0;
   const success = await runMemberSession(
