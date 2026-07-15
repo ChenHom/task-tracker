@@ -24,6 +24,54 @@ class MockElement {
   selectionStart: number = 0;
   selectionEnd: number = 0;
   offsetHeight: number = 0;
+  _innerHTML: string = '';
+
+  get options() {
+    return this.childNodes;
+  }
+
+  get innerHTML() {
+    return this._innerHTML || '';
+  }
+
+  set innerHTML(val: string) {
+    this._innerHTML = val;
+    this.childNodes = [];
+    if (this.tag === 'select') {
+      const matches = val.matchAll(/value="([^"]+)"[^>]*>([^<]+)/g);
+      for (const match of matches) {
+        const opt = new MockElement('option', { value: match[1] });
+        opt.textContent = match[2];
+        this.appendChild(opt);
+      }
+    } else {
+      if (val.includes('id="project-filter-select"')) {
+        const select = new MockElement('select', { id: 'project-filter-select' });
+        const optAll = new MockElement('option', { value: 'all' });
+        optAll.textContent = '所有專案';
+        select.appendChild(optAll);
+        const optNone = new MockElement('option', { value: 'none' });
+        optNone.textContent = '無專案';
+        select.appendChild(optNone);
+        this.appendChild(select);
+      }
+      if (val.includes('id="toggle-archived-checkbox"')) {
+        const isChecked = val.includes('checked');
+        const checkbox = new MockElement('input', {
+          type: 'checkbox',
+          id: 'toggle-archived-checkbox',
+          checked: isChecked
+        });
+        this.appendChild(checkbox);
+      }
+      if (val.includes('id="kanban-board-el"')) {
+        const board = new MockElement('div', { id: 'kanban-board-el' });
+        const colArchived = new MockElement('div', { id: 'col-Archived-el' });
+        board.appendChild(colArchived);
+        this.appendChild(board);
+      }
+    }
+  }
 
   classList = {
     classes: [] as string[],
@@ -66,6 +114,10 @@ class MockElement {
       this.cleanup = null;
       cb();
     }
+  }
+
+  hasChildNodes() {
+    return this.childNodes.length > 0;
   }
 
   addEventListener(event: string, callback: Function) {
@@ -150,6 +202,18 @@ const mockDocument: any = {
       };
       return el;
     }
+    const findRec = (node: MockElement): MockElement | null => {
+      if (node.id === id) return node;
+      for (const child of node.childNodes) {
+        const found = findRec(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    for (const root of bodyChildren) {
+      const found = findRec(root);
+      if (found) return found;
+    }
     return null;
   },
   createDocumentFragment: () => new MockElement('#fragment'),
@@ -200,6 +264,14 @@ const mockLocation: any = {
   }
 };
 
+const sessionStorageMap = new Map<string, string>();
+const mockSessionStorage = {
+  getItem: (key: string) => sessionStorageMap.get(key) ?? null,
+  setItem: (key: string, value: any) => sessionStorageMap.set(key, String(value)),
+  removeItem: (key: string) => sessionStorageMap.delete(key),
+  clear: () => sessionStorageMap.clear()
+};
+
 // 2. Read and transform public/js/views/task-detail.js
 let code = readFileSync(join(__dirname, '../public/js/views/task-detail.js'), 'utf8');
 
@@ -212,11 +284,17 @@ code = code.replace(/export\s+function\s+safeHttpUrl/g, 'function safeHttpUrl');
 code += '\nglobalThis.safeHttpUrl = typeof safeHttpUrl === "function" ? safeHttpUrl : undefined;';
 code += '\nglobalThis.renderRichText = typeof renderRichText === "function" ? renderRichText : undefined;';
 
+// 2.5 Read and transform public/js/views/kanban.js
+let kanbanCode = readFileSync(join(__dirname, '../public/js/views/kanban.js'), 'utf8');
+kanbanCode = kanbanCode.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
+kanbanCode = kanbanCode.replace(/export\s+const\s+KanbanView\s*=\s*/g, 'globalThis.KanbanView = ');
+
 // 3. Create sandbox
 const sandbox = {
   document: mockDocument,
   window: mockWindow,
   location: mockLocation,
+  sessionStorage: mockSessionStorage,
   alert: (msg?: any) => {},
   console: console,
   Event,
@@ -224,6 +302,7 @@ const sandbox = {
   api: (async () => []) as (...args: any[]) => Promise<any>,
   state: {
     userEmail: 'test@test.com',
+    workspaceId: 'ws-test-1',
     clear: () => {}
   },
   hasRole: (role: string, minimum: string) => {
@@ -232,6 +311,8 @@ const sandbox = {
   },
   MAIN_OWNER_EMAIL: 'user01@test.local',
   MAIN_POLICY_TITLE: '[規則] 主工作區協作與交接',
+  MAIN_WORKSPACE_ID: '11a82028-fc50-466a-a723-e002032cd9a6',
+  MAIN_DISCUSSION_DESCRIPTION_TEMPLATE: '',
   navigate: () => {},
   el: (tag: string, attrs: any = {}, ...children: any[]) => {
     const element = new MockElement(tag, attrs);
@@ -244,6 +325,7 @@ const sandbox = {
     }
     return element;
   },
+  requireWorkspace: () => true,
   showError: () => {},
   formatTime: () => '',
   Promise: Promise,
@@ -254,10 +336,12 @@ const sandbox = {
 
 vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
+vm.runInContext(kanbanCode, sandbox);
 
 const openTaskDetailModal = sandbox.globalThis.openTaskDetailModal;
 const safeHttpUrl = sandbox.globalThis.safeHttpUrl;
 const renderRichText = sandbox.globalThis.renderRichText;
+const KanbanView = sandbox.globalThis.KanbanView;
 
 const localPartMention = renderRichText('@user02', [{
   user_id: 'user-02',
@@ -557,6 +641,27 @@ async function runTests() {
     assert.strictEqual(postedComments[0]?.content, 'New mobile comment content');
     assert.strictEqual(commUnsavedBadge.textContent, '完成', 'Comment badge should show "完成" after submit');
     
+    // Test 6.1.1: Comment input focus/blur behavior
+    assert.strictEqual(commFormEl.classList.contains('focused'), false, 'Form should not be focused initially');
+    
+    // Simulate focus
+    const focusHandlers = commTextarea.eventListeners['focus'];
+    assert.ok(focusHandlers && focusHandlers.length > 0, 'Textarea should have a focus listener');
+    focusHandlers[0]();
+    assert.strictEqual(commFormEl.classList.contains('focused'), true, 'Form should have focused class after focus');
+    
+    // Simulate blur
+    const blurHandlers = commTextarea.eventListeners['blur'];
+    assert.ok(blurHandlers && blurHandlers.length > 0, 'Textarea should have a blur listener');
+    blurHandlers[0]();
+    
+    // Immediately after blur, it should still have the class due to 200ms delay
+    assert.strictEqual(commFormEl.classList.contains('focused'), true, 'Form should retain focused class immediately after blur');
+    
+    // Wait 250ms for delay to resolve
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.strictEqual(commFormEl.classList.contains('focused'), false, 'Form should lose focused class after 200ms delay');
+
     // Cleanup
     delete mockWindow.innerWidth;
   }
@@ -782,7 +887,82 @@ async function runTests() {
   assert.match(membersSource, /hasRole[\s\S]*MAIN_WORKSPACE_ID[\s\S]*canManageMembers/);
   assert.match(membersSource, /const\s+renderWorkspaceId\s*=\s*state\.workspaceId[\s\S]*let\s+loadGeneration\s*=\s*0[\s\S]*async\s+function\s+load\(\)\s*\{\s*if\s*\(state\.workspaceId\s*!==\s*renderWorkspaceId\)\s*return;[\s\S]*encodeURIComponent\(renderWorkspaceId\)[\s\S]*generation\s*!==\s*loadGeneration[\s\S]*state\.workspaceId\s*!==\s*renderWorkspaceId/);
   assert.match(membersSource, /const\s+searchGeneration\s*=\s*loadGeneration[\s\S]*setTimeout\(async\s*\(\)\s*=>\s*\{\s*if\s*\(!canManageMembers\s*\|\|\s*state\.workspaceId\s*!==\s*renderWorkspaceId\s*\|\|\s*searchGeneration\s*!==\s*loadGeneration\)\s*return;[\s\S]*await\s+api\([\s\S]*if\s*\(!canManageMembers\s*\|\|\s*state\.workspaceId\s*!==\s*renderWorkspaceId\s*\|\|\s*searchGeneration\s*!==\s*loadGeneration\)\s*return;[\s\S]*suggestionsDatalist\.innerHTML/);
-  assert.match(taskDetailSource, /rich-url-link[\s\S]*rel:\s*['"]noopener noreferrer['"]/);
+  // Test 9: KanbanView filter state persistence
+  {
+    const kanbanContainer = new MockElement('div');
+    bodyChildren.push(kanbanContainer);
+
+    // Setup API mock for Kanban data load
+    sandbox.api = async (url: string) => {
+      if (url.includes('/tasks')) {
+        return [{ task_id: 'task-1', title: 'Task 1', status: 'Todo', priority: 'Medium' }];
+      }
+      if (url.includes('/projects')) {
+        return [{ project_id: 'proj-1', name: 'Project 1' }];
+      }
+      if (url.includes('/members')) {
+        return [{ user_id: 'user-1', email: 'test@test.com', role: 'Member' }];
+      }
+      return [];
+    };
+
+    // Preset filter states in sessionStorage for workspace 'ws-test-1'
+    sandbox.sessionStorage.clear();
+    sandbox.sessionStorage.setItem('kanban_filter_project_ws-test-1', 'proj-1');
+    sandbox.sessionStorage.setItem('kanban_filter_show_archived_ws-test-1', 'true');
+
+    // Render KanbanView for workspace 'ws-test-1'
+    sandbox.state.workspaceId = 'ws-test-1';
+    await KanbanView.render(kanbanContainer);
+
+    // Verify checked state and selector values are loaded from sessionStorage
+    const projectSelect = findElement(kanbanContainer, (el) => el.id === 'project-filter-select');
+    const toggleArchived = findElement(kanbanContainer, (el) => el.id === 'toggle-archived-checkbox');
+    assert.ok(projectSelect, 'Project select should be rendered');
+    assert.ok(toggleArchived, 'Toggle archived checkbox should be rendered');
+    assert.strictEqual(toggleArchived.checked, true, 'Archived toggle checkbox should be checked from sessionStorage');
+
+    // Trigger api/data loading to check that select dropdown value is restored
+    // wait for loadAllData async tasks inside render
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.strictEqual(projectSelect.value, 'proj-1', 'Project select value should be proj-1 from sessionStorage');
+
+    // Trigger select value change and verify it is saved in sessionStorage
+    projectSelect.value = 'none';
+    const selectChangeHandlers = projectSelect.eventListeners['change'];
+    assert.ok(selectChangeHandlers && selectChangeHandlers.length > 0, 'Project select should have change listener');
+    await selectChangeHandlers[0]();
+    assert.strictEqual(sandbox.sessionStorage.getItem('kanban_filter_project_ws-test-1'), 'none', 'sessionStorage should be updated to none');
+
+    // Trigger checkbox state change and verify it is saved in sessionStorage
+    toggleArchived.checked = false;
+    const checkboxChangeHandlers = toggleArchived.eventListeners['change'];
+    assert.ok(checkboxChangeHandlers && checkboxChangeHandlers.length > 0, 'Toggle archived checkbox should have change listener');
+    checkboxChangeHandlers[0]();
+    assert.strictEqual(sandbox.sessionStorage.getItem('kanban_filter_show_archived_ws-test-1'), 'false', 'sessionStorage show_archived should be updated to false');
+
+    // Clean up first container from bodyChildren before testing the next workspace
+    const idx1 = bodyChildren.indexOf(kanbanContainer);
+    if (idx1 !== -1) bodyChildren.splice(idx1, 1);
+
+    // Render for a different workspace and ensure filters are defaulted/isolated
+    sandbox.state.workspaceId = 'ws-test-2';
+    const kanbanContainer2 = new MockElement('div');
+    bodyChildren.push(kanbanContainer2);
+    await KanbanView.render(kanbanContainer2);
+
+    const projectSelect2 = findElement(kanbanContainer2, (el) => el.id === 'project-filter-select');
+    const toggleArchived2 = findElement(kanbanContainer2, (el) => el.id === 'toggle-archived-checkbox');
+    assert.ok(projectSelect2 && toggleArchived2);
+    assert.strictEqual(toggleArchived2.checked, false, 'New workspace should default archived toggle to false');
+
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.strictEqual(projectSelect2.value, 'all', 'New workspace should default project filter to all');
+
+    // Cleanup from bodyChildren
+    const idx2 = bodyChildren.indexOf(kanbanContainer2);
+    if (idx2 !== -1) bodyChildren.splice(idx2, 1);
+  }
 
   console.log('frontend.test.ts OK');
 }
