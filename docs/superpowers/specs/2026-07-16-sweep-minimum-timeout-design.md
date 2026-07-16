@@ -15,4 +15,4 @@
 
 - focused test 鎖住 team/owner sweep 的 20 分鐘基準與 owner 30 分鐘上限。
 - 執行 TypeScript、focused sim test、完整測試與 build。
-- 合併後不 reset `sim-work/user06` 的 `public/js/views/kanban.js` dirty diff；執行一次已授權的 team sweep，確認 user06 以 Claude Sonnet 5 從現有 worktree 繼續，並以實際 task/comment/commit 副作用驗收。
+- 合併後不 reset `sim-work/user06` 的 `public/js/views/kanban.js` dirty diff；執行一次已授權的 team sweep，確認 user06 以目前設定的工作 route 從現有 worktree 繼續，並以實際 task/comment/commit 副作用驗收。

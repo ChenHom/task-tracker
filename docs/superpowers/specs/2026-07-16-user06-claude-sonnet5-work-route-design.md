@@ -1,5 +1,7 @@
 # user06 Claude Sonnet 5 工作路由設計
 
+> **已被取代（2026-07-16）：**目前暫時政策見 [user06 AGY 額度切換設計](2026-07-16-user06-agy-quota-containment-design.md)：Claude 五小時額度耗盡期間，user06 一般工作使用 AGY `Gemini 3.5 Flash (High)`、不設 fallback，notification preflight 維持 Codex `gpt-5.4-mini`。以下 Claude 設計保留為歷史記錄。
+
 ## 目標
 
 讓 user06（小芸）在一般任務工作階段改用 Claude `claude-sonnet-5`，同時保留已驗證的 Codex notification preflight，避免 AGY 的無副作用成功回應再次阻塞或偽裝成正常工作。

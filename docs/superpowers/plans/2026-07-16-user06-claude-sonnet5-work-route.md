@@ -1,5 +1,7 @@
 # user06 Claude Sonnet 5 Work Route Implementation Plan
 
+> **Superseded (2026-07-16):** The current temporary policy is in [the user06 AGY quota-containment design](../specs/2026-07-16-user06-agy-quota-containment-design.md): while Claude's five-hour quota is exhausted, user06 normal work uses AGY `Gemini 3.5 Flash (High)` with no fallback, while notification preflight remains Codex `gpt-5.4-mini`. The Claude plan below is retained as historical context.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Route user06's normal member work through Claude Sonnet 5 without affecting its Codex notification preflight or permitting an AGY fallback.

@@ -86,7 +86,7 @@
 
   Run: `npm run sim -- --sweep team`
 
-  Expected: user06 normal session starts as `claude/claude-sonnet-5`, has a 20-minute limit, and runs in the existing `sim-work/user06` worktree.
+  Expected: user06 normal session starts on its configured work route, has a 20-minute limit, and runs in the existing `sim-work/user06` worktree.
 
 - [ ] **Step 3: Read back task and worktree effects**
 

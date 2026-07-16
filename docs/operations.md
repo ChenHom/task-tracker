@@ -134,15 +134,15 @@ Owner 依成員 profile 與目前 Todo/Doing 負載直接 PATCH `assignee_id`，
 - Run commands from `/home/hom/code/task-tracker`.
 - `task-tracker.service` must answer HTTP 200 at `http://localhost:3000/api/health`.
 - Run `npm run seed` once so `user01-06@test.local` and `user09@test.local` exist.
-- The `claude` and `codex` CLIs must be installed, authenticated, and available in `PATH`.
-- user06 ordinary work uses Claude `claude-sonnet-5` with no AGY fallback; its notification preflight uses Codex `gpt-5.4-mini`.
+- The `claude`, `codex`, and `agy` CLIs must be installed, authenticated, and available in `PATH`.
+- While Claude's five-hour quota is exhausted, user06 ordinary work temporarily uses AGY `Gemini 3.5 Flash (High)` with no fallback; its notification preflight remains Codex `gpt-5.4-mini`. No current route uses or authorizes `--dangerously-skip-permissions`.
 - Historical evidence only: the following AGY curl capability probe was invoked once on 2026-07-16:
 
   ```bash
   agy --print --model 'Gemini 3.5 Flash (High)' --mode accept-edits --dangerously-skip-permissions 'Use curl to GET http://localhost:3000/api/health. Output the HTTP status and JSON body only. Do not modify any file or call a POST, PATCH, PUT, or DELETE endpoint.'
   ```
 
-  Its exact result was `exit 1: socket: operation not permitted`, before curl, so no curl or board mutation occurred and it did not output HTTP 200 or the health JSON. This does not authorize or require AGY for current user06 work. Available main-workspace sources require a verified actor comment before being marked read, and preflight failures remain unread; the documented `403`/`404` unavailable-source handling still logs and marks the item read. Do not add shared `--dangerously-skip-permissions`.
+  Its exact result was `exit 1: socket: operation not permitted`, before curl, so no curl or board mutation occurred and it did not output HTTP 200 or the health JSON. This historical failure does not change the current temporary AGY route. Available main-workspace sources require a verified actor comment before being marked read, and preflight failures remain unread; the documented `403`/`404` unavailable-source handling still logs and marks the item read. Do not add shared `--dangerously-skip-permissions`.
 - A new sprint requires the selected scenario repo to be on `master` with a clean main worktree.
 
 ### Manual start

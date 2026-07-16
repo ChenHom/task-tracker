@@ -1,11 +1,10 @@
 # user06 notification runner recovery design
 
-> **Superseded routing policy:** the Phase 1 instruction below to keep user06
-> normal work on AGY is superseded by
-> [the Claude Sonnet 5 work-route design](2026-07-16-user06-claude-sonnet5-work-route-design.md).
-> Current policy: notification preflight uses Codex `gpt-5.4-mini`; normal work
-> uses Claude `claude-sonnet-5` with no AGY fallback. The incident record below
-> remains historical evidence.
+> **Superseded routing policy:** the historical Phase 1 instruction below is
+> superseded by [the AGY quota-containment design](2026-07-16-user06-agy-quota-containment-design.md).
+> Current temporary policy: notification preflight uses Codex `gpt-5.4-mini`;
+> normal work uses AGY `Gemini 3.5 Flash (High)` with no fallback. The incident
+> record below remains historical evidence.
 
 ## Goal
 
