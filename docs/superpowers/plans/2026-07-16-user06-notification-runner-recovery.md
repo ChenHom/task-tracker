@@ -1,5 +1,12 @@
 # user06 Notification Runner Recovery Implementation Plan
 
+> **Superseded historical plan:** its instructions to retain AGY for user06
+> normal work are superseded by
+> [the Claude Sonnet 5 work-route design](../specs/2026-07-16-user06-claude-sonnet5-work-route-design.md).
+> Current route: notification preflight Codex `gpt-5.4-mini`; normal work
+> Claude `claude-sonnet-5`; no AGY fallback. The plan below remains intact as
+> historical context.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Clear user06 notifications through a side-effect-capable runner while keeping AGY for her normal frontend work, then determine whether AGY can safely return to notification automation.
