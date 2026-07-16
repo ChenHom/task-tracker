@@ -46,6 +46,7 @@ interface Member {
   model: string;
   profile: string; // 專長描述，注入 prompt 供成員自我認知與 owner 設計難度組合參考
   fallback?: ModelRoute;
+  notificationRoute?: ModelRoute;
   userId?: string;
   role?: string;
 }
@@ -56,6 +57,7 @@ interface MemberRunnerConfig {
   model: string;
   profile: string;
   fallback?: ModelRoute;
+  notificationRoute?: ModelRoute;
 }
 
 export interface PromptArtifact {
@@ -151,6 +153,7 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
     profile: '中小題，動手前先查核現況避免重工' },
   { email: 'user06@test.local', runner: 'agy', model: 'Gemini 3.5 Flash (High)',
     fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' },
+    notificationRoute: { runner: 'codex', model: 'gpt-5.4-mini' },
     profile: '前端工程師，擅長原生 JS/CSS、UI 互動、響應式版面與瀏覽器驗證；動手前先檢查現有頁面、API 契約與設計風格，偏好最小範圍修改。會主動驗證登入、表單、錯誤提示、手機版與實際操作流程；遇到後端 API 或權限問題先記錄並回報，不擅自擴大修改後端；在意 API response、錯誤狀態與 loading 狀態變化。' },
 ];
 
@@ -446,11 +449,16 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
         model: config.model,
         profile: config.profile,
         fallback: config.fallback,
+        notificationRoute: config.notificationRoute,
       };
     });
   } finally {
     database.close();
   }
+}
+
+export function notificationRouteForMember(member: Pick<Member, 'runner' | 'model' | 'notificationRoute'>): ModelRoute {
+  return member.notificationRoute ?? { runner: member.runner, model: member.model };
 }
 
 // 一則舊技術債題目文字，當 owner 開題的「格式範例」。
@@ -567,7 +575,7 @@ export interface NotificationGateResult {
   preflightStarted: boolean;
 }
 
-export type NotificationSweepMember = Pick<Member, 'email' | 'name' | 'user' | 'runner' | 'model' | 'fallback'>;
+export type NotificationSweepMember = Pick<Member, 'email' | 'name' | 'user' | 'runner' | 'model' | 'fallback' | 'notificationRoute'>;
 
 export interface NotificationSweepResult {
   actor: string;
@@ -991,9 +999,11 @@ async function runActorSessionWithNotificationGate(input: {
   jar: string;
   runner: Runner;
   model: string;
+  notificationRoute?: ModelRoute;
   preflightOptions: SessionOptions;
   normal: () => Promise<SessionResult>;
 }): Promise<SessionResult | null> {
+  const notificationRoute = input.notificationRoute ?? { runner: input.runner, model: input.model };
   let cookie: string;
   try {
     cookie = await login(input.actor.email);
@@ -1008,8 +1018,12 @@ async function runActorSessionWithNotificationGate(input: {
       request: api,
       jar: input.jar,
       runPreflight: (prompt, notificationId) => runSession(
-        `${input.label}-通知-${notificationId ?? 'unknown'}`, input.runner, input.model, prompt,
-        { ...input.preflightOptions, promptLabel: `${input.label}-notification-${notificationId ?? 'unknown'}` },
+        `${input.label}-通知-${notificationId ?? 'unknown'}`, notificationRoute.runner, notificationRoute.model, prompt,
+        {
+          ...input.preflightOptions,
+          fallback: input.notificationRoute ? undefined : input.preflightOptions.fallback,
+          promptLabel: `${input.label}-notification-${notificationId ?? 'unknown'}`,
+        },
       ),
       log: (line) => console.log(`[${input.label}] ${line}`),
       snapshotAt: new Date().toISOString(),
@@ -1706,6 +1720,7 @@ async function main(): Promise<void> {
       jar: join(wt(m), `.jar-notification-${m.user}.txt`),
       runner: m.runner,
       model: m.model,
+      notificationRoute: notificationRouteForMember(m),
       preflightOptions: memberOpts(m),
       normal: () => runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` }),
     });
@@ -1983,18 +1998,18 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         request: api,
         loginActor: login,
         jar: join(runDir, `.jar-notification-${member.user}.txt`),
-        runPreflight: (prompt) => runSession(
-          `${member.user}-notification-sweep`, member.runner, member.model, prompt,
-          {
+        runPreflight: (prompt) => {
+          const route = notificationRouteForMember(member);
+          return runSession(`${member.user}-notification-sweep`, route.runner, route.model, prompt, {
             cwd: RUN.repoRoot,
             tools: NOTIFICATION_TOOLS,
             timeoutMs: SWEEP_MEMBER_TIMEOUT,
             runDir,
             promptArtifacts,
             promptLabel: `${member.user}-notification-sweep`,
-            fallback: member.fallback,
-          },
-        ),
+            fallback: member.notificationRoute ? undefined : member.fallback,
+          });
+        },
         log: (line) => console.log(`[${member.user}] ${line}`),
       }),
       (line) => console.log(line),
@@ -2165,6 +2180,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
             jar: join(wt(m), `.jar-notification-${m.user}.txt`),
             runner: m.runner,
             model: m.model,
+            notificationRoute: notificationRouteForMember(m),
             preflightOptions: { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: m.fallback },
             normal: () => runSession(`${m.name}-巡檢`, m.runner, m.model, memberPrompt(m, p.wsId, hour, p.scenario),
               { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: m.fallback }),

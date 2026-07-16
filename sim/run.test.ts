@@ -30,6 +30,7 @@ import {
   mainDiscussionNeedsOwner,
   MAIN_OWNER_TOOLS,
   MEMBER_TOOLS,
+  notificationRouteForMember,
   parseScenario,
   ROOT,
   runMemberSession,
@@ -687,6 +688,18 @@ assert.deepStrictEqual(
     args: ['--print', '--model', 'Gemini 3.5 Flash (High)', '--mode', 'accept-edits', '前端 task prompt'],
   },
   'agy runner 應使用 headless print + accept-edits',
+);
+const user06 = members.find((member) => member.email === 'user06@test.local')!;
+const user02 = members.find((member) => member.email === 'user02@test.local')!;
+assert.deepStrictEqual(
+  notificationRouteForMember(user06),
+  { runner: 'codex', model: 'gpt-5.4-mini' },
+  'user06 的 Codex notification override 應覆寫 AGY 執行設定',
+);
+assert.deepStrictEqual(
+  notificationRouteForMember(user02),
+  { runner: 'codex', model: 'gpt-5.4-mini' },
+  'user02 應沿用 Codex 預設 notification route',
 );
 assert.strictEqual(isQuotaExhaustion('HTTP 429: quota exhausted'), true, 'quota 錯誤應可辨識');
 assert.strictEqual(isQuotaExhaustion('agy binary not found'), false, 'agy 不存在不可誤判為 quota');
