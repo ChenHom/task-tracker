@@ -1819,8 +1819,8 @@ async function main(): Promise<void> {
 // ── Sweep：定時巡檢（systemd timer 觸發 --sweep owner/team）─────────────
 // 把看板上未完成的工作收乾淨＋回應老闆留言＋推進 Owner 已派工 Todo/Doing。額度死了就直接退出
 // ——timer 下個小時自己會再敲門，這就是「限額到了自動等下次」，零重試機制、零狀態。
-const SWEEP_OWNER_TIMEOUT = 12 * 60 * 1000;
-const SWEEP_MEMBER_TIMEOUT = 7 * 60 * 1000;
+const SWEEP_OWNER_TIMEOUT = 20 * 60 * 1000;
+const SWEEP_MEMBER_TIMEOUT = 20 * 60 * 1000;
 const BOSS_EMAIL = 'user09@test.local';
 
 // owner 逾時自適應：跨 tick 狀態（sim-logs 下，gitignored）。上一輪 owner 逾時 → 這輪每逾時 +6 分（封頂 30）、

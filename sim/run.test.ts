@@ -62,6 +62,12 @@ const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
 const ownerProbe = source.match(/function probeOwnerRunner\(\): Promise<boolean> \{[\s\S]*?\n\}/)?.[0];
 assert.ok(ownerProbe?.includes('const child = execFile('), 'owner probe 必須保留 child，才能管理 stdin lifecycle');
 assert.ok(ownerProbe?.includes('child.stdin?.end()'), 'owner probe 必須關閉 Codex stdin，避免等待 EOF 而逾時');
+assert.ok(source.includes('const SWEEP_OWNER_TIMEOUT = 20 * 60 * 1000;'), 'owner sweep 基準必須至少 20 分鐘');
+assert.ok(source.includes('const SWEEP_MEMBER_TIMEOUT = 20 * 60 * 1000;'), 'team member sweep 必須至少 20 分鐘');
+assert.ok(
+  source.includes('Math.min(SWEEP_OWNER_TIMEOUT + ownerState.streak * 6 * 60 * 1000, 30 * 60 * 1000)'),
+  'owner sweep 必須保留既有 30 分鐘 adaptive cap',
+);
 assert.ok(!source.includes('const MEMBERS: Member[] = ['), 'MEMBERS 不應在 sim/run.ts 寫死 email/name');
 assert.ok(!source.includes('let REPO_ROOT'), 'scenario 狀態不應拆成多個可不同步的 global');
 assert.ok(!source.includes('let WORK_DIR'), 'scenario 狀態不應拆成多個可不同步的 global');
