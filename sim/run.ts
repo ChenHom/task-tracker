@@ -1522,13 +1522,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const jitter = (minS: number, maxS: number) => (minS + Math.random() * (maxS - minS)) * 1000;
 
 // 所有 member 都只改 worktree；driver 僅在 session 成功後統一提交，避免 runner 權限與完成語意分裂。
-function commitMemberWork(m: Member, round: number): boolean {
+function commitMemberWork(m: Member, round: number, model: string): boolean {
   validateMemberWorktree(m);
   const dirty = git(['status', '--porcelain'], wt(m));
   if (!dirty) return false;
   git(['add', '-A'], wt(m));
   git(['diff', '--cached', '--check'], wt(m));
-  git(['commit', '-m', `feat(${m.name}/${m.model}): r${round} 產出（driver 代 commit）`], wt(m));
+  git(['commit', '-m', `feat(${m.name}/${model}): r${round} 產出（driver 代 commit）`], wt(m));
   const hash = git(['log', '-1', '--format=%h'], wt(m));
   console.log(`[代commit] ${branch(m)} r${round} → ${hash}`);
   return true;
@@ -1740,7 +1740,7 @@ async function main(): Promise<void> {
       console.log(`[${m.name}-r${round}] notification gate 未完成，略過一般 session`);
       return;
     }
-    const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, round));
+    const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, round, workSession.route.model));
     if (result.errored || result.timedOut) console.log(`[${m.name}-r${round}] session 未成功，保留未提交 diff，不進入 branch commit`);
   };
   // 一輪：成員並行，登入用小 jitter 錯開；成員名單只來自 Owner 已派工。
@@ -2202,7 +2202,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
             console.log(`[${m.name}-巡檢] notification gate 未完成，略過一般 session`);
             return;
           }
-          const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, hour));
+          const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, hour, workSession.route.model));
           if (result.errored || result.timedOut) {
             console.log(`[${m.name}-巡檢] session 未成功，保留未提交 diff，不進入 branch commit`);
           }

@@ -712,10 +712,18 @@ assert.deepStrictEqual(
   { route: { runner: 'codex', model: 'gpt-5.4-mini' }, fallback: undefined },
   '未設 override 的 user02 必須維持既有一般工作路由',
 );
+const normalWorkSessions = source.match(
+  /normal: \(\) => runSession\([\s\S]{0,160}?workSession\.route\.runner[\s\S]{0,160}?workSession\.route\.model[\s\S]{0,800}?fallback: workSession\.fallback/g,
+) ?? [];
 assert.strictEqual(
-  (source.match(/const workSession = workSessionForMember\(m\);/g) ?? []).length,
+  normalWorkSessions.length,
   2,
-  'full sprint 與 team sweep 各應有一個一般工作 resolver 呼叫點',
+  'full sprint 與 team sweep 的一般工作都必須使用 resolved runner/model/fallback',
+);
+assert.strictEqual(
+  (source.match(/commitMemberWork\(m, (?:round|hour), workSession\.route\.model\)/g) ?? []).length,
+  2,
+  'full sprint 與 team sweep 的 driver commit 都必須記錄實際一般工作模型',
 );
 assert.strictEqual(isQuotaExhaustion('HTTP 429: quota exhausted'), true, 'quota 錯誤應可辨識');
 assert.strictEqual(isQuotaExhaustion('agy binary not found'), false, 'agy 不存在不可誤判為 quota');
