@@ -408,11 +408,33 @@ assert.throws(
   () => resolveMainDiscussionConclusion('task-missing-confirmation', 'owner', new Date(CLOSE_NOW), db),
   {
     name: 'CommandError',
-    message: '尚未取得建立者或 Commenter 的確認結論；請在 OWNER 結論後留下「【確認結論】」',
+    message: '尚未取得建立者或 Commenter 的確認結論；請留下「【確認結論】」，或在截止前明確表示同意／交接',
   },
-  '實作結論後缺少確認時應指出精確 marker 與順序',
+  '缺少確認時應指出可接受的確認方式',
 );
 assert.ok(missingConfirmationEvidence);
+
+const preDeadlineConfirmationEvidence = openForConclusion('task-pre-deadline-confirmation', 'user02');
+addComment('task-pre-deadline-confirmation', 'task-pre-deadline-confirmation-confirmation', 'user02', '請交由前端成員接手。');
+addComment('task-pre-deadline-confirmation', 'task-pre-deadline-confirmation-decision', 'owner', '【結論】\n採用此方向。');
+addComment('task-pre-deadline-confirmation', 'task-pre-deadline-confirmation-handoff', 'owner', '【實作任務】工作區：Task Tracker｜TASK：前端通知中心');
+assert.deepStrictEqual(
+  resolveMainDiscussionConclusion('task-pre-deadline-confirmation', 'owner', new Date(CLOSE_NOW), db),
+  {
+    status: 'Done',
+    outcome: 'implement',
+    windowOpenedAt: OPENED_AT,
+    windowDueAt: '2026-07-16T08:00:00.000Z',
+    ownerThoughtCommentId: preDeadlineConfirmationEvidence.thoughtId,
+    requestCommentId: preDeadlineConfirmationEvidence.requestId,
+    decisionCommentId: 'task-pre-deadline-confirmation-decision',
+    confirmationCommentId: 'task-pre-deadline-confirmation-confirmation',
+    handoffCommentId: 'task-pre-deadline-confirmation-handoff',
+    implementationWorkspaceName: 'Task Tracker',
+    implementationTaskName: '前端通知中心',
+  },
+  '截止前建立者明確交接確認，應可在到期後由 OWNER 收尾',
+);
 
 const ownerCreatedEvidence = openForConclusion('task-owner-created', 'owner');
 const ownerCreatedConclusionId = 'task-owner-created-conclusion';

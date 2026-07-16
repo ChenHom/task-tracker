@@ -123,8 +123,8 @@ const mainPromptSource = source.slice(
 assert.ok(!mainPromptSource.includes('${BASE}/#/task/<id>'), '主工作區 prompt 不得回寫 URL');
 assert.ok(!mainPromptSource.includes('HANDOFF-PENDING'), '主工作區 prompt 不得使用 handoff marker');
 assert.ok(
-  mainPromptSource.includes('「【結論】」→建立者／共同確認者「【確認結論】」→OWNER「【實作任務】工作區：<工作區名稱>｜TASK：<TASK 名稱>」'),
-  '主工作區 owner prompt 必須列出實作結論的精確 marker 與順序',
+  mainPromptSource.includes('期限內的建立者／共同確認者確認可作為收尾證據'),
+  '主工作區 owner prompt 必須說明期限內確認可供到期收尾使用',
 );
 assert.ok(
   mainPromptSource.includes('「【結論：實作】」或「【結論：implement】」'),
