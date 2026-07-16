@@ -390,6 +390,30 @@ assert.throws(
 );
 assert.ok(beforeDeadlineEvidence);
 
+const invalidImplementationMarkerEvidence = openForConclusion('task-invalid-implementation-marker', 'user02');
+addComment('task-invalid-implementation-marker', 'task-invalid-implementation-marker-decision', 'owner', '【結論：實作】\n採用此方向。');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-invalid-implementation-marker', 'owner', new Date(CLOSE_NOW), db),
+  {
+    name: 'CommandError',
+    message: '尚未留下合法的主工作區結論；實作請依序留下「【結論】」→「【確認結論】」→「【實作任務】工作區：...｜TASK：...」',
+  },
+  '實作結論 marker 錯誤時應回傳可直接修正的格式',
+);
+assert.ok(invalidImplementationMarkerEvidence);
+
+const missingConfirmationEvidence = openForConclusion('task-missing-confirmation', 'user02');
+addComment('task-missing-confirmation', 'task-missing-confirmation-decision', 'owner', '【結論】\n採用此方向。');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-missing-confirmation', 'owner', new Date(CLOSE_NOW), db),
+  {
+    name: 'CommandError',
+    message: '尚未取得建立者或 Commenter 的確認結論；請在 OWNER 結論後留下「【確認結論】」',
+  },
+  '實作結論後缺少確認時應指出精確 marker 與順序',
+);
+assert.ok(missingConfirmationEvidence);
+
 const ownerCreatedEvidence = openForConclusion('task-owner-created', 'owner');
 const ownerCreatedConclusionId = 'task-owner-created-conclusion';
 const ownerCreatedConfirmationId = 'task-owner-created-confirmation';

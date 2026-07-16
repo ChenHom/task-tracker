@@ -296,7 +296,9 @@ export function resolveMainDiscussionConclusion(
     .map((comment) => ({ comment, outcome: parseDecision(comment.content) }))
     .filter((entry): entry is { comment: OrderedComment; outcome: MainDiscussionOutcome } => entry.outcome !== null);
   const latestDecision = decisions.at(-1);
-  if (!latestDecision) throw new CommandError('尚未留下合法的主工作區結論');
+  if (!latestDecision) {
+    throw new CommandError('尚未留下合法的主工作區結論；實作請依序留下「【結論】」→「【確認結論】」→「【實作任務】工作區：...｜TASK：...」');
+  }
 
   if (latestDecision.outcome === 'no_consensus') {
     return {
@@ -322,7 +324,9 @@ export function resolveMainDiscussionConclusion(
       ? isMainCommenter(comment.user_id, database)
       : comment.user_id === creatorId)
   ));
-  if (!confirmation) throw new CommandError('尚未取得建立者或 Commenter 的確認結論');
+  if (!confirmation) {
+    throw new CommandError('尚未取得建立者或 Commenter 的確認結論；請在 OWNER 結論後留下「【確認結論】」');
+  }
 
   if (latestDecision.outcome === 'no_implementation') {
     return {

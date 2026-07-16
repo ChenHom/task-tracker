@@ -122,6 +122,14 @@ const mainPromptSource = source.slice(
 );
 assert.ok(!mainPromptSource.includes('${BASE}/#/task/<id>'), '主工作區 prompt 不得回寫 URL');
 assert.ok(!mainPromptSource.includes('HANDOFF-PENDING'), '主工作區 prompt 不得使用 handoff marker');
+assert.ok(
+  mainPromptSource.includes('「【結論】」→建立者／共同確認者「【確認結論】」→OWNER「【實作任務】工作區：<工作區名稱>｜TASK：<TASK 名稱>」'),
+  '主工作區 owner prompt 必須列出實作結論的精確 marker 與順序',
+);
+assert.ok(
+  mainPromptSource.includes('「【結論：實作】」或「【結論：implement】」'),
+  '主工作區 owner prompt 必須排除不被 validator 接受的實作結論 marker',
+);
 
 const dir = mkdtempSync(join(tmpdir(), 'task-tracker-sim-'));
 const dbPath = join(dir, 'dev.db');
