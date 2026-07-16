@@ -97,6 +97,23 @@ body {
   box-shadow: 4px 4px 0px 0px var(--pencil-color);
 }
 
+.task-link-error-card {
+  max-width: 500px;
+  margin: 3rem auto;
+  padding: 2rem;
+  text-align: center;
+  background: #fff;
+}
+
+.task-link-error-link {
+  display: inline-block;
+  margin-top: 1rem;
+}
+
+.task-link-loading-placeholder {
+  padding: 2rem;
+}
+
 /* Sidebar Styling */
 .logo h1 {
   font-size: 1.8rem;
