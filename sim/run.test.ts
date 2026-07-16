@@ -719,8 +719,8 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   workSessionForMember(user06),
-  { route: { runner: 'claude', model: 'claude-sonnet-5' }, fallback: undefined },
-  'user06 一般工作必須改走 Claude Sonnet 5，且不得回退 AGY',
+  { route: { runner: 'agy', model: 'Gemini 3.5 Flash (High)' }, fallback: undefined },
+  'Claude 額度耗盡期間，user06 一般工作必須改走 AGY 且不得 fallback',
 );
 assert.deepStrictEqual(
   workSessionForMember(user02),
