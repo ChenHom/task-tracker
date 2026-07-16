@@ -20,3 +20,5 @@ import './quota.test';
 import './quotaFrontend.test';
 import './server.test';
 import './frontend.test';
+import './frontendCore.test';
+import './frontendViews.test';
