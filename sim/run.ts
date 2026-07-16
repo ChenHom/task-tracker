@@ -46,6 +46,7 @@ interface Member {
   model: string;
   profile: string; // 專長描述，注入 prompt 供成員自我認知與 owner 設計難度組合參考
   fallback?: ModelRoute;
+  workRoute?: ModelRoute;
   notificationRoute?: ModelRoute;
   userId?: string;
   role?: string;
@@ -57,6 +58,7 @@ interface MemberRunnerConfig {
   model: string;
   profile: string;
   fallback?: ModelRoute;
+  workRoute?: ModelRoute;
   notificationRoute?: ModelRoute;
 }
 
@@ -153,6 +155,7 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
     profile: '中小題，動手前先查核現況避免重工' },
   { email: 'user06@test.local', runner: 'agy', model: 'Gemini 3.5 Flash (High)',
     fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' },
+    workRoute: { runner: 'claude', model: 'claude-sonnet-5' },
     notificationRoute: { runner: 'codex', model: 'gpt-5.4-mini' },
     profile: '前端工程師，擅長原生 JS/CSS、UI 互動、響應式版面與瀏覽器驗證；動手前先檢查現有頁面、API 契約與設計風格，偏好最小範圍修改。會主動驗證登入、表單、錯誤提示、手機版與實際操作流程；遇到後端 API 或權限問題先記錄並回報，不擅自擴大修改後端；在意 API response、錯誤狀態與 loading 狀態變化。' },
 ];
@@ -449,6 +452,7 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
         model: config.model,
         profile: config.profile,
         fallback: config.fallback,
+        workRoute: config.workRoute,
         notificationRoute: config.notificationRoute,
       };
     });
@@ -459,6 +463,13 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
 
 export function notificationRouteForMember(member: Pick<Member, 'runner' | 'model' | 'notificationRoute'>): ModelRoute {
   return member.notificationRoute ?? { runner: member.runner, model: member.model };
+}
+
+export function workSessionForMember(
+  member: Pick<Member, 'runner' | 'model' | 'fallback' | 'workRoute'>,
+): { route: ModelRoute; fallback: ModelRoute | undefined } {
+  if (member.workRoute) return { route: member.workRoute, fallback: undefined };
+  return { route: { runner: member.runner, model: member.model }, fallback: member.fallback };
 }
 
 // 一則舊技術債題目文字，當 owner 開題的「格式範例」。
@@ -1714,15 +1725,16 @@ async function main(): Promise<void> {
 
   // 一個 member session：只有正常結束才由 driver 提交；失敗 diff 留在 worktree 供人工檢查/下輪續作。
   const memberSession = async (m: Member, round: number) => {
+    const workSession = workSessionForMember(m);
     const gated = await runActorSessionWithNotificationGate({
       label: `${m.name}-r${round}`,
       actor: m,
       jar: join(wt(m), `.jar-notification-${m.user}.txt`),
-      runner: m.runner,
-      model: m.model,
+      runner: workSession.route.runner,
+      model: workSession.route.model,
       notificationRoute: notificationRouteForMember(m),
       preflightOptions: memberOpts(m),
-      normal: () => runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` }),
+      normal: () => runSession(`${m.name}-r${round}`, workSession.route.runner, workSession.route.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}`, fallback: workSession.fallback }),
     });
     if (!gated) {
       console.log(`[${m.name}-r${round}] notification gate 未完成，略過一般 session`);
@@ -2174,16 +2186,17 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         const hour = new Date().getHours();
         await settleAllOrThrow(readyToRun.map(async (m) => {
           await sleep(jitter(1, 5));
+          const workSession = workSessionForMember(m);
           const gated = await runActorSessionWithNotificationGate({
             label: `${m.name}-巡檢`,
             actor: m,
             jar: join(wt(m), `.jar-notification-${m.user}.txt`),
-            runner: m.runner,
-            model: m.model,
+            runner: workSession.route.runner,
+            model: workSession.route.model,
             notificationRoute: notificationRouteForMember(m),
-            preflightOptions: { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: m.fallback },
-            normal: () => runSession(`${m.name}-巡檢`, m.runner, m.model, memberPrompt(m, p.wsId, hour, p.scenario),
-              { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: m.fallback }),
+            preflightOptions: { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: workSession.fallback },
+            normal: () => runSession(`${m.name}-巡檢`, workSession.route.runner, workSession.route.model, memberPrompt(m, p.wsId, hour, p.scenario),
+              { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: workSession.fallback }),
           });
           if (!gated) {
             console.log(`[${m.name}-巡檢] notification gate 未完成，略過一般 session`);

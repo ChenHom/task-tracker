@@ -44,6 +44,7 @@ import {
   withRunLock,
   workspaceFitsSweepBudget,
   writePromptArtifact,
+  workSessionForMember,
   isQuotaExhaustion,
   notificationGatePrompt,
   processNotificationGate,
@@ -700,6 +701,21 @@ assert.deepStrictEqual(
   notificationRouteForMember(user02),
   { runner: 'codex', model: 'gpt-5.4-mini' },
   'user02 應沿用 Codex 預設 notification route',
+);
+assert.deepStrictEqual(
+  workSessionForMember(user06),
+  { route: { runner: 'claude', model: 'claude-sonnet-5' }, fallback: undefined },
+  'user06 一般工作必須改走 Claude Sonnet 5，且不得回退 AGY',
+);
+assert.deepStrictEqual(
+  workSessionForMember(user02),
+  { route: { runner: 'codex', model: 'gpt-5.4-mini' }, fallback: undefined },
+  '未設 override 的 user02 必須維持既有一般工作路由',
+);
+assert.strictEqual(
+  (source.match(/const workSession = workSessionForMember\(m\);/g) ?? []).length,
+  2,
+  'full sprint 與 team sweep 各應有一個一般工作 resolver 呼叫點',
 );
 assert.strictEqual(isQuotaExhaustion('HTTP 429: quota exhausted'), true, 'quota 錯誤應可辨識');
 assert.strictEqual(isQuotaExhaustion('agy binary not found'), false, 'agy 不存在不可誤判為 quota');
