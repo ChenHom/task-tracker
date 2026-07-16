@@ -136,6 +136,13 @@ Owner 依成員 profile 與目前 Todo/Doing 負載直接 PATCH `assignee_id`，
 - Run `npm run seed` once so `user01-06@test.local` and `user09@test.local` exist.
 - The `claude`, `codex`, and `agy` CLIs must be installed, authenticated, and available in `PATH`.
 - `agy` member sessions use headless `agy --print --model <model> --mode accept-edits`; only an explicit quota/rate-limit error may retry with the configured fallback model. Missing CLI, authentication failure, general error, or timeout stops that member session without fallback.
+- 2026-07-16 AGY curl capability probe was invoked once only:
+
+  ```bash
+  agy --print --model 'Gemini 3.5 Flash (High)' --mode accept-edits --dangerously-skip-permissions 'Use curl to GET http://localhost:3000/api/health. Output the HTTP status and JSON body only. Do not modify any file or call a POST, PATCH, PUT, or DELETE endpoint.'
+  ```
+
+  Its exact result was `exit 1: socket: operation not permitted`, before curl, so no curl or board mutation occurred and it did not output HTTP 200 or the health JSON. user06 normal work remains AGY; notification preflight remains Codex until AGY can perform the required curl side effect without widening shared runner permissions. Available main-workspace sources require a verified actor comment before being marked read, and preflight failures remain unread; the documented `403`/`404` unavailable-source handling still logs and marks the item read. Do not add shared `--dangerously-skip-permissions`.
 - A new sprint requires the selected scenario repo to be on `master` with a clean main worktree.
 
 ### Manual start
