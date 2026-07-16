@@ -1,204 +1,210 @@
 # Task Tracker
 
-A full-featured task management system built from scratch with **Event Sourcing**, **CQRS**, and **RBAC** — designed as a hands-on engineering exercise covering real-world backend patterns and OWASP security practices.
+一個從零打造的全功能任務管理系統，採用 **Event Sourcing**、**CQRS** 與 **RBAC** 架構設計 —— 作為後端工程實戰練習，涵蓋真實世界的架構模式與 OWASP 資安實踐。
 
-> **This is not a Jira/Trello clone.** It's a deliberately architected system for practicing event-driven design, state machines, audit trails, and role-based access control.
+> **這不是 Jira 或 Trello 的仿製品。** 而是一套刻意設計的系統，用來練習事件驅動設計、狀態機、審計追蹤與角色權限控管。
 
-## ✨ Features
+## ✨ 功能特色
 
-### Core Architecture
-- **Event Sourcing** — Workspace, Member, and Task aggregates store all state changes as immutable events
-- **CQRS** — Commands write to the event store; queries read from projected read models
-- **Optimistic Locking** — DB-level unique constraint on `(aggregate_id, aggregate_version)` prevents write conflicts
+### 核心架構
+- **Event Sourcing** — Workspace、Member、Task 聚合根將所有狀態變更儲存為不可變事件
+- **CQRS** — 寫入走命令端寫進事件儲存；查詢走讀取模型
+- **樂觀鎖** — 資料庫層級的 `(aggregate_id, aggregate_version)` 唯一約束，防止寫入衝突
 
-### Task Management
-- **Kanban Board** — Visual board with Todo → Doing → Review → Done state machine (one-step rollback allowed)
-- **Rich Collaboration** — `@mention` members, `#N` comment references with smooth scroll, `::shortId` cross-task links
-- **Projects** — Group tasks within workspaces
-- **Attachments** — File upload/download with path traversal protection
-- **Search** — Workspace-scoped full-text search
+### 任務管理
+- **看板** — 視覺化看板，狀態機為 Todo → Doing → Review → Done（允許一步回退）
+- **豐富協作** — `@mention` 提及成員、`#N` 留言引用（平滑捲動）、`::shortId` 跨任務連結
+- **專案分類** — 在工作區內將任務分組
+- **附件** — 檔案上傳/下載，含路徑穿越防護
+- **搜尋** — 工作區範圍內的全文搜尋
 
-### Access Control (RBAC)
-- **5-tier Role Hierarchy**: `Owner > Admin > Member > Commenter > Viewer`
-- **Workspace-scoped Permissions** — `requirePermission` is the single source of truth; frontend only adapts UI
-- **Commenter Role** — Can create discussion tasks and comments, edit own task descriptions; cannot modify others' tasks or project settings
+### 權限控管（RBAC）
+- **五層角色階層**：`Owner > Admin > Member > Commenter > Viewer`
+- **工作區範圍權限** — `requirePermission` 是唯一權威來源；前端僅調整 UI 顯示
+- **Commenter 角色** — 可建立討論任務與留言、編輯自己建立的任務描述；不可修改他人任務或專案設定
 
-### Security (OWASP Top 10)
-- `scrypt` password hashing with prepared statements (no SQL injection)
-- Cookie-based sessions with `SameSite=Strict` + Origin-check CSRF protection
-- Rate limiting on login and forgot-password endpoints
-- `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff` on downloads
-- All user input rendered via `textContent` (no `innerHTML` with user data)
-- Static file and attachment path traversal / symlink boundary guards
-- Audit trail with `actor_id`, `ip`, `user_agent`, `request_id` metadata
+### 資訊安全（OWASP Top 10）
+- `scrypt` 密碼雜湊搭配 prepared statements（防 SQL injection）
+- Cookie-based session 搭配 `SameSite=Strict` + Origin 檢查（防 CSRF）
+- 登入與忘記密碼端點設有 Rate Limiting
+- 下載回應帶 `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`
+- 所有使用者輸入一律透過 `textContent` 渲染（不使用 `innerHTML` 插入使用者資料）
+- 靜態檔案與附件的路徑穿越 / symlink 邊界守門
+- 審計追蹤記錄 `actor_id`、`ip`、`user_agent`、`request_id`
 
-### AI Simulation Harness
-- Multi-model AI fleet (Claude, Codex, Antigravity) simulating real users
-- Dogfooding the system with automated task creation, discussion, and review workflows
+### AI 模擬測試
+- 多模型 AI 車隊（Claude、Codex、Antigravity）模擬真實使用者
+- 對系統進行 Dogfooding 測試——自動化任務建立、討論與審查流程
 
-## 🏗️ Architecture
+## 🏗️ 架構設計
 
 ```
-User → Command → Permission Check → Aggregate → Event Store → Projection → Read Model
+使用者 → 命令 → 權限檢查 → 聚合根 → 事件儲存 → 投影 → 讀取模型
 ```
 
-| Layer | Description |
+| 層級 | 說明 |
 |---|---|
-| **Command** | Validates and applies business rules |
-| **Event Store** | Single append-only table for all aggregates |
-| **Projection** | Synchronously updates read models on each event |
-| **Read Model** | Flat tables optimized for queries |
+| **命令（Command）** | 驗證並套用業務規則 |
+| **事件儲存（Event Store）** | 單一 append-only 表格，存放所有聚合根的事件 |
+| **投影（Projection）** | 每次事件同步更新讀取模型 |
+| **讀取模型（Read Model）** | 扁平化表格，為查詢最佳化 |
 
-### Event-Sourced Aggregates
+### 事件溯源聚合根
 
-| Aggregate | Events |
+| 聚合根 | 事件 |
 |---|---|
-| **Workspace** | `created`, `renamed`, `archived`, `deleted` |
-| **Member** | `invited`, `joined`, `role_changed`, `removed` |
-| **Task** | `created`, `title_changed`, `description_changed`, `status_changed`, `priority_changed`, `assignee_changed`, `due_date_changed`, `archived`, `deleted`, `moved`, `main_discussion_concluded` |
+| **Workspace** | `created`、`renamed`、`archived`、`deleted` |
+| **Member** | `invited`、`joined`、`role_changed`、`removed` |
+| **Task** | `created`、`title_changed`、`description_changed`、`status_changed`、`priority_changed`、`assignee_changed`、`due_date_changed`、`archived`、`deleted`、`moved`、`main_discussion_concluded` |
 
-## 🛠️ Tech Stack
+## 🛠️ 技術堆疊
 
-| Component | Technology |
+| 組件 | 技術 |
 |---|---|
-| Runtime | Node.js (native `node:http`, `node:sqlite`) |
-| Language | TypeScript (strict mode) |
-| Database | SQLite (embedded, zero-config) |
-| Frontend | Vanilla JS SPA with hash routing (no framework) |
-| Build | `tsc` for type checking, `tsx` for dev server |
+| 執行環境 | Node.js（原生 `node:http`、`node:sqlite`） |
+| 語言 | TypeScript（strict 模式） |
+| 資料庫 | SQLite（嵌入式，零設定） |
+| 前端 | 原生 JS SPA，hash routing（無框架） |
+| 建構 | `tsc` 型別檢查、`tsx` 開發伺服器 |
 
-**Zero external runtime dependencies** — only `devDependencies` for TypeScript tooling.
+**零外部執行期依賴** — 僅有 `devDependencies` 用於 TypeScript 工具鏈。
 
-## 🚀 Getting Started
+## 🚀 快速開始
 
-### Prerequisites
+### 前置需求
 
-- **Node.js** ≥ 22.x (uses native `node:sqlite`)
+- **Node.js** ≥ 22.x（使用原生 `node:sqlite`）
 
-### Setup
+### 安裝與啟動
 
 ```bash
-# Clone the repository
+# 複製專案
 git clone https://github.com/ChenHom/task-tracker.git
 cd task-tracker
 
-# Install dev dependencies
+# 安裝開發依賴
 npm install
 
-# Seed test users (user01~user30@test.local, password: test1234)
+# 建立測試帳號（user01~user30@test.local，密碼：test1234）
 npm run seed
 
-# Start development server
+# 啟動開發伺服器
 npm run dev
 ```
 
-The app will be available at `http://localhost:3000`.
+應用程式將在 `http://localhost:3000` 啟動。
 
-### Login
+### 登入
 
-Use any seeded test account:
-- **Email**: `user01@test.local` ~ `user30@test.local`
-- **Password**: `test1234`
+使用任一測試帳號：
+- **Email**：`user01@test.local` ~ `user30@test.local`
+- **密碼**：`test1234`
 
-### Available Scripts
+### 可用指令
 
-| Script | Description |
+| 指令 | 說明 |
 |---|---|
-| `npm run dev` | Start dev server with hot reload |
-| `npm run build` | Compile TypeScript |
-| `npm start` | Run compiled production server |
-| `npm run seed` | Create/reset test users (idempotent) |
-| `npm run typecheck` | Run `tsc --noEmit` on all source |
-| `npm test` | Lint + typecheck + unit tests + sim tests |
+| `npm run dev` | 啟動開發伺服器（hot reload） |
+| `npm run build` | 編譯 TypeScript |
+| `npm start` | 執行編譯後的正式伺服器 |
+| `npm run seed` | 建立/重設測試帳號（冪等操作） |
+| `npm run typecheck` | 執行 `tsc --noEmit` 檢查所有原始碼 |
+| `npm test` | Lint + 型別檢查 + 單元測試 + 模擬測試 |
 
-## 📡 API Reference
+## 📡 API 參考
 
-### Auth
-| Method | Endpoint | Description |
+### 認證
+
+| 方法 | 端點 | 說明 |
 |---|---|---|
-| `POST` | `/api/auth/login` | Login (sets session cookie) |
-| `POST` | `/api/auth/logout` | Logout |
-| `GET` | `/api/auth/me` | Current user info |
-| `POST` | `/api/auth/forgot-password` | Request password reset |
-| `POST` | `/api/auth/reset-password` | Reset password with token |
+| `POST` | `/api/auth/login` | 登入（設定 session cookie） |
+| `POST` | `/api/auth/logout` | 登出 |
+| `GET` | `/api/auth/me` | 取得目前使用者資訊 |
+| `POST` | `/api/auth/forgot-password` | 申請密碼重設 |
+| `POST` | `/api/auth/reset-password` | 使用 token 重設密碼 |
 
-### Workspaces
-| Method | Endpoint | Description |
+### 工作區
+
+| 方法 | 端點 | 說明 |
 |---|---|---|
-| `GET` | `/api/workspaces` | List user's workspaces |
-| `POST` | `/api/workspaces` | Create workspace |
-| `PATCH` | `/api/workspaces/:id` | Rename workspace (Admin+) |
-| `POST` | `/api/workspaces/:id/archive` | Archive workspace |
-| `POST` | `/api/workspaces/:id/delete` | Delete workspace |
+| `GET` | `/api/workspaces` | 列出使用者的工作區 |
+| `POST` | `/api/workspaces` | 建立工作區 |
+| `PATCH` | `/api/workspaces/:id` | 重新命名工作區（Admin+） |
+| `POST` | `/api/workspaces/:id/archive` | 封存工作區 |
+| `POST` | `/api/workspaces/:id/delete` | 刪除工作區 |
 
-### Members
-| Method | Endpoint | Description |
+### 成員
+
+| 方法 | 端點 | 說明 |
 |---|---|---|
-| `GET` | `/api/workspaces/:id/members` | List members |
-| `POST` | `/api/workspaces/:id/members` | Invite member (Admin+) |
-| `POST` | `/api/workspaces/:id/members/join` | Accept invitation |
-| `PATCH` | `/api/workspaces/:id/members/:userId` | Change role (Admin+) |
-| `DELETE` | `/api/workspaces/:id/members/:userId` | Remove member (Admin+) |
+| `GET` | `/api/workspaces/:id/members` | 列出成員 |
+| `POST` | `/api/workspaces/:id/members` | 邀請成員（Admin+） |
+| `POST` | `/api/workspaces/:id/members/join` | 接受邀請 |
+| `PATCH` | `/api/workspaces/:id/members/:userId` | 變更角色（Admin+） |
+| `DELETE` | `/api/workspaces/:id/members/:userId` | 移除成員（Admin+） |
 
-### Tasks
-| Method | Endpoint | Description |
+### 任務
+
+| 方法 | 端點 | 說明 |
 |---|---|---|
-| `GET/POST` | `/api/workspaces/:id/tasks` | List / Create tasks |
-| `GET/PATCH/DELETE` | `/api/tasks/:id` | Read / Update / Delete task |
-| `POST` | `/api/tasks/:id/archive` | Archive task |
-| `POST` | `/api/tasks/:id/move` | Move task across workspaces |
+| `GET/POST` | `/api/workspaces/:id/tasks` | 列出 / 建立任務 |
+| `GET/PATCH/DELETE` | `/api/tasks/:id` | 讀取 / 更新 / 刪除任務 |
+| `POST` | `/api/tasks/:id/archive` | 封存任務 |
+| `POST` | `/api/tasks/:id/move` | 跨工作區搬移任務 |
 
-### Collaboration
-| Method | Endpoint | Description |
+### 協作
+
+| 方法 | 端點 | 說明 |
 |---|---|---|
-| `GET/POST` | `/api/tasks/:id/comments` | List / Create comments |
-| `PATCH` | `/api/comments/:id` | Edit own comment |
-| `DELETE` | `/api/comments/:id` | ~~Delete~~ → 405 (comments are immutable) |
-| `GET/POST` | `/api/tasks/:id/attachments` | List / Upload attachments |
-| `GET/DELETE` | `/api/attachments/:id` | Download / Delete attachment |
+| `GET/POST` | `/api/tasks/:id/comments` | 列出 / 建立留言 |
+| `PATCH` | `/api/comments/:id` | 編輯自己的留言 |
+| `DELETE` | `/api/comments/:id` | ~~刪除~~ → 405（留言不可刪除） |
+| `GET/POST` | `/api/tasks/:id/attachments` | 列出 / 上傳附件 |
+| `GET/DELETE` | `/api/attachments/:id` | 下載 / 刪除附件 |
 
-### Utilities
-| Method | Endpoint | Description |
+### 其他
+
+| 方法 | 端點 | 說明 |
 |---|---|---|
-| `GET` | `/api/health` | Health check |
-| `GET` | `/api/search?workspace=:id&q=...` | Workspace-scoped search |
-| `GET` | `/api/audit?aggregate_id=...` | Audit trail (Admin+) |
-| `GET` | `/api/quota` | AI quota dashboard |
-| `GET` | `/api/notifications` | List notifications |
-| `POST` | `/api/notifications/:id/read` | Mark notification as read |
-| `GET` | `/api/users/search?q=...` | Search users by email |
+| `GET` | `/api/health` | 健康檢查 |
+| `GET` | `/api/search?workspace=:id&q=...` | 工作區範圍搜尋 |
+| `GET` | `/api/audit?aggregate_id=...` | 審計追蹤（Admin+） |
+| `GET` | `/api/quota` | AI 額度儀表板 |
+| `GET` | `/api/notifications` | 列出通知 |
+| `POST` | `/api/notifications/:id/read` | 標記通知為已讀 |
+| `GET` | `/api/users/search?q=...` | 以 email 搜尋使用者 |
 
-## 📁 Project Structure
+## 📁 專案結構
 
 ```
 task-tracker/
-├── src/                    # Backend source (TypeScript)
-│   ├── server.ts           # HTTP server & route handler
-│   ├── eventStore.ts       # Event sourcing core
-│   ├── schema.ts           # SQLite schema & migrations
-│   ├── auth.ts             # Authentication & sessions
-│   ├── workspace.ts        # Workspace aggregate
-│   ├── member.ts           # Member aggregate & RBAC
-│   ├── task.ts             # Task aggregate & state machine
-│   ├── comment.ts          # Comment CRUD
-│   ├── attachment.ts       # File attachment handling
-│   ├── notification.ts     # Notification system
-│   ├── search.ts           # Full-text search
-│   ├── audit.ts            # Audit trail queries
-│   ├── mainDiscussion.ts   # Main workspace governance
-│   └── *.test.ts           # Co-located unit tests
-├── public/                 # Frontend (vanilla JS SPA)
-│   ├── index.html          # Single page entry
-│   ├── app.js              # Application bootstrap
-│   ├── js/                 # Modules (router, state, views)
-│   └── css/                # Stylesheets
-├── sim/                    # AI simulation harness
-├── deploy/                 # Deployment configs (systemd)
-├── docs/                   # Design docs & task history
-├── design.md               # Single design baseline
-└── data/                   # SQLite database (gitignored)
+├── src/                    # 後端原始碼（TypeScript）
+│   ├── server.ts           # HTTP 伺服器與路由處理
+│   ├── eventStore.ts       # 事件溯源核心
+│   ├── schema.ts           # SQLite schema 與 migration
+│   ├── auth.ts             # 認證與 session 管理
+│   ├── workspace.ts        # 工作區聚合根
+│   ├── member.ts           # 成員聚合根與 RBAC
+│   ├── task.ts             # 任務聚合根與狀態機
+│   ├── comment.ts          # 留言 CRUD
+│   ├── attachment.ts       # 附件處理
+│   ├── notification.ts     # 通知系統
+│   ├── search.ts           # 全文搜尋
+│   ├── audit.ts            # 審計追蹤查詢
+│   ├── mainDiscussion.ts   # 主工作區治理
+│   └── *.test.ts           # 共置單元測試
+├── public/                 # 前端（原生 JS SPA）
+│   ├── index.html          # 單頁應用進入點
+│   ├── app.js              # 應用程式初始化
+│   ├── js/                 # 模組（路由、狀態、視圖）
+│   └── css/                # 樣式表
+├── sim/                    # AI 模擬測試
+├── deploy/                 # 部署設定（systemd）
+├── docs/                   # 設計文件與任務歷史
+├── design.md               # 單一設計基準
+└── data/                   # SQLite 資料庫（已 gitignore）
 ```
 
-## 📝 License
+## 📝 授權
 
-This project is for educational and portfolio purposes.
+本專案為教學與作品集用途。
