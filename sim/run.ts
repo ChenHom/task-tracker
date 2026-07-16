@@ -1916,7 +1916,7 @@ function ensureWorktree(m: Member, scenario: Scenario): void {
 
 interface SweepTask extends SweepAssignedTask { task_id: string; title: string }
 
-function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string): string {
+function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string {
   const jar = join(RUN.repoRoot, '.jar-owner-sweep.txt');
   if (wsId === MAIN_WORKSPACE_ID) {
     return `你是「${OWNER.name}」（${OWNER.email}），主協作工作區的唯一 Owner。這個 session 只用 curl/API 操作，不得編輯、提交或合併任何程式碼。
@@ -1958,7 +1958,7 @@ ${memberIds}
 CI 摘要（driver 已預跑，信任它，不要自己重跑各 branch 測試）：
 ${ci || '（本 tick 無 branch 有新 commit）'}
 ${API_RULES(jar)}
-巡檢流程（⚠️ 你有 12 分鐘硬時限，優先序：老闆回覆 > 綠燈合併 > 紅燈退回 > 催辦。時間不夠就少做，下次巡檢還會再來）：
+巡檢流程（⚠️ 你有 ${timeoutMinutes} 分鐘硬時限，優先序：老闆回覆 > 綠燈合併 > 紅燈退回 > 催辦。時間不夠就少做，下次巡檢還會再來）：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks 全覽
 ${crossRepoRule(scenario)}
 2. [討論] task（title 以「[討論]」開頭）——這是你與老闆（${bossName}，真人）的對話串：
@@ -2156,7 +2156,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         model: OWNER_REVIEW_MODEL,
         preflightOptions: ownerSessionOptions,
         normal: () => runSession(ownerLabel, 'codex', OWNER_REVIEW_MODEL,
-          ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
+          ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000)),
           { ...ownerSessionOptions, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` }),
       });
       ownerSessionsRun++;

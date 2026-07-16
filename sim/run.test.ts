@@ -68,6 +68,15 @@ assert.ok(
   source.includes('Math.min(SWEEP_OWNER_TIMEOUT + ownerState.streak * 6 * 60 * 1000, 30 * 60 * 1000)'),
   'owner sweep 必須保留既有 30 分鐘 adaptive cap',
 );
+assert.ok(
+  source.includes('function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string'),
+  'owner sweep prompt 必須接受本輪 timeout 分鐘數',
+);
+assert.ok(source.includes('你有 ${timeoutMinutes} 分鐘硬時限'), 'owner sweep prompt 必須插入本輪 timeout 分鐘數');
+assert.ok(
+  source.includes("ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000))"),
+  'owner sweep 必須把計算後的 timeout 分鐘數傳進 prompt',
+);
 assert.ok(!source.includes('const MEMBERS: Member[] = ['), 'MEMBERS 不應在 sim/run.ts 寫死 email/name');
 assert.ok(!source.includes('let REPO_ROOT'), 'scenario 狀態不應拆成多個可不同步的 global');
 assert.ok(!source.includes('let WORK_DIR'), 'scenario 狀態不應拆成多個可不同步的 global');
