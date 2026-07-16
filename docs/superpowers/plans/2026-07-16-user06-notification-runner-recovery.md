@@ -1,10 +1,6 @@
-# user06 Notification Runner Recovery Implementation Plan
+> **已取代／歷史紀錄（2026-07-16）**：現行政策見 [user06 Sonnet 5 路由恢復設計](../specs/2026-07-16-user06-sonnet5-route-restoration-design.md)。user06 一般工作使用 Claude `claude-sonnet-5`，不設 AGY fallback；notification preflight 使用 Codex `gpt-5.4-mini`。以下內容保留為歷史記錄。
 
-> **Superseded historical plan:** its routing instructions are superseded by
-> [the AGY quota-containment design](../specs/2026-07-16-user06-agy-quota-containment-design.md).
-> Current temporary route: notification preflight Codex `gpt-5.4-mini`; normal
-> work AGY `Gemini 3.5 Flash (High)`; no fallback. The plan below remains intact
-> as historical context.
+# user06 Notification Runner Recovery Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
