@@ -1,3 +1,5 @@
+> **已取代／歷史紀錄（2026-07-16）**：AGY 試行未產生 task、comment 或 commit 副作用，Claude 額度恢復後已回復 user06 一般工作路由。現行決策見 [user06 Sonnet 5 路由恢復設計](../specs/2026-07-16-user06-sonnet5-route-restoration-design.md)。
+
 # user06 AGY Quota Route Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

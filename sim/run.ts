@@ -155,7 +155,7 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
     profile: '中小題，動手前先查核現況避免重工' },
   { email: 'user06@test.local', runner: 'agy', model: 'Gemini 3.5 Flash (High)',
     fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' },
-    workRoute: { runner: 'agy', model: 'Gemini 3.5 Flash (High)' },
+    workRoute: { runner: 'claude', model: 'claude-sonnet-5' },
     notificationRoute: { runner: 'codex', model: 'gpt-5.4-mini' },
     profile: '前端工程師，擅長原生 JS/CSS、UI 互動、響應式版面與瀏覽器驗證；動手前先檢查現有頁面、API 契約與設計風格，偏好最小範圍修改。會主動驗證登入、表單、錯誤提示、手機版與實際操作流程；遇到後端 API 或權限問題先記錄並回報，不擅自擴大修改後端；在意 API response、錯誤狀態與 loading 狀態變化。' },
 ];

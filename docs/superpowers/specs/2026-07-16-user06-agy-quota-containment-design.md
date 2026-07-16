@@ -1,3 +1,5 @@
+> **已取代／歷史紀錄（2026-07-16）**：AGY 試行未產生 task、comment 或 commit 副作用，Claude 額度恢復後已回復 user06 一般工作路由。現行決策見 [user06 Sonnet 5 路由恢復設計](2026-07-16-user06-sonnet5-route-restoration-design.md)。
+
 # user06 AGY 額度切換設計
 
 ## 目標
