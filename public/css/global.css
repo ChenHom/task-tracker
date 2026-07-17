@@ -154,6 +154,7 @@ body {
 
 .nav-btn {
   display: block;
+  position: relative;
   text-decoration: none;
   color: var(--pencil-color);
   font-weight: bold;
@@ -165,6 +166,69 @@ body {
   transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.15s ease;
   background: transparent;
   box-shadow: 3px 3px 0px 0px var(--pencil-color);
+}
+
+/* 未讀通知計數圓點：桌機 sidebar 的 #nav-notifications 與手機 #sidebar-toggle 共用同一個 class，
+   由 notifications.js 統一算好數字後同步更新，兩處數字不會不一致。 */
+.notif-badge {
+  display: none;
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+  border: 2px solid var(--pencil-color);
+  box-sizing: border-box;
+}
+
+.notif-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.notif-card {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.4rem 0.75rem;
+  padding: 0.75rem 1rem;
+  background: #fff;
+}
+.notif-card.notif-unread {
+  background: #fef9c3;
+}
+.notif-body {
+  flex: 1;
+  min-width: 200px;
+  cursor: pointer;
+}
+.notif-snippet {
+  margin: 0 0 0.25rem;
+  word-break: break-word;
+}
+.notif-time {
+  margin: 0;
+  font-size: 0.8rem;
+}
+.notif-actions {
+  flex-shrink: 0;
+}
+.notif-error {
+  display: none;
+  flex-basis: 100%;
+  margin: 0;
 }
 .nav-btn:hover, .nav-btn.active {
   background-color: var(--btn-hover-bg);

@@ -15,6 +15,7 @@ import { KanbanView } from './views/kanban.js';
 import { MembersView } from './views/members.js';
 import { SearchView } from './views/search.js';
 import { AuditView } from './views/audit.js';
+import { NotificationsView } from './views/notifications.js';
 
 // Register prefixes to target View controller instances
 registerRoute('login', LoginView);
@@ -26,3 +27,4 @@ registerRoute('task', KanbanView);
 registerRoute('members', MembersView);
 registerRoute('search', SearchView);
 registerRoute('audit', AuditView);
+registerRoute('notifications', NotificationsView);

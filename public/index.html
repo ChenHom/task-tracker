@@ -14,7 +14,7 @@
 </head>
 <body>
 
-  <button id="sidebar-toggle" type="button" aria-label="選單">☰</button>
+  <button id="sidebar-toggle" type="button" aria-label="選單">☰<span id="notif-badge-toggle" class="notif-badge" style="display:none;"></span></button>
   <div id="sidebar-backdrop"></div>
   <div id="layout-container">
     <aside id="sidebar" class="sketch-box">
@@ -35,6 +35,7 @@
       <!-- Navigation Menu -->
       <nav id="nav-menu">
         <a href="#/workspaces" id="nav-workspaces" class="nav-btn">Workspaces</a>
+        <a href="#/notifications" id="nav-notifications" class="nav-btn" style="display:none;">通知<span id="notif-badge-sidebar" class="notif-badge" style="display:none;"></span></a>
         <!-- Workspace Specific Links -->
         <div id="workspace-nav" style="display: none; flex-direction: column; gap: 0.8rem; margin-top: 0.5rem; border-top: 2px dashed #333; padding-top: 0.8rem;">
           <a href="#/tasks" id="nav-tasks" class="nav-btn">Kanban Board</a>

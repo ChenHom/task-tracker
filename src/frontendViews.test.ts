@@ -246,6 +246,11 @@ function openTaskDetailModal(taskId: string, opts: any) {
   openTaskDetailModalCalls.push({ taskId, opts });
 }
 
+let refreshNotificationBadgeCalls = 0;
+async function refreshNotificationBadge() {
+  refreshNotificationBadgeCalls++;
+}
+
 const ROLE_RANK: { [key: string]: number } = { Viewer: 0, Commenter: 1, Member: 2, Admin: 3, Owner: 4 };
 const hasRole = (role: string, minimum: string) => ROLE_RANK[role] >= ROLE_RANK[minimum];
 const MAIN_WORKSPACE_ID = '11a82028-fc50-466a-a723-e002032cd9a6';
@@ -277,6 +282,7 @@ const sandbox = {
   el,
   showError,
   openTaskDetailModal,
+  refreshNotificationBadge,
   hasRole,
   MAIN_WORKSPACE_ID,
   MAIN_OWNER_EMAIL,
@@ -329,6 +335,7 @@ function resetViewsMocks() {
   state.userEmail = null;
   state.userName = null;
   openTaskDetailModalCalls = [];
+  refreshNotificationBadgeCalls = 0;
   navigatedHash = null;
   syncWorkspacesCalled = false;
   syncedGlobalWorkspaces = [];
@@ -391,6 +398,7 @@ async function runTests() {
     assert.strictEqual(state.userName, 'User 09');
     assert.strictEqual(syncWorkspacesCalled, true);
     assert.strictEqual(navigatedHash, '#/workspaces');
+    assert.strictEqual(refreshNotificationBadgeCalls, 1, '登入成功應重抓一次通知未讀數');
   }
 
   // Login failure
