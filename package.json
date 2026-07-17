@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit && tsc -p sim/tsconfig.json",
-    "test": "npm run lint && npm run typecheck && node --import tsx src/test.ts && node --import tsx sim/run.test.ts",
+    "test": "npm run lint && npm run typecheck && node --import tsx src/test.ts && node --import tsx sim/run.test.ts && node --import tsx sim/escalateNotify.test.ts",
     "seed": "tsx src/seed.ts",
     "sim": "tsx sim/run.ts",
     "lint": "eslint public/js"
