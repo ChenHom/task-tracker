@@ -61,6 +61,31 @@ tail -n 80 /var/log/nginx/error.log
 
 If `/tracker/` returns `502`, first check whether `task-tracker.service` is active and whether port 3000 answers `/api/health`.
 
+## Autodeploy（master 自動部署）
+
+`sim-autodeploy.path` 監看本地 `refs/heads/master`（含 `packed-refs`），變動即觸發 `deploy/sim-autodeploy.sh`：等待進行中的 sim sweep（最多 30 分）→ `npm run build` → 重啟 `task-tracker.service` → 以 `/api/health` 的 `rev` 欄位 readback 確認與 `git rev-parse master` 一致。build 失敗或 readback 不符時**不會**留下新版（服務續跑舊版），並經 `sim/notify-human.sh` 推 Discord。
+
+```bash
+systemctl --user status sim-autodeploy.path        # 監看是否啟用
+journalctl --user -u sim-autodeploy.service -n 40  # 部署執行紀錄
+tail ~/.local/state/sim-autodeploy/deploy.log      # 部署結果（deployed OK / BUILD FAILED / READBACK MISMATCH）
+cat ~/.local/state/sim-autodeploy/deployed_rev     # 目前已部署的 rev
+systemctl --user disable --now sim-autodeploy.path # 停用自動部署
+```
+
+安裝與初始化見 `deploy/README.md`（state 初始化：`git rev-parse master > ~/.local/state/sim-autodeploy/deployed_rev`，避免啟用當下重複部署）。
+
+## ESCALATE 推播
+
+每輪 sweep 結束後 `sim-sweep-cron.sh` 會跑 `node --import tsx sim/escalateNotify.ts`：掃 `data/dev.db` 中 state 記錄點之後的新 `[ESCALATE]` 留言，逐則經 `sim/notify-human.sh`（openclaw CLI）推到 Discord。state 檔為 `~/.local/state/sim-escalate/state.json`（記錄已掃過的最大 comment rowid）。
+
+```bash
+node --import tsx sim/escalateNotify.ts   # 手動掃一次（輸出 escalate-notify: N new）
+sim/notify-human.sh "測試訊息"            # 驗證 Discord 管道
+```
+
+首次啟用（或 state 遺失重建）前先把 state 初始化到目前最大 rowid，避免歷史 ESCALATE 灌爆頻道：見 `docs/superpowers/plans/2026-07-17-sim-process-fixes.md` Task 3 Step 8 的初始化指令。
+
 ## AI quota dependency
 
 Quota provider polling belongs to the separate `/home/hom/services/ai-quota` repo. Its `ai-quota.timer` runs a one-shot poll every five minutes and writes the shared snapshot; task-tracker only validates and reads that file.

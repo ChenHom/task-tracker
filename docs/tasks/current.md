@@ -262,3 +262,15 @@
 > 實測：`npx tsc --noEmit`、`npm run build` 與 `npx tsx src/comment.test.ts` 通過；`node --import tsx src/test.ts`
 > 目前停在 `frontend.test.ts:603`，原因是該測試仍期待已移除的「刪除」按鈕，尚未同步測試契約。另起 `PORT=3999` 乾淨 server
 > 對 `DELETE /api/comments/whatever` 實測回 `405 {"error":"留言不可刪除，只能編輯"}`。commit `5b01859`。
+
+## Phase 22 — Sim 制度修正：ESCALATE 降噪四項（2026-07-17）✅
+
+> 動機：dev.db 777 則留言中 111 則（14%）是 [ESCALATE]，歸因為部署漂移、worktree 落後、重複留言、驗收錯層。
+> 計畫：`docs/superpowers/plans/2026-07-17-sim-process-fixes.md`。操作說明：`docs/operations.md`。
+
+- [x] `/api/health` 曝露 `rev`（部署中的 git SHA），供 readback 與 owner live 驗收比對（`src/server.ts`）
+- [x] master 自動部署：`sim-autodeploy.path` 監看本地 master ref → build → restart → rev readback；失敗推 Discord 且不部署（`deploy/sim-autodeploy.*`）。已實測 commit 觸發後 health rev 與 master 一致
+- [x] ESCALATE 推播：sweep 後 `sim/escalateNotify.ts` 掃新 [ESCALATE] 推 Discord（`sim/notify-human.sh`，openclaw CLI）；state 去重（`~/.local/state/sim-escalate/`）。已實測管道送達（Message ID 1527684541110816821）
+- [x] ESCALATE 留言去重：member 與 owner sweep prompt 加「同 task 狀況未變不重複留言」規則 + 契約測試（`sim/run.ts`、`sim/run.test.ts`）
+- [x] 派工前置同步：`syncWorktreeWithMaster` 於 sweep 派工前自動 merge master（dirty 跳過、衝突 abort 並在該成員 prompt 注入 merge 指示）+ 真 git 暫存 repo 測試
+- [x] 驗收分層：member 完成定義排除 live 驗收；owner sweep 於自動部署完成（health rev 與 master 一致）後才做 live 驗收 + 契約測試
