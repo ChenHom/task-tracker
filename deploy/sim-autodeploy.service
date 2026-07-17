@@ -1,0 +1,7 @@
+[Unit]
+Description=Task Tracker autodeploy (build + restart on master change)
+
+[Service]
+Type=oneshot
+ExecStart=/home/hom/code/task-tracker/deploy/sim-autodeploy.sh
+Environment=PATH=/home/hom/.nvm/versions/node/v24.3.0/bin:/usr/local/bin:/usr/bin:/bin

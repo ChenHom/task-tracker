@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch task-tracker master ref for autodeploy
+
+[Path]
+PathModified=/home/hom/code/task-tracker/.git/refs/heads/master
+PathModified=/home/hom/code/task-tracker/.git/packed-refs
+Unit=sim-autodeploy.service
+
+[Install]
+WantedBy=default.target
