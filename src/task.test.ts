@@ -162,6 +162,9 @@ assert.throws(() => createTask('u1', WS, { title: '' }, db), CommandError, '空 
 assert.throws(() => createTask('u1', WS, { title: 'x', priority: 'Urgent' }, db), CommandError, '非法 priority 應拒');
 assert.throws(() => createTask('u1', WS, { title: 'x', dueAt: 'not-a-date' }, db), CommandError, '非法 dueAt 應拒');
 assert.throws(() => createTask('u1', WS, {}, db), CommandError, '缺 title 應拒');
+assert.throws(() => createTask('u1', WS, { title: 'x', status: 'Doing' }, db), CommandError, '非 Todo 初始 status 應拒');
+const explicitTodoId = createTask('u1', WS, { title: 'Explicit todo', status: 'Todo' }, db);
+assert.strictEqual(one(explicitTodoId).status, 'Todo', 'status: Todo 應允許並建立 Todo');
 
 // ── workspace 生命週期 gate：archived / 不存在的 workspace 不可建 task（防孤兒資料）──
 seedWs('ws-arch', 'archived');
@@ -475,8 +478,8 @@ assert.strictEqual(loadEvents(discussionId, db).length, beforeDiscussionEvidence
 
 createComment(discussionId, 'main-owner', OWNER_THOUGHT, db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', TWO_DAY_REQUEST, db, new Date('2026-07-14T08:00:00.000Z'));
+createComment(discussionId, 'main-user', '請交由前端成員接手。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【結論】\n採用。', db, new Date('2026-07-14T08:00:00.000Z'));
-createComment(discussionId, 'main-user', '【確認結論】同意。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【實作任務】工作區：目標工作區｜TASK：實作討論方向', db, new Date('2026-07-14T08:00:00.000Z'));
 changeTaskStatus('main-owner', discussionId, 'Done', db, new Date('2026-07-17T08:00:00.000Z'));
 const concludedDiscussion = getTask(discussionId, db)!;

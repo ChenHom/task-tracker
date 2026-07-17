@@ -46,6 +46,7 @@ interface Member {
   model: string;
   profile: string; // 專長描述，注入 prompt 供成員自我認知與 owner 設計難度組合參考
   fallback?: ModelRoute;
+  workRoute?: ModelRoute;
   notificationRoute?: ModelRoute;
   userId?: string;
   role?: string;
@@ -57,6 +58,7 @@ interface MemberRunnerConfig {
   model: string;
   profile: string;
   fallback?: ModelRoute;
+  workRoute?: ModelRoute;
   notificationRoute?: ModelRoute;
 }
 
@@ -153,6 +155,7 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
     profile: '中小題，動手前先查核現況避免重工' },
   { email: 'user06@test.local', runner: 'agy', model: 'Gemini 3.5 Flash (High)',
     fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' },
+    workRoute: { runner: 'claude', model: 'claude-sonnet-5' },
     notificationRoute: { runner: 'codex', model: 'gpt-5.4-mini' },
     profile: '前端工程師，擅長原生 JS/CSS、UI 互動、響應式版面與瀏覽器驗證；動手前先檢查現有頁面、API 契約與設計風格，偏好最小範圍修改。會主動驗證登入、表單、錯誤提示、手機版與實際操作流程；遇到後端 API 或權限問題先記錄並回報，不擅自擴大修改後端；在意 API response、錯誤狀態與 loading 狀態變化。' },
 ];
@@ -449,6 +452,7 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
         model: config.model,
         profile: config.profile,
         fallback: config.fallback,
+        workRoute: config.workRoute,
         notificationRoute: config.notificationRoute,
       };
     });
@@ -459,6 +463,13 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
 
 export function notificationRouteForMember(member: Pick<Member, 'runner' | 'model' | 'notificationRoute'>): ModelRoute {
   return member.notificationRoute ?? { runner: member.runner, model: member.model };
+}
+
+export function workSessionForMember(
+  member: Pick<Member, 'runner' | 'model' | 'fallback' | 'workRoute'>,
+): { route: ModelRoute; fallback: ModelRoute | undefined } {
+  if (member.workRoute) return { route: member.workRoute, fallback: undefined };
+  return { route: { runner: member.runner, model: member.model }, fallback: member.fallback };
 }
 
 // 一則舊技術債題目文字，當 owner 開題的「格式範例」。
@@ -1175,7 +1186,7 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 - 狀態機：Todo→Doing→Review→Done 相鄰前進或一步回退；PATCH /api/tasks/<id> 一次只能改一個欄位（如 {"status":"Doing"}）；400/409 就重新 GET 再決定
 - 留言 POST /api/tasks/<id>/comments {"content":"..."}：正體中文、像真的工程師、具體（做法/卡點/驗證結果）
 - 遇疑似系統 bug：自查重試一次，可重現就建 [BUG] task（POST /api/workspaces/<ws>/tasks，title 以 [BUG] 開頭，description 含重現步驟/預期 vs 實際/原始回應，priority High）
-- 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層
+- 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層。同一 task 已有你留過且狀況未變的 [ESCALATE]，不要重複留言；維持靜默直到阻塞內容改變或解除
 - 主協作工作區（${MAIN_WORKSPACE_ID}）只放討論；非 user01 不改狀態，實作 task 必須建立在目標工作區。
 - 若這個 task 需要改的原始碼其實屬於別的 repo（不是你現在這個 repoRoot）：不要用 [ESCALATE]（那是給環境/權限問題，處理不了 repo 不合）。改用 [CROSS-REPO] 開頭留言說明是誰的 repo，並依下方跨 repo 判斷規則處理。`;
 
@@ -1237,7 +1248,7 @@ function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario
     : '你的工作目錄（已是 git worktree，branch ' + branch(m) + '）就是目前目錄，task-tracker 的完整原始碼在這裡。';
   const doneDef = isBrain
     ? '- 完成的定義：task 驗收欄位寫的檢查通過（若子專案有 package.json/test script 就跑它；有 tsconfig 就 npx tsc --noEmit）；至少留一個可重跑的檢查'
-    : '- 完成的定義：npx tsc --noEmit 乾淨 + 跑「與你改動相關的測試檔」通過（例如改 auth 就 npx tsx src/auth.test.ts）。完整測試套件由團隊 CI 在你下線後統一跑，你不必自己跑整套 npm test（省時：本地快測、CI 全測）';
+    : '- 完成的定義：npx tsc --noEmit 乾淨 + 跑「與你改動相關的測試檔」通過（例如改 auth 就 npx tsx src/auth.test.ts）。完整測試套件由團隊 CI 在你下線後統一跑，你不必自己跑整套 npm test（省時：本地快測、CI 全測）。不要對 localhost:3000 做 live 驗收；live 行為以合併部署後的 owner 巡檢為準，live 與你分支不一致不是你的阻塞，不要為此 [ESCALATE]';
   return `你是「${m.name}」（${m.email}），團隊工程師。第 ${round} 次上線工作。你的專長：${m.profile}。
 你的 user_id：${m.userId}。workspace：${wsId}。
 ${workdirDesc}
@@ -1511,13 +1522,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const jitter = (minS: number, maxS: number) => (minS + Math.random() * (maxS - minS)) * 1000;
 
 // 所有 member 都只改 worktree；driver 僅在 session 成功後統一提交，避免 runner 權限與完成語意分裂。
-function commitMemberWork(m: Member, round: number): boolean {
+function commitMemberWork(m: Member, round: number, model: string): boolean {
   validateMemberWorktree(m);
   const dirty = git(['status', '--porcelain'], wt(m));
   if (!dirty) return false;
   git(['add', '-A'], wt(m));
   git(['diff', '--cached', '--check'], wt(m));
-  git(['commit', '-m', `feat(${m.name}/${m.model}): r${round} 產出（driver 代 commit）`], wt(m));
+  git(['commit', '-m', `feat(${m.name}/${model}): r${round} 產出（driver 代 commit）`], wt(m));
   const hash = git(['log', '-1', '--format=%h'], wt(m));
   console.log(`[代commit] ${branch(m)} r${round} → ${hash}`);
   return true;
@@ -1714,21 +1725,22 @@ async function main(): Promise<void> {
 
   // 一個 member session：只有正常結束才由 driver 提交；失敗 diff 留在 worktree 供人工檢查/下輪續作。
   const memberSession = async (m: Member, round: number) => {
+    const workSession = workSessionForMember(m);
     const gated = await runActorSessionWithNotificationGate({
       label: `${m.name}-r${round}`,
       actor: m,
       jar: join(wt(m), `.jar-notification-${m.user}.txt`),
-      runner: m.runner,
-      model: m.model,
+      runner: workSession.route.runner,
+      model: workSession.route.model,
       notificationRoute: notificationRouteForMember(m),
       preflightOptions: memberOpts(m),
-      normal: () => runSession(`${m.name}-r${round}`, m.runner, m.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}` }),
+      normal: () => runSession(`${m.name}-r${round}`, workSession.route.runner, workSession.route.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}`, fallback: workSession.fallback }),
     });
     if (!gated) {
       console.log(`[${m.name}-r${round}] notification gate 未完成，略過一般 session`);
       return;
     }
-    const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, round));
+    const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, round, workSession.route.model));
     if (result.errored || result.timedOut) console.log(`[${m.name}-r${round}] session 未成功，保留未提交 diff，不進入 branch commit`);
   };
   // 一輪：成員並行，登入用小 jitter 錯開；成員名單只來自 Owner 已派工。
@@ -1807,8 +1819,8 @@ async function main(): Promise<void> {
 // ── Sweep：定時巡檢（systemd timer 觸發 --sweep owner/team）─────────────
 // 把看板上未完成的工作收乾淨＋回應老闆留言＋推進 Owner 已派工 Todo/Doing。額度死了就直接退出
 // ——timer 下個小時自己會再敲門，這就是「限額到了自動等下次」，零重試機制、零狀態。
-const SWEEP_OWNER_TIMEOUT = 12 * 60 * 1000;
-const SWEEP_MEMBER_TIMEOUT = 7 * 60 * 1000;
+const SWEEP_OWNER_TIMEOUT = 20 * 60 * 1000;
+const SWEEP_MEMBER_TIMEOUT = 20 * 60 * 1000;
 const BOSS_EMAIL = 'user09@test.local';
 
 // owner 逾時自適應：跨 tick 狀態（sim-logs 下，gitignored）。上一輪 owner 逾時 → 這輪每逾時 +6 分（封頂 30）、
@@ -1902,9 +1914,25 @@ function ensureWorktree(m: Member, scenario: Scenario): void {
   validateMemberWorktree(m);
 }
 
+// 派工前置同步：乾淨且落後 master 的 worktree 自動 merge master，消掉「分支落後 N commits」型 ESCALATE。
+// dirty 不動（在製品；memory: dirty FAIL 死鎖）；衝突則 abort 留給成員依 merge conflict 流程處理。
+export function syncWorktreeWithMaster(dir: string): 'merged' | 'up-to-date' | 'skipped-dirty' | 'conflict-aborted' {
+  const g = (args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  if (g(['status', '--porcelain']) !== '') return 'skipped-dirty';
+  const behind = Number(g(['rev-list', '--count', 'HEAD..master']));
+  if (behind === 0) return 'up-to-date';
+  try {
+    g(['merge', 'master', '--no-edit']);
+    return 'merged';
+  } catch {
+    try { g(['merge', '--abort']); } catch { /* 沒有進行中的 merge */ }
+    return 'conflict-aborted';
+  }
+}
+
 interface SweepTask extends SweepAssignedTask { task_id: string; title: string }
 
-function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string): string {
+function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string {
   const jar = join(RUN.repoRoot, '.jar-owner-sweep.txt');
   if (wsId === MAIN_WORKSPACE_ID) {
     return `你是「${OWNER.name}」（${OWNER.email}），主協作工作區的唯一 Owner。這個 session 只用 curl/API 操作，不得編輯、提交或合併任何程式碼。
@@ -1923,8 +1951,11 @@ ${API_RULES(jar)}
 3. 再獨立 POST「【全員回覆：2天】」，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。只有近期成員已有大量事務才使用 2.5 至 7 天，並在同一留言填寫較長期限理由。
 4. 從通知 comment.created_at 加上 N * 24 小時計算截止時間；一天 24 小時、半天 12 小時。期限固定，不延長、不縮短；全員提前回覆也保持 Todo。
 5. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、截止尚未到、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或全員通知、阻塞／範圍／決策變化，或到期收斂時才留言。
-6. 等待期間讀取留言並推動 OWNER 與建立者雙方確認；一般 TASK 由建立者確認，OWNER 自建則由任一 Commenter 確認。到期前不得 PATCH status。
-7. 到期後依 implement、no implementation、no consensus 三條路徑留下精確 marker；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
+6. 等待期間讀取留言並收集意見；一般 TASK 的建立者、OWNER 自建 TASK 的任一 Commenter，應在期限內留下明確確認，優先用「【確認結論】」，也可明確表示同意或交接。期限內的建立者／共同確認者確認可作為收尾證據，到期後不得再因等待確認而延長窗口；到期前不得 PATCH status。
+7. 到期後依下列精確 marker 與順序收尾；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
+   - 實作：OWNER「【結論】」→OWNER「【實作任務】工作區：<工作區名稱>｜TASK：<TASK 名稱>」；建立者／共同確認者的有效確認可在期限內、OWNER 結論前或後留下。不得使用「【結論：實作】」或「【結論：implement】」。
+   - 不實作：OWNER「【結論：不實作】」→建立者／共同確認者「【確認結論】」。
+   - 未達共識：OWNER「【未達共識】」並逐行填寫尚未解決的分歧、缺少的確認或資訊、下次重新思考前的建議。
 8. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
 ${canonicalWorkspaceDirectory()}
 9. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
@@ -1946,7 +1977,7 @@ ${memberIds}
 CI 摘要（driver 已預跑，信任它，不要自己重跑各 branch 測試）：
 ${ci || '（本 tick 無 branch 有新 commit）'}
 ${API_RULES(jar)}
-巡檢流程（⚠️ 你有 12 分鐘硬時限，優先序：老闆回覆 > 綠燈合併 > 紅燈退回 > 催辦。時間不夠就少做，下次巡檢還會再來）：
+巡檢流程（⚠️ 你有 ${timeoutMinutes} 分鐘硬時限，優先序：老闆回覆 > 綠燈合併 > 紅燈退回 > 催辦。時間不夠就少做，下次巡檢還會再來）：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks 全覽
 ${crossRepoRule(scenario)}
 2. [討論] task（title 以「[討論]」開頭）——這是你與老闆（${bossName}，真人）的對話串：
@@ -1959,8 +1990,8 @@ ${crossRepoRule(scenario)}
    - CI 有 SKIP → 不可當成 PASS；人工審 diff、task 驗收證據與成員實際檢查，證據足夠才可 merge，否則留言缺少的驗證並退回 Doing
    - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
    - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"}，保留原 assignee 等待 Owner 後續決定
-4. status=Doing 沒動靜的：催辦留言。無 assignee Todo 的實作 task：依 eligible profile/負載 PATCH assignee，留下「【OWNER派工】」（負責人、專長理由、下一個可驗收成果）；沒有 eligible runner 才留「[ESCALATE]」，不等待 member 自行認領。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）：先檢查是否已用 [CROSS-REPO] 轉移過——沒轉移過，依上方跨 repo 判斷規則轉移；已轉移過、且上一輪已有相同結論、環境沒有變化，才可以跳過
-5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task
+4. status=Doing 沒動靜的：催辦留言。無 assignee Todo 的實作 task：依 eligible profile/負載 PATCH assignee，留下「【OWNER派工】」（負責人、專長理由、下一個可驗收成果）；沒有 eligible runner 才留「[ESCALATE]」，不等待 member 自行認領；同一 task 已有你留過且狀況未變的 [ESCALATE]，不要重複留言。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）：先檢查是否已用 [CROSS-REPO] 轉移過——沒轉移過，依上方跨 repo 判斷規則轉移；已轉移過、且上一輪已有相同結論、環境沒有變化，才可以跳過
+5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task。merge 後 master 會自動部署；需要 live 驗收時，等待自動部署完成（health rev 與 master 一致）再做 live 驗收，可用 GET /api/health 的 rev 欄位確認；rev 長時間不一致才留一次 [ESCALATE]
 6. 結束輸出 3 行內總結（合了幾件、退了幾件、老闆有無新指示）`;
 }
 
@@ -2144,7 +2175,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         model: OWNER_REVIEW_MODEL,
         preflightOptions: ownerSessionOptions,
         normal: () => runSession(ownerLabel, 'codex', OWNER_REVIEW_MODEL,
-          ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆'),
+          ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000)),
           { ...ownerSessionOptions, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` }),
       });
       ownerSessionsRun++;
@@ -2170,26 +2201,35 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       }).flatMap((m) => m.userId ? [m.userId] : []);
       const readyToRun = selectAssignedMembers(work2, eligibleMembers, memberBudget, blockedUserIds);
       if (readyToRun.length) {
-        for (const m of readyToRun) ensureWorktree(m, p.scenario);
+        const syncNotes = new Map<string, string>();
+        for (const m of readyToRun) {
+          ensureWorktree(m, p.scenario);
+          const sync = syncWorktreeWithMaster(wt(m));
+          console.log(`[${m.name}-巡檢] worktree 同步 master：${sync}`);
+          if (sync === 'conflict-aborted') {
+            syncNotes.set(m.user, 'Driver 通知：你的分支與 master 有衝突（driver 自動同步已 abort）。本輪視同 owner 要求同步 master：依序 git status → git merge master → 解衝突 → git add 衝突檔 → git commit 完成 merge，再繼續 task。\n\n');
+          }
+        }
         const hour = new Date().getHours();
         await settleAllOrThrow(readyToRun.map(async (m) => {
           await sleep(jitter(1, 5));
+          const workSession = workSessionForMember(m);
           const gated = await runActorSessionWithNotificationGate({
             label: `${m.name}-巡檢`,
             actor: m,
             jar: join(wt(m), `.jar-notification-${m.user}.txt`),
-            runner: m.runner,
-            model: m.model,
+            runner: workSession.route.runner,
+            model: workSession.route.model,
             notificationRoute: notificationRouteForMember(m),
-            preflightOptions: { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: m.fallback },
-            normal: () => runSession(`${m.name}-巡檢`, m.runner, m.model, memberPrompt(m, p.wsId, hour, p.scenario),
-              { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: m.fallback }),
+            preflightOptions: { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: workSession.fallback },
+            normal: () => runSession(`${m.name}-巡檢`, workSession.route.runner, workSession.route.model, (syncNotes.get(m.user) ?? '') + memberPrompt(m, p.wsId, hour, p.scenario),
+              { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: workSession.fallback }),
           });
           if (!gated) {
             console.log(`[${m.name}-巡檢] notification gate 未完成，略過一般 session`);
             return;
           }
-          const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, hour));
+          const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, hour, workSession.route.model));
           if (result.errored || result.timedOut) {
             console.log(`[${m.name}-巡檢] session 未成功，保留未提交 diff，不進入 branch commit`);
           }

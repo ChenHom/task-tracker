@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { db } from './db';
 import { resolveSafePath } from './staticPath';
 import { runWithRequestContext } from './requestContext';
@@ -65,6 +66,15 @@ const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 
 
 // CSRF：mutating 請求若帶 Origin，必須同源。無 Origin（curl/API client）放行——SameSite=Strict cookie 是主防線。
+// 啟動時讀一次部署中的 git rev，供 /api/health readback 與 owner live 驗收比對
+const GIT_REV = (() => {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: join(__dirname, '..') }).toString().trim();
+  } catch {
+    return 'unknown';
+  }
+})();
+
 function isCsrfSafe(req: IncomingMessage): boolean {
   const m = req.method ?? 'GET';
   if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return true;
@@ -148,7 +158,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
   if (req.url === '/api/health') {
     const row = db.prepare('SELECT 1 AS ok').get() as { ok: number };
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', db: row.ok === 1 }));
+    res.end(JSON.stringify({ status: 'ok', db: row.ok === 1, rev: GIT_REV }));
     return;
   }
 

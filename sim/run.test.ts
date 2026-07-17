@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
@@ -40,10 +41,12 @@ import {
   shouldFallbackToModel,
   sweepCandidateUsesRepoSlot,
   sweepBudgets,
+  syncWorktreeWithMaster,
   validateGitRootFacts,
   withRunLock,
   workspaceFitsSweepBudget,
   writePromptArtifact,
+  workSessionForMember,
   isQuotaExhaustion,
   notificationGatePrompt,
   processNotificationGate,
@@ -61,6 +64,21 @@ const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
 const ownerProbe = source.match(/function probeOwnerRunner\(\): Promise<boolean> \{[\s\S]*?\n\}/)?.[0];
 assert.ok(ownerProbe?.includes('const child = execFile('), 'owner probe 必須保留 child，才能管理 stdin lifecycle');
 assert.ok(ownerProbe?.includes('child.stdin?.end()'), 'owner probe 必須關閉 Codex stdin，避免等待 EOF 而逾時');
+assert.ok(source.includes('const SWEEP_OWNER_TIMEOUT = 20 * 60 * 1000;'), 'owner sweep 基準必須至少 20 分鐘');
+assert.ok(source.includes('const SWEEP_MEMBER_TIMEOUT = 20 * 60 * 1000;'), 'team member sweep 必須至少 20 分鐘');
+assert.ok(
+  source.includes('Math.min(SWEEP_OWNER_TIMEOUT + ownerState.streak * 6 * 60 * 1000, 30 * 60 * 1000)'),
+  'owner sweep 必須保留既有 30 分鐘 adaptive cap',
+);
+assert.ok(
+  source.includes('function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string'),
+  'owner sweep prompt 必須接受本輪 timeout 分鐘數',
+);
+assert.ok(source.includes('你有 ${timeoutMinutes} 分鐘硬時限'), 'owner sweep prompt 必須插入本輪 timeout 分鐘數');
+assert.ok(
+  source.includes("ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000))"),
+  'owner sweep 必須把計算後的 timeout 分鐘數傳進 prompt',
+);
 assert.ok(!source.includes('const MEMBERS: Member[] = ['), 'MEMBERS 不應在 sim/run.ts 寫死 email/name');
 assert.ok(!source.includes('let REPO_ROOT'), 'scenario 狀態不應拆成多個可不同步的 global');
 assert.ok(!source.includes('let WORK_DIR'), 'scenario 狀態不應拆成多個可不同步的 global');
@@ -77,6 +95,10 @@ assert.strictEqual(source.match(/請該成員 merge master/g)?.length, 2, '兩�
 assert.strictEqual(MAIN_OWNER_TOOLS, 'Bash(curl:*)', 'main owner session 只能使用 curl');
 assert.ok(source.includes('CI 有 SKIP'), 'owner prompt 必須保留 SKIP 人工審查規則');
 assert.ok(source.includes('[CROSS-REPO]'), '跨 repo 轉移需要獨立標記，不能沿用死路的 [ESCALATE]');
+assert.ok(
+  (source.match(/同一 task 已有你留過且狀況未變的 \[ESCALATE\]，不要重複留言/g)?.length ?? 0) >= 2,
+  'member 與 owner sweep prompt 都必須含 ESCALATE 去重規則',
+);
 assert.strictEqual(
   source.match(/ensureMainWorkspaceCandidate\(wsScenario\);\n\s*ensureCanonicalWorkspaceCandidates\(wsScenario\);/g)?.length,
   1,
@@ -140,6 +162,14 @@ const mainPromptSource = source.slice(
 );
 assert.ok(!mainPromptSource.includes('${BASE}/#/task/<id>'), '主工作區 prompt 不得回寫 URL');
 assert.ok(!mainPromptSource.includes('HANDOFF-PENDING'), '主工作區 prompt 不得使用 handoff marker');
+assert.ok(
+  mainPromptSource.includes('期限內的建立者／共同確認者確認可作為收尾證據'),
+  '主工作區 owner prompt 必須說明期限內確認可供到期收尾使用',
+);
+assert.ok(
+  mainPromptSource.includes('「【結論：實作】」或「【結論：implement】」'),
+  '主工作區 owner prompt 必須排除不被 validator 接受的實作結論 marker',
+);
 assert.ok(
   (source.match(/runActorSessionWithNotificationGate\(/g)?.length ?? 0) >= 8,
   '一般 run 與 owner/team sweep 的每條自動 session 路徑都必須經 notification gate wrapper',
@@ -701,6 +731,29 @@ assert.deepStrictEqual(
   { runner: 'codex', model: 'gpt-5.4-mini' },
   'user02 應沿用 Codex 預設 notification route',
 );
+assert.deepStrictEqual(
+  workSessionForMember(user06),
+  { route: { runner: 'claude', model: 'claude-sonnet-5' }, fallback: undefined },
+  'AGY 無副作用試行結束後，user06 一般工作必須恢復 Sonnet 5 且不得 fallback',
+);
+assert.deepStrictEqual(
+  workSessionForMember(user02),
+  { route: { runner: 'codex', model: 'gpt-5.4-mini' }, fallback: undefined },
+  '未設 override 的 user02 必須維持既有一般工作路由',
+);
+const normalWorkSessions = source.match(
+  /normal: \(\) => runSession\([\s\S]{0,160}?workSession\.route\.runner[\s\S]{0,160}?workSession\.route\.model[\s\S]{0,800}?fallback: workSession\.fallback/g,
+) ?? [];
+assert.strictEqual(
+  normalWorkSessions.length,
+  2,
+  'full sprint 與 team sweep 的一般工作都必須使用 resolved runner/model/fallback',
+);
+assert.strictEqual(
+  (source.match(/commitMemberWork\(m, (?:round|hour), workSession\.route\.model\)/g) ?? []).length,
+  2,
+  'full sprint 與 team sweep 的 driver commit 都必須記錄實際一般工作模型',
+);
 assert.strictEqual(isQuotaExhaustion('HTTP 429: quota exhausted'), true, 'quota 錯誤應可辨識');
 assert.strictEqual(isQuotaExhaustion('agy binary not found'), false, 'agy 不存在不可誤判為 quota');
 assert.strictEqual(isQuotaExhaustion('authentication failed'), false, '登入失敗不可誤判為 quota');
@@ -1029,6 +1082,50 @@ async function runAsyncPolicyTests(): Promise<void> {
   assert.strictEqual(delayedFinished, true, '其中一個 member 失敗仍須等待其他 session 結束後才解鎖');
   assert.ok(!existsSync(finallyLockPath));
 }
+
+// ── 派工前置同步：syncWorktreeWithMaster（真 git 暫存 repo）──
+{
+  const repo = mkdtempSync(join(tmpdir(), 'sync-wt-'));
+  const g = (args: string[], cwd = repo) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  g(['init', '-b', 'master']);
+  g(['config', 'user.email', 't@t']);
+  g(['config', 'user.name', 't']);
+  writeFileSync(join(repo, 'a.txt'), '1\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'c1']);
+  g(['worktree', 'add', join(repo, 'wt'), '-b', 'sim/u', 'master']);
+  writeFileSync(join(repo, 'a.txt'), '2\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'c2']); // master 前進，branch 落後
+  assert.strictEqual(syncWorktreeWithMaster(join(repo, 'wt')), 'merged', '落後且無衝突 → 自動 merge master');
+  assert.strictEqual(g(['rev-parse', 'sim/u']), g(['rev-parse', 'master']), '同步後與 master 齊');
+  assert.strictEqual(syncWorktreeWithMaster(join(repo, 'wt')), 'up-to-date', '已同步 → up-to-date');
+  // dirty worktree → 跳過不動（不碰在製品）
+  writeFileSync(join(repo, 'wt', 'a.txt'), 'dirty\n');
+  assert.strictEqual(syncWorktreeWithMaster(join(repo, 'wt')), 'skipped-dirty');
+  g(['checkout', '--', 'a.txt'], join(repo, 'wt'));
+  // 衝突 → abort 並回報，worktree 保持乾淨
+  writeFileSync(join(repo, 'wt', 'a.txt'), 'branch-change\n');
+  g(['add', '.'], join(repo, 'wt'));
+  g(['commit', '-m', 'wt1'], join(repo, 'wt'));
+  writeFileSync(join(repo, 'a.txt'), 'master-change\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'c3']);
+  assert.strictEqual(syncWorktreeWithMaster(join(repo, 'wt')), 'conflict-aborted', '衝突應 abort 回報');
+  assert.strictEqual(g(['status', '--porcelain'], join(repo, 'wt')), '', 'abort 後 worktree 應乾淨');
+}
+assert.ok(
+  source.includes('worktree 同步 master'),
+  'sweep 派工前必須呼叫 syncWorktreeWithMaster 並記錄結果',
+);
+assert.ok(
+  source.includes('不要對 localhost:3000 做 live 驗收'),
+  'member 完成定義必須排除 live 驗收（分支測試綠即完成）',
+);
+assert.ok(
+  source.includes('等待自動部署完成（health rev 與 master 一致）再做 live 驗收'),
+  'owner sweep 必須在自動部署完成後才做 live 驗收',
+);
 
 runAsyncPolicyTests()
   .then(() => console.log('sim/run.test.ts OK'))

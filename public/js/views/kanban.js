@@ -135,13 +135,11 @@ export const KanbanView = {
           <div class="kanban-cards" id="cards-Todo"></div>
         </div>
         <div class="kanban-column col-doing">
-          <div class="kanban-column-title"><span>Doing</span><span class="inline-add-btn-slot" id="add-btn-Doing"></span></div>
-          <div class="inline-add-form-slot" id="add-form-Doing"></div>
+          <div class="kanban-column-title"><span>Doing</span></div>
           <div class="kanban-cards" id="cards-Doing"></div>
         </div>
         <div class="kanban-column col-review">
-          <div class="kanban-column-title"><span>Review</span><span class="inline-add-btn-slot" id="add-btn-Review"></span></div>
-          <div class="inline-add-form-slot" id="add-form-Review"></div>
+          <div class="kanban-column-title"><span>Review</span></div>
           <div class="kanban-cards" id="cards-Review"></div>
         </div>
         <div class="kanban-column col-done">
@@ -160,7 +158,7 @@ export const KanbanView = {
      * @returns {void}
      */
     function clearInlineAdders() {
-      for (const colStatus of ['Todo', 'Doing', 'Review']) {
+      for (const colStatus of ['Todo']) {
         const btnSlot = document.getElementById(`add-btn-${colStatus}`);
         const formSlot = document.getElementById(`add-form-${colStatus}`);
         if (btnSlot) btnSlot.textContent = '';
@@ -171,9 +169,7 @@ export const KanbanView = {
     function setupInlineAdders() {
       clearInlineAdders();
       if (!canCreateTask) return;
-      const colStatuses = isMainWorkspace || !hasRole(currentRole, 'Member')
-        ? ['Todo']
-        : ['Todo', 'Doing', 'Review'];
+      const colStatuses = ['Todo'];
       for (const colStatus of colStatuses) {
         const btnSlot = document.getElementById(`add-btn-${colStatus}`);
         const formSlot = document.getElementById(`add-form-${colStatus}`);
@@ -236,7 +232,6 @@ export const KanbanView = {
                     title,
                     description,
                     priority: 'Medium',
-                    status: colStatus,
                     projectId,
                     assigneeId: null,
                     dueAt: null

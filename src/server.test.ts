@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { clientIp } from './clientIp';
-import { taskPatchRole } from './server';
+import { handle, taskPatchRole } from './server';
 
 const socketIp = '203.0.113.10';
 
@@ -34,4 +34,13 @@ assert.strictEqual(taskPatchRole({ status: 'Doing' }), 'Member');
 assert.strictEqual(taskPatchRole({ description: 'x', title: 'y' }), 'Member');
 assert.strictEqual(taskPatchRole({}), 'Member');
 
-console.log('server.test.ts OK');
+// /api/health 需回報部署中的 git rev，供部署 readback 與 owner live 驗收比對
+void (async () => {
+  let body = '';
+  const req = { url: '/api/health', method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' } };
+  const res = { writeHead: () => {}, end: (chunk?: unknown) => { body = String(chunk ?? ''); } };
+  await handle(req as never, res as never);
+  const health = JSON.parse(body);
+  assert.match(String(health.rev), /^[0-9a-f]{7,40}$/, 'health 必須帶 git rev');
+  console.log('server.test.ts OK');
+})().catch((e) => { console.error(e); process.exit(1); });

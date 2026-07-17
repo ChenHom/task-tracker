@@ -87,7 +87,7 @@
 ## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex + Antigravity 混合車隊）
 
 - [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-06、join）→ spawn headless 子行程
-- [x] 混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna；user06=Antigravity CLI Gemini 3.5 Flash (High)，quota 滿時改用 Claude Sonnet 4.6 (Thinking)
+- [x] 混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna；Claude 五小時額度恢復後，user06 notification preflight=Codex gpt-5.4-mini，正常工作=Claude claude-sonnet-5（無 AGY fallback）
 - [x] 主題 Dogfooding：owner prompt 內嵌本專案真實技術債清單（ponytail: 註記）出題
 - [x] 全員 QA 規則：可重現的系統問題建 `[BUG]` task（重現步驟/預期 vs 實際/原始回應），owner 收尾 triage
 - [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
@@ -98,7 +98,7 @@
 - [x] scenario 啟用前驗證 Git top-level/master，commit 前再驗 worktree/branch；legacy `technical-debt` report 明確映射，未知 scenario fail closed
 - [x] `sim-logs/.run.lock` 序列化 manual/timer 流程並回收 dead-PID lock；平行 member 全部 settle 後才解鎖
 - [x] 每個既有自動 Owner／member session 先處理登入當下的未讀通知；主工作區需驗證新的非自我 mention 留言後才已讀，來源 403/404 會記錄並清除，其他失敗保留未讀並跳過該 actor 的一般工作（不含前端通知 UI 或 user09 runner）
-- [x] Owner runner probe 只影響 owner 預算；`team` 不做全域 probe，member 各自依 runner 執行。user06 僅在 agy 回報 quota exhaustion 且未逾時時切換 fallback；agy 缺少、未登入、一般錯誤或逾時都停工並保留 diff
+- [x] Owner runner probe 只影響 owner 預算；`team` 不做全域 probe，member 各自依 runner 執行。user06 notification preflight 使用 Codex gpt-5.4-mini，正常工作使用 Claude claude-sonnet-5 且無 AGY fallback；2026-07-16 AGY 試行沒有產生副作用，僅保留為歷史證據
 - [x] `sim/tsconfig.json` 納入 `npm test`，讓 sim harness 也受 strict TypeScript 檢查
 - [x] `docs/operations.md` 記錄手動模式、scenario、systemd owner/team timers、logs、lock 與權限邊界
 - [x] 跑完整端到端 `--fast` self-directed sprint（`sim-run-1783392991269`）
@@ -118,16 +118,17 @@
 
 ### 跨 workspace 搬移 task（原 `451c2509`，已轉移至 `11983af5` @ workspace `d9da9945`，High）
 
-> `451c2509` 卡在 workspace `11db3331`（scenario=brain，repoRoot 不合）32 小時後人工轉移；本功能規格未變，下列 checklist 仍待實作。詳見 [2026-07-10-crossrepo-workspace-routing.md](../superpowers/plans/2026-07-10-crossrepo-workspace-routing.md)。
+> `451c2509` 卡在 workspace `11db3331`（scenario=brain，repoRoot 不合）32 小時後人工轉移。詳見 [2026-07-10-crossrepo-workspace-routing.md](../superpowers/plans/2026-07-10-crossrepo-workspace-routing.md)。
+> **2026-07-17 使用者裁定：本項直接視為 done，不再處理。** 註：master 程式碼已有 `moveTask`（`src/task.ts:305`）、`task.moved` projection（`src/task.ts:429`）與 `POST /api/tasks/:id/move`（`src/server.ts:518`）實作；下列 checklist 未逐項驗證（未驗證）。
 
-- [ ] `moveTask(actorId, taskId, targetWorkspaceId)` append `task.moved`，payload 含 source/target workspace
-- [ ] projection 同步更新 `workspace_id`，並清掉舊 workspace 所屬的 `project_id`
-- [ ] actor 在 source/target 均至少為 Member；source/target 都必須 active；archived task 不可搬移
-- [ ] assignee 不在 target 時走既有 invite/join 流程，不隱式寫 read model；這是只限本 task 原 assignee、固定 Member 角色的受限例外，不得變成任意邀人或指定角色的旁路
-- [ ] 已存在 pending invite 不可讓搬移失敗；測試必須證明受限例外沒有放寬一般 Member API 的 Admin+ 邊界
-- [ ] 新增 `POST /api/tasks/:id/move`，使用既有 command error 映射
-- [ ] 自動測試覆蓋成功、權限不足、inactive workspace、archived task、`project_id` 清空與 pending invite
-- [ ] 真 HTTP smoke 用 A=source only、B=target only、C=雙邊成員驗證搬移前後 `GET/PATCH/comments` 權限完整反轉
+- [x] `moveTask(actorId, taskId, targetWorkspaceId)` append `task.moved`，payload 含 source/target workspace
+- [x] projection 同步更新 `workspace_id`，並清掉舊 workspace 所屬的 `project_id`
+- [x] actor 在 source/target 均至少為 Member；source/target 都必須 active；archived task 不可搬移
+- [x] assignee 不在 target 時走既有 invite/join 流程，不隱式寫 read model；這是只限本 task 原 assignee、固定 Member 角色的受限例外，不得變成任意邀人或指定角色的旁路
+- [x] 已存在 pending invite 不可讓搬移失敗；測試必須證明受限例外沒有放寬一般 Member API 的 Admin+ 邊界
+- [x] 新增 `POST /api/tasks/:id/move`，使用既有 command error 映射
+- [x] 自動測試覆蓋成功、權限不足、inactive workspace、archived task、`project_id` 清空與 pending invite
+- [x] 真 HTTP smoke 用 A=source only、B=target only、C=雙邊成員驗證搬移前後 `GET/PATCH/comments` 權限完整反轉
 
 > 最新 user03 sweep 未改程式。Brain repo 的 `20e8b2c` 只包含 `.jar-user03.txt`，不是 task-tracker 功能實作，不應合併當作交付。
 
@@ -261,3 +262,15 @@
 > 實測：`npx tsc --noEmit`、`npm run build` 與 `npx tsx src/comment.test.ts` 通過；`node --import tsx src/test.ts`
 > 目前停在 `frontend.test.ts:603`，原因是該測試仍期待已移除的「刪除」按鈕，尚未同步測試契約。另起 `PORT=3999` 乾淨 server
 > 對 `DELETE /api/comments/whatever` 實測回 `405 {"error":"留言不可刪除，只能編輯"}`。commit `5b01859`。
+
+## Phase 22 — Sim 制度修正：ESCALATE 降噪四項（2026-07-17）✅
+
+> 動機：dev.db 777 則留言中 111 則（14%）是 [ESCALATE]，歸因為部署漂移、worktree 落後、重複留言、驗收錯層。
+> 計畫：`docs/superpowers/plans/2026-07-17-sim-process-fixes.md`。操作說明：`docs/operations.md`。
+
+- [x] `/api/health` 曝露 `rev`（部署中的 git SHA），供 readback 與 owner live 驗收比對（`src/server.ts`）
+- [x] master 自動部署：`sim-autodeploy.path` 監看本地 master ref → build → restart → rev readback；失敗推 Discord 且不部署（`deploy/sim-autodeploy.*`）。已實測 commit 觸發後 health rev 與 master 一致
+- [x] ESCALATE 推播：sweep 後 `sim/escalateNotify.ts` 掃新 [ESCALATE] 推 Discord（`sim/notify-human.sh`，openclaw CLI）；state 去重（`~/.local/state/sim-escalate/`）。已實測管道送達（Message ID 1527684541110816821）
+- [x] ESCALATE 留言去重：member 與 owner sweep prompt 加「同 task 狀況未變不重複留言」規則 + 契約測試（`sim/run.ts`、`sim/run.test.ts`）
+- [x] 派工前置同步：`syncWorktreeWithMaster` 於 sweep 派工前自動 merge master（dirty 跳過、衝突 abort 並在該成員 prompt 注入 merge 指示）+ 真 git 暫存 repo 測試
+- [x] 驗收分層：member 完成定義排除 live 驗收；owner sweep 於自動部署完成（health rev 與 master 一致）後才做 live 驗收 + 契約測試

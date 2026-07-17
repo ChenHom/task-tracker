@@ -173,6 +173,7 @@ interface OrderedComment {
   comment_id: string;
   user_id: string;
   content: string;
+  created_at: string;
 }
 
 interface MainTaskContext {
@@ -220,6 +221,11 @@ function isMarker(content: string, marker: string): boolean {
   return content.startsWith(marker);
 }
 
+function isPreDeadlineConfirmation(content: string): boolean {
+  return isMarker(content, '【確認結論】')
+    || /(?:同意|支持).*(?:採用|實作|方向)|請交由.+接手/u.test(content);
+}
+
 function parseDecision(content: string): MainDiscussionOutcome | null {
   if (isMarker(content, '【未達共識】')) {
     const fields = [
@@ -249,7 +255,7 @@ function parseImplementationHandoff(content: string): {
 
 function loadOrderedComments(taskId: string, database: DatabaseSync): OrderedComment[] {
   return database.prepare(
-    `SELECT rowid, comment_id, user_id, content
+    `SELECT rowid, comment_id, user_id, content, created_at
        FROM comments
       WHERE task_id = ?
       ORDER BY rowid`,
@@ -296,7 +302,9 @@ export function resolveMainDiscussionConclusion(
     .map((comment) => ({ comment, outcome: parseDecision(comment.content) }))
     .filter((entry): entry is { comment: OrderedComment; outcome: MainDiscussionOutcome } => entry.outcome !== null);
   const latestDecision = decisions.at(-1);
-  if (!latestDecision) throw new CommandError('尚未留下合法的主工作區結論');
+  if (!latestDecision) {
+    throw new CommandError('尚未留下合法的主工作區結論；實作請依序留下「【結論】」→「【確認結論】」→「【實作任務】工作區：...｜TASK：...」');
+  }
 
   if (latestDecision.outcome === 'no_consensus') {
     return {
@@ -315,14 +323,22 @@ export function resolveMainDiscussionConclusion(
   }
 
   const creatorId = getTaskCreatorId(taskId, database);
+  const isEligibleConfirmer = (comment: OrderedComment) => (creatorId === ownerId
+    ? isMainCommenter(comment.user_id, database)
+    : comment.user_id === creatorId);
   const confirmation = laterComments.find((comment) => (
     comment.rowid > latestDecision.comment.rowid
     && isMarker(comment.content, '【確認結論】')
-    && (creatorId === ownerId
-      ? isMainCommenter(comment.user_id, database)
-      : comment.user_id === creatorId)
+    && isEligibleConfirmer(comment)
+  )) ?? laterComments.find((comment) => (
+    comment.rowid < latestDecision.comment.rowid
+    && Date.parse(comment.created_at) <= dueMs
+    && isPreDeadlineConfirmation(comment.content)
+    && isEligibleConfirmer(comment)
   ));
-  if (!confirmation) throw new CommandError('尚未取得建立者或 Commenter 的確認結論');
+  if (!confirmation) {
+    throw new CommandError('尚未取得建立者或 Commenter 的確認結論；請留下「【確認結論】」，或在截止前明確表示同意／交接');
+  }
 
   if (latestDecision.outcome === 'no_implementation') {
     return {

@@ -1,10 +1,46 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Build output
 dist/
+
+# Runtime data
 data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Environment variables
+.env
+.env.*
+
+# Simulation
 sim-logs/
 sim-work/
-.worktrees/
+
+# AI tool configs (personal/local)
+.claude/
+.codex/
+.agents/
+
+# Playwright
 .playwright-mcp/
 .playwright-cli/
+
+# Git worktrees
+.worktrees/
+
+# Temp/generated
 .jar-*.txt
 .cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+
+# Personal notes
+memory/

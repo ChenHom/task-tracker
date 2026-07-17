@@ -61,6 +61,31 @@ tail -n 80 /var/log/nginx/error.log
 
 If `/tracker/` returns `502`, first check whether `task-tracker.service` is active and whether port 3000 answers `/api/health`.
 
+## Autodeploy（master 自動部署）
+
+`sim-autodeploy.path` 監看本地 `refs/heads/master`（含 `packed-refs`），變動即觸發 `deploy/sim-autodeploy.sh`：等待進行中的 sim sweep（最多 30 分）→ `npm run build` → 重啟 `task-tracker.service` → 以 `/api/health` 的 `rev` 欄位 readback 確認與 `git rev-parse master` 一致。build 失敗或 readback 不符時**不會**留下新版（服務續跑舊版），並經 `sim/notify-human.sh` 推 Discord。
+
+```bash
+systemctl --user status sim-autodeploy.path        # 監看是否啟用
+journalctl --user -u sim-autodeploy.service -n 40  # 部署執行紀錄
+tail ~/.local/state/sim-autodeploy/deploy.log      # 部署結果（deployed OK / BUILD FAILED / READBACK MISMATCH）
+cat ~/.local/state/sim-autodeploy/deployed_rev     # 目前已部署的 rev
+systemctl --user disable --now sim-autodeploy.path # 停用自動部署
+```
+
+安裝與初始化見 `deploy/README.md`（state 初始化：`git rev-parse master > ~/.local/state/sim-autodeploy/deployed_rev`，避免啟用當下重複部署）。
+
+## ESCALATE 推播
+
+每輪 sweep 結束後 `sim-sweep-cron.sh` 會跑 `node --import tsx sim/escalateNotify.ts`：掃 `data/dev.db` 中 state 記錄點之後的新 `[ESCALATE]` 留言，逐則經 `sim/notify-human.sh`（openclaw CLI）推到 Discord。state 檔為 `~/.local/state/sim-escalate/state.json`（記錄已掃過的最大 comment rowid）。
+
+```bash
+node --import tsx sim/escalateNotify.ts   # 手動掃一次（輸出 escalate-notify: N new）
+sim/notify-human.sh "測試訊息"            # 驗證 Discord 管道
+```
+
+首次啟用（或 state 遺失重建）前先把 state 初始化到目前最大 rowid，避免歷史 ESCALATE 灌爆頻道：見 `docs/superpowers/plans/2026-07-17-sim-process-fixes.md` Task 3 Step 8 的初始化指令。
+
 ## AI quota dependency
 
 Quota provider polling belongs to the separate `/home/hom/services/ai-quota` repo. Its `ai-quota.timer` runs a one-shot poll every five minutes and writes the shared snapshot; task-tracker only validates and reads that file.
@@ -135,14 +160,14 @@ Owner 依成員 profile 與目前 Todo/Doing 負載直接 PATCH `assignee_id`，
 - `task-tracker.service` must answer HTTP 200 at `http://localhost:3000/api/health`.
 - Run `npm run seed` once so `user01-06@test.local` and `user09@test.local` exist.
 - The `claude`, `codex`, and `agy` CLIs must be installed, authenticated, and available in `PATH`.
-- `agy` member sessions use headless `agy --print --model <model> --mode accept-edits`; only an explicit quota/rate-limit error may retry with the configured fallback model. Missing CLI, authentication failure, general error, or timeout stops that member session without fallback.
-- 2026-07-16 AGY curl capability probe was invoked once only:
+- Claude's five-hour quota has recovered, so user06 ordinary work uses Claude `claude-sonnet-5` with no AGY fallback; its notification preflight remains Codex `gpt-5.4-mini`. No current route uses or authorizes `--dangerously-skip-permissions`.
+- Historical evidence only: the following AGY curl capability probe was invoked once on 2026-07-16:
 
   ```bash
   agy --print --model 'Gemini 3.5 Flash (High)' --mode accept-edits --dangerously-skip-permissions 'Use curl to GET http://localhost:3000/api/health. Output the HTTP status and JSON body only. Do not modify any file or call a POST, PATCH, PUT, or DELETE endpoint.'
   ```
 
-  Its exact result was `exit 1: socket: operation not permitted`, before curl, so no curl or board mutation occurred and it did not output HTTP 200 or the health JSON. user06 normal work remains AGY; notification preflight remains Codex until AGY can perform the required curl side effect without widening shared runner permissions. Available main-workspace sources require a verified actor comment before being marked read, and preflight failures remain unread; the documented `403`/`404` unavailable-source handling still logs and marks the item read. Do not add shared `--dangerously-skip-permissions`.
+  Its exact result was `exit 1: socket: operation not permitted`, before curl, so no curl or board mutation occurred and it did not output HTTP 200 or the health JSON. This no-side-effect AGY trial is historical; user06 ordinary work has been restored to Claude. Available main-workspace sources require a verified actor comment before being marked read, and preflight failures remain unread; the documented `403`/`404` unavailable-source handling still logs and marks the item read. Do not add shared `--dangerously-skip-permissions`.
 - A new sprint requires the selected scenario repo to be on `master` with a clean main worktree.
 
 ### Manual start
