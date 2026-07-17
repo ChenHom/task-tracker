@@ -162,6 +162,9 @@ assert.throws(() => createTask('u1', WS, { title: '' }, db), CommandError, '空 
 assert.throws(() => createTask('u1', WS, { title: 'x', priority: 'Urgent' }, db), CommandError, '非法 priority 應拒');
 assert.throws(() => createTask('u1', WS, { title: 'x', dueAt: 'not-a-date' }, db), CommandError, '非法 dueAt 應拒');
 assert.throws(() => createTask('u1', WS, {}, db), CommandError, '缺 title 應拒');
+assert.throws(() => createTask('u1', WS, { title: 'x', status: 'Doing' }, db), CommandError, '非 Todo 初始 status 應拒');
+const explicitTodoId = createTask('u1', WS, { title: 'Explicit todo', status: 'Todo' }, db);
+assert.strictEqual(one(explicitTodoId).status, 'Todo', 'status: Todo 應允許並建立 Todo');
 
 // ── workspace 生命週期 gate：archived / 不存在的 workspace 不可建 task（防孤兒資料）──
 seedWs('ws-arch', 'archived');

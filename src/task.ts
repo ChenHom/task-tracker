@@ -157,6 +157,9 @@ export function createTask(actorId: string, workspaceId: string, input: CreateTa
   ) {
     throw new CommandError('Commenter 建立 task 只能提交 title 與 description');
   }
+  if (input.status != null && input.status !== 'Todo') {
+    throw new CommandError('新任務只能建立於 Todo 欄');
+  }
 
   let title = validateTitle(input.title);
   const description = validateDescription(input.description);
