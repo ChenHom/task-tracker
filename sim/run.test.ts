@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
@@ -40,6 +41,7 @@ import {
   shouldFallbackToModel,
   sweepCandidateUsesRepoSlot,
   sweepBudgets,
+  syncWorktreeWithMaster,
   validateGitRootFacts,
   withRunLock,
   workspaceFitsSweepBudget,
@@ -1080,6 +1082,42 @@ async function runAsyncPolicyTests(): Promise<void> {
   assert.strictEqual(delayedFinished, true, '其中一個 member 失敗仍須等待其他 session 結束後才解鎖');
   assert.ok(!existsSync(finallyLockPath));
 }
+
+// ── 派工前置同步：syncWorktreeWithMaster（真 git 暫存 repo）──
+{
+  const repo = mkdtempSync(join(tmpdir(), 'sync-wt-'));
+  const g = (args: string[], cwd = repo) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  g(['init', '-b', 'master']);
+  g(['config', 'user.email', 't@t']);
+  g(['config', 'user.name', 't']);
+  writeFileSync(join(repo, 'a.txt'), '1\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'c1']);
+  g(['worktree', 'add', join(repo, 'wt'), '-b', 'sim/u', 'master']);
+  writeFileSync(join(repo, 'a.txt'), '2\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'c2']); // master 前進，branch 落後
+  assert.strictEqual(syncWorktreeWithMaster(join(repo, 'wt')), 'merged', '落後且無衝突 → 自動 merge master');
+  assert.strictEqual(g(['rev-parse', 'sim/u']), g(['rev-parse', 'master']), '同步後與 master 齊');
+  assert.strictEqual(syncWorktreeWithMaster(join(repo, 'wt')), 'up-to-date', '已同步 → up-to-date');
+  // dirty worktree → 跳過不動（不碰在製品）
+  writeFileSync(join(repo, 'wt', 'a.txt'), 'dirty\n');
+  assert.strictEqual(syncWorktreeWithMaster(join(repo, 'wt')), 'skipped-dirty');
+  g(['checkout', '--', 'a.txt'], join(repo, 'wt'));
+  // 衝突 → abort 並回報，worktree 保持乾淨
+  writeFileSync(join(repo, 'wt', 'a.txt'), 'branch-change\n');
+  g(['add', '.'], join(repo, 'wt'));
+  g(['commit', '-m', 'wt1'], join(repo, 'wt'));
+  writeFileSync(join(repo, 'a.txt'), 'master-change\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'c3']);
+  assert.strictEqual(syncWorktreeWithMaster(join(repo, 'wt')), 'conflict-aborted', '衝突應 abort 回報');
+  assert.strictEqual(g(['status', '--porcelain'], join(repo, 'wt')), '', 'abort 後 worktree 應乾淨');
+}
+assert.ok(
+  source.includes('worktree 同步 master'),
+  'sweep 派工前必須呼叫 syncWorktreeWithMaster 並記錄結果',
+);
 
 runAsyncPolicyTests()
   .then(() => console.log('sim/run.test.ts OK'))

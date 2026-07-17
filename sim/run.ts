@@ -1914,6 +1914,22 @@ function ensureWorktree(m: Member, scenario: Scenario): void {
   validateMemberWorktree(m);
 }
 
+// 派工前置同步：乾淨且落後 master 的 worktree 自動 merge master，消掉「分支落後 N commits」型 ESCALATE。
+// dirty 不動（在製品；memory: dirty FAIL 死鎖）；衝突則 abort 留給成員依 merge conflict 流程處理。
+export function syncWorktreeWithMaster(dir: string): 'merged' | 'up-to-date' | 'skipped-dirty' | 'conflict-aborted' {
+  const g = (args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  if (g(['status', '--porcelain']) !== '') return 'skipped-dirty';
+  const behind = Number(g(['rev-list', '--count', 'HEAD..master']));
+  if (behind === 0) return 'up-to-date';
+  try {
+    g(['merge', 'master', '--no-edit']);
+    return 'merged';
+  } catch {
+    try { g(['merge', '--abort']); } catch { /* 沒有進行中的 merge */ }
+    return 'conflict-aborted';
+  }
+}
+
 interface SweepTask extends SweepAssignedTask { task_id: string; title: string }
 
 function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string {
@@ -2185,7 +2201,15 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       }).flatMap((m) => m.userId ? [m.userId] : []);
       const readyToRun = selectAssignedMembers(work2, eligibleMembers, memberBudget, blockedUserIds);
       if (readyToRun.length) {
-        for (const m of readyToRun) ensureWorktree(m, p.scenario);
+        const syncNotes = new Map<string, string>();
+        for (const m of readyToRun) {
+          ensureWorktree(m, p.scenario);
+          const sync = syncWorktreeWithMaster(wt(m));
+          console.log(`[${m.name}-巡檢] worktree 同步 master：${sync}`);
+          if (sync === 'conflict-aborted') {
+            syncNotes.set(m.user, 'Driver 通知：你的分支與 master 有衝突（driver 自動同步已 abort）。本輪視同 owner 要求同步 master：依序 git status → git merge master → 解衝突 → git add 衝突檔 → git commit 完成 merge，再繼續 task。\n\n');
+          }
+        }
         const hour = new Date().getHours();
         await settleAllOrThrow(readyToRun.map(async (m) => {
           await sleep(jitter(1, 5));
@@ -2198,7 +2222,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
             model: workSession.route.model,
             notificationRoute: notificationRouteForMember(m),
             preflightOptions: { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: workSession.fallback },
-            normal: () => runSession(`${m.name}-巡檢`, workSession.route.runner, workSession.route.model, memberPrompt(m, p.wsId, hour, p.scenario),
+            normal: () => runSession(`${m.name}-巡檢`, workSession.route.runner, workSession.route.model, (syncNotes.get(m.user) ?? '') + memberPrompt(m, p.wsId, hour, p.scenario),
               { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: workSession.fallback }),
           });
           if (!gated) {
