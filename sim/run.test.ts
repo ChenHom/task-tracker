@@ -93,6 +93,10 @@ assert.strictEqual(source.match(/請該成員 merge master/g)?.length, 2, '兩�
 assert.strictEqual(MAIN_OWNER_TOOLS, 'Bash(curl:*)', 'main owner session 只能使用 curl');
 assert.ok(source.includes('CI 有 SKIP'), 'owner prompt 必須保留 SKIP 人工審查規則');
 assert.ok(source.includes('[CROSS-REPO]'), '跨 repo 轉移需要獨立標記，不能沿用死路的 [ESCALATE]');
+assert.ok(
+  (source.match(/同一 task 已有你留過且狀況未變的 \[ESCALATE\]，不要重複留言/g)?.length ?? 0) >= 2,
+  'member 與 owner sweep prompt 都必須含 ESCALATE 去重規則',
+);
 assert.strictEqual(
   source.match(/ensureMainWorkspaceCandidate\(wsScenario\);\n\s*ensureCanonicalWorkspaceCandidates\(wsScenario\);/g)?.length,
   1,

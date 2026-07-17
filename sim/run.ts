@@ -1186,7 +1186,7 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 - 狀態機：Todo→Doing→Review→Done 相鄰前進或一步回退；PATCH /api/tasks/<id> 一次只能改一個欄位（如 {"status":"Doing"}）；400/409 就重新 GET 再決定
 - 留言 POST /api/tasks/<id>/comments {"content":"..."}：正體中文、像真的工程師、具體（做法/卡點/驗證結果）
 - 遇疑似系統 bug：自查重試一次，可重現就建 [BUG] task（POST /api/workspaces/<ws>/tasks，title 以 [BUG] 開頭，description 含重現步驟/預期 vs 實際/原始回應，priority High）
-- 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層
+- 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層。同一 task 已有你留過且狀況未變的 [ESCALATE]，不要重複留言；維持靜默直到阻塞內容改變或解除
 - 主協作工作區（${MAIN_WORKSPACE_ID}）只放討論；非 user01 不改狀態，實作 task 必須建立在目標工作區。
 - 若這個 task 需要改的原始碼其實屬於別的 repo（不是你現在這個 repoRoot）：不要用 [ESCALATE]（那是給環境/權限問題，處理不了 repo 不合）。改用 [CROSS-REPO] 開頭留言說明是誰的 repo，並依下方跨 repo 判斷規則處理。`;
 
@@ -1974,7 +1974,7 @@ ${crossRepoRule(scenario)}
    - CI 有 SKIP → 不可當成 PASS；人工審 diff、task 驗收證據與成員實際檢查，證據足夠才可 merge，否則留言缺少的驗證並退回 Doing
    - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
    - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"}，保留原 assignee 等待 Owner 後續決定
-4. status=Doing 沒動靜的：催辦留言。無 assignee Todo 的實作 task：依 eligible profile/負載 PATCH assignee，留下「【OWNER派工】」（負責人、專長理由、下一個可驗收成果）；沒有 eligible runner 才留「[ESCALATE]」，不等待 member 自行認領。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）：先檢查是否已用 [CROSS-REPO] 轉移過——沒轉移過，依上方跨 repo 判斷規則轉移；已轉移過、且上一輪已有相同結論、環境沒有變化，才可以跳過
+4. status=Doing 沒動靜的：催辦留言。無 assignee Todo 的實作 task：依 eligible profile/負載 PATCH assignee，留下「【OWNER派工】」（負責人、專長理由、下一個可驗收成果）；沒有 eligible runner 才留「[ESCALATE]」，不等待 member 自行認領；同一 task 已有你留過且狀況未變的 [ESCALATE]，不要重複留言。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）：先檢查是否已用 [CROSS-REPO] 轉移過——沒轉移過，依上方跨 repo 判斷規則轉移；已轉移過、且上一輪已有相同結論、環境沒有變化，才可以跳過
 5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task
 6. 結束輸出 3 行內總結（合了幾件、退了幾件、老闆有無新指示）`;
 }
