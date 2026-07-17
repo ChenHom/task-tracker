@@ -157,6 +157,14 @@ const mainPromptSource = source.slice(
 assert.ok(!mainPromptSource.includes('${BASE}/#/task/<id>'), '主工作區 prompt 不得回寫 URL');
 assert.ok(!mainPromptSource.includes('HANDOFF-PENDING'), '主工作區 prompt 不得使用 handoff marker');
 assert.ok(
+  mainPromptSource.includes('期限內的建立者／共同確認者確認可作為收尾證據'),
+  '主工作區 owner prompt 必須說明期限內確認可供到期收尾使用',
+);
+assert.ok(
+  mainPromptSource.includes('「【結論：實作】」或「【結論：implement】」'),
+  '主工作區 owner prompt 必須排除不被 validator 接受的實作結論 marker',
+);
+assert.ok(
   (source.match(/runActorSessionWithNotificationGate\(/g)?.length ?? 0) >= 8,
   '一般 run 與 owner/team sweep 的每條自動 session 路徑都必須經 notification gate wrapper',
 );

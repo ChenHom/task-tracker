@@ -1935,8 +1935,11 @@ ${API_RULES(jar)}
 3. 再獨立 POST「【全員回覆：2天】」，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。只有近期成員已有大量事務才使用 2.5 至 7 天，並在同一留言填寫較長期限理由。
 4. 從通知 comment.created_at 加上 N * 24 小時計算截止時間；一天 24 小時、半天 12 小時。期限固定，不延長、不縮短；全員提前回覆也保持 Todo。
 5. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、截止尚未到、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或全員通知、阻塞／範圍／決策變化，或到期收斂時才留言。
-6. 等待期間讀取留言並推動 OWNER 與建立者雙方確認；一般 TASK 由建立者確認，OWNER 自建則由任一 Commenter 確認。到期前不得 PATCH status。
-7. 到期後依 implement、no implementation、no consensus 三條路徑留下精確 marker；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
+6. 等待期間讀取留言並收集意見；一般 TASK 的建立者、OWNER 自建 TASK 的任一 Commenter，應在期限內留下明確確認，優先用「【確認結論】」，也可明確表示同意或交接。期限內的建立者／共同確認者確認可作為收尾證據，到期後不得再因等待確認而延長窗口；到期前不得 PATCH status。
+7. 到期後依下列精確 marker 與順序收尾；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
+   - 實作：OWNER「【結論】」→OWNER「【實作任務】工作區：<工作區名稱>｜TASK：<TASK 名稱>」；建立者／共同確認者的有效確認可在期限內、OWNER 結論前或後留下。不得使用「【結論：實作】」或「【結論：implement】」。
+   - 不實作：OWNER「【結論：不實作】」→建立者／共同確認者「【確認結論】」。
+   - 未達共識：OWNER「【未達共識】」並逐行填寫尚未解決的分歧、缺少的確認或資訊、下次重新思考前的建議。
 8. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
 ${canonicalWorkspaceDirectory()}
 9. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。

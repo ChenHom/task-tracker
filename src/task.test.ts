@@ -478,8 +478,8 @@ assert.strictEqual(loadEvents(discussionId, db).length, beforeDiscussionEvidence
 
 createComment(discussionId, 'main-owner', OWNER_THOUGHT, db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', TWO_DAY_REQUEST, db, new Date('2026-07-14T08:00:00.000Z'));
+createComment(discussionId, 'main-user', '請交由前端成員接手。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【結論】\n採用。', db, new Date('2026-07-14T08:00:00.000Z'));
-createComment(discussionId, 'main-user', '【確認結論】同意。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【實作任務】工作區：目標工作區｜TASK：實作討論方向', db, new Date('2026-07-14T08:00:00.000Z'));
 changeTaskStatus('main-owner', discussionId, 'Done', db, new Date('2026-07-17T08:00:00.000Z'));
 const concludedDiscussion = getTask(discussionId, db)!;
