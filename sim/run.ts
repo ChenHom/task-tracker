@@ -1248,7 +1248,7 @@ function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario
     : '你的工作目錄（已是 git worktree，branch ' + branch(m) + '）就是目前目錄，task-tracker 的完整原始碼在這裡。';
   const doneDef = isBrain
     ? '- 完成的定義：task 驗收欄位寫的檢查通過（若子專案有 package.json/test script 就跑它；有 tsconfig 就 npx tsc --noEmit）；至少留一個可重跑的檢查'
-    : '- 完成的定義：npx tsc --noEmit 乾淨 + 跑「與你改動相關的測試檔」通過（例如改 auth 就 npx tsx src/auth.test.ts）。完整測試套件由團隊 CI 在你下線後統一跑，你不必自己跑整套 npm test（省時：本地快測、CI 全測）';
+    : '- 完成的定義：npx tsc --noEmit 乾淨 + 跑「與你改動相關的測試檔」通過（例如改 auth 就 npx tsx src/auth.test.ts）。完整測試套件由團隊 CI 在你下線後統一跑，你不必自己跑整套 npm test（省時：本地快測、CI 全測）。不要對 localhost:3000 做 live 驗收；live 行為以合併部署後的 owner 巡檢為準，live 與你分支不一致不是你的阻塞，不要為此 [ESCALATE]';
   return `你是「${m.name}」（${m.email}），團隊工程師。第 ${round} 次上線工作。你的專長：${m.profile}。
 你的 user_id：${m.userId}。workspace：${wsId}。
 ${workdirDesc}
@@ -1991,7 +1991,7 @@ ${crossRepoRule(scenario)}
    - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
    - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"}，保留原 assignee 等待 Owner 後續決定
 4. status=Doing 沒動靜的：催辦留言。無 assignee Todo 的實作 task：依 eligible profile/負載 PATCH assignee，留下「【OWNER派工】」（負責人、專長理由、下一個可驗收成果）；沒有 eligible runner 才留「[ESCALATE]」，不等待 member 自行認領；同一 task 已有你留過且狀況未變的 [ESCALATE]，不要重複留言。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）：先檢查是否已用 [CROSS-REPO] 轉移過——沒轉移過，依上方跨 repo 判斷規則轉移；已轉移過、且上一輪已有相同結論、環境沒有變化，才可以跳過
-5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task
+5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task。merge 後 master 會自動部署；需要 live 驗收時，等待自動部署完成（health rev 與 master 一致）再做 live 驗收，可用 GET /api/health 的 rev 欄位確認；rev 長時間不一致才留一次 [ESCALATE]
 6. 結束輸出 3 行內總結（合了幾件、退了幾件、老闆有無新指示）`;
 }
 

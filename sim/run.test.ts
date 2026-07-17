@@ -1118,6 +1118,14 @@ assert.ok(
   source.includes('worktree 同步 master'),
   'sweep 派工前必須呼叫 syncWorktreeWithMaster 並記錄結果',
 );
+assert.ok(
+  source.includes('不要對 localhost:3000 做 live 驗收'),
+  'member 完成定義必須排除 live 驗收（分支測試綠即完成）',
+);
+assert.ok(
+  source.includes('等待自動部署完成（health rev 與 master 一致）再做 live 驗收'),
+  'owner sweep 必須在自動部署完成後才做 live 驗收',
+);
 
 runAsyncPolicyTests()
   .then(() => console.log('sim/run.test.ts OK'))
