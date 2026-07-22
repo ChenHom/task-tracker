@@ -67,7 +67,7 @@ Gate / discovery
 | G4 login 失敗 | yes | yes | no | any | any | `DiscoveryUnavailable`；不得將 password 寫入 log／manifest／error | `3` | 任務 8 步驟 3 |
 | G5 required workspace GET 失敗 | yes | yes | yes | no | any | `DiscoveryUnavailable` | `3` | 任務 8 步驟 3 |
 | G6 prerequisite 缺漏 | yes | yes | yes | yes | no | `CutoverPrerequisiteMissing`；零 planned mutation | `2` | 任務 9 步驟 1、任務 11 步驟 1 |
-| G7 未分類錯誤 | any | any | any | any | any | 程式錯誤 | `1` | Open |
+| G7 未分類錯誤 | any | any | any | any | any | 程式錯誤；**不保證零 mutation** | `1` | 任務 8 步驟 3 |
 | G8 單一 workspace 失敗 | yes | yes | yes | 部分 | any | 該 workspace 的 action 中止，另一 workspace 不受影響 | 依 partial failure 收斂 | 任務 3 步驟 1 |
 
 ## Cutover Prerequisite Table
@@ -95,8 +95,8 @@ Gate / discovery
 | C3 main discussion, ready | `10e65231` | yes | any | Todo | 以既有 window／conclusion／handoff 機械式結案一次 | Done，不再產生第二次 closure | 任務 9 步驟 4、任務 11 步驟 5 |
 | C4 active review, blocked | `938aa035` | no | — | Review | 零 action | 等 `P` | 任務 9 步驟 4 |
 | C5 active review, ready | `938aa035` | yes | — | Review | 保留／恢復 user06、留固定 action key 的 reset 說明、PATCH Review→Doing、從當時 master 開乾淨 branch | checkpoint=doing, `NP=0` | 任務 9 步驟 4 |
-| C6 queued review, blocked | `6384b6f4` | yes | no | Review | 只 PATCH 清除 assignee；board 留 Review | checkpoint=`Q`, `workerId=null`, `branch=null` | 任務 9 步驟 4 |
-| C7 queued review, released | `6384b6f4` | yes | yes | Review | 依序指派 user06、PATCH Review→Doing、從含 `938aa035` merge 的新 master 開 branch | 各恰好一次 | 任務 9 步驟 1 情境 3 |
+| C6 queued review, blocked | `6384b6f4` | yes | no | Review | 三步退回：Review→Doing→Todo→清 assignee（順序被 domain 鎖死） | checkpoint=`Q`, `workerId=null`, `branch=null` | 任務 9 步驟 4 |
+| C7 queued review, released | `6384b6f4` | yes | yes | Todo | 依序指派 user06、PATCH Todo→Doing、從含 `938aa035` merge 的新 master 開 branch | 各恰好一次 | 任務 9 步驟 1 情境 3 |
 | C8 deferred, blocked | `027c0052` | yes | no | Todo | 維持 Todo／unassigned／`Q`，不開 branch、不呼叫 AI | 等 `DEP` | 任務 9 步驟 4 |
 | C9 deferred, released | `027c0052` | yes | yes | Todo | 依序指派 user05、PATCH Todo→Doing、從新 master 開乾淨 branch | 各恰好一次 | 任務 9 步驟 1 情境 3 |
 | C10 dependency 未收斂 | `6384b6f4`／`027c0052` | yes | `938aa035` 為 `HB`／失敗／Doing／Review | any | 兩筆都維持 `Q` | 等 `DEP` | 任務 9 步驟 1 情境 4 |
@@ -111,7 +111,8 @@ Gate / discovery
 |---|---|---|---|---|---|---|---|---|---|
 | S1 out of scope | no | any | any | any | any | any | any | 完全不 discovery | 任務 3 步驟 1 |
 | S2 excluded task | yes | yes | any | any | any | any | any | 零 action | 任務 3 步驟 4 |
-| S3 queued | yes | no | `Q` | any | any | any | any | 不取 lease、不開 branch、不呼叫 AI；不占 WIP | 任務 2 步驟 1 |
+| S3 queued | yes | no | `Q` | Todo | 無 | any | any | 不取 lease、不開 branch、不呼叫 AI；不占 WIP | 任務 2 步驟 1 |
+| S3b queued 誤判為可派工 | yes | no | `Q` | Todo | 無 | 0 | any | **不得**因「未指派可執行 Todo」觸發 Owner 派工；`Q` 優先於 S8 | 任務 3 步驟 1 |
 | S4 human blocked, 無新事件 | yes | no | `HB` | any | any | any | no | 零 action，保持安靜 | 任務 5 步驟 5 |
 | S5 human blocked, 有新事件 | yes | no | `HB` | any | any | any | yes | 解除 `HB`，`NP=0`，恢復排程 | `shouldResumeHumanBlocked` |
 | S6 assigned Doing | yes | no | doing | Doing | 有 | 1（本筆） | any | 啟動 member session | 任務 3 步驟 4 |
@@ -161,7 +162,8 @@ Gate / discovery
 | DP12 revert indeterminate 一次 | yes | yes | no | — | yes | no | any | `DeploymentIndeterminate`，不升級 fatal | 下一個 tick 重試 | 任務 6 步驟 4 |
 | DP13 revert indeterminate 連兩 tick | — | — | — | — | — | no | any | fatal coordinator error | 拒絕後續所有 AI／mutation | 任務 6 步驟 4 |
 | DP14 operator 手動 start | yes | any | 非自己觀察 | success | any | yes | yes | 等同 DP6；coordinator 不主動 start | 下一 tick 以 `DR`／`HR` 認回 | 任務 6 步驟 5 |
-| DP15 實作期 commit | yes | any | yes | success | — | yes | yes | 觸發一次 build+restart，**不走** acceptance sequence | 無 completion、無 task 變更 | 已確認的產品決策 |
+| DP15 feature branch commit | yes | any | 無 | — | — | — | — | 不改 master ref，**完全不觸發**部署 | 累積至分支 merge | 已確認的產品決策 |
+| DP16 feature branch merge | yes | yes | yes | success | no | yes | yes | 單次 build+restart，走簡化 gate | 無 completion、無 task 變更 | 任務 10 步驟 5 |
 
 ## Completion Decision Table
 
@@ -200,6 +202,8 @@ Gate / discovery
 | Case | Expected externally observable result | Covered by |
 |---|---|---|
 | Coordinator 在 tick 中途重啟 | 從 SQLite checkpoint 接續，不重放已完成副作用 | 任務 2 步驟 5 |
+| Lease TTL 與 deploy 逾時 | `LEASE_TTL_MS`(45 分) 嚴格大於 `DEPLOY_WAIT_TIMEOUT_MS`(35 分)，長 tick 不會誤放 lease、不會出現雙 coordinator | 任務 2 步驟 1 |
+| Exit `1` 後的下一個 tick | 以 `action_log` + 權威 readback 重新對帳，不假設 planned mutation 的完成狀態 | 任務 8 步驟 3 |
 | 相同 action key 重送 | 被 `action_log` 拒絕，副作用恰好一次 | 任務 2 步驟 1 |
 | `--apply --live` 在狀態未變時重跑 | 零重複 comment／PATCH／branch／assignment／closure | 任務 9 步驟 1 情境 2 |
 | Mutation response 不確定 | 先 readback 權威資源再決定重送，不盲目重試 | 任務 3 步驟 3 |
@@ -222,7 +226,7 @@ Gate / discovery
 | `pgrep sim/production.ts` 守衛 | 會與 coordinator 自己等待的 deploy 形成循環等待 |
 | `.path` 觸發遺漏的自動偵測 | 第一版以 35 分鐘逾時決議 + operator 手動 start 逃生口涵蓋 |
 | 舊 sweep 程式碼退役 | 移到任務 12，前置為兩個成功 live tick，確保任務 11 的復原路徑仍在 |
-| 實作期 commit 的 acceptance sequence | 任務 2～12 的 commit 直接進 master 各觸發一次 build+restart，屬預期行為 |
+| 實作期 commit 的 acceptance sequence | 任務 2～10 與 12 在 feature branch 上實作，各以單次 merge 收尾；merge 走簡化 gate，不產生 completion 或 task 變更 |
 | 未經明確人工授權的 live AI 與 timer 啟用 | 安全邊界，不因 build／安裝而放寬 |
 
 ## 本次模擬對照（未實際執行 sim）
@@ -236,7 +240,7 @@ Gate / discovery
 | `00123ef0` | Todo／unassigned／v1／4 comments | **P1 fail** → G6 → C1 | `CutoverPrerequisiteMissing`；零 mutation |
 | `10e65231` | Todo／window due `2026-07-18`（已過期）／有 `【結論】`+`【實作任務】` | C2 | 零 action；資料上已具備結案條件，只被 `P` 擋住 |
 | `938aa035` | Review／user06／v9 | C4 | 零 action |
-| `6384b6f4` | Review／**user06**／v8 | C4（`P` 未過，尚未進入 C6） | 零 action；目前與 `938aa035` 同屬 user06，即文件所述 WIP1 衝突來源 |
+| `6384b6f4` | Review／**user06**／v8 | C4（`P` 未過，尚未進入 C6） | 零 action；目前與 `938aa035` 同屬 user06，即文件所述 WIP1 衝突來源。C6 執行後會退回 Todo／unassigned |
 | `027c0052` | Todo／unassigned／v1 | C8 | 零 action；即使 `P` 通過仍因 `DEP=false` 維持 `Q` |
 | `27ec8d7e` | Todo／`[規則] 主工作區協作與交接` | C11 | excluded |
 | `8be538bc` | Todo／canonical `[討論] 方向與下一步`／29 comments | C12 | excluded |
@@ -247,4 +251,4 @@ Gate / discovery
 
 **已由實測支持的假設：** `10e65231` 的歷史 request 為 `【全員回覆：2天】`／`wait_half_days=4`，legacy 唯讀 parser 對它成立；且該 task 已具備 Owner `【結論】`（rowid 811）與 `【實作任務】`（rowid 812），C3 的機械式結案前提為真。
 
-**尚未被覆蓋的假設（Open）：** DP6／DP7／DP8 三條逾時決議與 DP14 人工逃生口目前只有計畫層規範，尚無任何 fixture；`.path` 在「merge 後緊接 revert」密集情境下的觸發可靠度未經壓力測試。
+**尚未被覆蓋的假設（Open）：** DP6／DP7／DP8 三條逾時決議與 DP14 人工逃生口目前只有計畫層規範，尚無任何 fixture；`.path` 在「merge 後緊接 revert」密集情境下的觸發可靠度未經壓力測試。C6 的三步退回順序依賴 `src/task.ts` 的 `TRANSITIONS` 與 Doing 守衛，已用原始碼確認，但尚無 fixture 覆蓋「先清 assignee 會卡死」的反向案例。

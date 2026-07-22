@@ -32,7 +32,12 @@
 - Build 與安裝不代表已授權 live AI。啟用或手動執行 live coordinator 前，必須另取得明確人工授權。
 - 既有 `sim-autodeploy.path` 是 master merge／revert 的唯一部署觸發來源；coordinator 等待並驗證 path 觸發的同一輪 service invocation，不再主動 start 第二輪。
 - 舊 sweep 程式碼只在 runtime cutover 完成兩個成功 live tick 後退役；`deploy/sim-autodeploy.sh` 的既有 `pgrep sim/run.ts` 守衛本次保留。
-- 任務 2 至 12 的實作 commit 直接落在 master，每一筆都會觸發一次 `sim-autodeploy` build + restart，這是預期行為，不是 acceptance sequence 的一部分。只有任務 1 的看板 task 走完整 acceptance／deploy／completion 鏈；其餘 commit 只需 `npm run build` 可過即可，且不得同時修改 `src/`（伺服器行為）與 `sim/production/`。
+- 任務 1 的 bootstrap driver 是一個具備 board mutation 授權的互動式 Claude Code session。該 session 同時負責實作與機械式 API／Git／部署操作；因為是互動環境，git 與 systemd 寫入可即時取得人工核可，不得改在非互動 cron 環境執行。
+- 任務 2 至 10 在單一 feature branch `feature/production-coordinator` 上實作，過程中的 commit 不觸碰 master，因此不觸發 `sim-autodeploy`。任務 10 結束後一次合併進 master，只產生一次 build + restart。任務 12 另開 `feature/retire-legacy-sweep` 並同樣以單次 merge 收尾。
+- 只有任務 1 的看板 task 走完整 acceptance／deploy／completion 鏈。feature branch 的 merge 走簡化 gate：merge 前完整 test／build 通過，merge 後等待 path-triggered invocation 並驗證 health rev，但不產生 completion comment 或 task 狀態變更。
+- Lease TTL 固定為 45 分鐘（`LEASE_TTL_MS`），必須嚴格大於 `DEPLOY_WAIT_TIMEOUT_MS`（35 分鐘）。一個 tick 合法可跑超過 35 分鐘，若 lease 先過期，`--status` 會誤報不健康，且過期 lease 可被重新 claim，導致兩個 coordinator 同時處理同一 task。
+- Exit `1`（未分類程式錯誤）**不保證零 mutation**。它是唯一沒有副作用契約的結束路徑：下一個 tick 必須以 `action_log` 與權威 readback 重新對帳，不得假設任何 planned mutation 已完成或未完成。
+- `queued` task 的看板狀態必須是 Todo／unassigned，不得停留在 Review。Review 沒有直接到 Todo 的合法轉換（`src/task.ts` 的 `TRANSITIONS`），且 Review -> Doing 要求 assignee 非 null，因此順序固定為 Review -> Doing -> Todo -> 清除 assignee，先清 assignee 會永久卡在 Review。
 - 部署等待的逾時固定為 35 分鐘，涵蓋 `sim-autodeploy.sh` 最長 30 分鐘的 `pgrep sim/run.ts` 等待。逾時本身不等於部署失敗：必須先比對 `deployed_rev` 與 `/api/health` rev 是否已等於 target SHA，再判定成功、失敗或 `DeploymentIndeterminate`。
 - `.path` 觸發遺漏是已知殘餘風險。coordinator 永遠不主動 start service，但 operator 可手動 `systemctl --user start sim-autodeploy.service`；`sim-autodeploy.sh` 的 `[ "$HEAD" = "$DEPLOYED" ] && exit 0` 讓手動啟動冪等。coordinator 下一個 tick 以 `deployed_rev`／health rev 認回該狀態，不要求該輪 invocation 由自己觀察到。
 
@@ -81,7 +86,13 @@
 - 修改：`src/mainWorkspace.test.ts`
 - 修改：`docs/api.md`
 
-**唯一執行綁定與 bootstrap driver：** 本任務只對應既有看板 task `00123ef0-81cb-410e-aed1-d6d1fb925ed6`，不得另建重複 task。任務 1 的 driver 明確是「取得本 task board mutation 授權的計畫執行者／operator」，不是尚未完成的 production coordinator、不是舊 `sim/run.ts`，也不要求一次性 AI runner。user03 是這筆 task 在看板上的唯一 accountable assignee；計畫執行者在固定 user03 task branch/worktree 內完成實作、測試與 commit，機械式 API／Git／部署操作仍由該 bootstrap driver 執行。Owner acceptance 必須由 operator 審查 exact head 後，才以 canonical Owner 身分留下結構化 record。
+**唯一執行綁定與 bootstrap driver：** 本任務只對應既有看板 task `00123ef0-81cb-410e-aed1-d6d1fb925ed6`，不得另建重複 task。任務 1 的 driver 是**一個具備 board mutation 授權的互動式 Claude Code session**，不是尚未完成的 production coordinator，也不是舊 `sim/run.ts`。該 session 一人分飾三角，但角色邊界必須在 transcript 中分開記錄：
+
+- **實作者（掛在 user03 名下）**：在固定 task branch/worktree 內完成程式修改、測試與 commit。user03 是這筆 task 在看板上的唯一 accountable assignee。
+- **Driver（機械式操作）**：執行單欄位 PATCH、readback、Git merge、等待部署、發完成留言。所有副作用由此角色執行，且每一步都要 readback。
+- **Owner（canonical `user01@test.local`）**：審查 exact head 後留下結構化 acceptance record。不得在實作完成前預先寫好 acceptance。
+
+因為是互動式 session，git 與 systemd 寫入可即時取得人工核可，這正是選它而非 cron 的原因；**不得**把本任務改在非互動環境執行，否則 `git merge`／`systemctl` 會卡在無人可核可的提示上。session 中斷後以 `evidence.json` 與權威 readback 續跑，不得從頭重做已完成的副作用。
 
 由於 coordinator `action_log` 要到任務 2 才建立，本任務不得假設已有 action-key 冪等能力，也不得臨時新增另一套權威 ledger。取得授權後，bootstrap driver 建立 Git 已忽略的 `sim-logs/task1-bootstrap/<run-id>/evidence.json` 作為操作 transcript；權威仍是 API audit/comment/notification、Git ancestry 與 live health readback。紀錄至少包含：`task1AuthorizedAt`、task ID、canonical Owner ID、user03 canonical ID、task aggregate baseline version、assignment event ID／version、branch／base SHA、accepted head、Owner acceptance ID、merge SHA、live rev、completion comment ID 與 user09 notification ID。任何 response 不確定時先查權威 readback，再更新 transcript，不得靠 transcript 推定副作用已成功。
 
@@ -204,6 +215,16 @@ bootstrap driver 在固定 task branch 產生 head SHA 後，必須再次執行�
 
 ## 任務 2：新增協調器型別與可持久化 SQLite 狀態
 
+**前置：** 任務 2 至 10 全部在 `feature/production-coordinator` 上進行。開工前先確認 master 已含任務 1 的 accepted merge，再建立分支：
+
+```bash
+git checkout master
+git pull --ff-only 2>/dev/null || true
+git checkout -b feature/production-coordinator
+```
+
+分支上的 commit 不改動 master ref，因此不觸發 `sim-autodeploy`；在任務 10 合併前，線上服務始終停在任務 1 的版本。
+
 **檔案：**
 - 新增：`sim/production/types.ts`
 - 新增：`sim/production/state.ts`
@@ -211,7 +232,7 @@ bootstrap driver 在固定 task branch 產生 head SHA 後，必須再次執行�
 
 - [ ] **步驟 1：撰寫會失敗的 state tests。**
 
-測試 task lease 只能被 claim 一次、過期 lease 可重新 claim、重複 action key 會被拒絕、成功 checkpoint 在重新開啟資料庫後仍存在、CI 結果以 base／head／command hash 作為 key，而且 completion attempt 最多三次。另驗證 `queued` task 可持久化 `workerId=null`、`branch=null`；重新開啟 DB 後仍不得取得執行 lease 或建立 AI action，且只能由固定 release condition 或新的人工決策轉出 queued。
+測試 `LEASE_TTL_MS`（45 分鐘）嚴格大於 `DEPLOY_WAIT_TIMEOUT_MS`（35 分鐘）——這條斷言必須直接比較兩個常數，避免日後單獨調高 deploy 逾時而悄悄製造雙 coordinator。另測試 task lease 只能被 claim 一次、過期 lease 可重新 claim、重複 action key 會被拒絕、成功 checkpoint 在重新開啟資料庫後仍存在、CI 結果以 base／head／command hash 作為 key，而且 completion attempt 最多三次。另驗證 `queued` task 可持久化 `workerId=null`、`branch=null`；重新開啟 DB 後仍不得取得執行 lease 或建立 AI action，且只能由固定 release condition 或新的人工決策轉出 queued。
 
 - [ ] **步驟 2：執行 focused test，確認 import 失敗。**
 
@@ -304,7 +325,7 @@ Policy fixture 必須證明：
 - 每位 member 只取得一個非 blocked WIP task。
 - Fixed cutover disposition 優先於一般 Review／Doing／Todo 排序；不受同狀態 task 的 `updated_at` 影響。
 - `938aa035-5f96-4908-b28b-876fa4735061` 是 user06 唯一可執行 action。
-- `6384b6f4-f92f-45a2-a5e1-133f04f76372` 即使看板仍為 Review，只要 checkpoint 是 queued，就不建立 Review、member、branch 或 Owner action。
+- `6384b6f4-f92f-45a2-a5e1-133f04f76372` 在 cutover 後為 Todo／unassigned，checkpoint 是 queued，不建立 Review、member、branch 或 Owner action；即使排程看到它是 Todo，也不得因「未指派可執行 Todo」而觸發 Owner 派工。
 - `00123ef0-81cb-410e-aed1-d6d1fb925ed6` 只接受任務 1 的同一條完成證據鏈：assignment audit event 必須在本次 Task 1 授權後由 canonical Owner 產生，且 payload 是 user03 canonical ID；accepted head 位於固定 task branch 且含 `Task-Id` trailer；具可 read back ID 的 Owner acceptance 引用該 exact head；accepted merge 保留該 head 為 ancestor；live rev 等於 accepted merge 或其後代；`【SYSTEM完成】` 留言引用同一組授權／assignment event／acceptance／head／merge／live rev；user09 notification 的 source comment ID 指向該留言。狀態還必須為 Done。全部符合時不產生任何 action；任一環節缺漏或不相符時回傳 `CutoverPrerequisiteMissing`，且整批 task／Git／AI cutover mutation 必須為零。
 - `027c0052-46d5-4da7-90fa-dd8efb2219fc` 在 `938aa035...` 尚未 Done 時保持 queued／unassigned；Done readback 後只產生指派 user05 的 action。
 - 上述結果在 coordinator restart 後不變，且任何 member 都不超過 WIP1。
@@ -620,14 +641,14 @@ git commit -m "feat(sim): report verified completions"
 
 - `npx tsx sim/production.ts --once` 執行唯讀 discovery 並列印 planned action；不可呼叫 AI 或 mutation。
 - `npx tsx sim/production.ts --once --live` 允許 AI 與 mutation，只供明確人工授權或 systemd 使用。
-- `npx tsx sim/production.ts --status` 列印最後一個 tick；若 30 分鐘內沒有成功 heartbeat 且不存在有效 active lease，則以非零碼結束。
+- `npx tsx sim/production.ts --status` 列印最後一個 tick；若 30 分鐘內沒有成功 heartbeat 且不存在有效 active lease，則以非零碼結束。因為 `LEASE_TTL_MS` 大於 deploy 逾時，一個正在等待部署的長 tick 必定仍持有有效 lease，不會被誤判為不健康。
 
 `--once` 是 read-only live discovery，不是離線 fixture：先要求 `task-tracker.service` active、`GET http://localhost:3000/api/health` 為 HTTP 200，並以 canonical Owner `user01@test.local` 與現有 local seed credential 登入，成功 GET 主協作工作區與 task-tracker canonical workspace 後才可計算 disposition。不得把 owner password 寫入 log、manifest 或 error。Exit code 契約固定為：
 
 - `0`：完整 discovery，且 cutover prerequisite ready。
 - `2`：完整 discovery，但 `CutoverPrerequisiteMissing`；零 mutation、零 AI。
 - `3`：`DiscoveryUnavailable`，包含 service inactive、health 非 200、login 失敗或任一 required workspace GET 失敗；零 mutation、零 AI。
-- `1`：未分類程式錯誤。
+- `1`：未分類程式錯誤。**不保證零 mutation**；下一個 tick 必須以 `action_log` 與權威 readback 重新對帳，不得假設任何 planned mutation 的完成狀態。
 
 每個 tick 記錄 scheduled／start／end 時間、app rev、各 workspace 的 discovered／processed／skipped／error 數、AI call、task transition、deploy result、notification result 與 aggregate outcome。獨立 task error 會被彙整；任何 partial failure 都會在所有可安全完成的獨立 action 結束後，使 service 以非零碼結束。
 
@@ -694,9 +715,9 @@ git commit -m "feat(sim): add production coordinator service"
 
 Manifest 必須包含 task ID／version／status／assignee、branch head／dirty／ahead state、目前 notification cursor、outbox cursor、舊 timer state、cutover generation、planned disposition、固定 assignee email、coordinator phase、release dependency，以及 `00123ef0...` 的 Task 1 授權時間、canonical Owner ID、assignment baseline version、user03 canonical ID、assignment audit event ID／aggregate version／actor ID、task branch、accepted head／merge SHA、Owner acceptance ID、live rev、`【SYSTEM完成】` comment ID、user09 notification ID、完整證據 fingerprint 與 `readyForApply`。以下四個階段都以 `00123ef0...` 的任務 1 完成證據已通過為前置條件：
 
-1. 初次 apply 先把 `10e65231...` 恰好機械式結案一次，再只啟動 `938aa035...`；`6384b6f4...` 只清除 assignee 並保持 Review／queued，沒有 branch、lease、status transition 或 AI action。
+1. 初次 apply 先把 `10e65231...` 恰好機械式結案一次，再只啟動 `938aa035...`；`6384b6f4...` 以 Review -> Doing -> Todo -> 清除 assignee 三步退回 Todo／unassigned／queued，沒有 branch、lease 或 AI action，且三步的 action key 各恰好使用一次。
 2. 狀態未變時重跑，不能重複 comment、PATCH、branch、assignment、closure 或 action key；`10e65231...` 保持 Done 且不產生第二次 closure。
-3. `938aa035...` Done 且 master 已包含其 accepted merge 後重跑，`6384b6f4...` 恰好一次取得 user06、Review -> Doing，`027c0052...` 恰好一次取得 user05、Todo -> Doing；兩條新 branch 都以當時的新 master 為 base。
+3. `938aa035...` Done 且 master 已包含其 accepted merge 後重跑，`6384b6f4...` 恰好一次取得 user06、Todo -> Doing，`027c0052...` 恰好一次取得 user05、Todo -> Doing；兩條新 branch 都以當時的新 master 為 base。
 4. `938aa035...` 為 `human_blocked`、失敗、Doing 或 Review 時，兩筆 dependent task 都繼續 queued。
 
 另測試 cutover 前置條件：`00123ef0...` 為 Todo／Doing／Review、assignment event 缺漏／重複／早於 Task 1 授權、actor 不是 canonical Owner、payload 不是 user03 canonical ID、aggregate version 無法連回 baseline、task branch 與 accepted head 不符、`Task-Id` trailer 缺漏、Owner acceptance ID 缺漏或引用不同 head、accepted merge 不含該 head、live rev 不含 accepted merge、完成留言引用不同證據、留言缺漏，或 notification 的 recipient／source comment 不符時，必須回傳 `CutoverPrerequisiteMissing`、`readyForApply=false`，而且 task mutation adapter、Git adapter 與 AI adapter 的呼叫數都為零，`10e65231...` 也完全不變。證據完整時，cutover 對 `00123ef0...` 的 assignment、status、comment、branch 與 AI action 也都必須為零；重跑不得重複任務 1 已完成的任何副作用。
@@ -755,7 +776,7 @@ export const CUTOVER_TASKS = {
 - 在任何 task、comment、PATCH、checkpoint、branch、Git 或 AI mutation 前，重新 read back `00123ef0...` 的 Done 狀態與完整 fingerprint，逐段驗證 Task 1 授權時間／canonical Owner ID -> 授權後由該 Owner 產生且指向 user03 的 assignment audit event -> 固定 task branch／含 `Task-Id` trailer 的 accepted head -> 具 ID 且引用 exact head 的 Owner acceptance -> 保留 accepted head 為 ancestor 的 merge -> 等於該 merge 或其後代的 live health rev -> 引用同一組授權／ID／SHA 的 `【SYSTEM完成】` 留言 -> source comment 與 recipient 都相符的 user09 notification。cutover 不得變更 `00123ef0...` 的 assignee／status、建立 branch／task／comment，或呼叫 Owner／member AI；任一證據缺漏或 fingerprint 已變即回傳 `CutoverPrerequisiteMissing`，並以零 task／Git／AI mutation 結束。
 - 前置條件通過後，以 `10e65231...` 既有的已到期 window、Owner conclusion 與 handoff 完成一次機械式結案，不建立新的 Owner AI action。
 - `938aa035...` 保留或恢復 user06 assignee，留一則具固定 action key 的 reset 說明，再以單欄位 PATCH 執行 Review -> Doing；checkpoint 設為 doing，`noProgressCount=0`，並從當時 master 建立乾淨的 per-task branch。
-- `6384b6f4...` 只以單欄位 PATCH 清除 assignee；board status 暫時保持 Review，checkpoint 設為 queued、`workerId=null`、`branch=null`，不得 reset status、取得 lease、建立 branch 或呼叫 Owner／member AI。只有 `938aa035...` Done 且 master 包含其 accepted merge 後，下一個 tick 才能依序指派 user06、PATCH Review -> Doing，並從該新版 master 建立 branch。
+- `6384b6f4...` 退回 Todo／unassigned，避免看板長期停在「Review 但沒有負責人」這種無法解讀的狀態。順序被 domain 鎖死，必須是三次單欄位 PATCH：**(1) Review -> Doing（此時 assignee 仍是 user06，滿足 `src/task.ts:247` 的守衛）→ (2) Doing -> Todo → (3) 清除 assignee**。`Review -> Todo` 不是合法轉換，且一旦先清 assignee 就再也回不到 Doing，會永久卡在 Review。三步各有固定 action key，每步都要 read back；中斷後依 action key 續跑，不得重頭再跑一次。完成後 checkpoint 設為 queued、`workerId=null`、`branch=null`，不得取得 lease、建立 branch 或呼叫 Owner／member AI。中間短暫經過 Doing 期間 coordinator 尚未啟動，不會被排程選中。只有 `938aa035...` Done 且 master 包含其 accepted merge 後，下一個 tick 才依一般流程指派 user06、PATCH Todo -> Doing，並從該新版 master 建立 branch。
 - `027c0052...` 固定分類為 approved；在 `938aa035...` 尚未 Done 時維持 Todo、unassigned、queued，不建立 branch 或呼叫 AI。依賴解除後，下一個 tick 依序以單欄位 PATCH 指派 user05、執行 Todo -> Doing，並從包含 `938aa035...` accepted merge 的 master 建立乾淨 branch。
 - 不得 merge、cherry-pick、format-patch、apply、copy 或以其他方式帶入任何舊 `sim/user02` 至 `sim/user06` commit、dirty diff 或檔案；舊 branch／worktree／SHA 只寫入 manifest，不得放進 member prompt。每個新 worktree 的初始 diff 必須為空。
 - 每個 comment／PATCH／checkpoint／branch action 都使用固定 action key，且任何 mutation 後都必須 read back。
@@ -779,7 +800,7 @@ git commit -m "feat(sim): add idempotent cutover reconciliation"
 
 - [ ] **步驟 1：更新 cutover 前操作文件。**
 
-記錄固定 workspace allowlist、15 分鐘 coordinator、dry-run／live 邊界、live server／canonical Owner credential 前置條件、exit `2`／`3`、ledger／status command、WIP1、discussion policy、human-blocked 行為、task branch、path-triggered autodeploy generation readback、acceptance／deploy／revert sequence、completion digest、安裝後保持 disabled 的規則，以及 rollback procedure。文件必須同時記錄五筆 fixed cutover disposition、兩筆 excluded task、queued 不占 WIP、queued Review 不會觸發 acceptance，以及 `027c0052...`／`6384b6f4...` 只有在 `938aa035...` Done readback 後才解除依賴。
+記錄固定 workspace allowlist、15 分鐘 coordinator、dry-run／live 邊界、live server／canonical Owner credential 前置條件、exit `2`／`3`、ledger／status command、WIP1、discussion policy、human-blocked 行為、task branch、path-triggered autodeploy generation readback、acceptance／deploy／revert sequence、completion digest、安裝後保持 disabled 的規則，以及 rollback procedure。文件必須同時記錄五筆 fixed cutover disposition、兩筆 excluded task、queued 不占 WIP、queued Review 不會觸發 acceptance，以及 `027c0052...`／`6384b6f4...` 只有在 `938aa035...` Done readback 後才解除依賴。另記錄 queued task 的看板狀態一律是 Todo／unassigned（含 `6384b6f4...` 退回 Todo 的固定三步順序）、`LEASE_TTL_MS` 與 `DEPLOY_WAIT_TIMEOUT_MS` 的大小關係，以及 exit `1` 不保證零 mutation 的對帳規則。
 
 - [ ] **步驟 2：明訂舊 sweep 仍是可復原路徑。**
 
@@ -804,6 +825,28 @@ git diff --check
 git add docs/operations.md docs/owner-sweep-guide.md design.md
 git commit -m "docs(sim): prepare production coordinator cutover"
 ```
+
+- [ ] **步驟 5：把 feature branch 合併回 master 並驗證單次部署。**
+
+任務 11 的 systemd unit 指向主 worktree 的 master，因此 coordinator 程式碼必須先進 master。合併前確認步驟 3 的完整 gate 已 PASS、worktree 乾淨，且本次變更只動 `sim/`、`deploy/` 與 `docs/`，沒有夾帶 `src/`。
+
+合併前先擷取 autodeploy invocation baseline：
+
+```bash
+systemctl --user is-active sim-autodeploy.path
+systemctl --user show sim-autodeploy.service --property=ActiveState --property=InvocationID --property=ExecMainStartTimestampMonotonic
+```
+
+要求 path active 且 service inactive，再合併：
+
+```bash
+git checkout master
+git merge --no-ff feature/production-coordinator -m "feat(sim): add production coordinator"
+```
+
+merge 會觸發**唯一一次** path invocation。依任務 6 步驟 5 的同一套 generation readback 等待該輪結束（逾時 35 分鐘、逾時後改以 `deployed_rev`／health rev 決議），要求 `Result=success`、`ExecMainStatus=0`、`deployed_rev` 與 `/api/health` rev 都等於 merge SHA。不得主動 `start` 第二輪。本次 merge 不產生 completion comment、不改任何 task 狀態——它交付的是 coordinator 程式碼，不是看板工作。
+
+若該輪 invocation 失敗（例如 merge 後 `npm run build` 掛掉），依任務 6 步驟 4 的 revert 流程處理，並在修好前不得進入任務 11。
 
 ## 任務 11：最終驗證與具前置檢查、復原能力的 Runtime Cutover
 
@@ -908,7 +951,7 @@ systemctl --user enable --now sim-coordinator.timer
 - `10e65231...` 只結案一次，不建立新的 Owner AI action。
 - `10e65231...` 的歷史 `【全員回覆：N天】` request 由唯讀 legacy parser 與既有 DB `wait_half_days` 配對成功；不得改寫 comment 或建立新 window。
 - user06 唯一 active WIP 是 `938aa035...`，且其 branch 不含任何 legacy diff。
-- `6384b6f4...` 在依賴解除前保持 Review／unassigned、沒有 branch／lease／AI action，checkpoint 是 queued。
+- `6384b6f4...` 在依賴解除前保持 Todo／unassigned、沒有 branch／lease／AI action，checkpoint 是 queued，且未被當成可派工的 Todo。
 - `00123ef0...` 維持任務 1 已完成的 Done 狀態；cutover／live tick 不得新增 assignment、status transition、comment、branch、task 或 AI action。
 - `027c0052...` 在 `938aa035...` Done 前保持 Todo／unassigned／queued；解除依賴後 assignee 只能是 user05。
 - 不存在 merge、cherry-pick、patch、copy 或 prompt reuse 任何舊 `sim/user02` 至 `sim/user06` 成果。
@@ -937,6 +980,8 @@ systemctl --user enable --now sim-sweep-owner.timer sim-sweep-team.timer
 - 修改：`docs/operations.md`
 - 修改：`docs/owner-sweep-guide.md`
 - 修改：`docs/tasks/current.md`
+
+**分支：** 本任務在 `feature/retire-legacy-sweep` 上進行，完成後單次 merge 回 master，理由與任務 2 至 10 相同：避免退役過程中的中間狀態被 autodeploy 帶上線。
 
 **硬性前置條件：** 任務 11 步驟 5 的兩個 live tick、五筆 fixed disposition、兩筆 excluded task、heartbeat、health 與無重複副作用 readback 全部通過。任一證據缺漏就停止；不得修改 legacy path，因為任務 11 的回復仍需要它。
 
@@ -970,9 +1015,11 @@ git diff --check
 ```bash
 git add sim/run.ts sim/run.test.ts docs/operations.md docs/owner-sweep-guide.md docs/tasks/current.md
 git commit -m "refactor(sim): retire legacy production sweeps"
+git checkout master
+git merge --no-ff feature/retire-legacy-sweep -m "refactor(sim): retire legacy production sweeps"
 ```
 
-cleanup commit merge 到 master 前先擷取 autodeploy invocation baseline；merge 後只等待 path-triggered 的下一輪 invocation，要求 `Result=success`、`ExecMainStatus=0`、`deployed_rev` 與 `/api/health` rev 都等於 cleanup merge SHA。不得主動 start 第二輪。最後確認舊 timers 仍 disabled、新 coordinator timer active，且 `npm run sim -- --sweep owner` 只輸出退役指引、零 AI／mutation。
+merge 到 master 前先擷取 autodeploy invocation baseline；merge 後只等待 path-triggered 的下一輪 invocation，要求 `Result=success`、`ExecMainStatus=0`、`deployed_rev` 與 `/api/health` rev 都等於 cleanup merge SHA。不得主動 start 第二輪。最後確認舊 timers 仍 disabled、新 coordinator timer active，且 `npm run sim -- --sweep owner` 只輸出退役指引、零 AI／mutation。
 
 ## 驗收條件
 
@@ -991,7 +1038,10 @@ cleanup commit merge 到 master 前先擷取 autodeploy invocation baseline；me
 - Merge 後部署失敗會產生 revert commit，並恢復健康 revision。
 - 部署等待逾時固定 35 分鐘且大於 autodeploy 自身的 30 分鐘 sweep 等待；逾時後只依 `deployed_rev`／health rev 決議成功、`DeploymentIndeterminate` 或失敗，絕不因逾時本身直接 revert。
 - Coordinator 從不主動 start `sim-autodeploy.service`；operator 手動啟動後，下一個 tick 必須能以 `deployed_rev`／health rev 認回該部署，不需自己觀察過那輪 invocation。
-- 任務 2 至 12 的實作 commit 直接進 master 並各觸發一次 build + restart，屬預期行為；只有任務 1 的看板 task 走完整 acceptance／deploy／completion 鏈。
+- 任務 2 至 10 在 `feature/production-coordinator` 上實作，過程中不觸發任何部署；任務 10 結束後單次 merge 進 master 只產生一次 build + restart。只有任務 1 的看板 task 走完整 acceptance／deploy／completion 鏈。
+- 任務 1 由具備 board mutation 授權的互動式 Claude Code session 執行，實作者／driver／Owner 三個角色的操作在 transcript 中分開記錄。
+- `6384b6f4...` 在依賴解除前為 Todo／unassigned／queued，且不得被當成可派工的未指派 Todo；退回 Todo 必須依 Review -> Doing -> Todo -> 清除 assignee 的固定順序。
+- `LEASE_TTL_MS` 嚴格大於 `DEPLOY_WAIT_TIMEOUT_MS`，且有直接比較兩個常數的斷言。
 - Discord 只收到一則去重摘要，delivery attempt 不超過三次。
 - Coordinator restart 會從 checkpoint 接續，不重複已完成副作用。
 - Production coordinator 永遠不接觸兩個明確 UUID 以外的 workspace。
