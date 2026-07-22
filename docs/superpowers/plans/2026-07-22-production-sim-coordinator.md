@@ -100,7 +100,7 @@ Owner 先 GET task 與 audit，並解析 `user03@test.local` 的 canonical user 
 
 bootstrap driver 以 user03 accountable assignee 的執行身分，只能在從當時 master 建立、初始 diff 為空的 `sim/task/00123ef0-81cb-410e-aed1-d6d1fb925ed6` branch 與 `sim-work/tasks/00123ef0-81cb-410e-aed1-d6d1fb925ed6` worktree 實作；不得帶入任何 legacy branch、commit、dirty diff 或檔案。後續 cutover 只接受這條執行鏈留下的完成證據，不得再次指派 user03、建立 branch 或呼叫 Owner／member AI。
 
-- [ ] **步驟 1：把可變討論期限測試改為固定 24 小時。**
+- [x] **步驟 1：把可變討論期限測試改為固定 24 小時。**
 
 加入涵蓋以下契約的斷言：
 
@@ -132,13 +132,13 @@ const LEGACY_REQUEST = `【全員回覆：2天】
 - 既有 window 的 DB row 為 `waitHalfDays: 4` 且 request comment 是上述舊 marker 時，到期後仍可完成收尾；這是 `10e65231...` 的唯讀相容回歸測試。
 - 嘗試用同一舊 marker 建立新 window 時必須失敗，錯誤為 `全員回覆期限固定為 24 小時`；唯讀相容不得重新開放可變期限。
 
-- [ ] **步驟 2：執行 focused test，確認舊行為會失敗。**
+- [x] **步驟 2：執行 focused test，確認舊行為會失敗。**
 
 執行：`npx tsx src/mainDiscussion.test.ts`
 
 預期：FAIL，因為目前建立 parser 不接受 `24小時`，而且仍要求 confirmation 證據；實作若只把舊 regex 直接換掉，legacy closure fixture 也會失敗。
 
-- [ ] **步驟 3：實作固定期限，移除自然語句 confirmation parsing。**
+- [x] **步驟 3：實作固定期限，移除自然語句 confirmation parsing。**
 
 使用以下 constant 與 outcome 結構：
 
@@ -183,11 +183,11 @@ function parseStoredWaitHalfDays(content: string): number | null;
 
 同步更新 `src/mainWorkspacePolicy.ts` 與 `docs/api.md` 的使用者可見契約：窗口固定為連續 24 小時、不可提前結案、缺席不阻擋、到期後不要求 `【確認結論】`。不得保留會讓 Owner 或使用者繼續採用舊 2 至 7 天流程的說明。
 
-- [ ] **步驟 4：遷移 SQLite constraint，不改變歷史 due date。**
+- [x] **步驟 4：遷移 SQLite constraint，不改變歷史 due date。**
 
 將新表驗證改為允許 `wait_half_days BETWEEN 2 AND 14`。新增冪等 schema migration：只有在既有資料表的 `sqlite_master.sql` 仍含 `BETWEEN 4 AND 14` 時才重建，並原樣複製所有既有資料列。
 
-- [ ] **步驟 5：執行 focused 與 domain tests。**
+- [x] **步驟 5：執行 focused 與 domain tests。**
 
 執行：
 
@@ -200,7 +200,7 @@ npx tsc --noEmit
 
 預期：全部 PASS。
 
-- [ ] **步驟 6：提交、驗收、部署並完成唯一的看板 task。**
+- [x] **步驟 6：提交、驗收、部署並完成唯一的看板 task。**
 
 ```bash
 git add src/mainDiscussion.ts src/schema.ts src/mainWorkspacePolicy.ts src/mainDiscussion.test.ts src/task.test.ts src/mainWorkspace.test.ts docs/api.md
