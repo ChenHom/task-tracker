@@ -33,7 +33,10 @@ export function openCoordinatorState(path: string): DatabaseSync {
       CREATE TABLE IF NOT EXISTS task_runs (
         task_id              TEXT PRIMARY KEY,
         workspace_id         TEXT NOT NULL,
-        phase                TEXT NOT NULL,
+        phase                TEXT NOT NULL CHECK (phase IN (
+                                 'queued', 'assigned', 'doing', 'review',
+                                 'integrating', 'deployed', 'done', 'human_blocked'
+                               )),
         worker_id            TEXT,
         branch               TEXT,
         base_sha             TEXT,
@@ -214,28 +217,38 @@ export interface ClaimLeaseInput {
  * 只能由固定 release condition 或人工決策轉出 queued 之後才可 claim）。
  * 若已有未過期 lease，回傳 null（正常的 claim 競爭，不是程式錯誤）；
  * 過期後任何 worker 都可重新 claim。
+ *
+ * Claim 本身是單一 atomic UPDATE：是否可 claim 完全由這條敘述的 WHERE 子句判斷
+ * （`phase != 'queued'` 且 lease 已空或已過期），不是先 SELECT 再 UPDATE 的
+ * check-then-act，避免兩個 process 在 lease 恰好過期的瞬間都讀到「可 claim」而雙寫。
+ * 只有在 UPDATE 影響 0 列時才補一次讀取，且純粹用來分類失敗原因（不存在／queued／
+ * lease 仍有效）以決定要拋錯還是回傳 null，不會反過來影響 claim 是否成立。
  */
 export function claimLease(db: DatabaseSync, input: ClaimLeaseInput): TaskRun | null {
   const now = input.now ?? new Date();
   const leaseMs = input.leaseMs ?? LEASE_TTL_MS;
-  const run = getTaskRun(db, input.taskId);
-  if (!run) {
-    throw new Error(`claimLease: no task_run checkpoint for ${input.taskId}`);
-  }
-  if (run.phase === 'queued') {
-    throw new Error(`claimLease: task ${input.taskId} is queued and cannot be leased`);
-  }
-  const leaseActive = run.leaseUntil !== null && new Date(run.leaseUntil).getTime() > now.getTime();
-  if (leaseActive) {
-    return null;
-  }
+  const nowIso = now.toISOString();
   const leaseUntil = new Date(now.getTime() + leaseMs).toISOString();
-  db.prepare('UPDATE task_runs SET worker_id = ?, lease_until = ?, updated_at = ? WHERE task_id = ?').run(
-    input.workerId,
-    leaseUntil,
-    now.toISOString(),
-    input.taskId,
-  );
+
+  const result = db
+    .prepare(`
+      UPDATE task_runs
+      SET worker_id = ?, lease_until = ?, updated_at = ?
+      WHERE task_id = ? AND phase != 'queued' AND (lease_until IS NULL OR lease_until <= ?)
+    `)
+    .run(input.workerId, leaseUntil, nowIso, input.taskId, nowIso);
+
+  if (result.changes === 0) {
+    const run = getTaskRun(db, input.taskId);
+    if (!run) {
+      throw new Error(`claimLease: no task_run checkpoint for ${input.taskId}`);
+    }
+    if (run.phase === 'queued') {
+      throw new Error(`claimLease: task ${input.taskId} is queued and cannot be leased`);
+    }
+    return null; // lease 仍有效，屬正常 claim 競爭，不是程式錯誤
+  }
+
   return getTaskRun(db, input.taskId);
 }
 

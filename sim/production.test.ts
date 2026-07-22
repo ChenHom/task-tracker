@@ -98,6 +98,33 @@ assert.ok(
   // release 若不是目前持有者，必須拒絕。
   assert.throws(() => releaseLease(db, 'task-lease', 'worker-not-holder', afterExpiry), /not held by/);
 
+  // claim 是單一 atomic UPDATE，不是 check-then-act：直接用原始 SQL 模擬「另一個 process
+  // 恰好在這一刻已經寫下未過期 lease」，證明 claimLease 的 WHERE guard 會擋下這次 claim，
+  // 且失敗的 claim 完全不動任何欄位（不會覆寫並發寫入者的 worker_id/lease_until）。
+  db.prepare('UPDATE task_runs SET worker_id = ?, lease_until = ? WHERE task_id = ?').run(
+    'concurrent-worker',
+    new Date(afterExpiry.getTime() + 10000).toISOString(),
+    'task-lease',
+  );
+  const racedClaim = claimLease(db, {
+    taskId: 'task-lease',
+    workerId: 'worker-e',
+    now: afterExpiry,
+    leaseMs: 1000,
+  });
+  assert.strictEqual(racedClaim, null, 'atomic UPDATE 的 WHERE guard 必須擋下未過期 lease 的 claim');
+  const afterRacedClaim = getTaskRun(db, 'task-lease');
+  assert.strictEqual(
+    afterRacedClaim!.workerId,
+    'concurrent-worker',
+    '失敗的 claim 不得覆寫並發寫入者已持有的 worker_id',
+  );
+  assert.strictEqual(
+    afterRacedClaim!.leaseUntil,
+    new Date(afterExpiry.getTime() + 10000).toISOString(),
+    '失敗的 claim 不得覆寫並發寫入者已持有的 lease_until',
+  );
+
   db.close();
 }
 
