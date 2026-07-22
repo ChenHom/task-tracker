@@ -46,10 +46,12 @@ assert.throws(
   /UNIQUE/,
   '同一通知留言不可對應多個窗口',
 );
+// 固定 24 小時窗口對應 wait_half_days=2；下限自 4 放寬為 2 以容納這個值。
+insertWindow.run('task-fixed-24h', 'thought-fixed', 'request-fixed', '2026-07-14T00:00:00.000Z', 2, '2026-07-15T00:00:00.000Z');
 assert.throws(
-  () => insertWindow.run('task-3', 'thought-3', 'request-3', '2026-07-14T00:00:00.000Z', 3, '2026-07-16T00:00:00.000Z'),
+  () => insertWindow.run('task-3', 'thought-3', 'request-3', '2026-07-14T00:00:00.000Z', 1, '2026-07-16T00:00:00.000Z'),
   /CHECK/,
-  '最短只能是 4 個 half-days',
+  '最短只能是 2 個 half-days',
 );
 assert.throws(
   () => insertWindow.run('task-4', 'thought-4', 'request-4', '2026-07-14T00:00:00.000Z', 15, '2026-07-16T00:00:00.000Z'),

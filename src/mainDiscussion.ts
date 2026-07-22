@@ -4,6 +4,8 @@ import { CommandError } from './eventStore';
 import { MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 
 const HALF_DAY_MS = 12 * 60 * 60 * 1000;
+const FIXED_WAIT_HALF_DAYS = 2;
+const FIXED_WAIT_MS = 24 * 60 * 60 * 1000;
 const REQUIRED_THOUGHT_FIELDS = [
   '現況／問題',
   '預期價值',
@@ -45,8 +47,24 @@ function missingOwnerThoughtFields(content: string): readonly string[] {
   return REQUIRED_THOUGHT_FIELDS.filter((label) => lineValue(content, label) === null);
 }
 
-function parseWaitHalfDays(content: string): number | null {
-  const match = content.match(/^【全員回覆：(\d+(?:\.5)?)天】(?:\r?\n|$)/u);
+const FIXED_REQUEST_MARKER = /^【全員回覆：24小時】(?:\r?\n|$)/u;
+const LEGACY_REQUEST_MARKER = /^【全員回覆：(\d+(?:\.5)?)天】(?:\r?\n|$)/u;
+
+// 新窗口只接受固定 24 小時 marker；遇到舊 N 天格式直接拒絕，不重新開放可變期限。
+function parseNewWaitHalfDays(content: string): number | null {
+  if (FIXED_REQUEST_MARKER.test(content)) return FIXED_WAIT_HALF_DAYS;
+  if (LEGACY_REQUEST_MARKER.test(content)) {
+    throw new CommandError('全員回覆期限固定為 24 小時');
+  }
+  return null;
+}
+
+// 既有窗口收尾時的唯讀相容：固定 marker 直接視為 2；舊 N 天 marker 仍套用原本
+// 2～7 天、0.5 天遞增與較長期限理由驗證，讓歷史 request comment 能被機械式驗證，
+// 而不必改寫留言或忽略既有證據。
+function parseStoredWaitHalfDays(content: string): number | null {
+  if (FIXED_REQUEST_MARKER.test(content)) return FIXED_WAIT_HALF_DAYS;
+  const match = content.match(LEGACY_REQUEST_MARKER);
   if (!match) return null;
 
   const waitHalfDays = Number(match[1]) * 2;
@@ -63,7 +81,7 @@ export function recordMainDiscussionWindowForComment(
   input: RecordMainDiscussionCommentInput,
   database = db,
 ): MainDiscussionWindow | null {
-  const waitHalfDays = parseWaitHalfDays(input.content);
+  const waitHalfDays = parseNewWaitHalfDays(input.content);
   if (waitHalfDays === null) return null;
 
   const task = database.prepare(
@@ -113,7 +131,7 @@ export function recordMainDiscussionWindowForComment(
   const openedAtMs = Date.parse(input.createdAt);
   if (Number.isNaN(openedAtMs)) throw new CommandError('留言建立時間不合法');
   const openedAt = new Date(openedAtMs).toISOString();
-  const dueAt = new Date(openedAtMs + waitHalfDays * HALF_DAY_MS).toISOString();
+  const dueAt = new Date(openedAtMs + FIXED_WAIT_MS).toISOString();
   database.prepare(
     `INSERT INTO main_discussion_windows
        (task_id, owner_thought_comment_id, request_comment_id, opened_at, wait_half_days, due_at)
@@ -154,6 +172,11 @@ export function getMainDiscussionWindow(taskId: string, database = db): MainDisc
 
 export type MainDiscussionOutcome = 'implement' | 'no_implementation' | 'no_consensus';
 
+export interface MainDiscussionImplementationTask {
+  workspaceName: string;
+  taskName: string;
+}
+
 export interface MainDiscussionConcludedPayload {
   status: 'Done';
   outcome: MainDiscussionOutcome;
@@ -162,10 +185,11 @@ export interface MainDiscussionConcludedPayload {
   ownerThoughtCommentId: string;
   requestCommentId: string;
   decisionCommentId: string;
-  confirmationCommentId: string | null;
+  confirmationCommentId: null;
   handoffCommentId: string | null;
   implementationWorkspaceName: string | null;
   implementationTaskName: string | null;
+  implementationTasks: MainDiscussionImplementationTask[];
 }
 
 interface OrderedComment {
@@ -191,39 +215,8 @@ function getMainOwnerId(database: DatabaseSync): string | null {
   return row?.id ?? null;
 }
 
-function getTaskCreatorId(taskId: string, database: DatabaseSync): string | null {
-  const row = database.prepare(
-    `SELECT metadata_json
-       FROM event_store
-      WHERE aggregate_id = ? AND event_type = 'task.created'
-      ORDER BY aggregate_version
-      LIMIT 1`,
-  ).get(taskId) as { metadata_json: string } | undefined;
-  if (!row) return null;
-  try {
-    const metadata = JSON.parse(row.metadata_json) as { actor_id?: unknown };
-    return typeof metadata.actor_id === 'string' && metadata.actor_id ? metadata.actor_id : null;
-  } catch {
-    return null;
-  }
-}
-
-function isMainCommenter(userId: string, database: DatabaseSync): boolean {
-  const row = database.prepare(
-    `SELECT 1
-       FROM workspace_members_read_model
-      WHERE workspace_id = ? AND user_id = ? AND role = 'Commenter'`,
-  ).get(MAIN_WORKSPACE_ID, userId);
-  return Boolean(row);
-}
-
 function isMarker(content: string, marker: string): boolean {
   return content.startsWith(marker);
-}
-
-function isPreDeadlineConfirmation(content: string): boolean {
-  return isMarker(content, '【確認結論】')
-    || /(?:同意|支持).*(?:採用|實作|方向)|請交由.+接手/u.test(content);
 }
 
 function parseDecision(content: string): MainDiscussionOutcome | null {
@@ -292,7 +285,7 @@ export function resolveMainDiscussionConclusion(
   if (!thought || thought.user_id !== ownerId || !isStructuredOwnerThought(thought.content)) {
     throw new CommandError('收尾前必須保留完整的 OWNER想法');
   }
-  if (!request || request.user_id !== ownerId || parseWaitHalfDays(request.content) !== window.waitHalfDays) {
+  if (!request || request.user_id !== ownerId || parseStoredWaitHalfDays(request.content) !== window.waitHalfDays) {
     throw new CommandError('收尾前必須保留合法的全員回覆通知');
   }
 
@@ -303,7 +296,7 @@ export function resolveMainDiscussionConclusion(
     .filter((entry): entry is { comment: OrderedComment; outcome: MainDiscussionOutcome } => entry.outcome !== null);
   const latestDecision = decisions.at(-1);
   if (!latestDecision) {
-    throw new CommandError('尚未留下合法的主工作區結論；實作請依序留下「【結論】」→「【確認結論】」→「【實作任務】工作區：...｜TASK：...」');
+    throw new CommandError('尚未留下合法的主工作區結論；實作請依序留下「【結論】」→「【實作任務】工作區：...｜TASK：...」');
   }
 
   if (latestDecision.outcome === 'no_consensus') {
@@ -319,25 +312,8 @@ export function resolveMainDiscussionConclusion(
       handoffCommentId: null,
       implementationWorkspaceName: null,
       implementationTaskName: null,
+      implementationTasks: [],
     };
-  }
-
-  const creatorId = getTaskCreatorId(taskId, database);
-  const isEligibleConfirmer = (comment: OrderedComment) => (creatorId === ownerId
-    ? isMainCommenter(comment.user_id, database)
-    : comment.user_id === creatorId);
-  const confirmation = laterComments.find((comment) => (
-    comment.rowid > latestDecision.comment.rowid
-    && isMarker(comment.content, '【確認結論】')
-    && isEligibleConfirmer(comment)
-  )) ?? laterComments.find((comment) => (
-    comment.rowid < latestDecision.comment.rowid
-    && Date.parse(comment.created_at) <= dueMs
-    && isPreDeadlineConfirmation(comment.content)
-    && isEligibleConfirmer(comment)
-  ));
-  if (!confirmation) {
-    throw new CommandError('尚未取得建立者或 Commenter 的確認結論；請留下「【確認結論】」，或在截止前明確表示同意／交接');
   }
 
   if (latestDecision.outcome === 'no_implementation') {
@@ -349,18 +325,20 @@ export function resolveMainDiscussionConclusion(
       ownerThoughtCommentId: window.ownerThoughtCommentId,
       requestCommentId: window.requestCommentId,
       decisionCommentId: latestDecision.comment.comment_id,
-      confirmationCommentId: confirmation.comment_id,
+      confirmationCommentId: null,
       handoffCommentId: null,
       implementationWorkspaceName: null,
       implementationTaskName: null,
+      implementationTasks: [],
     };
   }
 
-  const handoff = laterComments
-    .filter((comment) => comment.rowid > confirmation.rowid && comment.user_id === ownerId)
+  const handoffs = laterComments
+    .filter((comment) => comment.rowid > latestDecision.comment.rowid && comment.user_id === ownerId)
     .map((comment) => ({ comment, handoff: parseImplementationHandoff(comment.content) }))
-    .find((entry): entry is { comment: OrderedComment; handoff: { workspaceName: string; taskName: string } } => entry.handoff !== null);
-  if (!handoff) throw new CommandError('尚未留下合法的實作任務交接');
+    .filter((entry): entry is { comment: OrderedComment; handoff: MainDiscussionImplementationTask } => entry.handoff !== null);
+  const firstHandoff = handoffs[0];
+  if (!firstHandoff) throw new CommandError('尚未留下合法的實作任務交接');
 
   return {
     status: 'Done',
@@ -370,9 +348,10 @@ export function resolveMainDiscussionConclusion(
     ownerThoughtCommentId: window.ownerThoughtCommentId,
     requestCommentId: window.requestCommentId,
     decisionCommentId: latestDecision.comment.comment_id,
-    confirmationCommentId: confirmation.comment_id,
-    handoffCommentId: handoff.comment.comment_id,
-    implementationWorkspaceName: handoff.handoff.workspaceName,
-    implementationTaskName: handoff.handoff.taskName,
+    confirmationCommentId: null,
+    handoffCommentId: firstHandoff.comment.comment_id,
+    implementationWorkspaceName: firstHandoff.handoff.workspaceName,
+    implementationTaskName: firstHandoff.handoff.taskName,
+    implementationTasks: handoffs.map((entry) => entry.handoff),
   };
 }
