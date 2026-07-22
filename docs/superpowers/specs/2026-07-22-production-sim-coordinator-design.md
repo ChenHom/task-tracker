@@ -136,7 +136,13 @@ task branch CI -> 暫存整合 worktree -> npm test -> npm run build -> git diff
 
 部署 revision 通過 readback 前不得變更任何 task status 或 completion comment——避免「Build 完成」被誤當成「已交付」。任一階段失敗：確認 `master HEAD === mergeSha` 且該 invocation 已結束後，執行 `git revert -m 1 --no-edit <mergeSha>`、等待 revert ref change 觸發的下一個 path invocation，並要求 invocation result、`deployed_rev` 與 health rev 都等於 revert commit；task 維持 Review，留下去重的 rollback comment。若連 rollback health 都失敗，記錄 fatal coordinator error 並拒絕後續所有 AI／mutation action（寧可停擺也不在未知健康狀態下繼續動作）。永遠不 reset Git 歷史，只用 revert 前進式修復。
 
-`sim-autodeploy.path` 監看 master ref／packed refs，merge 與 revert 本身就是觸發。每次改動 master 前，coordinator 先要求 path unit active、service inactive，並擷取目前 `InvocationID`／`ExecMainStartTimestampMonotonic`；改動後只等待一個新的已完成 invocation，不再主動 `systemctl start` 製造第二輪。成功必須同時符合：新 invocation `Result=success`／`ExecMainStatus=0`、`deployed_rev` 等於目標 SHA、health rev 等於目標 SHA。新 invocation 失敗或逾時就是該 merge／revert generation 的部署失敗，不得用第二次 start 掩蓋；revert 也沿用相同 generation readback。
+`sim-autodeploy.path` 監看 master ref／packed refs，merge 與 revert 本身就是觸發。每次改動 master 前，coordinator 先要求 path unit active、service inactive，並擷取目前 `InvocationID`／`ExecMainStartTimestampMonotonic`；改動後只等待一個新的已完成 invocation，不再主動 `systemctl start` 製造第二輪。成功必須同時符合：新 invocation `Result=success`／`ExecMainStatus=0`、`deployed_rev` 等於目標 SHA、health rev 等於目標 SHA。新 invocation 明確失敗就是該 merge／revert generation 的部署失敗，不得用第二次 start 掩蓋；revert 沿用相同 generation readback。
+
+等待逾時固定 35 分鐘，必須大於 `sim-autodeploy.sh` 自身最長 30 分鐘的 `pgrep sim/run.ts` 等待，否則一次正常但緩慢的部署會被誤判成失敗。逾時不等於失敗，改以最終狀態決議：兩個 rev 都等於目標 SHA 視為成功並標記 `deployObservedOutOfBand=true`；rev 不符但 service 仍 active 回傳 `DeploymentIndeterminate`，該 tick 零 revert／零 status change／零 completion comment，留待下一個 tick 以同一 target SHA 重新 readback；rev 不符且 service 已 inactive 才判定該 generation 部署失敗並進入 revert。Rollback 只在 invocation 明確失敗，或 `DeploymentIndeterminate` 連續兩個 tick 未收斂時，才升級為 fatal coordinator error。
+
+`.path` 觸發遺漏是已知殘餘風險：inotify 對 ref rename 與密集 merge／revert 的事件合併不保證每次送達。設計上不讓 coordinator 主動 start service（那會破壞 generation 歸因），改以人工逃生口涵蓋：operator 可手動 `systemctl --user start sim-autodeploy.service`，而 `sim-autodeploy.sh` 的 `[ "$HEAD" = "$DEPLOYED" ] && exit 0` 讓手動啟動冪等。coordinator 下一個 tick 只比對 `deployed_rev` 與 health rev，不要求該輪 invocation 由自己觀察到，人工介入因此不會讓 checkpoint 卡死。
+
+實作期的 commit 走另一條路：任務 2 至 12 的 commit 直接落在 master，每一筆都會觸發一次 build + restart，這是預期行為而非 acceptance sequence。只有任務 1 的看板 task 走完整 acceptance／deploy／completion 鏈；其餘 commit 只需 `npm run build` 可過，且不得在同一筆 commit 同時修改 `src/` 與 `sim/production/`，以免半成品 coordinator 與伺服器行為一起上線。
 
 既有 `deploy/sim-autodeploy.sh` 對 `pgrep tsx sim/run.ts` 的 wait 在 cutover 與 post-cutover cleanup 期間都保留。它仍能避免舊 timer 或人工 lab run 的 in-flight session 被 task-tracker restart 打斷；production coordinator 不以 `pgrep sim/production.ts` 守衛，避免 coordinator 等部署、部署又等待 coordinator 的循環等待。
 

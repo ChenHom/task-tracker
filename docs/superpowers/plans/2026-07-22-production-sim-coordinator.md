@@ -32,6 +32,9 @@
 - Build 與安裝不代表已授權 live AI。啟用或手動執行 live coordinator 前，必須另取得明確人工授權。
 - 既有 `sim-autodeploy.path` 是 master merge／revert 的唯一部署觸發來源；coordinator 等待並驗證 path 觸發的同一輪 service invocation，不再主動 start 第二輪。
 - 舊 sweep 程式碼只在 runtime cutover 完成兩個成功 live tick 後退役；`deploy/sim-autodeploy.sh` 的既有 `pgrep sim/run.ts` 守衛本次保留。
+- 任務 2 至 12 的實作 commit 直接落在 master，每一筆都會觸發一次 `sim-autodeploy` build + restart，這是預期行為，不是 acceptance sequence 的一部分。只有任務 1 的看板 task 走完整 acceptance／deploy／completion 鏈；其餘 commit 只需 `npm run build` 可過即可，且不得同時修改 `src/`（伺服器行為）與 `sim/production/`。
+- 部署等待的逾時固定為 35 分鐘，涵蓋 `sim-autodeploy.sh` 最長 30 分鐘的 `pgrep sim/run.ts` 等待。逾時本身不等於部署失敗：必須先比對 `deployed_rev` 與 `/api/health` rev 是否已等於 target SHA，再判定成功、失敗或 `DeploymentIndeterminate`。
+- `.path` 觸發遺漏是已知殘餘風險。coordinator 永遠不主動 start service，但 operator 可手動 `systemctl --user start sim-autodeploy.service`；`sim-autodeploy.sh` 的 `[ "$HEAD" = "$DEPLOYED" ] && exit 0` 讓手動啟動冪等。coordinator 下一個 tick 以 `deployed_rev`／health rev 認回該狀態，不要求該輪 invocation 由自己觀察到。
 
 ## 本計畫要消除的已確認失敗模式
 
@@ -490,6 +493,8 @@ git commit -m "feat(sim): verify agent side effects"
 
 涵蓋：branch CI failure、integration conflict、full test failure、merge 前 build failure、`sim-autodeploy.path` inactive、merge 前 service 尚 active、merge 後沒有新 invocation、path-triggered invocation failure、health rev mismatch、成功 revert 並由另一個新 invocation 恢復 health，以及 revert 部署失敗後停止全部後續 live action。測試要證明 coordinator 從不呼叫 `systemctl start sim-autodeploy.service`，而且不能把先前 invocation 或第二次重試誤認為目前 generation 的成功。
 
+逾時分支另需三筆 fixture：invocation 因 `pgrep sim/run.ts` 等待而在 34 分鐘後才成功時不得逾時；逾時且 `deployedRev`／health rev 都等於 target SHA 時視為成功並標記 `deployObservedOutOfBand=true`；逾時且 `deployedRev` 不符但 service 仍 active 時回傳 `DeploymentIndeterminate`，該 tick 零 revert、零 status change、零 completion comment，下一個 tick 以同一 target SHA 重新 readback 後可成功收斂。
+
 - [ ] **步驟 2：執行 focused test，確認失敗。**
 
 執行：`npx tsx sim/production.test.ts`
@@ -508,7 +513,8 @@ task branch CI
   -> require sim-autodeploy.path active and sim-autodeploy.service inactive
   -> snapshot InvocationID / ExecMainStartTimestampMonotonic
   -> merge --no-ff
-  -> wait for exactly one newer path-triggered sim-autodeploy.service invocation to finish
+  -> wait <= 35 min for exactly one newer path-triggered invocation to finish
+     (timeout -> resolve by deployed_rev/health rev, see 步驟 5)
   -> GET /api/health
   -> require invocation Result=success / ExecMainStatus=0,
      deployed_rev=master HEAD, HTTP 200, status=ok, db=true, rev=master HEAD
@@ -519,11 +525,19 @@ task branch CI
 
 - [ ] **步驟 4：實作失敗復原。**
 
-若 merge 後失敗，必須先確認 `master HEAD === mergeSha`、等待失敗 invocation 已結束，再擷取新的 invocation baseline，執行 `git revert -m 1 --no-edit <mergeSha>`，並等待 revert ref change 觸發的下一個且唯一的新 invocation；要求該 invocation 成功、`deployed_rev` 與 health rev 都等於 revert commit。Task 維持 Review，並留下去重的 deployment-rollback comment。若 rollback health 失敗，記錄 fatal coordinator error，拒絕後續所有 AI／mutation action。
+若 merge 後失敗，必須先確認 `master HEAD === mergeSha`、等待失敗 invocation 已結束，再擷取新的 invocation baseline，執行 `git revert -m 1 --no-edit <mergeSha>`，並等待 revert ref change 觸發的下一個且唯一的新 invocation；要求該 invocation 成功、`deployed_rev` 與 health rev 都等於 revert commit。Revert 的等待沿用步驟 5 的 35 分鐘逾時與同一套逾時決議：逾時且兩個 rev 都已等於 revert commit 視為 rollback 成功；逾時且 service 仍 active 回傳 `DeploymentIndeterminate`，該 tick 不升級為 fatal，下一個 tick 以同一 revert SHA 重新 readback。Task 維持 Review，並留下去重的 deployment-rollback comment。只有在 rollback invocation 明確失敗，或 `DeploymentIndeterminate` 連續兩個 tick 仍未收斂時，才記錄 fatal coordinator error 並拒絕後續所有 AI／mutation action。
 
 - [ ] **步驟 5：以 path invocation generation 實作唯一部署 readback。**
 
-在 `sim/production/git.ts` 定義可注入的 systemd readback adapter，至少回傳 `pathActive`、`serviceActiveState`、`invocationId`、`execMainStartTimestampMonotonic`、`result`、`execMainStatus` 與 `deployedRev`。merge／revert 前都先要求 path active 且 service inactive，再保存 baseline；ref 變更後輪詢直到看到 start timestamp 增加且該 invocation 結束，逾時或 `Result != success`／`ExecMainStatus != 0` 立即回傳該 target SHA 的 deployment failure。不得主動 start service，也不得在失敗後補跑第二輪來掩蓋 path invocation 的結果。
+在 `sim/production/git.ts` 定義可注入的 systemd readback adapter，至少回傳 `pathActive`、`serviceActiveState`、`invocationId`、`execMainStartTimestampMonotonic`、`result`、`execMainStatus` 與 `deployedRev`。merge／revert 前都先要求 path active 且 service inactive，再保存 baseline；ref 變更後輪詢直到看到 start timestamp 增加且該 invocation 結束。`Result != success`／`ExecMainStatus != 0` 立即回傳該 target SHA 的 deployment failure。不得主動 start service，也不得在失敗後補跑第二輪來掩蓋 path invocation 的結果。
+
+等待逾時固定為 35 分鐘（`DEPLOY_WAIT_TIMEOUT_MS = 35 * 60 * 1000`），必須大於 `sim-autodeploy.sh` 最長 30 分鐘的 `pgrep sim/run.ts` 等待，否則正常部署會被誤判失敗。逾時後不得直接判為 deployment failure，必須改以最終狀態決議：
+
+- `deployedRev === targetSha` 且 health rev `=== targetSha`：視為成功（invocation 由遺漏觸發後的人工 start 或延遲 readback 完成），記錄 `deployObservedOutOfBand=true`。
+- `deployedRev !== targetSha` 且 service 仍 active：回傳 `DeploymentIndeterminate`，不 revert、不改 task status、不留 completion comment，等下一個 tick 以同一 target SHA 重新 readback。
+- `deployedRev !== targetSha` 且 service 已 inactive：確認 `.path` 觸發遺漏，回傳該 target SHA 的 deployment failure，進入步驟 4 的 revert 流程。
+
+`.path` 觸發遺漏是已知殘餘風險，因為 inotify 對 ref rename 與密集 merge／revert 的合併行為不保證每次都送出事件。coordinator 永遠不主動 start service；operator 可手動 `systemctl --user start sim-autodeploy.service`，`sim-autodeploy.sh` 的 `[ "$HEAD" = "$DEPLOYED" ] && exit 0` 讓手動啟動冪等。coordinator 下一個 tick 只比對 `deployed_rev` 與 health rev，不要求該輪 invocation 由自己觀察到，因此人工介入不會讓 checkpoint 卡死。
 
 本任務不修改 `deploy/sim-autodeploy.sh`，並保留 line 13～17 對 `tsx sim/run.ts` 的 wait。共用 run lock 只防 sim process 彼此重疊，不能保護 in-flight 舊 sweep 不被 task-tracker restart 打斷；production coordinator 也不能加入 `pgrep sim/production.ts`，否則會和自己等待的 deploy 形成循環等待。
 
@@ -975,6 +989,9 @@ cleanup commit merge 到 master 前先擷取 autodeploy invocation baseline；me
 - 兩次 member 無進展嘗試會觸發 Owner intervention；再一次無進展只觸發一筆 human-blocked notification，之後保持安靜。
 - Live deployment health 與 user09 notification readback 完成前，task 不得進入 Done。
 - Merge 後部署失敗會產生 revert commit，並恢復健康 revision。
+- 部署等待逾時固定 35 分鐘且大於 autodeploy 自身的 30 分鐘 sweep 等待；逾時後只依 `deployed_rev`／health rev 決議成功、`DeploymentIndeterminate` 或失敗，絕不因逾時本身直接 revert。
+- Coordinator 從不主動 start `sim-autodeploy.service`；operator 手動啟動後，下一個 tick 必須能以 `deployed_rev`／health rev 認回該部署，不需自己觀察過那輪 invocation。
+- 任務 2 至 12 的實作 commit 直接進 master 並各觸發一次 build + restart，屬預期行為；只有任務 1 的看板 task 走完整 acceptance／deploy／completion 鏈。
 - Discord 只收到一則去重摘要，delivery attempt 不超過三次。
 - Coordinator restart 會從 checkpoint 接續，不重複已完成副作用。
 - Production coordinator 永遠不接觸兩個明確 UUID 以外的 workspace。
