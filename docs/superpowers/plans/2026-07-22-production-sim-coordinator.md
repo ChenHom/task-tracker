@@ -30,6 +30,8 @@
 - 每個 coordinator tick 最多產生一則 Discord 摘要。初次傳送失敗後再重送兩次，總計三次；Discord 失敗不會重開已 Done 的 task。
 - 部署失敗時建立可追溯的 `git revert` commit，並恢復上一個正常服務 revision。永遠不 reset Git 歷史。
 - Build 與安裝不代表已授權 live AI。啟用或手動執行 live coordinator 前，必須另取得明確人工授權。
+- 既有 `sim-autodeploy.path` 是 master merge／revert 的唯一部署觸發來源；coordinator 等待並驗證 path 觸發的同一輪 service invocation，不再主動 start 第二輪。
+- 舊 sweep 程式碼只在 runtime cutover 完成兩個成功 live tick 後退役；`deploy/sim-autodeploy.sh` 的既有 `pgrep sim/run.ts` 守衛本次保留。
 
 ## 本計畫要消除的已確認失敗模式
 
@@ -41,6 +43,9 @@
 - 同一成員的兩個 Review 若在 cutover 同時退回 Doing，會立即違反 WIP1；只能啟動一筆，其餘必須以持久化 `queued` checkpoint 保持靜默。
 - 一般 session 通常只信任 CLI exit status，沒有驗證預期留言、狀態轉移、commit、merge 或部署是否真的發生。
 - 主討論結案以自然語句 confirmation regex 判斷，會拒絕 user09 的有效表達。
+- 新建窗口改成 `【全員回覆：24小時】` 後，若收尾 parser 不保留舊 `【全員回覆：N天】` 的唯讀相容，既有 `10e65231...` 會因歷史 request comment 無法解析而永遠不能結案。
+- `sim-autodeploy.path` 已監看 master ref；merge／revert 後再主動 start service 會形成無法歸因的第二次部署 invocation。
+- 任務 1 發生在 coordinator 建立前，不能把尚未存在的 `action_log`、production driver 或舊 sweep 當成 bootstrap 執行者。
 - user09 沒有可靠的完成摘要可確認修改內容、驗證方式與目前 live revision。
 
 ## 目標檔案結構
@@ -73,11 +78,13 @@
 - 修改：`src/mainWorkspace.test.ts`
 - 修改：`docs/api.md`
 
-**唯一執行綁定：** 本任務只對應既有看板 task `00123ef0-81cb-410e-aed1-d6d1fb925ed6`，不得另建重複 task。由於 coordinator `action_log` 要到任務 2 才建立，本任務不得假設已有 action-key 冪等能力。取得本 task 的 board mutation 授權後，driver 先在 Git 已忽略的執行紀錄保存 `task1AuthorizedAt`、canonical Owner ID 與 task aggregate baseline version。Owner 再 GET task 與 audit，並解析 `user03@test.local` 的 canonical user ID。
+**唯一執行綁定與 bootstrap driver：** 本任務只對應既有看板 task `00123ef0-81cb-410e-aed1-d6d1fb925ed6`，不得另建重複 task。任務 1 的 driver 明確是「取得本 task board mutation 授權的計畫執行者／operator」，不是尚未完成的 production coordinator、不是舊 `sim/run.ts`，也不要求一次性 AI runner。user03 是這筆 task 在看板上的唯一 accountable assignee；計畫執行者在固定 user03 task branch/worktree 內完成實作、測試與 commit，機械式 API／Git／部署操作仍由該 bootstrap driver 執行。Owner acceptance 必須由 operator 審查 exact head 後，才以 canonical Owner 身分留下結構化 record。
 
-若 task 是 Todo／unassigned，只送出一次 assignee PATCH；response 不確定時先重新 GET task／audit，不得盲目重送。若 task 已是 Todo／user03，只有在造成目前 projection 的 `task.assignee_changed` event 是本次 `task1AuthorizedAt` 之後由 canonical Owner 產生時才可沿用且不再 PATCH；授權前的舊 event 不得採納。兩種路徑都必須 read back 唯一 assignment event，驗證 actor ID 是 canonical Owner、payload 是 user03 canonical ID、aggregate version 與 baseline 可追溯，並保存 event ID／version；若為其他 assignee／status、event 缺漏／重複，或 readback 不一致，立即停止並交由人工判斷。完成上述證據後，才以另一個單欄位 PATCH 執行 Todo -> Doing 並 read back。
+由於 coordinator `action_log` 要到任務 2 才建立，本任務不得假設已有 action-key 冪等能力，也不得臨時新增另一套權威 ledger。取得授權後，bootstrap driver 建立 Git 已忽略的 `sim-logs/task1-bootstrap/<run-id>/evidence.json` 作為操作 transcript；權威仍是 API audit/comment/notification、Git ancestry 與 live health readback。紀錄至少包含：`task1AuthorizedAt`、task ID、canonical Owner ID、user03 canonical ID、task aggregate baseline version、assignment event ID／version、branch／base SHA、accepted head、Owner acceptance ID、merge SHA、live rev、completion comment ID 與 user09 notification ID。任何 response 不確定時先查權威 readback，再更新 transcript，不得靠 transcript 推定副作用已成功。
 
-user03 只能在從當時 master 建立、初始 diff 為空的 `sim/task/00123ef0-81cb-410e-aed1-d6d1fb925ed6` branch 與 `sim-work/tasks/00123ef0-81cb-410e-aed1-d6d1fb925ed6` worktree 實作；不得帶入任何 legacy branch、commit、dirty diff 或檔案。後續 cutover 只接受這條執行鏈留下的完成證據，不得再次指派 user03、建立 branch 或呼叫 Owner／member AI。
+Owner 先 GET task 與 audit，並解析 `user03@test.local` 的 canonical user ID。若 task 是 Todo／unassigned，只送出一次 assignee PATCH；response 不確定時先重新 GET task／audit，不得盲目重送。若 task 已是 Todo／user03，只有在造成目前 projection 的 `task.assignee_changed` event 是本次 `task1AuthorizedAt` 之後由 canonical Owner 產生時才可沿用且不再 PATCH；授權前的舊 event 不得採納。兩種路徑都必須 read back 唯一 assignment event，驗證 actor ID 是 canonical Owner、payload 是 user03 canonical ID、aggregate version 與 baseline 可追溯，並保存 event ID／version；若為其他 assignee／status、event 缺漏／重複，或 readback 不一致，立即停止並交由人工判斷。完成上述證據後，才以另一個單欄位 PATCH 執行 Todo -> Doing 並 read back。
+
+bootstrap driver 以 user03 accountable assignee 的執行身分，只能在從當時 master 建立、初始 diff 為空的 `sim/task/00123ef0-81cb-410e-aed1-d6d1fb925ed6` branch 與 `sim-work/tasks/00123ef0-81cb-410e-aed1-d6d1fb925ed6` worktree 實作；不得帶入任何 legacy branch、commit、dirty diff 或檔案。後續 cutover 只接受這條執行鏈留下的完成證據，不得再次指派 user03、建立 branch 或呼叫 Owner／member AI。
 
 - [ ] **步驟 1：把可變討論期限測試改為固定 24 小時。**
 
@@ -100,11 +107,22 @@ assert.deepStrictEqual(opened, {
 
 同時證明：期限前結案必須失敗；期限後即使沒有 `【確認結論】` 也能成功；缺席或零回覆不阻擋；`【未達共識】` 會直接 Done 且不建立 target task；implement outcome 必須在決議後至少有一筆 Owner handoff。`src/mainWorkspace.test.ts` 必須同步斷言政策文字只描述固定 24 小時，不再出現 2 至 7 天或 confirmation 要求。
 
+再加入兩條 parser boundary fixture：
+
+```ts
+const LEGACY_REQUEST = `【全員回覆：2天】
+@user02 @user03 @user04 @user05 @user06 @user09
+請在期限內提出意見。`;
+```
+
+- 既有 window 的 DB row 為 `waitHalfDays: 4` 且 request comment 是上述舊 marker 時，到期後仍可完成收尾；這是 `10e65231...` 的唯讀相容回歸測試。
+- 嘗試用同一舊 marker 建立新 window 時必須失敗，錯誤為 `全員回覆期限固定為 24 小時`；唯讀相容不得重新開放可變期限。
+
 - [ ] **步驟 2：執行 focused test，確認舊行為會失敗。**
 
 執行：`npx tsx src/mainDiscussion.test.ts`
 
-預期：FAIL，因為目前 parser 只接受 2 至 7 天，而且仍要求 confirmation 證據。
+預期：FAIL，因為目前建立 parser 不接受 `24小時`，而且仍要求 confirmation 證據；實作若只把舊 regex 直接換掉，legacy closure fixture 也會失敗。
 
 - [ ] **步驟 3：實作固定期限，移除自然語句 confirmation parsing。**
 
@@ -137,6 +155,18 @@ export interface MainDiscussionConcludedPayload {
 
 Server 可以解析由 Owner 控制的 `【結論】`、`【結論：不實作】`、`【未達共識】` 與 `【實作任務】` audit marker，但不得把一般 member／user09 文字解讀成核准。以第一筆 handoff 保留舊的 singular handoff 欄位，使歷史 audit reader 維持相容。
 
+Request marker 必須分成兩個不共用 command path 的 parser：
+
+```ts
+const FIXED_REQUEST_MARKER = /^【全員回覆：24小時】(?:\r?\n|$)/u;
+const LEGACY_REQUEST_MARKER = /^【全員回覆：(\d+(?:\.5)?)天】(?:\r?\n|$)/u;
+
+function parseNewWaitHalfDays(content: string): number | null;
+function parseStoredWaitHalfDays(content: string): number | null;
+```
+
+`recordMainDiscussionWindowForComment()` 只能呼叫 `parseNewWaitHalfDays()`：fixed marker 回傳 `2`；遇到 legacy marker 拋 `CommandError('全員回覆期限固定為 24 小時')`；其他留言回傳 `null`。`resolveMainDiscussionConclusion()` line 295 的 request readback 改呼叫 `parseStoredWaitHalfDays()`，接受 fixed marker `2` 或歷史 legacy marker；legacy 數值仍驗證 2～7 天、0.5 天遞增，超過 2 天仍要求 `較長期限理由`，並保留原本 `全員回覆期限必須是 2 到 7 天，並以 0.5 天遞增`／`超過 2 天必須填寫較長期限理由` 錯誤。收尾必須繼續比較解析值與 DB `window.waitHalfDays`，不能只信 DB、也不能修改歷史 comment。
+
 同步更新 `src/mainWorkspacePolicy.ts` 與 `docs/api.md` 的使用者可見契約：窗口固定為連續 24 小時、不可提前結案、缺席不阻擋、到期後不要求 `【確認結論】`。不得保留會讓 Owner 或使用者繼續採用舊 2 至 7 天流程的說明。
 
 - [ ] **步驟 4：遷移 SQLite constraint，不改變歷史 due date。**
@@ -163,7 +193,9 @@ git add src/mainDiscussion.ts src/schema.ts src/mainWorkspacePolicy.ts src/mainD
 git commit -m "fix: simplify main discussion closure" -m "Task-Id: 00123ef0-81cb-410e-aed1-d6d1fb925ed6"
 ```
 
-user03 回報 task branch 的 head SHA 後，driver 必須再次執行步驟 5 的 focused／domain tests，並確認 commit trailer、file scope、乾淨 worktree 與初始空白 diff 證據都只屬於 `00123ef0...`。通過後，driver 先以單欄位 PATCH 執行 Doing -> Review 並 read back；Owner 只能針對該 task branch 的 exact head SHA 作出結構化 acceptance。driver 以 task ID／head SHA 組成穩定 marker，將 acceptance 持久化為可 read back 的 comment／record；response 不確定時先查 marker，並保存 acceptance ID 與內容 readback。驗收通過後，再依 `docs/operations.md` 以保留 accepted head 為 ancestor 的 merge 合併至 master、部署 `task-tracker.service`，驗證 `/api/health` 的 HTTP 200、`status=ok`、`db=true`，且 live rev 等於該 merge 或是包含該 merge 的後代。
+bootstrap driver 在固定 task branch 產生 head SHA 後，必須再次執行步驟 5 的 focused／domain tests，並確認 commit trailer、file scope、乾淨 worktree 與初始空白 diff 證據都只屬於 `00123ef0...`。通過後，driver 先以單欄位 PATCH 執行 Doing -> Review 並 read back；Owner 只能針對該 task branch 的 exact head SHA 作出結構化 acceptance。driver 以 task ID／head SHA 組成穩定 marker，將 acceptance 持久化為可 read back 的 comment／record；response 不確定時先查 marker，並保存 acceptance ID 與內容 readback。
+
+驗收通過後，先要求 `sim-autodeploy.path` active、`sim-autodeploy.service` inactive，並用 `systemctl --user show sim-autodeploy.service --property=InvocationID --property=ExecMainStartTimestampMonotonic --property=Result --property=ExecMainStatus` 保存 invocation baseline。再依 `docs/operations.md` 以保留 accepted head 為 ancestor 的 merge 合併至 master；merge ref change 會自動觸發 deploy，bootstrap driver 只能等待 start timestamp 增加的那一輪 service 結束，不得另行 `start`／`restart sim-autodeploy.service` 或直接 restart `task-tracker.service`。只有該輪 `Result=success`、`ExecMainStatus=0`，且 `/api/health` 回 HTTP 200、`status=ok`、`db=true`、live rev 等於該 merge 或包含該 merge 的後代，才算部署 readback 成功。
 
 部署 readback 成功後，driver 以 `Task-Id`、assignment audit event ID 與 accepted head 組成穩定 completion marker；POST 前與 response 不確定時都先列出 comments，只有 marker 不存在時才能送出 `【SYSTEM完成】 @user09` 留言。留言內容列出功能修改、驗證命令、Task 1 授權時間／canonical Owner ID、assignment audit event ID、task branch、accepted head、Owner acceptance ID、merge SHA 與 live rev；確認對應 notification 的 source comment ID 指向該留言、recipient 是 user09，且不得代替 user09 標示已讀。最後才以單欄位 PATCH 執行 Review -> Done 並 read back。任一證據缺漏或無法串成同一條證據鏈時，`00123ef0...` 保持目前狀態，不得視為任務 1 完成，也不得進入 cutover。
 
@@ -312,6 +344,8 @@ shouldResumeHumanBlocked(run: TaskRun, snapshot: TaskEvidence): boolean;
 
 若 task 無法明確證明是在恢復既有文件行為、進行不影響使用者的維護，或引用已核准 discussion／user09 決策，classification 預設為 `new-feature`。Provider／network failure 永遠不增加 `noProgressCount`。
 
+Discovery 必須以 ID／canonical title 雙重規則排除 `CUTOVER_TASKS.mainPolicy`（`[規則] 主工作區協作與交接`）與 `CUTOVER_TASKS.legacyCanonicalDiscussion`（canonical `[討論] 方向與下一步`），這兩筆永遠不產生 Owner／member／branch action。`mainDiscussionNeedsOwner(status)` 不得再作為 production policy：只有 evidence fingerprint、期限事件或新留言使 snapshot 發生可執行變化時才建立主討論 Owner action；未變更的 Todo 必須保持零 action。
+
 - [ ] **步驟 5：執行 focused tests 與 typecheck。**
 
 ```bash
@@ -450,12 +484,11 @@ git commit -m "feat(sim): verify agent side effects"
 **檔案：**
 - 修改：`sim/production/git.ts`
 - 修改：`sim/production/coordinator.ts`
-- 修改：`deploy/sim-autodeploy.sh`
 - 修改：`sim/production.test.ts`
 
 - [ ] **步驟 1：以注入的 command result 新增會失敗的 integration／deployment tests。**
 
-涵蓋：branch CI failure、integration conflict、full test failure、merge 前 build failure、merge 後 health rev mismatch、成功 revert 並恢復 health，以及 revert 部署失敗後停止全部後續 live action。
+涵蓋：branch CI failure、integration conflict、full test failure、merge 前 build failure、`sim-autodeploy.path` inactive、merge 前 service 尚 active、merge 後沒有新 invocation、path-triggered invocation failure、health rev mismatch、成功 revert 並由另一個新 invocation 恢復 health，以及 revert 部署失敗後停止全部後續 live action。測試要證明 coordinator 從不呼叫 `systemctl start sim-autodeploy.service`，而且不能把先前 invocation 或第二次重試誤認為目前 generation 的成功。
 
 - [ ] **步驟 2：執行 focused test，確認失敗。**
 
@@ -472,10 +505,13 @@ task branch CI
   -> npm run build
   -> git diff --check
   -> task-specific acceptance
+  -> require sim-autodeploy.path active and sim-autodeploy.service inactive
+  -> snapshot InvocationID / ExecMainStartTimestampMonotonic
   -> merge --no-ff
-  -> start/wait sim-autodeploy.service
+  -> wait for exactly one newer path-triggered sim-autodeploy.service invocation to finish
   -> GET /api/health
-  -> require HTTP 200, status=ok, db=true, rev=master HEAD
+  -> require invocation Result=success / ExecMainStatus=0,
+     deployed_rev=master HEAD, HTTP 200, status=ok, db=true, rev=master HEAD
   -> task live acceptance
 ```
 
@@ -483,11 +519,13 @@ task branch CI
 
 - [ ] **步驟 4：實作失敗復原。**
 
-若 merge 後失敗，必須先確認 `master HEAD === mergeSha`，再執行 `git revert -m 1 --no-edit <mergeSha>`、重新呼叫 autodeploy，並要求 health rev 等於 revert commit。Task 維持 Review，並留下去重的 deployment-rollback comment。若 rollback health 失敗，記錄 fatal coordinator error，拒絕後續所有 AI／mutation action。
+若 merge 後失敗，必須先確認 `master HEAD === mergeSha`、等待失敗 invocation 已結束，再擷取新的 invocation baseline，執行 `git revert -m 1 --no-edit <mergeSha>`，並等待 revert ref change 觸發的下一個且唯一的新 invocation；要求該 invocation 成功、`deployed_rev` 與 health rev 都等於 revert commit。Task 維持 Review，並留下去重的 deployment-rollback comment。若 rollback health 失敗，記錄 fatal coordinator error，拒絕後續所有 AI／mutation action。
 
-- [ ] **步驟 5：取代舊 autodeploy 的 process-name wait。**
+- [ ] **步驟 5：以 path invocation generation 實作唯一部署 readback。**
 
-移除對 `pgrep` 搜尋 `tsx sim/run.ts` 的依賴。正式環境 coordinator 只會在已接受 task 的所有 AI session 結束後呼叫 deploy；共用 run lock 會阻止 cutover 期間舊 sweep 重疊執行。
+在 `sim/production/git.ts` 定義可注入的 systemd readback adapter，至少回傳 `pathActive`、`serviceActiveState`、`invocationId`、`execMainStartTimestampMonotonic`、`result`、`execMainStatus` 與 `deployedRev`。merge／revert 前都先要求 path active 且 service inactive，再保存 baseline；ref 變更後輪詢直到看到 start timestamp 增加且該 invocation 結束，逾時或 `Result != success`／`ExecMainStatus != 0` 立即回傳該 target SHA 的 deployment failure。不得主動 start service，也不得在失敗後補跑第二輪來掩蓋 path invocation 的結果。
+
+本任務不修改 `deploy/sim-autodeploy.sh`，並保留 line 13～17 對 `tsx sim/run.ts` 的 wait。共用 run lock 只防 sim process 彼此重疊，不能保護 in-flight 舊 sweep 不被 task-tracker restart 打斷；production coordinator 也不能加入 `pgrep sim/production.ts`，否則會和自己等待的 deploy 形成循環等待。
 
 - [ ] **步驟 6：執行測試並提交。**
 
@@ -496,7 +534,7 @@ npx tsx sim/production.test.ts
 npm test
 npm run build
 git diff --check
-git add sim/production/git.ts sim/production/coordinator.ts deploy/sim-autodeploy.sh sim/production.test.ts
+git add sim/production/git.ts sim/production/coordinator.ts sim/production.test.ts
 git commit -m "feat(sim): gate completion on live deploy"
 ```
 
@@ -570,6 +608,13 @@ git commit -m "feat(sim): report verified completions"
 - `npx tsx sim/production.ts --once --live` 允許 AI 與 mutation，只供明確人工授權或 systemd 使用。
 - `npx tsx sim/production.ts --status` 列印最後一個 tick；若 30 分鐘內沒有成功 heartbeat 且不存在有效 active lease，則以非零碼結束。
 
+`--once` 是 read-only live discovery，不是離線 fixture：先要求 `task-tracker.service` active、`GET http://localhost:3000/api/health` 為 HTTP 200，並以 canonical Owner `user01@test.local` 與現有 local seed credential 登入，成功 GET 主協作工作區與 task-tracker canonical workspace 後才可計算 disposition。不得把 owner password 寫入 log、manifest 或 error。Exit code 契約固定為：
+
+- `0`：完整 discovery，且 cutover prerequisite ready。
+- `2`：完整 discovery，但 `CutoverPrerequisiteMissing`；零 mutation、零 AI。
+- `3`：`DiscoveryUnavailable`，包含 service inactive、health 非 200、login 失敗或任一 required workspace GET 失敗；零 mutation、零 AI。
+- `1`：未分類程式錯誤。
+
 每個 tick 記錄 scheduled／start／end 時間、app rev、各 workspace 的 discovered／processed／skipped／error 數、AI call、task transition、deploy result、notification result 與 aggregate outcome。獨立 task error 會被彙整；任何 partial failure 都會在所有可安全完成的獨立 action 結束後，使 service 以非零碼結束。
 
 - [ ] **步驟 4：新增 systemd unit，安裝後保持 disabled。**
@@ -610,11 +655,13 @@ WantedBy=timers.target
 
 ```bash
 npx tsx sim/production.integration.test.ts
+systemctl --user is-active task-tracker.service
+curl -fsS http://localhost:3000/api/health
 npx tsx sim/production.ts --once
 npx tsc -p sim/tsconfig.json --noEmit
 ```
 
-預期：integration PASS；dry-run 必須逐筆列出 `938aa035... -> user06／active`、`6384b6f4... -> queued／unassigned`、`00123ef0... -> 任務 1 已完成前置條件／cutover 無 action`、`10e65231... -> 前置條件通過後機械式結案`、`027c0052... -> 等待 938 Done 後交給 user05`，但不得建立 comment、task change、branch、AI call 或 deploy。若 `00123ef0...` 的任一完成證據缺漏，dry-run 必須明確回報 `CutoverPrerequisiteMissing` 與零個 planned mutation。
+預期：integration PASS；service 為 active、health HTTP 200；dry-run 必須逐筆列出 `938aa035... -> user06／active`、`6384b6f4... -> queued／unassigned`、`00123ef0... -> 任務 1 已完成前置條件／cutover 無 action`、`10e65231... -> 前置條件通過後機械式結案`、`027c0052... -> 等待 938 Done 後交給 user05`，另列 `mainPolicy`／`legacyCanonicalDiscussion` 為 excluded，但不得建立 comment、task change、branch、AI call 或 deploy。若 `00123ef0...` 的任一完成證據缺漏，dry-run 必須明確回報 `CutoverPrerequisiteMissing`、exit `2` 與零個 planned mutation；server／health／owner login／required workspace readback 不可用時回報 `DiscoveryUnavailable`、exit `3` 與零個 planned mutation。
 
 - [ ] **步驟 6：提交 production entry point。**
 
@@ -647,6 +694,7 @@ Task-specific fixture 必須再證明：
 - `938aa035...` 驗收涵蓋冷啟動／重新整理 task URL、目前選到其他 workspace 時仍切到正確 workspace、task modal 與 comment anchor、403／404、既有 `#/tasks` 回歸，以及正式瀏覽器 smoke。
 - `6384b6f4...` 的 branch base 已包含 `938aa035...` merge；手機 menu toggle 後 badge 節點仍存在、hidden tab 不執行 60 秒 polling、來源 task／comment 真正開啟成功後才標已讀，並涵蓋 0／1／多筆、403／404、手動已讀與桌機／手機 smoke。
 - Fake Git／agent adapter 的 command、diff 與 prompt 不得含 `933b974`、`f94b69e`、`sim/user02` 或 `sim/user06`，證明舊 commit、dirty diff 與檔案沒有被重用。
+- `mainPolicy` 與 `legacyCanonicalDiscussion` 都出現在 manifest 的 excluded readback 中，但永遠不建立 checkpoint、lease、Owner／member action、branch 或 mutation。
 
 - [ ] **步驟 2：編碼固定 migration set。**
 
@@ -708,29 +756,22 @@ git add sim/production/migrate.ts sim/production.test.ts
 git commit -m "feat(sim): add idempotent cutover reconciliation"
 ```
 
-## 任務 10：更新操作文件並退役舊正式環境 Sweep 路徑
+## 任務 10：更新操作文件並準備 Runtime Cutover
 
 **檔案：**
-- 修改：`sim/run.ts`
-- 修改：`sim/run.test.ts`
 - 修改：`docs/operations.md`
 - 修改：`docs/owner-sweep-guide.md`
-- 修改：`docs/tasks/current.md`
 - 修改：`design.md`
 
-- [ ] **步驟 1：移除舊路徑前先更新文件。**
+- [ ] **步驟 1：更新 cutover 前操作文件。**
 
-記錄固定 workspace allowlist、15 分鐘 coordinator、dry-run／live 邊界、ledger／status command、WIP1、discussion policy、human-blocked 行為、task branch、acceptance／deploy／revert sequence、completion digest、安裝後保持 disabled 的規則，以及 rollback procedure。文件必須同時記錄五筆 fixed cutover disposition、queued 不占 WIP、queued Review 不會觸發 acceptance，以及 `027c0052...`／`6384b6f4...` 只有在 `938aa035...` Done readback 後才解除依賴。
+記錄固定 workspace allowlist、15 分鐘 coordinator、dry-run／live 邊界、live server／canonical Owner credential 前置條件、exit `2`／`3`、ledger／status command、WIP1、discussion policy、human-blocked 行為、task branch、path-triggered autodeploy generation readback、acceptance／deploy／revert sequence、completion digest、安裝後保持 disabled 的規則，以及 rollback procedure。文件必須同時記錄五筆 fixed cutover disposition、兩筆 excluded task、queued 不占 WIP、queued Review 不會觸發 acceptance，以及 `027c0052...`／`6384b6f4...` 只有在 `938aa035...` Done readback 後才解除依賴。
 
-- [ ] **步驟 2：保留 lab 行為，拒絕已退役的 sweep flag。**
+- [ ] **步驟 2：明訂舊 sweep 仍是可復原路徑。**
 
-新 coordinator 完成兩個成功 live tick 後，從 `sim/run.ts` 移除 Owner／Team production sweep scheduling 與 notification-gate code。保留 deep／fast／scenario CLI 行為。`npm run sim -- --sweep ...` 必須以清楚訊息結束，指引 operator 改用 `npm run sim:production -- --once`，而且不得呼叫 AI。
+本任務不得修改 `sim/run.ts`、`sim/run.test.ts` 或 `deploy/sim-autodeploy.sh`。Runtime cutover 完成前，舊 Owner／Team scheduling、notification gate、sweep flag 與 `pgrep sim/run.ts` 守衛都要保持可用，否則任務 11 失敗時重新 enable 舊 timers 只會啟動一條已被拆除的路徑。
 
-- [ ] **步驟 3：更新 regression tests。**
-
-證明 lab mode 仍可選用、已退役 sweep flag 無法 mutation，而且沒有任何 production module 會從歷史 `report.json` 發現 workspace。
-
-- [ ] **步驟 4：執行 focused 與完整測試。**
+- [ ] **步驟 3：執行文件與既有 regression gate。**
 
 ```bash
 npx tsx sim/run.test.ts
@@ -743,11 +784,11 @@ git diff --check
 
 預期：全部 PASS。
 
-- [ ] **步驟 5：提交文件與退役變更。**
+- [ ] **步驟 4：提交 cutover 文件。**
 
 ```bash
-git add sim/run.ts sim/run.test.ts docs/operations.md docs/owner-sweep-guide.md docs/tasks/current.md design.md
-git commit -m "refactor(sim): retire legacy production sweeps"
+git add docs/operations.md docs/owner-sweep-guide.md design.md
+git commit -m "docs(sim): prepare production coordinator cutover"
 ```
 
 ## 任務 11：最終驗證與具前置檢查、復原能力的 Runtime Cutover
@@ -763,15 +804,18 @@ npx tsc -p sim/tsconfig.json --noEmit
 npx tsx src/mainDiscussion.test.ts
 npx tsx src/task.test.ts
 npx tsx src/mainWorkspace.test.ts
+npx tsx sim/run.test.ts
 npx tsx sim/production.test.ts
 npx tsx sim/production.integration.test.ts
 npm test
 npm run build
 git diff --check
+systemctl --user is-active task-tracker.service
+curl -fsS http://localhost:3000/api/health
 npx tsx sim/production.ts --once
 ```
 
-預期：所有 test／build PASS；最後一個 command 為 read-only、回報沒有 mutation／AI，並逐筆列出：`938aa035...` 是 user06 唯一 active WIP、`6384b6f4...` queued／unassigned、`00123ef0...` 是任務 1 已完成前置條件且 cutover 無 action、`10e65231...` 等待前置條件通過後機械式結案、`027c0052...` 等待 `938aa035...` Done 後固定 user05。若 `00123ef0...` 尚未 Done 或完成證據不完整，本 gate 必須以 `CutoverPrerequisiteMissing` 失敗，不得進入安裝或 live 步驟。
+預期：所有 test／build PASS；live `task-tracker.service` active、health HTTP 200。最後一個 command 使用 canonical Owner credentials 做 read-only discovery、回報沒有 mutation／AI，並逐筆列出：`938aa035...` 是 user06 唯一 active WIP、`6384b6f4...` queued／unassigned、`00123ef0...` 是任務 1 已完成前置條件且 cutover 無 action、`10e65231...` 等待前置條件通過後機械式結案、`027c0052...` 等待 `938aa035...` Done 後固定 user05，另列 `mainPolicy`／`legacyCanonicalDiscussion` 為 excluded。若 `00123ef0...` 尚未 Done 或完成證據不完整，本 gate 必須以 `CutoverPrerequisiteMissing`、exit `2` 失敗；service／health／login／required workspace readback 不可用時以 `DiscoveryUnavailable`、exit `3` 失敗。兩者都不得進入安裝或 live 步驟，且 task／Git／AI mutation 為零。
 
 - [ ] **步驟 2：安裝新 unit，但不啟用。**
 
@@ -787,10 +831,12 @@ systemctl --user is-enabled sim-coordinator.timer
 - [ ] **步驟 3：取得明確 live 授權後，擷取 manifest 並等待舊 service 排空。**
 
 ```bash
+systemctl --user is-active sim-autodeploy.path
+systemctl --user show sim-autodeploy.service --property=ActiveState --property=SubState --property=InvocationID --property=ExecMainStartTimestampMonotonic --property=Result --property=ExecMainStatus
 npx tsx sim/production/migrate.ts
 ```
 
-必須先讀取 manifest，保存 cutover generation／prerequisite fingerprint，並確認 `readyForApply=true` 且 `00123ef0...` 的整條完成證據可追溯；否則停在此處，不得停用舊 timer。緊接在任何 systemd mutation 前，再執行一次 generation-bound 唯讀檢查：
+`sim-autodeploy.path` 必須是 active；service 若正在執行，先等待它結束，不得帶著既有 deployment invocation 進入 cutover。必須先讀取 manifest，保存 cutover generation／prerequisite fingerprint，並確認 `readyForApply=true` 且 `00123ef0...` 的整條完成證據可追溯；否則停在此處，不得停用舊 timer。緊接在任何 systemd mutation 前，再執行一次 generation-bound 唯讀檢查：
 
 ```bash
 npx tsx sim/production/migrate.ts --preflight --live --expect-generation <cutover-generation>
@@ -846,11 +892,13 @@ systemctl --user enable --now sim-coordinator.timer
 - 兩個 allowlisted workspace 都有明確的 discovered／processed／skipped／error 數量。
 - 不存在重複 comment、task transition、branch、completion row 或 Discord batch。
 - `10e65231...` 只結案一次，不建立新的 Owner AI action。
+- `10e65231...` 的歷史 `【全員回覆：N天】` request 由唯讀 legacy parser 與既有 DB `wait_half_days` 配對成功；不得改寫 comment 或建立新 window。
 - user06 唯一 active WIP 是 `938aa035...`，且其 branch 不含任何 legacy diff。
 - `6384b6f4...` 在依賴解除前保持 Review／unassigned、沒有 branch／lease／AI action，checkpoint 是 queued。
 - `00123ef0...` 維持任務 1 已完成的 Done 狀態；cutover／live tick 不得新增 assignment、status transition、comment、branch、task 或 AI action。
 - `027c0052...` 在 `938aa035...` Done 前保持 Todo／unassigned／queued；解除依賴後 assignee 只能是 user05。
 - 不存在 merge、cherry-pick、patch、copy 或 prompt reuse 任何舊 `sim/user02` 至 `sim/user06` 成果。
+- 每個 merge／revert 只對應一個 path-triggered autodeploy invocation；coordinator 沒有主動 start 第二輪，invocation result、`deployed_rev` 與 health rev 都指向同一 target SHA。
 
 - [ ] **步驟 6：任一 tick 發生操作失敗時，回復 coordinator activation。**
 
@@ -866,6 +914,51 @@ systemctl --user enable --now sim-sweep-owner.timer sim-sweep-team.timer
 ```
 
 不得同時執行新舊 timer。保留 coordinator DB、log、manifest、branch 與 comment 供診斷。
+
+## 任務 12：兩個成功 Live Tick 後退役舊正式環境 Sweep 路徑
+
+**檔案：**
+- 修改：`sim/run.ts`
+- 修改：`sim/run.test.ts`
+- 修改：`docs/operations.md`
+- 修改：`docs/owner-sweep-guide.md`
+- 修改：`docs/tasks/current.md`
+
+**硬性前置條件：** 任務 11 步驟 5 的兩個 live tick、五筆 fixed disposition、兩筆 excluded task、heartbeat、health 與無重複副作用 readback 全部通過。任一證據缺漏就停止；不得修改 legacy path，因為任務 11 的回復仍需要它。
+
+- [ ] **步驟 1：保留 lab 行為，拒絕退役的 sweep flag。**
+
+從 `sim/run.ts` 移除 Owner／Team production sweep scheduling 與 notification-gate code，保留 deep／fast／scenario CLI 行為。`npm run sim -- --sweep ...` 必須以清楚訊息結束，指引 operator 改用 `npm run sim:production -- --once`，而且不得呼叫 AI 或 mutation。不得修改 `deploy/sim-autodeploy.sh`；`pgrep sim/run.ts` 守衛保留，讓人工 lab run 或 cleanup commit 的 in-flight process 不會被 restart 打斷。
+
+- [ ] **步驟 2：更新 regression tests。**
+
+證明 lab mode 仍可選用、已退役 sweep flag 無法 mutation，而且沒有任何 production module 會從歷史 `report.json` 發現 workspace。另以 source assertion 證明 `deploy/sim-autodeploy.sh` 仍保留 `pgrep -f '\.bin/tsx sim/run\.ts'`。
+
+- [ ] **步驟 3：更新 post-cutover 文件。**
+
+`docs/operations.md` 與 `docs/owner-sweep-guide.md` 改以 production coordinator 為唯一正式路徑；`docs/tasks/current.md` 記錄兩個 live tick、legacy timers disabled、sweep flag 已退役與保留 autodeploy guard 的 readback。移除「失敗時直接重新 enable 舊 timers」的日常指引；post-cleanup 若需回退，必須先 revert 本 cleanup commit、驗證舊 sweep tests／service，再依任務 11 的互斥 drain 流程切回，不能啟動已退役程式碼。
+
+- [ ] **步驟 4：執行 focused 與完整測試。**
+
+```bash
+npx tsx sim/run.test.ts
+npx tsx sim/production.test.ts
+npx tsx sim/production.integration.test.ts
+npm test
+npm run build
+git diff --check
+```
+
+預期：全部 PASS。
+
+- [ ] **步驟 5：提交退役變更並驗證部署 generation。**
+
+```bash
+git add sim/run.ts sim/run.test.ts docs/operations.md docs/owner-sweep-guide.md docs/tasks/current.md
+git commit -m "refactor(sim): retire legacy production sweeps"
+```
+
+cleanup commit merge 到 master 前先擷取 autodeploy invocation baseline；merge 後只等待 path-triggered 的下一輪 invocation，要求 `Result=success`、`ExecMainStatus=0`、`deployed_rev` 與 `/api/health` rev 都等於 cleanup merge SHA。不得主動 start 第二輪。最後確認舊 timers 仍 disabled、新 coordinator timer active，且 `npm run sim -- --sweep owner` 只輸出退役指引、零 AI／mutation。
 
 ## 驗收條件
 
