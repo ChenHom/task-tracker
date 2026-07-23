@@ -581,17 +581,17 @@ git commit -m "feat(sim): gate completion on live deploy"
 - 修改：`sim/production/coordinator.ts`
 - 修改：`sim/production.test.ts`
 
-- [ ] **步驟 1：新增會失敗的 completion-order tests。**
+- [x] **步驟 1：新增會失敗的 completion-order tests。**
 
 證明：notification 前 completion row 已持久化；不確定的 comment response 可透過 action key 找回；user09 notification readback 早於 Done；status failure 不會重複留言；同一 tick 的所有新 completion 形成單一 batch；Discord 最多嘗試三次；最後 Discord 仍失敗時 task 保持 Done。
 
-- [ ] **步驟 2：執行 focused test，確認失敗。**
+- [x] **步驟 2：執行 focused test，確認失敗。**
 
 執行：`npx tsx sim/production.test.ts`
 
 預期：FAIL，因為 completion module 尚不存在。
 
-- [ ] **步驟 3：實作 completion comment contract。**
+- [x] **步驟 3：實作 completion comment contract。**
 
 ```text
 【SYSTEM完成】 @user09
@@ -605,11 +605,11 @@ Commit：<accepted head/merge sha>
 
 使用 `completion_id = task_id + ':' + accepted_head_sha`。以 user01 發文後 GET comment readback，再以 user09 登入並讀取 notifications，但不標記任何項目為已讀；確認存在相符 notification row 後，才能 PATCH Review -> Done。
 
-- [ ] **步驟 4：實作摘要重試語意。**
+- [x] **步驟 4：實作摘要重試語意。**
 
 Tick 結束時，只把新完成 task 合併到一個穩定 `batch_id`。該 tick 嘗試傳送 Discord 一次；失敗時，在接下來兩個 coordinator tick 各重試一次。第三次失敗後設為 `notify_failed`；不得再自動重試、重貼 system comment、重跑 deploy 或變更 Done。
 
-- [ ] **步驟 5：執行測試並提交。**
+- [x] **步驟 5：執行測試並提交。**
 
 ```bash
 npx tsx sim/production.test.ts
