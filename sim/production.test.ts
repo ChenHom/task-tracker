@@ -1829,7 +1829,46 @@ async function runGitTests(): Promise<void> {
     const baseSha0 = g(['rev-parse', 'HEAD']);
 
     // -------------------------------------------------------------------------
-    // taskBranchName / taskWorktreePath：純字串 helper。
+    // taskId 必須先過安全字元檢查：不能靠 `/` 或 `..` 逃逸出 sim-work/tasks/ 底下，
+    // 例如把 repo root 本身或共用父目錄悄悄冒充成「隔離」worktree。
+    // 這裡刻意放在任何合法 worktree 建立「之前」，才能證明拒絕時真的零副作用
+    // （沒有留下任何 sim-work 目錄）。
+    // -------------------------------------------------------------------------
+    assert.strictEqual(existsSync(join(repoRoot, 'sim-work')), false, '測試一開始不應該有任何 sim-work 目錄');
+    for (const unsafeTaskId of ['../..', '..', 'foo/bar', '/etc/passwd', '']) {
+      assert.throws(
+        () => taskBranchName(unsafeTaskId),
+        /unsafe taskId/i,
+        `taskBranchName 必須拒絕不安全的 taskId: ${JSON.stringify(unsafeTaskId)}`,
+      );
+      assert.throws(
+        () => taskWorktreePath(repoRoot, unsafeTaskId),
+        /unsafe taskId/i,
+        `taskWorktreePath 必須拒絕不安全的 taskId: ${JSON.stringify(unsafeTaskId)}`,
+      );
+    }
+    // 逐字重現 reviewer 回報的兩個具體案例：`../..` 會讓 sim-work/tasks/../.. 抵銷成
+    // repoRoot 本身；`..` 會抵銷成共用的 sim-work 父目錄。兩者都必須被 ensureTaskWorktree
+    // 明確拒絕，絕不能把它們當成合法的「隔離」worktree 回傳（例如悄悄回報 repo root
+    // 自己的 HEAD 當作這個 task 的 headSha）。
+    await assert.rejects(
+      () => ensureTaskWorktree(repoRoot, '../..', baseSha0),
+      /unsafe taskId/i,
+      'ensureTaskWorktree(taskId="../..") 絕不能把 repo root 本身悄悄當成隔離 worktree 回傳',
+    );
+    await assert.rejects(
+      () => ensureTaskWorktree(repoRoot, '..', baseSha0),
+      /unsafe taskId/i,
+      'ensureTaskWorktree(taskId="..") 絕不能把共用父目錄悄悄當成隔離 worktree 回傳',
+    );
+    assert.strictEqual(
+      existsSync(join(repoRoot, 'sim-work')),
+      false,
+      '不安全的 taskId 全部被拒絕後，不得留下任何 sim-work 相關目錄或副作用',
+    );
+
+    // -------------------------------------------------------------------------
+    // taskBranchName / taskWorktreePath：合法 taskId 的純字串 helper。
     // -------------------------------------------------------------------------
     assert.strictEqual(taskBranchName(ACTIVE_TASK_ID), `sim/task/${ACTIVE_TASK_ID}`);
     assert.strictEqual(taskWorktreePath(repoRoot, ACTIVE_TASK_ID), join(repoRoot, 'sim-work', 'tasks', ACTIVE_TASK_ID));
@@ -1982,6 +2021,52 @@ async function runGitTests(): Promise<void> {
       // 清掉這次失敗嘗試留下的 staged/untracked 檔案，避免汙染後續斷言。
       g(['reset', '--hard', headBeforeBadCommit], wtA.path);
       rmSync(join(wtA.path, 'feature', 'whitespace.txt'), { force: true });
+    }
+
+    // commitTaskChanges 也必須拒絕新 symlink，即使呼叫端沒有先跑 validateTaskChanges
+    // （defense-in-depth：直接對 worktree 上的真實檔案重新做一次 symlink 檢查）。
+    {
+      const headBeforeSymlinkAttempt = g(['rev-parse', 'HEAD'], wtA.path);
+      symlinkSync('foo.txt', join(wtA.path, 'feature', 'sneaky-commit-link'));
+      await assert.rejects(
+        () => commitTaskChanges(wtA.path, ACTIVE_TASK_ID, 'feat(sim): sneaky symlink', ['feature/sneaky-commit-link']),
+        /symlink/i,
+        'commitTaskChanges 必須拒絕 commit 新 symlink，即使呼叫端沒先驗證過',
+      );
+      assert.strictEqual(g(['rev-parse', 'HEAD'], wtA.path), headBeforeSymlinkAttempt, '拒絕的 symlink 不得留下新 commit');
+      rmSync(join(wtA.path, 'feature', 'sneaky-commit-link'));
+    }
+
+    // -------------------------------------------------------------------------
+    // ensureTaskWorktree 冪等重用（同一 taskId 再次呼叫）：
+    // 1) 傳入「真的是既有 branch 祖先」的 baseSha 必須成功，且 headSha 反映目前真正的
+    //    HEAD（不是舊快照），baseSha 如實回報。
+    // 2) 傳入「跟既有 branch 不相容」的新 baseSha（不是它的祖先——例如 master 之後
+    //    獨立前進出來的另一個 commit）必須被明確拒絕，絕不能悄悄回傳這個錯誤的
+    //    baseSha 冒充成真相（這正是 reviewer 回報的「base-reuse 說謊」問題）。
+    // -------------------------------------------------------------------------
+    {
+      const wtAAgain = await ensureTaskWorktree(repoRoot, ACTIVE_TASK_ID, baseSha0);
+      assert.strictEqual(wtAAgain.path, wtA.path, '冪等重用必須回傳同一個 worktree 路徑');
+      assert.strictEqual(
+        wtAAgain.headSha,
+        headShaAfterCommit,
+        '重用既有 worktree 時，headSha 必須反映目前真正的 HEAD（commitTaskChanges 之後的那個 commit），不是舊快照',
+      );
+      assert.strictEqual(wtAAgain.baseSha, baseSha0, '傳入的 baseSha 若真的是既有 branch 的祖先，可以如實回報');
+
+      // 讓 master 獨立前進一個跟 activeReview branch 完全無關的 commit，模擬「這個
+      // baseSha 對這個既有 branch 而言不相容」的情境（它不是這個 branch 目前 HEAD 的祖先）。
+      writeFileSync(join(repoRoot, 'unrelated-master-advance.txt'), 'x');
+      g(['add', 'unrelated-master-advance.txt']);
+      g(['commit', '-q', '-m', 'advance master independently of task branch']);
+      const unrelatedLaterSha = g(['rev-parse', 'HEAD']);
+
+      await assert.rejects(
+        () => ensureTaskWorktree(repoRoot, ACTIVE_TASK_ID, unrelatedLaterSha),
+        /base/i,
+        '同一 taskId 若傳入與既有 branch 不相容的新 baseSha，ensureTaskWorktree 必須明確拒絕，不能悄悄回傳錯誤的 baseSha',
+      );
     }
 
     // -------------------------------------------------------------------------

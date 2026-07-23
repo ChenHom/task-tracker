@@ -29,17 +29,53 @@ async function branchExists(repoRoot: string, branch: string): Promise<boolean> 
   }
 }
 
+/**
+ * 檢查 `baseSha` 是否真的是 `headSha` 的祖先（或就是同一個 commit）。用在
+ * ensureTaskWorktree 的冪等重用路徑：確保回傳的 `baseSha` 不是對呼叫端輸入的
+ * 盲目回音，而是跟這個 branch 目前真正的歷史一致。非 0 exit code（不是祖先，
+ * 或根本不是合法 object）一律視為不一致。
+ */
+async function assertBaseIsAncestor(cwd: string, taskId: string, baseSha: string, headSha: string): Promise<void> {
+  if (baseSha === headSha) return;
+  try {
+    await execFileAsync('git', ['merge-base', '--is-ancestor', baseSha, headSha], { cwd });
+  } catch (err) {
+    throw new Error(
+      `ensureTaskWorktree: task ${taskId} 已經有 branch／worktree，但目前的 head (${headSha}) 並不是傳入的 ` +
+        `baseSha (${baseSha}) 的後代。重用既有 worktree 卻回報一個跟真實歷史不符的 baseSha 等於悄悄說謊——` +
+        `拒絕重用；呼叫端必須自行決定如何在新 base 上重建這個 task 的 worktree。`,
+      { cause: err },
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Task branch／worktree 命名
 // ---------------------------------------------------------------------------
 
+// taskId 一律來自看板 API 回應（外部輸入），在抵達這裡之前完全不保證是 UUID 形狀。
+// 這個檔案是這個 subsystem 唯一的 git shell-out 信任邊界，所以字元白名單檢查放這裡：
+// 只允許英數字、底線、連字號——沒有 `/`、沒有 `.`，天生排除任何 `../` path traversal，
+// 不可能把 repo root 或共用父目錄悄悄冒充成「隔離」worktree。
+const SAFE_TASK_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+function assertSafeTaskId(taskId: string): void {
+  if (!SAFE_TASK_ID_RE.test(taskId)) {
+    throw new Error(
+      `unsafe taskId (must match ${SAFE_TASK_ID_RE.source}, no "/" or "."): ${JSON.stringify(taskId)}`,
+    );
+  }
+}
+
 /** 單一 task 專用的 branch 名稱：固定 `sim/task/<taskId>` 格式。 */
 export function taskBranchName(taskId: string): string {
+  assertSafeTaskId(taskId);
   return `sim/task/${taskId}`;
 }
 
 /** 單一 task 專用的 worktree 路徑：固定 `<repoRoot>/sim-work/tasks/<taskId>`。 */
 export function taskWorktreePath(repoRoot: string, taskId: string): string {
+  assertSafeTaskId(taskId);
   return join(repoRoot, 'sim-work', 'tasks', taskId);
 }
 
@@ -64,6 +100,9 @@ export async function ensureTaskWorktree(repoRoot: string, taskId: string, baseS
 
   if (existsSync(worktreePath)) {
     const headSha = await git(['rev-parse', 'HEAD'], worktreePath);
+    // 冪等重用：不能對呼叫端傳入的 baseSha 照單全收再原樣回報——必須先確認它真的
+    // 是這個既有 branch 目前歷史的祖先，否則等於用假資料冒充「這個 worktree 的真實 base」。
+    await assertBaseIsAncestor(worktreePath, taskId, baseSha, headSha);
     return { taskId, branch, path: worktreePath, baseSha, headSha };
   }
 
@@ -71,10 +110,12 @@ export async function ensureTaskWorktree(repoRoot: string, taskId: string, baseS
     // branch 已存在（例如先前的 worktree 目錄被清掉但 branch 還在）：checkout 既有 branch，
     // 不是重新以 baseSha 建一個新 branch。
     await git(['worktree', 'add', worktreePath, branch], repoRoot);
-  } else {
-    await git(['worktree', 'add', '-b', branch, worktreePath, baseSha], repoRoot);
+    const headSha = await git(['rev-parse', 'HEAD'], worktreePath);
+    await assertBaseIsAncestor(worktreePath, taskId, baseSha, headSha);
+    return { taskId, branch, path: worktreePath, baseSha, headSha };
   }
 
+  await git(['worktree', 'add', '-b', branch, worktreePath, baseSha], repoRoot);
   const headSha = await git(['rev-parse', 'HEAD'], worktreePath);
   return { taskId, branch, path: worktreePath, baseSha, headSha };
 }
@@ -211,11 +252,21 @@ export async function commitTaskChanges(
   }
 
   // Defense-in-depth：即使呼叫端忘記先跑 validateTaskChanges，這裡仍拒絕明顯違規的路徑
-  // （沒有 allowedPrefixes 可比對，所以只重複套用固定禁止規則，不做 scope／symlink 檢查）。
+  // （沒有 allowedPrefixes 可比對，所以不重做 scope 檢查，但固定禁止規則與 symlink
+  // 檢查都直接對 worktree 上的真實檔案重新做一次，不依賴呼叫端有沒有先驗證過）。
   for (const path of paths) {
     const reason = forbiddenReason(path);
     if (reason) {
       throw new Error(`commitTaskChanges: refusing to stage "${path}" (${reason})`);
+    }
+    let isSymlink = false;
+    try {
+      isSymlink = lstatSync(join(worktree, path)).isSymbolicLink();
+    } catch {
+      isSymlink = false; // 檔案已經不存在（例如刪除的路徑）：沒有東西可以是 symlink
+    }
+    if (isSymlink) {
+      throw new Error(`commitTaskChanges: refusing to stage "${path}" (new symlink is never permitted)`);
     }
   }
 
