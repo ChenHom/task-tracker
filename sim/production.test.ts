@@ -4117,10 +4117,10 @@ async function runCompletionTests(): Promise<void> {
   }
 
   // -------------------------------------------------------------------------
-  // 模擬「crash」：postCommentOnce 甚至還沒得到 UncertainMutationError 那麼客氣的
-  // 結果，就直接整個中止（比 api.ts 的不確定情境更粗暴）。重新呼叫（模擬 process
-  // 重啟、用同一個持久化 db 重新驅動）必須能接續完成整個流程——completion row
-  // 不會因為這次失敗而消失，也不會被當成「沒發生過」。
+  // 模擬「crash」：postCommentOnce 明確失敗（比 UncertainMutationError 更粗暴的
+  // 中止）。這必須回傳 `comment_failed`，不得 throw（見函式 JSDoc 的錯誤處理
+  // 契約）；completion row 也不會因此消失——重新呼叫（模擬 process 重啟、用同一
+  // 個持久化 db 重新驅動）必須能接續完成整個流程。
   // -------------------------------------------------------------------------
   {
     const db = openCoordinatorState(':memory:');
@@ -4139,7 +4139,7 @@ async function runCompletionTests(): Promise<void> {
       async postCommentOnce(_taskId, content) {
         if (firstAttempt) {
           firstAttempt = false;
-          throw new Error('simulated process crash before any response'); // 比 UncertainMutationError 更粗暴的中止
+          throw new Error('simulated process crash before any response'); // 明確失敗，不是 UncertainMutationError
         }
         const c = { commentId: 'comment-crash-resume', taskId, userId: 'user01-id', content, createdAt: 'x' };
         comments.push(c);
@@ -4179,7 +4179,15 @@ async function runCompletionTests(): Promise<void> {
       ...COMPLETION_INPUT_DEFAULTS,
     };
 
-    await assert.rejects(() => postCompletionAndTransitionToDone(input), /simulated process crash/);
+    const firstResult = await postCompletionAndTransitionToDone(input);
+    assert.strictEqual(
+      firstResult.kind,
+      'comment_failed',
+      '留言階段的明確失敗必須回傳 comment_failed，不得往上丟例外',
+    );
+    if (firstResult.kind === 'comment_failed') {
+      assert.match(firstResult.reason, /simulated process crash/);
+    }
 
     const rowAfterCrash = getCompletion(db, id);
     assert.ok(rowAfterCrash, 'crash 之後 completion row 必須仍然持久化著，可供重新驅動');
@@ -4187,6 +4195,65 @@ async function runCompletionTests(): Promise<void> {
 
     const result = await postCompletionAndTransitionToDone(input);
     assert.strictEqual(result.kind, 'done', '模擬 process 重啟後的重新呼叫必須能接續完成整個流程');
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // 留言結果不確定、且 readback 也真的找不到相符的留言：必須回傳 comment_failed
+  // （不是 throw），且不得繼續嘗試 PATCH、不得標記 Done。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'completion-comment-uncertain-unresolved';
+    const headSha = 'headsha-unresolved';
+    const id = completionId(taskId, headSha);
+
+    let patchCalls = 0;
+    const ownerClient: CompletionOwnerClient = {
+      async listComments() {
+        return []; // 不管重試幾次，readback 都找不到符合 marker 的留言
+      },
+      async postCommentOnce() {
+        throw new UncertainMutationError('uncertain, never resolved');
+      },
+      async getTask() {
+        return makeCompletionTask(taskId, 'Review');
+      },
+      async patchTaskField() {
+        patchCalls++;
+        throw new Error('patchTaskField must not be called when the comment stage failed');
+      },
+    };
+    const user09Client: CompletionNotifierClient = {
+      async listNotifications() {
+        return [];
+      },
+    };
+
+    const result = await postCompletionAndTransitionToDone({
+      db,
+      ownerClient,
+      user09Client,
+      user09Id: 'user09-id',
+      taskId,
+      acceptedHeadSha: headSha,
+      ...COMPLETION_INPUT_DEFAULTS,
+    });
+
+    assert.strictEqual(
+      result.kind,
+      'comment_failed',
+      '留言結果不確定且 readback 找不到相符留言時，必須回傳 comment_failed 而不是 throw',
+    );
+    if (result.kind === 'comment_failed') {
+      assert.match(result.reason, /uncertain/);
+    }
+    assert.strictEqual(patchCalls, 0, '留言階段失敗時不得繼續嘗試 PATCH');
+
+    const row = getCompletion(db, id);
+    assert.ok(row, 'completion row 仍應該持久化著，供之後重試');
+    assert.strictEqual(row!.doneConfirmedAt, null, '留言階段失敗時不得標記 Done');
 
     db.close();
   }

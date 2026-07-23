@@ -108,6 +108,12 @@ export type CompletionResult =
       task: TaskSnapshot;
     }
   | {
+      kind: 'comment_failed';
+      completionId: string;
+      taskId: string;
+      reason: string;
+    }
+  | {
       kind: 'patch_failed';
       completionId: string;
       taskId: string;
@@ -126,9 +132,23 @@ export type CompletionResult =
  *
  * 每一步都是可安全重試的：整個函式可以在任何一步之後的 crash／失敗發生後被重新
  * 呼叫，(a)(b)(c) 永遠先用 readback 確認「是不是已經做過」，不會因為重呼叫而
- * 重複留言或重複送出 mutation。只有 (d) PATCH 失敗（`patch_failed`）時，呼叫端
- * 才需要之後再呼叫一次這個函式重試——那次重試會直接從 (a)(b)(c) 的 readback
- * 短路過去，只真正重試 PATCH，不會回頭重貼留言。
+ * 重複留言或重複送出 mutation。
+ *
+ * 錯誤處理契約（兩種失敗類別刻意用不同方式回報，呼叫端必須知道差異）：
+ *
+ *   - 留言 (b) 與 Review->Done PATCH (d) 的失敗**都不會 throw**——分別回傳
+ *     `{ kind: 'comment_failed' }` / `{ kind: 'patch_failed' }`，呼叫端只需要
+ *     `switch (result.kind)`，不需要額外包 try/catch。這呼應 coordinator.ts
+ *     既有的 `runDeployAcceptance`／`resolveRollbackWait`（任務 6）慣例：
+ *     expected、可重試的失敗一律是回傳值，不是例外。兩種失敗都可以安全地整個
+ *     重新呼叫這個函式重試——`comment_failed` 重試會從 (a) 開始（(b) 本身就是
+ *     readback-first，不會因為重試而重複貼留言）；`patch_failed` 重試會直接從
+ *     (a)(b)(c) 的 readback 短路過去，只真正重試 PATCH，不會回頭重貼留言。
+ *   - user09 notification (c) 讀不到符合的一筆，會 **throw**（不是回傳
+ *     `kind`）：這代表留言已經確認落地，notification 卻不存在——一個不應該
+ *     發生的資料完整性問題，不是「這次呼叫可能失敗、下次再試就好」那種預期內
+ *     的失敗，因此不適合跟 `comment_failed`／`patch_failed` 用同一種「呼叫端可
+ *     以安全忽略、單純重試」的語意混在一起；呼叫端應該讓它往上炸。
  */
 export async function postCompletionAndTransitionToDone(input: PostCompletionInput): Promise<CompletionResult> {
   const now = input.now ?? new Date();
@@ -151,6 +171,13 @@ export async function postCompletionAndTransitionToDone(input: PostCompletionInp
   });
   const actionKey = completionActionKey(id);
 
+  const commentFailed = (reason: string): CompletionResult => ({
+    kind: 'comment_failed',
+    completionId: id,
+    taskId: input.taskId,
+    reason,
+  });
+
   let commentId: string;
   const existingComments = await input.ownerClient.listComments(input.taskId);
   const existingMatch = existingComments.find((c) => c.content.includes(marker));
@@ -160,11 +187,20 @@ export async function postCompletionAndTransitionToDone(input: PostCompletionInp
     try {
       commentId = await input.ownerClient.postCommentOnce(input.taskId, content, actionKey);
     } catch (err) {
-      if (!(err instanceof UncertainMutationError)) throw err;
+      if (!(err instanceof UncertainMutationError)) {
+        // 明確失敗（非 UncertainMutationError）：回傳 comment_failed，不 throw——
+        // 呼叫端可以直接整個重新呼叫這個函式重試，(b) 本身是 readback-first，
+        // 不會因為重試而重複貼留言。
+        return commentFailed((err as Error).message);
+      }
       // 結果不確定：不盲目重送，改用 readback 找有沒有符合 marker 的留言已經落地。
       const retryComments = await input.ownerClient.listComments(input.taskId);
       const retryMatch = retryComments.find((c) => c.content.includes(marker));
-      if (!retryMatch) throw err; // 真的不確定且 readback 也找不到——把原始錯誤丟出去，交由呼叫端決定何時重試。
+      if (!retryMatch) {
+        // 真的不確定，且 readback 也找不到——同樣回傳 comment_failed 而不是 throw，
+        // 交由呼叫端決定何時重試（重試一樣會先做這整套 readback-first 檢查）。
+        return commentFailed(`postCommentOnce uncertain and readback found no matching comment: ${(err as Error).message}`);
+      }
       commentId = retryMatch.commentId;
     }
   }
