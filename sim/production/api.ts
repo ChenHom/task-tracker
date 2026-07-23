@@ -218,27 +218,43 @@ export class TaskTrackerClient {
    * 重試預算，直接拋出並保留 `error.cause`。
    */
   private async safeRequest(method: string, path: string, body?: unknown): Promise<RawResponse> {
-    let lastError: unknown;
+    let lastNetworkError: unknown;
+    let lastFailedResponse: RawResponse | undefined;
     for (let attempt = 0; attempt <= this.retries; attempt++) {
+      let res: RawResponse;
       try {
-        const res = await this.rawRequest(method, path, body);
-        if (res.status >= 500 && attempt < this.retries) {
-          lastError = new Error(`transient HTTP ${res.status}`);
-          await delay(this.retryDelayMs);
-          continue;
-        }
-        return res;
+        res = await this.rawRequest(method, path, body);
       } catch (err) {
         if (attempt < this.retries && isRetryableNetworkError(err)) {
-          lastError = err;
+          lastNetworkError = err;
           await delay(this.retryDelayMs);
           continue;
         }
         throw new Error(`${method} ${path} failed after ${attempt + 1} attempt(s)`, { cause: err });
       }
+
+      // 5xx 的重試判斷刻意放在 try/catch 之外：耗盡重試預算後拋出的 Error 才不會
+      // 被上面那個只負責 network-level 失敗的 catch 攔截、包成一層多餘的巢狀 Error。
+      if (res.status >= 500) {
+        lastFailedResponse = res;
+        if (attempt < this.retries) {
+          await delay(this.retryDelayMs);
+          continue;
+        }
+        // 重試預算耗盡、仍是 5xx：必須拋出並把造成失敗的 response 放進 cause，
+        // 不能把失敗的 raw response 直接 return 給呼叫端當成功處理
+        // （那樣 error.cause 就悄悄消失了——這正是這裡要修的 bug）。
+        throw new Error(`${method} ${path} failed after ${attempt + 1} attempt(s): HTTP ${res.status}`, {
+          cause: { status: res.status, body: res.body },
+        });
+      }
+
+      return res;
     }
     // 迴圈一定會在上面 return 或 throw；這裡只是滿足型別檢查的 fallback。
-    throw new Error(`${method} ${path} failed after retries`, { cause: lastError });
+    throw new Error(`${method} ${path} failed after retries`, {
+      cause: lastFailedResponse ? { status: lastFailedResponse.status, body: lastFailedResponse.body } : lastNetworkError,
+    });
   }
 
   async health(): Promise<{ status: string; db: boolean; rev: string }> {

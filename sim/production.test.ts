@@ -443,6 +443,7 @@ const USER_IDS: Record<string, string> = {
   'user03@test.local': 'user-03',
   'user05@test.local': 'user-05',
   'user06@test.local': 'user-06',
+  'user09@test.local': 'user-09',
 };
 
 function makeTaskRun(overrides: Partial<TaskRun> & { taskId: string; workspaceId: string }): TaskRun {
@@ -505,6 +506,7 @@ function validPrerequisiteEvidence(): PrerequisiteEvidence {
     task1AuthorizedAt: '2026-07-20T00:00:00.000Z',
     canonicalOwnerId: USER_IDS['user01@test.local'],
     user03CanonicalId: USER_IDS['user03@test.local'],
+    user09CanonicalId: USER_IDS['user09@test.local'],
     assignmentEvent: {
       eventId: 'event-assign-1',
       actorId: USER_IDS['user01@test.local'],
@@ -537,7 +539,7 @@ function validPrerequisiteEvidence(): PrerequisiteEvidence {
     },
     notification: {
       notificationId: 'notif-1',
-      recipientId: 'user09-id',
+      recipientId: USER_IDS['user09@test.local'],
       sourceCommentId: 'comment-complete-1',
     },
   };
@@ -921,6 +923,10 @@ function validPrerequisiteEvidence(): PrerequisiteEvidence {
     ['notification 沒有指向完成留言', (e) => ({
       ...e,
       notification: { ...e.notification!, sourceCommentId: 'other-comment' },
+    })],
+    ['notification recipient 不是 user09', (e) => ({
+      ...e,
+      notification: { ...e.notification!, recipientId: 'not-user09' },
     })],
     ['assignment event 整個缺席', (e) => ({ ...e, assignmentEvent: null })],
     ['owner acceptance 整個缺席', (e) => ({ ...e, ownerAcceptance: null })],
@@ -1486,6 +1492,35 @@ async function runApiTests(): Promise<void> {
   }
 
   // -------------------------------------------------------------------------
+  // error.cause 會保留：重試預算耗盡後、仍是持續性 5xx 的那個路徑，同樣必須
+  // 拋出帶 cause 的 Error，而不是把失敗的 raw response 當成功 return 回去
+  // （這條路徑先前會悄悄把 error.cause 弄丟）。
+  // -------------------------------------------------------------------------
+  {
+    let attempts = 0;
+    const { port, close } = await startFakeServer((req, res) => {
+      attempts += 1;
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'db always warming up' }));
+    });
+    try {
+      const client = new TaskTrackerClient({ baseUrl: `http://127.0.0.1:${port}`, retries: 2, retryDelayMs: 5 });
+      await assert.rejects(
+        () => client.health(),
+        (err: unknown) => {
+          assert.ok(err instanceof Error, '5xx 重試耗盡後必須拋出 Error');
+          assert.ok(err.cause, '5xx 重試耗盡後 error.cause 必須保留（不得悄悄消失）');
+          assert.strictEqual((err.cause as { status: number }).status, 503, 'cause 必須帶著造成失敗的 HTTP 狀態碼');
+          return true;
+        },
+      );
+      assert.strictEqual(attempts, 3, '重試預算 retries=2 代表最多嘗試 3 次（1 次原始 + 2 次重試）');
+    } finally {
+      await close();
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // postCommentOnce：結果不確定時，先 readback 而非盲目重送。
   // 伺服器端其實已經把留言寫進去了，只是在送出 response 之前中斷 socket——
   // 模擬「mutation 可能已成功，但呼叫端從未收到確認」。api.ts 必須拋出
@@ -1634,7 +1669,17 @@ async function runApiTests(): Promise<void> {
 
     try {
       const client = new TaskTrackerClient({ baseUrl: `http://127.0.0.1:${port}`, retries: 0, retryDelayMs: 5 });
-      await assert.rejects(() => client.listWorkspaceTasks(brokenWorkspace), /listWorkspaceTasks failed/);
+      // 5xx 重試耗盡現在直接從 safeRequest 內部拋出（帶 cause），listWorkspaceTasks
+      // 自己的 status 檢查已經來不及執行——訊息格式因此變成 safeRequest 那種通用格式。
+      await assert.rejects(
+        () => client.listWorkspaceTasks(brokenWorkspace),
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
+          assert.match(err.message, /HTTP 500/);
+          assert.ok(err.cause, '5xx 重試耗盡的 error 必須保留 cause');
+          return true;
+        },
+      );
       // 壞掉的 workspace 呼叫失敗，不影響對另一個 workspace 的獨立呼叫。
       const okTasks = await client.listWorkspaceTasks(okWorkspace);
       assert.strictEqual(okTasks.length, 1);

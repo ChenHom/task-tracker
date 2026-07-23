@@ -128,6 +128,8 @@ export interface PrerequisiteEvidence {
   task1AuthorizedAt: string;
   canonicalOwnerId: string;
   user03CanonicalId: string;
+  /** user09 的 canonical user ID：完成通知的 recipient 必須恰好是這個人，不是任意使用者。 */
+  user09CanonicalId: string;
   assignmentEvent: {
     eventId: string;
     actorId: string;
@@ -331,8 +333,9 @@ export function validatePrerequisiteEvidence(evidence: PrerequisiteEvidence | nu
   if (completionComment.referencesMergeSha !== acceptedMerge.sha) return false;
   if (completionComment.referencesLiveRev !== evidence.liveRev) return false;
 
-  // user09 notification 的 source comment ID 必須指向該留言。
+  // notification 必須指向該留言，且 recipient 必須恰好是 user09（不是任意使用者）。
   if (notification.sourceCommentId !== completionComment.commentId) return false;
+  if (notification.recipientId !== evidence.user09CanonicalId) return false;
 
   return true;
 }
