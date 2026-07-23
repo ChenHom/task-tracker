@@ -312,7 +312,7 @@ export class TaskTrackerClient {
     }
     if (res.status >= 500) {
       throw new UncertainMutationError(`postCommentOnce uncertain (actionKey=${actionKey}): HTTP ${res.status}`, {
-        cause: new Error(res.body),
+        cause: { status: res.status, body: res.body },
       });
     }
     throw new Error(`postCommentOnce failed: HTTP ${res.status} ${res.body}`);
@@ -336,7 +336,7 @@ export class TaskTrackerClient {
     }
     if (res.status >= 500) {
       throw new UncertainMutationError(`patchTaskField uncertain (task=${taskId}, field=${field}): HTTP ${res.status}`, {
-        cause: new Error(res.body),
+        cause: { status: res.status, body: res.body },
       });
     }
     if (res.status !== 200) {

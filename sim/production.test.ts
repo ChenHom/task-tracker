@@ -1578,6 +1578,39 @@ async function runApiTests(): Promise<void> {
   }
 
   // -------------------------------------------------------------------------
+  // postCommentOnce：不確定結果的另一條路徑——收到明確的 5xx response（不是連線層
+  // 失敗）。cause 的結構必須跟 safeRequest 的 5xx-exhaustion path 一致：
+  // { status, body }，而不是把 body 包成一個丟失狀態碼的 Error。
+  // -------------------------------------------------------------------------
+  {
+    const taskId = 'task-uncertain-comment-5xx';
+    const { port, close } = await startFakeServer((req, res) => {
+      if (req.url === `/api/tasks/${taskId}/comments` && req.method === 'POST') {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end('db unavailable');
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    try {
+      const client = new TaskTrackerClient({ baseUrl: `http://127.0.0.1:${port}`, retries: 2, retryDelayMs: 5 });
+      await assert.rejects(
+        () => client.postCommentOnce(taskId, 'content', 'action-key-5xx'),
+        (err: unknown) => {
+          assert.ok(err instanceof UncertainMutationError, '5xx 也必須是 UncertainMutationError，不是盲目重送');
+          const cause = (err as Error).cause as { status: number; body: string };
+          assert.strictEqual(cause.status, 503, 'cause 必須帶結構化的 status，而不是包進 Error message 裡');
+          assert.strictEqual(cause.body, 'db unavailable');
+          return true;
+        },
+      );
+    } finally {
+      await close();
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // patchTaskField：結果不確定時，同樣先 readback 而非盲目重送 PATCH。
   // -------------------------------------------------------------------------
   {
@@ -1628,6 +1661,38 @@ async function runApiTests(): Promise<void> {
 
       const readback = await client.getTask(taskId);
       assert.strictEqual(readback.status, 'Doing', 'readback 必須看到伺服器其實已經套用過的那次 mutation');
+    } finally {
+      await close();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // patchTaskField：不確定結果的另一條路徑——收到明確的 5xx response。cause 的
+  // 結構必須跟 safeRequest 的 5xx-exhaustion path 一致：{ status, body }。
+  // -------------------------------------------------------------------------
+  {
+    const taskId = 'task-uncertain-patch-5xx';
+    const { port, close } = await startFakeServer((req, res) => {
+      if (req.url === `/api/tasks/${taskId}` && req.method === 'PATCH') {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end('internal error');
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    try {
+      const client = new TaskTrackerClient({ baseUrl: `http://127.0.0.1:${port}`, retries: 2, retryDelayMs: 5 });
+      await assert.rejects(
+        () => client.patchTaskField(taskId, 'status', 'Doing'),
+        (err: unknown) => {
+          assert.ok(err instanceof UncertainMutationError, '5xx 也必須是 UncertainMutationError，不是盲目重送');
+          const cause = (err as Error).cause as { status: number; body: string };
+          assert.strictEqual(cause.status, 500, 'cause 必須帶結構化的 status，而不是包進 Error message 裡');
+          assert.strictEqual(cause.body, 'internal error');
+          return true;
+        },
+      );
     } finally {
       await close();
     }
