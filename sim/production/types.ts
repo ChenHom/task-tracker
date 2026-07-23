@@ -60,6 +60,16 @@ export interface CiRunRecord {
 }
 
 // completion_outbox 一列：completion_id 由呼叫端組成（例如 task_id + ':' + accepted_head_sha）。
+//
+// 這一列同時承擔兩個獨立階段的紀錄（任務 7 沿用任務 2 既有 schema，只加了
+// doneConfirmedAt 這一欄）：
+//   1) 存在本身（persist）：completion.ts 在嘗試貼留言之前就必須 enqueue 這一列，
+//      作為「已經決定要完成這個 task」的 crash-recoverable 標記。
+//   2) doneConfirmedAt：只有在留言／user09 notification／Review->Done PATCH 全部
+//      readback 確認之後才會被寫入——`doneConfirmedAt !== null` 才代表這個 task
+//      真的可以被排進 Discord batch；status／attemptCount／batchId 三者則純粹描述
+//      **Discord 彙整通知**本身的 batch／重試狀態，與這個 task 有沒有真的 Done
+//      無關（Discord 失敗永遠不影響已經确定的 Done）。
 export type CompletionStatus = 'pending' | 'sent' | 'notify_failed';
 
 export interface CompletionRecord {
@@ -68,6 +78,8 @@ export interface CompletionRecord {
   batchId: string | null;
   attemptCount: number;
   status: CompletionStatus;
+  /** 非 null 代表留言／notification／Done PATCH 都已經 readback 確認過，可以排入 Discord batch。 */
+  doneConfirmedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

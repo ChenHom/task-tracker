@@ -11,6 +11,7 @@
 // agent.ts 的 MemberSessionResult.evidenceChanged 原封不動傳給 policy.ts 的
 // recordMemberAttempt（不自己另外從 outcome 重新推導一次），並在真的轉入
 // human_blocked 的那一刻，產生一則唯一、可去重的 @user09 留言內容。
+import type { DatabaseSync } from 'node:sqlite';
 import type { TaskRun } from './types';
 import { recordMemberAttempt, shouldResumeHumanBlocked, taskEvidenceFingerprint, type TaskEvidence } from './policy';
 import type { MemberSessionResult } from './agent';
@@ -26,6 +27,13 @@ import {
   type CheckHealth,
   type DeployWaitBaseline,
 } from './git';
+import {
+  listUnbatchedCompletions,
+  assignBatch,
+  listPendingBatchIds,
+  getCompletionsByBatch,
+  recordBatchAttempt,
+} from './state';
 
 export interface HumanBlockedNotice {
   /**
@@ -454,4 +462,88 @@ export async function resolveRollbackWait(input: ResolveRollbackWaitInput): Prom
     kind: 'fatal',
     fatal: { taskId: input.taskId, sha: input.revertSha, reason: `rollback deployment failed: ${waitResult.reason}` },
   };
+}
+
+// =============================================================================
+// 任務 7 步驟 4：完成通知的 Discord outbox——tick 級 batch／重試。
+//
+// completion.ts 只處理「一個 task 的完成」；這裡處理「這次 tick 有哪些 task 剛
+// 完成，該怎麼合併成一則 Discord 訊息、失敗了要不要重試」。兩者刻意分開：
+// completion.ts 對 Discord 的存在一無所知，這裡也完全不碰留言／notification／
+// task 狀態——Discord 傳送成敗永遠只是通知管道的事，不是任何 task 是否 Done 的
+// 判準（那件事早在 completion.ts 裡就已經透過 readback 確認過了）。
+// =============================================================================
+
+/** 一次 Discord 彙整訊息：一個 batch、一組 taskId，不是每個 task 各送一則。 */
+export interface DiscordBatchMessage {
+  batchId: string;
+  taskIds: string[];
+}
+
+/** 正式環境會是真正呼叫 Discord webhook 的實作；這裡永遠是呼叫端（測試）注入的假函式。回傳 true 代表送出成功。 */
+export type SendDiscordMessage = (message: DiscordBatchMessage) => Promise<boolean>;
+
+export interface RunDiscordOutboxTickInput {
+  db: DatabaseSync;
+  sendDiscordMessage: SendDiscordMessage;
+  /** 產生新 batch 的 id；只有在這次 tick 真的存在尚未 batch 的 completion 時才會被呼叫。 */
+  newBatchId: () => string;
+  now?: Date;
+}
+
+export interface DiscordBatchOutcome {
+  batchId: string;
+  taskIds: string[];
+  /** 沿用 state.ts CompletionStatus：'pending' 代表這次嘗試失敗但還沒到第 3 次，下次 tick 會再試。 */
+  status: 'pending' | 'sent' | 'notify_failed';
+  attemptCount: number;
+}
+
+/**
+ * 每個 coordinator tick 都應該呼叫一次：
+ *
+ *   1) 把「自上次呼叫以來所有已經 Done 確認、但還沒被 batch 過」的 completion
+ *      （`listUnbatchedCompletions`）合併成單一新 batch_id——這正是「同一個 tick
+ *      的所有新 completion 形成單一 batch」；batch 一旦形成就是封閉集合，下一批
+ *      新完成的 task 只會形成下一個新 batch，不會被塞進這個已存在的 batch。
+ *   2) 對「目前所有仍是 pending 的 batch」（剛形成的新 batch，加上先前 tick 失敗、
+ *      還在重試窗口內的舊 batch）各嘗試一次 Discord 傳送——每個 batch 只送一則
+ *      彙整訊息。
+ *   3) 每個 batch 最多嘗試 3 次（沿用 state.ts 既有的 `recordCompletionAttempt` /
+ *      `MAX_COMPLETION_ATTEMPTS`，不重寫一份）；第 3 次仍失敗後這個 batch 轉為
+ *      `notify_failed`，下一次呼叫 `listPendingBatchIds` 就不會再看到它——不會再
+ *      自動重試、不會重貼 system comment、不會重跑 deploy，也不會改動任何 task
+ *      的 Done 狀態（那些 task 早就在 completion.ts 裡各自 Done 過了）。
+ */
+export async function runDiscordOutboxTick(input: RunDiscordOutboxTickInput): Promise<DiscordBatchOutcome[]> {
+  const now = input.now ?? new Date();
+
+  const unbatched = listUnbatchedCompletions(input.db);
+  if (unbatched.length > 0) {
+    const batchId = input.newBatchId();
+    assignBatch(
+      input.db,
+      unbatched.map((c) => c.completionId),
+      batchId,
+      now,
+    );
+  }
+
+  const outcomes: DiscordBatchOutcome[] = [];
+  for (const batchId of listPendingBatchIds(input.db)) {
+    const rows = getCompletionsByBatch(input.db, batchId);
+    const taskIds = rows.map((row) => row.taskId);
+
+    let sent: boolean;
+    try {
+      sent = await input.sendDiscordMessage({ batchId, taskIds });
+    } catch {
+      sent = false; // 傳送函式本身拋出例外，一律當作這次嘗試失敗，不讓它逃出這個迴圈。
+    }
+
+    const updated = recordBatchAttempt(input.db, batchId, sent ? 'sent' : 'failed', now);
+    outcomes.push({ batchId, taskIds, status: updated[0].status, attemptCount: updated[0].attemptCount });
+  }
+
+  return outcomes;
 }

@@ -21,6 +21,12 @@ import {
   getCompletion,
   enqueueCompletion,
   recordCompletionAttempt,
+  markCompletionDone,
+  listUnbatchedCompletions,
+  assignBatch,
+  getCompletionsByBatch,
+  listPendingBatchIds,
+  recordBatchAttempt,
   beginTick,
   endTick,
   getTick,
@@ -47,6 +53,7 @@ import {
   type PrerequisiteEvidence,
   type OwnerClassification,
   type WorkClass,
+  type CommentSnapshot,
 } from './production/policy';
 import {
   taskBranchName,
@@ -91,11 +98,21 @@ import {
   resolveRollbackWait,
   assertNoFatalCoordinatorError,
   deploymentRollbackActionKey,
+  runDiscordOutboxTick,
   type AcceptanceCheckResult,
   type AcceptanceCheck,
   type IntegrationCommandRunner,
   type FatalCoordinatorError,
+  type DiscordBatchMessage,
 } from './production/coordinator';
+import {
+  buildCompletionComment,
+  completionId,
+  completionActionKey,
+  postCompletionAndTransitionToDone,
+  type CompletionOwnerClient,
+  type CompletionNotifierClient,
+} from './production/completion';
 
 // ---------------------------------------------------------------------------
 // LEASE_TTL_MS 必須嚴格大於 DEPLOY_WAIT_TIMEOUT_MS
@@ -352,6 +369,52 @@ const dir = mkdtempSync(join(tmpdir(), 'sim-production-state-'));
   assert.strictEqual(sent.attemptCount, 1);
   assert.strictEqual(sent.status, 'sent');
   assert.throws(() => recordCompletionAttempt(db, okCompletionId, 'sent', t0), /already resolved/);
+
+  db.close();
+}
+
+// ---------------------------------------------------------------------------
+// completion_outbox 的 Discord batch 輔助函式（任務 7 新增）：
+// listUnbatchedCompletions／assignBatch／getCompletionsByBatch／
+// listPendingBatchIds／recordBatchAttempt。
+// ---------------------------------------------------------------------------
+{
+  const db = openCoordinatorState(':memory:');
+  const t0 = new Date('2026-07-23T03:00:00.000Z');
+
+  enqueueCompletion(db, { completionId: 'c1', taskId: 'task-1' }, t0);
+  enqueueCompletion(db, { completionId: 'c2', taskId: 'task-2' }, t0);
+  assert.deepStrictEqual(
+    listUnbatchedCompletions(db),
+    [],
+    '尚未 doneConfirmed 的 completion 不算 unbatched，不會被誤排進 Discord batch',
+  );
+
+  markCompletionDone(db, 'c1', t0);
+  const unbatched = listUnbatchedCompletions(db);
+  assert.strictEqual(unbatched.length, 1);
+  assert.strictEqual(unbatched[0].completionId, 'c1');
+
+  assert.throws(() => assignBatch(db, [], 'batch-x', t0), /non-empty/);
+  assert.throws(() => assignBatch(db, ['unknown-id'], 'batch-x', t0), /not found/);
+
+  assignBatch(db, ['c1'], 'batch-x', t0);
+  assert.throws(
+    () => assignBatch(db, ['c1'], 'batch-y', t0),
+    /already belongs to a batch/,
+    '已經有 batch_id 的 completion 不得被重新分配到另一個 batch',
+  );
+
+  assert.deepStrictEqual(listUnbatchedCompletions(db), [], 'c1 已經 batch 過，不應該再出現在 unbatched 清單');
+  assert.deepStrictEqual(listPendingBatchIds(db), ['batch-x']);
+  assert.strictEqual(getCompletionsByBatch(db, 'batch-x').length, 1);
+
+  const afterAttempt = recordBatchAttempt(db, 'batch-x', 'failed', t0);
+  assert.strictEqual(afterAttempt[0].attemptCount, 1);
+  assert.strictEqual(afterAttempt[0].status, 'pending');
+  assert.deepStrictEqual(listPendingBatchIds(db), ['batch-x']);
+
+  assert.throws(() => recordBatchAttempt(db, 'no-such-batch', 'failed', t0), /no completion_outbox rows/);
 
   db.close();
 }
@@ -3926,12 +3989,901 @@ async function runDeployTests(): Promise<void> {
   }
 }
 
+// =============================================================================
+// completion.ts：任務 7 步驟 1-3——單一 task 的 SYSTEM 完成留言／user09
+// notification readback／Review -> Done 轉移。全部用注入的假 CompletionOwnerClient／
+// CompletionNotifierClient 測試（不需要真正的 HTTP server：這裡要驗證的是呼叫
+// 順序、readback 優先、以及重試的冪等性，用輕量假物件最能精準控制每個分支）。
+// =============================================================================
+
+function makeCompletionTask(taskId: string, status: TaskStatus): TaskSnapshot {
+  return {
+    taskId,
+    workspaceId: MAIN_WORKSPACE_ID,
+    title: 'completion fixture',
+    status,
+    assigneeId: null,
+    dueAt: null,
+    updatedAt: null,
+    version: 1,
+  };
+}
+
+const COMPLETION_INPUT_DEFAULTS = {
+  taskTitle: 'completion fixture task',
+  summary: '修正驗證流程的 bug',
+  verification: 'focused tests + integration + live acceptance 全部 PASS',
+  deployRev: 'rev-fixture',
+};
+
+async function runCompletionTests(): Promise<void> {
+  // -------------------------------------------------------------------------
+  // 純函式：completionId／buildCompletionComment 必須逐字符合計畫模板。
+  // -------------------------------------------------------------------------
+  {
+    assert.strictEqual(completionId('task-x', 'sha123'), 'task-x:sha123');
+    assert.strictEqual(completionActionKey('task-x:sha123'), 'completion_comment:task-x:sha123');
+
+    const content = buildCompletionComment({
+      taskTitle: '範例任務',
+      taskId: 'task-x',
+      summary: '修正 XX bug',
+      verification: 'focused tests + integration + live acceptance 全部 PASS',
+      commitSha: 'sha123',
+      deployRev: 'rev-9',
+      completionId: 'task-x:sha123',
+    });
+    const expected = [
+      '【SYSTEM完成】 @user09',
+      'TASK：範例任務（task-x）',
+      '功能／修改：修正 XX bug',
+      '驗證：focused tests + integration + live acceptance 全部 PASS',
+      'Commit：sha123',
+      '部署版本：rev-9',
+      '執行識別：task-x:sha123',
+    ].join('\n');
+    assert.strictEqual(content, expected, 'completion comment 必須逐字符合計畫模板');
+  }
+
+  // -------------------------------------------------------------------------
+  // completion row 必須在留言 POST 之前就已經持久化（crash-recoverable 的核心保證）。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'completion-order-task';
+    const headSha = 'headsha1';
+    const id = completionId(taskId, headSha);
+
+    let postCommentCalls = 0;
+    let rowExistedAtPostTime: boolean | null = null;
+    const comments: CommentSnapshot[] = [];
+    let taskStatus: TaskStatus = 'Review';
+
+    const ownerClient: CompletionOwnerClient = {
+      async listComments() {
+        return comments;
+      },
+      async postCommentOnce(_taskId, content) {
+        postCommentCalls++;
+        rowExistedAtPostTime = getCompletion(db, id) !== null;
+        const commentId = 'comment-order-1';
+        comments.push({ commentId, taskId, userId: 'user01-id', content, createdAt: '2026-07-23T00:00:01.000Z' });
+        return commentId;
+      },
+      async getTask() {
+        return makeCompletionTask(taskId, taskStatus);
+      },
+      async patchTaskField(_taskId, _field, value) {
+        taskStatus = value as TaskStatus;
+        return makeCompletionTask(taskId, taskStatus);
+      },
+    };
+    const user09Client: CompletionNotifierClient = {
+      async listNotifications() {
+        return [
+          {
+            notificationId: 'notif-order-1',
+            recipientId: 'user09-id',
+            sourceTaskId: taskId,
+            sourceCommentId: 'comment-order-1',
+            snippet: '...',
+            createdAt: '2026-07-23T00:00:00.000Z',
+            readAt: null,
+          },
+        ];
+      },
+    };
+
+    assert.strictEqual(getCompletion(db, id), null, '呼叫前不應該存在任何 completion row');
+
+    const result = await postCompletionAndTransitionToDone({
+      db,
+      ownerClient,
+      user09Client,
+      user09Id: 'user09-id',
+      taskId,
+      acceptedHeadSha: headSha,
+      ...COMPLETION_INPUT_DEFAULTS,
+    });
+
+    assert.strictEqual(postCommentCalls, 1);
+    assert.strictEqual(rowExistedAtPostTime, true, 'completion row 必須在留言 POST 之前就已經持久化');
+    assert.strictEqual(result.kind, 'done');
+    const row = getCompletion(db, id);
+    assert.ok(row, 'completion row 必須存在');
+    assert.ok(row!.doneConfirmedAt, 'Done 確認後必須寫入 doneConfirmedAt');
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // 模擬「crash」：postCommentOnce 甚至還沒得到 UncertainMutationError 那麼客氣的
+  // 結果，就直接整個中止（比 api.ts 的不確定情境更粗暴）。重新呼叫（模擬 process
+  // 重啟、用同一個持久化 db 重新驅動）必須能接續完成整個流程——completion row
+  // 不會因為這次失敗而消失，也不會被當成「沒發生過」。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'completion-crash-resume';
+    const headSha = 'headsha-crash';
+    const id = completionId(taskId, headSha);
+
+    let firstAttempt = true;
+    const comments: CommentSnapshot[] = [];
+    let taskStatus: TaskStatus = 'Review';
+
+    const ownerClient: CompletionOwnerClient = {
+      async listComments() {
+        return comments;
+      },
+      async postCommentOnce(_taskId, content) {
+        if (firstAttempt) {
+          firstAttempt = false;
+          throw new Error('simulated process crash before any response'); // 比 UncertainMutationError 更粗暴的中止
+        }
+        const c = { commentId: 'comment-crash-resume', taskId, userId: 'user01-id', content, createdAt: 'x' };
+        comments.push(c);
+        return c.commentId;
+      },
+      async getTask() {
+        return makeCompletionTask(taskId, taskStatus);
+      },
+      async patchTaskField(_taskId, _field, value) {
+        taskStatus = value as TaskStatus;
+        return makeCompletionTask(taskId, taskStatus);
+      },
+    };
+    const user09Client: CompletionNotifierClient = {
+      async listNotifications() {
+        return [
+          {
+            notificationId: 'notif-crash-resume',
+            recipientId: 'user09-id',
+            sourceTaskId: taskId,
+            sourceCommentId: 'comment-crash-resume',
+            snippet: '...',
+            createdAt: 'x',
+            readAt: null,
+          },
+        ];
+      },
+    };
+
+    const input = {
+      db,
+      ownerClient,
+      user09Client,
+      user09Id: 'user09-id',
+      taskId,
+      acceptedHeadSha: headSha,
+      ...COMPLETION_INPUT_DEFAULTS,
+    };
+
+    await assert.rejects(() => postCompletionAndTransitionToDone(input), /simulated process crash/);
+
+    const rowAfterCrash = getCompletion(db, id);
+    assert.ok(rowAfterCrash, 'crash 之後 completion row 必須仍然持久化著，可供重新驅動');
+    assert.strictEqual(rowAfterCrash!.doneConfirmedAt, null, 'crash 當下還沒完成，不應該有 doneConfirmedAt');
+
+    const result = await postCompletionAndTransitionToDone(input);
+    assert.strictEqual(result.kind, 'done', '模擬 process 重啟後的重新呼叫必須能接續完成整個流程');
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // 不確定的 comment response：不得盲目重送，必須透過 marker／action key 對應的
+  // readback 找回伺服器其實已經處理過的那則留言。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'completion-uncertain-task';
+    const headSha = 'headsha2';
+    const id = completionId(taskId, headSha);
+
+    let postAttempts = 0;
+    let listCommentsCalls = 0;
+    const comments: CommentSnapshot[] = [];
+    let taskStatus: TaskStatus = 'Review';
+
+    const ownerClient: CompletionOwnerClient = {
+      async listComments() {
+        listCommentsCalls++;
+        return comments;
+      },
+      async postCommentOnce(_taskId, content) {
+        postAttempts++;
+        // 模擬伺服器其實已經處理了這次 POST，但 response 在抵達 caller 前中斷。
+        comments.push({ commentId: 'comment-uncertain', taskId, userId: 'user01-id', content, createdAt: 'x' });
+        throw new UncertainMutationError('uncertain comment post');
+      },
+      async getTask() {
+        return makeCompletionTask(taskId, taskStatus);
+      },
+      async patchTaskField(_taskId, _field, value) {
+        taskStatus = value as TaskStatus;
+        return makeCompletionTask(taskId, taskStatus);
+      },
+    };
+    const user09Client: CompletionNotifierClient = {
+      async listNotifications() {
+        return [
+          {
+            notificationId: 'notif-uncertain-1',
+            recipientId: 'user09-id',
+            sourceTaskId: taskId,
+            sourceCommentId: 'comment-uncertain',
+            snippet: '...',
+            createdAt: 'x',
+            readAt: null,
+          },
+        ];
+      },
+    };
+
+    const result = await postCompletionAndTransitionToDone({
+      db,
+      ownerClient,
+      user09Client,
+      user09Id: 'user09-id',
+      taskId,
+      acceptedHeadSha: headSha,
+      ...COMPLETION_INPUT_DEFAULTS,
+    });
+
+    assert.strictEqual(postAttempts, 1, '結果不確定時不得自動重送同一個 POST');
+    assert.ok(listCommentsCalls >= 2, '必須用 readback 找回不確定 response 背後其實已經落地的留言');
+    assert.strictEqual(result.kind, 'done');
+    if (result.kind === 'done') assert.strictEqual(result.commentId, 'comment-uncertain');
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // user09 notification readback 必須早於 Review -> Done PATCH；user09Client
+  // 的介面本身沒有任何「標記已讀」的方法可以呼叫。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'completion-order-notif';
+    const headSha = 'headsha3';
+    const callLog: string[] = [];
+    const comments: CommentSnapshot[] = [];
+
+    const ownerClient: CompletionOwnerClient = {
+      async listComments() {
+        callLog.push('listComments');
+        return comments;
+      },
+      async postCommentOnce(_taskId, content) {
+        callLog.push('postCommentOnce');
+        const c = { commentId: 'comment-order-notif', taskId, userId: 'user01-id', content, createdAt: 'x' };
+        comments.push(c);
+        return c.commentId;
+      },
+      async getTask() {
+        callLog.push('getTask');
+        return makeCompletionTask(taskId, 'Review');
+      },
+      async patchTaskField() {
+        callLog.push('patchTaskField');
+        return makeCompletionTask(taskId, 'Done');
+      },
+    };
+    const user09Client: CompletionNotifierClient = {
+      async listNotifications() {
+        callLog.push('listNotifications');
+        return [
+          {
+            notificationId: 'notif-order-2',
+            recipientId: 'user09-id',
+            sourceTaskId: taskId,
+            sourceCommentId: 'comment-order-notif',
+            snippet: '...',
+            createdAt: 'x',
+            readAt: null,
+          },
+        ];
+      },
+    };
+
+    await postCompletionAndTransitionToDone({
+      db,
+      ownerClient,
+      user09Client,
+      user09Id: 'user09-id',
+      taskId,
+      acceptedHeadSha: headSha,
+      ...COMPLETION_INPUT_DEFAULTS,
+    });
+
+    const notifIndex = callLog.indexOf('listNotifications');
+    const patchIndex = callLog.indexOf('patchTaskField');
+    assert.notStrictEqual(notifIndex, -1);
+    assert.notStrictEqual(patchIndex, -1);
+    assert.ok(notifIndex < patchIndex, 'user09 notification readback 必須早於 Review -> Done PATCH');
+
+    assert.deepStrictEqual(
+      Object.keys(user09Client),
+      ['listNotifications'],
+      'user09Client 不得暴露任何「標記已讀」的方法可以被呼叫',
+    );
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // 找不到 user09 notification 時必須拒絕轉 Done（不得樂觀假設「應該已經有了」）。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'completion-missing-notif';
+    const headSha = 'headsha4';
+
+    const ownerClient: CompletionOwnerClient = {
+      async listComments() {
+        return [];
+      },
+      async postCommentOnce() {
+        return 'comment-missing-notif';
+      },
+      async getTask() {
+        return makeCompletionTask(taskId, 'Review');
+      },
+      async patchTaskField() {
+        throw new Error('patchTaskField must not be called before notification readback succeeds');
+      },
+    };
+    const user09Client: CompletionNotifierClient = {
+      async listNotifications() {
+        return [];
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        postCompletionAndTransitionToDone({
+          db,
+          ownerClient,
+          user09Client,
+          user09Id: 'user09-id',
+          taskId,
+          acceptedHeadSha: headSha,
+          ...COMPLETION_INPUT_DEFAULTS,
+        }),
+      /no notification found/,
+      '找不到 user09 notification 時必須拒絕轉 Done',
+    );
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // status failure 不會重複留言：第一次 PATCH 明確失敗，重試（第二次呼叫）只應
+  // 該重打 PATCH，不得回頭重貼留言。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'completion-patch-retry';
+    const headSha = 'headsha5';
+    const comments: CommentSnapshot[] = [];
+    let postCalls = 0;
+    let patchCalls = 0;
+    let shouldFailPatch = true;
+    let taskStatus: TaskStatus = 'Review';
+
+    const ownerClient: CompletionOwnerClient = {
+      async listComments() {
+        return comments;
+      },
+      async postCommentOnce(_taskId, content) {
+        postCalls++;
+        const c = { commentId: 'comment-patch-retry', taskId, userId: 'user01-id', content, createdAt: 'x' };
+        comments.push(c);
+        return c.commentId;
+      },
+      async getTask() {
+        return makeCompletionTask(taskId, taskStatus);
+      },
+      async patchTaskField(_taskId, _field, value) {
+        patchCalls++;
+        if (shouldFailPatch) throw new Error('db write conflict'); // 明確失敗，不是 UncertainMutationError
+        taskStatus = value as TaskStatus;
+        return makeCompletionTask(taskId, taskStatus);
+      },
+    };
+    const user09Client: CompletionNotifierClient = {
+      async listNotifications() {
+        return [
+          {
+            notificationId: 'notif-patch-retry',
+            recipientId: 'user09-id',
+            sourceTaskId: taskId,
+            sourceCommentId: 'comment-patch-retry',
+            snippet: '...',
+            createdAt: 'x',
+            readAt: null,
+          },
+        ];
+      },
+    };
+
+    const input = {
+      db,
+      ownerClient,
+      user09Client,
+      user09Id: 'user09-id',
+      taskId,
+      acceptedHeadSha: headSha,
+      ...COMPLETION_INPUT_DEFAULTS,
+    };
+
+    const firstResult = await postCompletionAndTransitionToDone(input);
+    assert.strictEqual(firstResult.kind, 'patch_failed');
+    assert.strictEqual(postCalls, 1, '第一次呼叫必須貼一次留言');
+    assert.strictEqual(patchCalls, 1);
+
+    shouldFailPatch = false;
+    const secondResult = await postCompletionAndTransitionToDone(input);
+    assert.strictEqual(secondResult.kind, 'done', 'PATCH 重試成功後應該完成 Done 轉移');
+    assert.strictEqual(postCalls, 1, 'status PATCH 失敗後重試，不得重複留言');
+    assert.strictEqual(patchCalls, 2, '重試只應該再打一次 PATCH');
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // PATCH 結果不確定，但 readback 顯示伺服器其實已經套用（Done）：必須視為成功，
+  // 不得再送第二次 PATCH。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'completion-patch-uncertain-success';
+    const headSha = 'headsha5b';
+    const comments: CommentSnapshot[] = [];
+    let taskStatus: TaskStatus = 'Review';
+    let patchCalls = 0;
+
+    const ownerClient: CompletionOwnerClient = {
+      async listComments() {
+        return comments;
+      },
+      async postCommentOnce(_taskId, content) {
+        const c = { commentId: 'comment-patch-unc', taskId, userId: 'user01-id', content, createdAt: 'x' };
+        comments.push(c);
+        return c.commentId;
+      },
+      async getTask() {
+        return makeCompletionTask(taskId, taskStatus);
+      },
+      async patchTaskField() {
+        patchCalls++;
+        taskStatus = 'Done'; // 伺服器端其實已經套用了這次 mutation
+        throw new UncertainMutationError('uncertain patch');
+      },
+    };
+    const user09Client: CompletionNotifierClient = {
+      async listNotifications() {
+        return [
+          {
+            notificationId: 'notif-patch-unc',
+            recipientId: 'user09-id',
+            sourceTaskId: taskId,
+            sourceCommentId: 'comment-patch-unc',
+            snippet: '...',
+            createdAt: 'x',
+            readAt: null,
+          },
+        ];
+      },
+    };
+
+    const result = await postCompletionAndTransitionToDone({
+      db,
+      ownerClient,
+      user09Client,
+      user09Id: 'user09-id',
+      taskId,
+      acceptedHeadSha: headSha,
+      ...COMPLETION_INPUT_DEFAULTS,
+    });
+    assert.strictEqual(result.kind, 'done', 'PATCH 不確定但 readback 顯示已經 Done 時必須視為成功，不重送 PATCH');
+    assert.strictEqual(patchCalls, 1);
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // 完全成功之後的重呼叫（idempotent resume）：不得重貼留言，也不得重打 PATCH
+  // （getTask readback 已經看到 Done）。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'completion-idempotent-full';
+    const headSha = 'headsha6';
+    const comments: CommentSnapshot[] = [];
+    let postCalls = 0;
+    let patchCalls = 0;
+    let taskStatus: TaskStatus = 'Review';
+
+    const ownerClient: CompletionOwnerClient = {
+      async listComments() {
+        return comments;
+      },
+      async postCommentOnce(_taskId, content) {
+        postCalls++;
+        const c = { commentId: 'comment-idem', taskId, userId: 'user01-id', content, createdAt: 'x' };
+        comments.push(c);
+        return c.commentId;
+      },
+      async getTask() {
+        return makeCompletionTask(taskId, taskStatus);
+      },
+      async patchTaskField(_taskId, _field, value) {
+        patchCalls++;
+        taskStatus = value as TaskStatus;
+        return makeCompletionTask(taskId, taskStatus);
+      },
+    };
+    const user09Client: CompletionNotifierClient = {
+      async listNotifications() {
+        return [
+          {
+            notificationId: 'notif-idem',
+            recipientId: 'user09-id',
+            sourceTaskId: taskId,
+            sourceCommentId: 'comment-idem',
+            snippet: '...',
+            createdAt: 'x',
+            readAt: null,
+          },
+        ];
+      },
+    };
+    const input = {
+      db,
+      ownerClient,
+      user09Client,
+      user09Id: 'user09-id',
+      taskId,
+      acceptedHeadSha: headSha,
+      ...COMPLETION_INPUT_DEFAULTS,
+    };
+
+    const r1 = await postCompletionAndTransitionToDone(input);
+    assert.strictEqual(r1.kind, 'done');
+    const r2 = await postCompletionAndTransitionToDone(input);
+    assert.strictEqual(r2.kind, 'done');
+
+    assert.strictEqual(postCalls, 1, '完全成功後重呼叫不得重貼留言');
+    assert.strictEqual(patchCalls, 1, '完全成功後重呼叫不得重複 PATCH（getTask readback 已經看到 Done）');
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // 真實 HTTP + cookie jar 端到端：用 api.ts 真正的 TaskTrackerClient（分別以
+  // user01／user09 身分登入）打一個假 node:http server，驗證整條流程在真實
+  // HTTP 語意下也成立（不是只在手寫假物件底下成立）。
+  // -------------------------------------------------------------------------
+  {
+    const taskId = 'completion-e2e-task';
+    const headSha = 'e2e-sha-1';
+    const user09Id = 'user09-canonical-id';
+
+    let taskStatus: TaskStatus = 'Review';
+    const comments: Array<{ comment_id: string; task_id: string; user_id: string; content: string; created_at: string }> = [];
+    let postCommentCalls = 0;
+    let patchCalls = 0;
+
+    const { port, close } = await startFakeServer((req, res) => {
+      const cookie = req.headers.cookie ?? '';
+      const isUser09 = cookie.includes('tt_session=user09-session');
+
+      if (req.url === '/api/auth/login' && req.method === 'POST') {
+        readJsonBody(req)
+          .then((body) => {
+            const sessionCookie = body.email === 'user09@test.local' ? 'user09-session' : 'user01-session';
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': `tt_session=${sessionCookie}; HttpOnly; Path=/` });
+            res.end(JSON.stringify({ ok: true }));
+          })
+          .catch(() => {
+            res.writeHead(400);
+            res.end();
+          });
+        return;
+      }
+      if (req.url === `/api/tasks/${taskId}/comments` && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(comments));
+        return;
+      }
+      if (req.url === `/api/tasks/${taskId}/comments` && req.method === 'POST') {
+        postCommentCalls++;
+        readJsonBody(req)
+          .then((body) => {
+            const commentId = 'e2e-comment-1';
+            comments.push({ comment_id: commentId, task_id: taskId, user_id: 'user01-id', content: body.content, created_at: '2026-07-23T00:00:01.000Z' });
+            res.writeHead(201, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ id: commentId }));
+          })
+          .catch(() => {
+            res.writeHead(400);
+            res.end();
+          });
+        return;
+      }
+      if (req.url === '/api/notifications' && req.method === 'GET') {
+        if (!isUser09) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'unauthenticated' }));
+          return;
+        }
+        const notifications = comments.length > 0
+          ? [
+              {
+                notification_id: 'e2e-notif-1',
+                recipient_id: user09Id,
+                source_task_id: taskId,
+                source_comment_id: comments[0].comment_id,
+                snippet: '...',
+                created_at: '2026-07-23T00:00:02.000Z',
+                read_at: null,
+              },
+            ]
+          : [];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(notifications));
+        return;
+      }
+      if (req.url === `/api/tasks/${taskId}` && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            task_id: taskId,
+            workspace_id: MAIN_WORKSPACE_ID,
+            title: 'e2e completion fixture',
+            status: taskStatus,
+            assignee_id: null,
+            due_at: null,
+            version: 1,
+            updated_at: null,
+          }),
+        );
+        return;
+      }
+      if (req.url === `/api/tasks/${taskId}` && req.method === 'PATCH') {
+        patchCalls++;
+        readJsonBody(req)
+          .then((body) => {
+            taskStatus = body.status;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          })
+          .catch(() => {
+            res.writeHead(400);
+            res.end();
+          });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    try {
+      const db = openCoordinatorState(':memory:');
+      const ownerClient = new TaskTrackerClient({ baseUrl: `http://127.0.0.1:${port}`, retries: 1, retryDelayMs: 5 });
+      await ownerClient.login('user01@test.local', 'whatever');
+      const user09Client = new TaskTrackerClient({ baseUrl: `http://127.0.0.1:${port}`, retries: 1, retryDelayMs: 5 });
+      await user09Client.login('user09@test.local', 'whatever');
+
+      const result = await postCompletionAndTransitionToDone({
+        db,
+        ownerClient,
+        user09Client,
+        user09Id,
+        taskId,
+        acceptedHeadSha: headSha,
+        ...COMPLETION_INPUT_DEFAULTS,
+      });
+
+      assert.strictEqual(result.kind, 'done', '真實 HTTP client 底下整條流程也必須成功完成');
+      assert.strictEqual(postCommentCalls, 1);
+      assert.strictEqual(patchCalls, 1);
+      assert.strictEqual(taskStatus, 'Done');
+      if (result.kind === 'done') {
+        assert.strictEqual(result.task.status, 'Done');
+        assert.strictEqual(result.commentId, 'e2e-comment-1');
+      }
+
+      const row = getCompletion(db, completionId(taskId, headSha));
+      assert.ok(row?.doneConfirmedAt, '真實 HTTP 流程完成後也必須寫入 doneConfirmedAt');
+
+      db.close();
+    } finally {
+      await close();
+    }
+  }
+}
+
+// =============================================================================
+// coordinator.ts：任務 7 步驟 4——Discord outbox 的 tick 級 batch／重試。
+// completion.ts 對 Discord 一無所知，這裡也完全不碰任何 TaskTrackerClient——
+// 只操作 completion_outbox（透過 state.ts）與注入的假 sendDiscordMessage。
+// =============================================================================
+
+async function runDiscordOutboxTests(): Promise<void> {
+  // -------------------------------------------------------------------------
+  // 同一 tick 的所有新 completion 形成單一 batch：三個已經 Done 確認、但尚未
+  // batch 過的 completion，第一次呼叫就必須合併成同一個 batch_id，只送出一次
+  // Discord 訊息（不是三則）。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const t0 = new Date('2026-07-23T10:00:00.000Z');
+    for (const taskId of ['task-a', 'task-b', 'task-c']) {
+      const id = completionId(taskId, `sha-${taskId}`);
+      enqueueCompletion(db, { completionId: id, taskId }, t0);
+      markCompletionDone(db, id, t0);
+    }
+
+    let sendCalls = 0;
+    const sentPayloads: DiscordBatchMessage[] = [];
+    const outcomes = await runDiscordOutboxTick({
+      db,
+      newBatchId: () => 'batch-1',
+      sendDiscordMessage: async (msg) => {
+        sendCalls++;
+        sentPayloads.push(msg);
+        return true;
+      },
+      now: t0,
+    });
+
+    assert.strictEqual(sendCalls, 1, '同一 tick 的所有新 completion 必須合併成單一 Discord 傳送');
+    assert.strictEqual(sentPayloads[0]!.taskIds.length, 3);
+    assert.deepStrictEqual([...sentPayloads[0]!.taskIds].sort(), ['task-a', 'task-b', 'task-c']);
+    assert.strictEqual(outcomes.length, 1);
+    assert.strictEqual(outcomes[0]!.status, 'sent');
+
+    for (const taskId of ['task-a', 'task-b', 'task-c']) {
+      const id = completionId(taskId, `sha-${taskId}`);
+      assert.strictEqual(getCompletion(db, id)!.batchId, 'batch-1');
+      assert.strictEqual(getCompletion(db, id)!.status, 'sent');
+    }
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // Discord 最多嘗試三次：連續三個 tick 都失敗，第三次後轉 notify_failed，第四個
+  // tick 不得再自動重試；task 的 Done 狀態（completion row 的 doneConfirmedAt）
+  // 完全不受 Discord 失敗影響。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const t0 = new Date('2026-07-23T11:00:00.000Z');
+    const taskId = 'task-retry-fail';
+    const id = completionId(taskId, 'sha-retry');
+    enqueueCompletion(db, { completionId: id, taskId }, t0);
+    markCompletionDone(db, id, t0);
+
+    let sendCalls = 0;
+    const attempt = (tickN: number) =>
+      runDiscordOutboxTick({
+        db,
+        newBatchId: () => 'batch-retry',
+        sendDiscordMessage: async () => {
+          sendCalls++;
+          return false; // 每次都失敗
+        },
+        now: new Date(t0.getTime() + tickN * 60_000),
+      });
+
+    const tick1 = await attempt(1);
+    assert.strictEqual(tick1[0]!.status, 'pending');
+    assert.strictEqual(tick1[0]!.attemptCount, 1);
+
+    const tick2 = await attempt(2);
+    assert.strictEqual(tick2[0]!.status, 'pending');
+    assert.strictEqual(tick2[0]!.attemptCount, 2);
+
+    const tick3 = await attempt(3);
+    assert.strictEqual(tick3[0]!.status, 'notify_failed', '第三次仍失敗後必須轉為 notify_failed');
+    assert.strictEqual(tick3[0]!.attemptCount, 3);
+
+    assert.strictEqual(sendCalls, 3, 'Discord 最多嘗試三次');
+
+    const tick4 = await attempt(4);
+    assert.strictEqual(tick4.length, 0, 'notify_failed 之後不得再自動重試');
+    assert.strictEqual(sendCalls, 3, '第四次呼叫不得再多打一次 Discord');
+
+    const finalRow = getCompletion(db, id)!;
+    assert.ok(finalRow.doneConfirmedAt, 'Discord 通知失敗不得影響已經確認的 Done 狀態');
+    assert.strictEqual(
+      finalRow.doneConfirmedAt,
+      t0.toISOString(),
+      'doneConfirmedAt 不應該被 Discord 重試邏輯改動——最後 Discord 仍失敗時 task 保持 Done',
+    );
+
+    db.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // 舊 batch 還在重試視窗內時，新完成的 task 必須形成獨立的新 batch，不會被塞進
+  // 尚未解決的舊 batch（batch 一旦形成就是封閉集合）。
+  // -------------------------------------------------------------------------
+  {
+    const db = openCoordinatorState(':memory:');
+    const t0 = new Date('2026-07-23T12:00:00.000Z');
+    const idOld = completionId('task-old', 'sha-old');
+    enqueueCompletion(db, { completionId: idOld, taskId: 'task-old' }, t0);
+    markCompletionDone(db, idOld, t0);
+
+    let batchCounter = 0;
+    const newBatchId = () => `batch-${++batchCounter}`;
+
+    const tick1 = await runDiscordOutboxTick({
+      db,
+      newBatchId,
+      sendDiscordMessage: async () => false,
+      now: t0,
+    });
+    assert.strictEqual(tick1.length, 1);
+    assert.strictEqual(tick1[0]!.batchId, 'batch-1');
+    assert.strictEqual(tick1[0]!.status, 'pending');
+
+    const idNew = completionId('task-new', 'sha-new');
+    enqueueCompletion(db, { completionId: idNew, taskId: 'task-new' }, t0);
+    markCompletionDone(db, idNew, t0);
+
+    const tick2 = await runDiscordOutboxTick({
+      db,
+      newBatchId,
+      sendDiscordMessage: async () => true,
+      now: new Date(t0.getTime() + 60_000),
+    });
+
+    assert.strictEqual(tick2.length, 2, '舊 batch 的重試與新 batch 的第一次嘗試必須各自獨立處理');
+    const byBatch = new Map(tick2.map((o) => [o.batchId, o]));
+    const oldOutcome = byBatch.get('batch-1')!;
+    const newOutcome = [...byBatch.values()].find((o) => o.batchId !== 'batch-1')!;
+    assert.deepStrictEqual(oldOutcome.taskIds, ['task-old']);
+    assert.deepStrictEqual(newOutcome.taskIds, ['task-new']);
+    assert.notStrictEqual(oldOutcome.batchId, newOutcome.batchId, '新完成的 task 不得被塞進尚未解決的舊 batch');
+
+    db.close();
+  }
+}
+
 async function main(): Promise<void> {
   await runApiTests();
   await runGitTests();
   await runAgentTests();
   runCoordinatorTests();
   await runDeployTests();
+  await runCompletionTests();
+  await runDiscordOutboxTests();
 }
 
 main()

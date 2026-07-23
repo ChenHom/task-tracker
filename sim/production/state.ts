@@ -70,14 +70,20 @@ export function openCoordinatorState(path: string): DatabaseSync {
         PRIMARY KEY (base_sha, head_sha, commands_hash)
       );
 
+      -- done_confirmed_at（任務 7 新增，nullable）：非 NULL 代表 completion.ts 已經
+      -- readback 確認留言／user09 notification／Review->Done PATCH 全部成立，這個
+      -- completion 才可以被排進 Discord batch（見 listUnbatchedCompletions）。
+      -- status／attempt_count／batch_id 三者只描述 Discord 彙整通知本身的重試狀態，
+      -- 與 done_confirmed_at 是否成立無關。
       CREATE TABLE IF NOT EXISTS completion_outbox (
-        completion_id TEXT PRIMARY KEY,
-        task_id       TEXT NOT NULL,
-        batch_id      TEXT,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'notify_failed')),
-        created_at    TEXT NOT NULL,
-        updated_at    TEXT NOT NULL
+        completion_id     TEXT PRIMARY KEY,
+        task_id           TEXT NOT NULL,
+        batch_id          TEXT,
+        attempt_count     INTEGER NOT NULL DEFAULT 0,
+        status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'notify_failed')),
+        done_confirmed_at TEXT,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS ticks (
@@ -408,6 +414,7 @@ interface CompletionRow {
   batch_id: string | null;
   attempt_count: number;
   status: string;
+  done_confirmed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -419,6 +426,7 @@ function mapCompletion(row: CompletionRow): CompletionRecord {
     batchId: row.batch_id,
     attemptCount: row.attempt_count,
     status: row.status as CompletionStatus,
+    doneConfirmedAt: row.done_confirmed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -479,6 +487,108 @@ export function recordCompletionAttempt(
     completionId,
   );
   return getCompletion(db, completionId)!;
+}
+
+/**
+ * 標記一筆 completion 的留言／user09 notification／Review->Done PATCH 都已經
+ * readback 確認（任務 7：completion.ts 唯一會呼叫這個函式的地方）。只影響
+ * `doneConfirmedAt`，不動 Discord 重試用的 status／attempt_count／batch_id。
+ */
+export function markCompletionDone(db: DatabaseSync, completionId: string, now: Date = new Date()): CompletionRecord {
+  const nowIso = now.toISOString();
+  const result = db
+    .prepare('UPDATE completion_outbox SET done_confirmed_at = ?, updated_at = ? WHERE completion_id = ?')
+    .run(nowIso, nowIso, completionId);
+  if (result.changes === 0) {
+    throw new Error(`markCompletionDone: unknown completion_id ${completionId}`);
+  }
+  return getCompletion(db, completionId)!;
+}
+
+// ---------------------------------------------------------------------------
+// completion_outbox：Discord batch（任務 7 步驟 4）
+// ---------------------------------------------------------------------------
+
+/**
+ * 所有「Done 已確認、但還沒被併進任何 Discord batch」的 completion——這正是
+ * 「自上次 batch 形成以來新完成的 task」的集合，用來讓 coordinator 在 tick 結束時
+ * 把它們合併成單一新 batch_id。
+ */
+export function listUnbatchedCompletions(db: DatabaseSync): CompletionRecord[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM completion_outbox
+       WHERE batch_id IS NULL AND done_confirmed_at IS NOT NULL
+       ORDER BY created_at, completion_id`,
+    )
+    .all() as unknown as CompletionRow[];
+  return rows.map(mapCompletion);
+}
+
+/**
+ * 把一組（目前都還沒有 batch_id 的）completion 併成單一 batch_id。呼叫端必須
+ * 保證這組 id 全部來自同一次 `listUnbatchedCompletions()` 讀取——batch 一旦形成
+ * 就是穩定、封閉的集合，之後新完成的 task 只會形成下一個新 batch，不會被塞進
+ * 這個已經存在的 batch。
+ */
+export function assignBatch(
+  db: DatabaseSync,
+  completionIds: readonly string[],
+  batchId: string,
+  now: Date = new Date(),
+): CompletionRecord[] {
+  if (completionIds.length === 0) {
+    throw new Error('assignBatch: completionIds must be non-empty');
+  }
+  const nowIso = now.toISOString();
+  const stmt = db.prepare(
+    'UPDATE completion_outbox SET batch_id = ?, updated_at = ? WHERE completion_id = ? AND batch_id IS NULL',
+  );
+  for (const id of completionIds) {
+    const result = stmt.run(batchId, nowIso, id);
+    if (result.changes === 0) {
+      throw new Error(`assignBatch: completion ${id} not found, or already belongs to a batch`);
+    }
+  }
+  return completionIds.map((id) => getCompletion(db, id)!);
+}
+
+/** 一個 batch 底下的所有 completion（用來組 Discord 彙整訊息的 taskId 清單）。 */
+export function getCompletionsByBatch(db: DatabaseSync, batchId: string): CompletionRecord[] {
+  const rows = db
+    .prepare('SELECT * FROM completion_outbox WHERE batch_id = ? ORDER BY completion_id')
+    .all(batchId) as unknown as CompletionRow[];
+  return rows.map(mapCompletion);
+}
+
+/** 目前仍 `pending`（尚未 sent、也還沒到達 notify_failed）的 batch id，供每個 tick 決定要重試誰。 */
+export function listPendingBatchIds(db: DatabaseSync): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT batch_id AS batch_id FROM completion_outbox
+       WHERE status = 'pending' AND batch_id IS NOT NULL
+       ORDER BY batch_id`,
+    )
+    .all() as { batch_id: string }[];
+  return rows.map((row) => row.batch_id);
+}
+
+/**
+ * 對一整個 batch 記錄一次 Discord 傳送嘗試：batch 底下每一筆 completion 都套用
+ * 同一個 outcome（沿用 `recordCompletionAttempt` 既有的 3 次上限／notify_failed
+ * 轉換邏輯，不重寫一份），讓同一個 batch 內的 attempt_count／status 永遠一致。
+ */
+export function recordBatchAttempt(
+  db: DatabaseSync,
+  batchId: string,
+  outcome: 'sent' | 'failed',
+  now: Date = new Date(),
+): CompletionRecord[] {
+  const rows = getCompletionsByBatch(db, batchId);
+  if (rows.length === 0) {
+    throw new Error(`recordBatchAttempt: no completion_outbox rows for batch ${batchId}`);
+  }
+  return rows.map((row) => recordCompletionAttempt(db, row.completionId, outcome, now));
 }
 
 // ---------------------------------------------------------------------------
