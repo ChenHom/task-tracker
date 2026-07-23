@@ -8,8 +8,9 @@
 // 純函式、零 I/O：不 import node:sqlite、node:http 或 git.ts。no-progress 計數、
 // Owner intervention 門檻與 human_blocked 判斷全部委派給 policy.ts 既有的
 // recordMemberAttempt／shouldResumeHumanBlocked——這裡不重寫那套邏輯，只負責把
-// agent.ts 的 MemberSessionResult 轉換成 policy.ts 要的 evidenceChanged bool，
-// 並在真的轉入 human_blocked 的那一刻，產生一則唯一、可去重的 @user09 留言內容。
+// agent.ts 的 MemberSessionResult.evidenceChanged 原封不動傳給 policy.ts 的
+// recordMemberAttempt（不自己另外從 outcome 重新推導一次），並在真的轉入
+// human_blocked 的那一刻，產生一則唯一、可去重的 @user09 留言內容。
 import type { TaskRun } from './types';
 import { recordMemberAttempt, shouldResumeHumanBlocked, taskEvidenceFingerprint, type TaskEvidence } from './policy';
 import type { MemberSessionResult } from './agent';
@@ -32,7 +33,7 @@ export interface MemberAttemptTransition {
   humanBlockedNotice: HumanBlockedNotice | null;
 }
 
-const HUMAN_BLOCKED_ACTION_KIND = 'human_blocked_notice';
+export const HUMAN_BLOCKED_ACTION_KIND = 'human_blocked_notice';
 
 /** human_blocked 通知的 action key：taskId + noProgressCount，同一次卡關轉移永遠得到同一把 key。 */
 export function humanBlockedActionKey(taskId: string, noProgressCount: number): string {
@@ -57,13 +58,16 @@ function buildHumanBlockedNotice(run: TaskRun, session: MemberSessionResult): Hu
  * 剛好轉入 human_blocked 的那一刻，把「目前板面證據」的 fingerprint 寫回 TaskRun、
  * 產生唯一的 @user09 留言內容。
  *
- * `evidenceChanged` 的定義選擇 `session.outcome === 'progressed'`，而不是「這次
- * blocker 文字跟上次是否不同」：只有跨過 agent.ts 定義的完整成功門檻（已驗證 commit
- * + verification PASS + driver 摘要留言 + Doing -> Review readback）才代表這個
- * task 的板面狀態真的往前走了。一個「這次 blocker 文字換了、但仍然沒有任何可驗證
- * 副作用」的 session 依然是卡住的，不應該重置 noProgressCount——否則 AI 只要每次
- * 講不同的藉口就能無限期避開 Owner 介入與 human_blocked 升級，違背這整個 subsystem
- * 要防的「假裝有進展」反模式。
+ * 這裡直接消費 `session.evidenceChanged`（不會自己另外從 `session.outcome` 重新
+ * 推導一次）——agent.ts 的 MemberSessionResult 已經明文定義 `evidenceChanged` 就是
+ * 餵給這裡的權威訊號，兩邊各寫一份等價邏輯只會製造「文件說的資料流」與「程式碼真正
+ * 的資料流」不一致的風險：agent.ts 未來若讓 `evidenceChanged` 的判斷比目前的
+ * `outcome === 'progressed'` 更細緻，這裡完全不需要跟著改。目前的判斷邏輯（見
+ * agent.ts）仍然是：只有跨過完整成功門檻（已驗證 commit + verification PASS +
+ * driver 摘要留言 + Doing -> Review readback）才代表這個 task 的板面狀態真的往前
+ * 走了；一個「這次 blocker 文字換了、但仍然沒有任何可驗證副作用」的 session 依然是
+ * 卡住的，不應該重置 noProgressCount——否則 AI 只要每次講不同的藉口就能無限期避開
+ * Owner 介入與 human_blocked 升級，違背這整個 subsystem 要防的「假裝有進展」反模式。
  *
  * `currentEvidence` 代表呼叫端（未來真正呼叫 API 的那一層；這裡永遠是呼叫端自行
  * 組好或測試注入的快照）目前讀到的板面證據（留言／狀態／期限）。只有在這次呼叫
@@ -77,7 +81,7 @@ export function recordMemberSessionAttempt(
   session: MemberSessionResult,
   currentEvidence: TaskEvidence,
 ): MemberAttemptTransition {
-  const evidenceChanged = session.outcome === 'progressed';
+  const evidenceChanged = session.evidenceChanged;
   const wasIntervened = run.ownerIntervened;
   const wasBlocked = run.phase === 'human_blocked';
 

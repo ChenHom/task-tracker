@@ -109,7 +109,15 @@ export interface MemberSessionResult {
   exitCode: number;
   output: MemberSessionOutput;
   evidence: MemberSessionEvidence;
-  /** 餵給 coordinator.ts -> policy.ts 的 recordMemberAttempt(run, evidenceChanged)。 */
+  /**
+   * 這一次 session 是否真的產生了可驗證進展。coordinator.ts 的
+   * `recordMemberSessionAttempt` 直接把這個欄位原封不動餵給 policy.ts 的
+   * `recordMemberAttempt(run, evidenceChanged)`，不會自己重新從 `outcome` 推導一次
+   * ——這裡才是這個判斷唯一的權威來源，兩邊的邏輯只能有一份。目前實作上恰好等於
+   * `outcome === 'progressed'`，但欄位本身才是契約，`outcome` 只是它的其中一個
+   * 輸入，未來若這裡的判斷邏輯變得比「等於 progressed」更細，coordinator.ts 不需要
+   * 跟著改。
+   */
   evidenceChanged: boolean;
 }
 
@@ -117,6 +125,15 @@ export interface RunMemberSessionInput {
   taskId: string;
   worktreePath: string;
   allowedPrefixes: string[];
+  /**
+   * 這個 task 專屬宣告的 verification command 子集合（步驟 3 所謂「已宣告...
+   * verification command allowlist」）。這是一個真正的 per-call 執行邊界，不只是
+   * prompt context 裝飾：宣告的每個指令仍然必須先通過 git.ts 的全域
+   * `isAllowedVerificationCommand`（沒有任何東西可以靠這個欄位「加寬」到超出全域
+   * allowlist），但若這裡非空，還會進一步要求宣告的指令必須逐字出現在這個清單裡
+   * ——用來收斂到「這個 task 這次真正打算跑的那幾個指令」，而不是全域清單裡任何
+   * 一個都算數。省略或傳空陣列代表這個 task 沒有額外收斂，只受全域 allowlist 限制。
+   */
   verificationCommandAllowlist?: readonly string[];
   acceptanceCriteria: string;
   comments: string[];
@@ -153,29 +170,49 @@ function emptyEvidence(blockerRepeated: boolean, rejectedReason: string | null):
  * evidence-based 邏輯評估，不特別因為 exit code 加分或扣分）。
  */
 export async function runMemberSession(input: RunMemberSessionInput): Promise<MemberSessionResult> {
+  const declaredAllowlist = input.verificationCommandAllowlist ?? [];
   const context: MemberSessionRunnerContext = {
     taskId: input.taskId,
     acceptanceCriteria: input.acceptanceCriteria,
     comments: input.comments,
     allowedPrefixes: input.allowedPrefixes,
-    verificationCommandAllowlist: input.verificationCommandAllowlist ?? [],
+    verificationCommandAllowlist: declaredAllowlist,
     worktreePath: input.worktreePath,
   };
 
   const { exitCode, output } = await input.runner(context);
   const blockerRepeated = output.blocker !== null && output.blocker === input.previousBlocker;
 
-  // 1) 宣告的 verification command 只要有一個不在 allowlist 上，整次 session 直接
-  //    判定不可信——不管 exitCode 或 summary 講得多好聽，都不會進入後續證據檢查。
-  const disallowed = output.verificationCommands.find((cmd) => !isAllowedVerificationCommand(cmd));
-  if (disallowed) {
+  // 1a) 宣告的 verification command 只要有一個不在 git.ts 的全域 allowlist 上，
+  //     整次 session 直接判定不可信——不管 exitCode 或 summary 講得多好聽，都不會
+  //     進入後續證據檢查。這一層是絕對安全網，任何 per-call 設定都不能繞過它。
+  const disallowedGlobally = output.verificationCommands.find((cmd) => !isAllowedVerificationCommand(cmd));
+  if (disallowedGlobally) {
     return {
       outcome: 'retryable_failure',
       exitCode,
       output,
-      evidence: emptyEvidence(blockerRepeated, `verification command not on allowlist: ${JSON.stringify(disallowed)}`),
+      evidence: emptyEvidence(blockerRepeated, `verification command not on allowlist: ${JSON.stringify(disallowedGlobally)}`),
       evidenceChanged: false,
     };
+  }
+
+  // 1b) 若呼叫端有為這個 task 宣告更窄的 verificationCommandAllowlist，宣告的指令
+  //     還必須逐字落在這個清單裡——這是真正的執行邊界，不只是餵給 prompt 的裝飾欄位。
+  if (declaredAllowlist.length > 0) {
+    const disallowedByDeclaredScope = output.verificationCommands.find((cmd) => !declaredAllowlist.includes(cmd));
+    if (disallowedByDeclaredScope) {
+      return {
+        outcome: 'retryable_failure',
+        exitCode,
+        output,
+        evidence: emptyEvidence(
+          blockerRepeated,
+          `verification command not in this task's declared verificationCommandAllowlist: ${JSON.stringify(disallowedByDeclaredScope)}`,
+        ),
+        evidenceChanged: false,
+      };
+    }
   }
 
   // 2) 獨立檢查 worktree 目前真正的未 commit 變更——絕不信任 output.changedPaths 自稱。
@@ -223,11 +260,19 @@ export async function runMemberSession(input: RunMemberSessionInput): Promise<Me
   }
 
   // 4) driver 對 Doing -> Review 的獨立 readback，與摘要留言的建立——都是真正的
-  //    副作用，這裡只信呼叫端回傳的結果，不信 output 自稱。
-  const reviewStatus = await input.driverActions.confirmReviewTransition();
-  const reviewTransitionConfirmed = reviewStatus === 'Review';
-  const commentResult = await input.driverActions.createSummaryComment(output.summary);
-  const summaryCommentId = commentResult?.commentId ?? null;
+  //    副作用，這裡只信呼叫端回傳的結果，不信 output 自稱。只有 verification 真的
+  //    PASS 時才嘗試：verification 已知失敗時，這次 session 邏輯上不可能是
+  //    progressed，就不該對已知壞掉的工作觸發真正的 driver 副作用（移動看板狀態、
+  //    留言）——這裡的短路呼應上面 realChanges.length === 0 分支同樣的原則。
+  let reviewStatus: TaskStatus | null = null;
+  let reviewTransitionConfirmed = false;
+  let summaryCommentId: string | null = null;
+  if (verificationPassed) {
+    reviewStatus = await input.driverActions.confirmReviewTransition();
+    reviewTransitionConfirmed = reviewStatus === 'Review';
+    const commentResult = await input.driverActions.createSummaryComment(output.summary);
+    summaryCommentId = commentResult?.commentId ?? null;
+  }
 
   const evidence: MemberSessionEvidence = {
     commitSha,
@@ -241,7 +286,10 @@ export async function runMemberSession(input: RunMemberSessionInput): Promise<Me
     rejectedReason: null,
   };
 
-  const progressed = Boolean(commitSha) && verificationPassed && reviewTransitionConfirmed && Boolean(summaryCommentId);
+  // commitSha 在這裡必定已經是真實字串（前面任何一條 no-commit／validation-failure
+  // 路徑都已經提前 return），因此這裡不再重複判斷它的真假——progressed 完全由
+  // verification／review transition／summary comment 三項決定。
+  const progressed = verificationPassed && reviewTransitionConfirmed && Boolean(summaryCommentId);
 
   return {
     outcome: progressed ? 'progressed' : 'no_change',
@@ -312,6 +360,9 @@ export async function runOwnerSession(input: RunOwnerSessionInput): Promise<Owne
   // driver。這裡不信任 runner「說」自己沒動檔案，而是獨立檢查 worktree 目前真正的
   // 未 commit 變更：只要有任何一筆，就代表這個 Owner-driving 的 AI process 違反了
   // 唯讀契約，整次 session 判定無效，decision 一律不被信任、不得執行。
+  // 注意這個檢查的範圍：只涵蓋這個 worktree 的 `git status`，不包含 worktree 以外的
+  // 檔案系統、網路呼叫或其他副作用——這是目前唯一可獨立驗證的信號，不是完整的
+  // process sandbox。
   const changes = await collectTaskChanges(input.worktreePath);
   if (changes.length > 0) {
     return {

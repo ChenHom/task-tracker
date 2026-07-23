@@ -2273,6 +2273,55 @@ async function runAgentTests(): Promise<void> {
     }
 
     // -------------------------------------------------------------------------
+    // verificationCommandAllowlist 是真正的 per-call 執行邊界，不是只餵給 prompt
+    // context 的裝飾欄位：宣告的指令即使在 git.ts 的全域 allowlist 上，只要不在這個
+    // task 自己宣告的（更窄的）allowlist 裡，一樣要被拒絕。
+    // -------------------------------------------------------------------------
+    {
+      const taskId = 'agent-fixture-declared-allowlist-narrower';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      const verify = makeVerify();
+      const driver = makeDriverActions({});
+      const result = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        // 這個 task 宣告只允許 'npm test'——'npx tsc --noEmit' 雖然在全域 allowlist
+        // 上，但沒有落在這個 task 自己宣告的清單裡，必須被拒絕。
+        verificationCommandAllowlist: ['npm test'],
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: null,
+        runner: makeRunner(0, makeOutput({ verificationCommands: ['npx tsc --noEmit'] })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+      assert.strictEqual(result.outcome, 'retryable_failure', '不在這個 task 自己宣告的 verificationCommandAllowlist 裡的指令必須被拒絕，即使它在全域 allowlist 上');
+      assert.match(result.evidence.rejectedReason ?? '', /declared verificationCommandAllowlist/);
+      assert.strictEqual(verify.calls.length, 0, '被拒絕的 session 不應該執行任何 verification command');
+
+      // 對照組：宣告的指令同時落在全域 allowlist 與這個 task 自己的宣告清單裡——
+      // 正常通過這一關，且真的往下執行到 verification 這一步（需要真實 diff 才會
+      // 走到那裡，所以這裡先製造一筆真實變更）。
+      execFileSync('mkdir', ['-p', join(wt.path, 'feature')]);
+      writeFileSync(join(wt.path, 'feature', 'declared-allowlist-ok.txt'), 'hello\n');
+      const okResult = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        verificationCommandAllowlist: ['npm test'],
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: null,
+        runner: makeRunner(0, makeOutput({ verificationCommands: ['npm test'] })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+      assert.strictEqual(okResult.evidence.rejectedReason, null, 'declared verificationCommandAllowlist 邊界不應該誤擋合法指令');
+      assert.ok(verify.calls.includes('npm test'), '宣告的指令同時在全域與 per-task allowlist 內時，必須真的被送去執行（沒有在這一關被短路）');
+    }
+
+    // -------------------------------------------------------------------------
     // false-success fixture 1：exit 0，但沒有真實 diff／comment／status 變更——
     // 不管 runner 自稱多成功，都必須是 no_change。
     // -------------------------------------------------------------------------
@@ -2306,7 +2355,7 @@ async function runAgentTests(): Promise<void> {
     //       時，即使 exitCode=1 仍然是 progressed——exit code 不會讓它變得更糟。
     //   (b) 證據不齊全（缺 Review transition）時，即使有真實 commit，也不是
     //       progressed，但同樣不會因為 exitCode=1 被誤判成比 no_change 更差的
-        //       retryable_failure——exit code 也不會讓它變得更好或更壞，一切只看證據。
+    //       retryable_failure——exit code 也不會讓它變得更好或更壞，一切只看證據。
     // -------------------------------------------------------------------------
     {
       const taskId = 'agent-fixture-exit1-full-evidence';
@@ -2368,6 +2417,49 @@ async function runAgentTests(): Promise<void> {
       );
       assert.strictEqual(result.evidenceChanged, false);
       assert.ok(result.evidence.commitSha, '即使不是 progressed，真實 commit 仍然必須被獨立記錄下來');
+    }
+
+    // -------------------------------------------------------------------------
+    // 真實 commit 落地，但宣告的 verification command 真的執行失敗（非 0 exit）：
+    // 這次 session 邏輯上不可能是 progressed，driver 的 Doing -> Review readback／
+    // 摘要留言必須完全不被呼叫——不能對已知壞掉的工作仍然觸發真正的 driver 副作用
+    // （呼應 realChanges.length === 0 分支同樣的短路原則）。
+    // -------------------------------------------------------------------------
+    {
+      const taskId = 'agent-fixture-verification-fails-skips-driver';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      execFileSync('mkdir', ['-p', join(wt.path, 'feature')]);
+      writeFileSync(join(wt.path, 'feature', 'verification-fails.txt'), 'hello\n');
+
+      const verify = makeVerify({ exitCode: 1 }); // 宣告的 verification command 真的跑，但失敗
+      const driver = makeDriverActions({ reviewResult: 'Review', commentResult: { commentId: 'comment-should-not-happen' } });
+      const result = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: null,
+        runner: makeRunner(0, makeOutput({ summary: 'claims success', verificationCommands: ['npm test'] })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+
+      assert.strictEqual(verify.calls.length, 1, 'verification command 必須真的被執行一次');
+      assert.strictEqual(result.evidence.verificationPassed, false);
+      assert.notStrictEqual(result.outcome, 'progressed', 'verification 已知失敗時絕不能是 progressed');
+      assert.strictEqual(
+        driver.counters.reviewCalls,
+        0,
+        'verification 已知失敗時，不得呼叫 driver 的 Doing -> Review readback（即使 driver 假設性地會回報 Review）',
+      );
+      assert.strictEqual(
+        driver.counters.commentCalls,
+        0,
+        'verification 已知失敗時，不得呼叫 driver 建立摘要留言',
+      );
+      assert.strictEqual(result.evidence.reviewTransitionConfirmed, false);
+      assert.strictEqual(result.evidence.summaryCommentId, null);
     }
 
     // -------------------------------------------------------------------------
@@ -2652,6 +2744,47 @@ function runCoordinatorTests(): void {
     assert.strictEqual(transition.run.ownerIntervened, false, '真正的進展必須清除舊的 Owner 介入旗標');
     assert.strictEqual(transition.ownerInterventionRequested, false);
     assert.strictEqual(transition.humanBlockedNotice, null);
+  }
+
+  // ---------------------------------------------------------------------------
+  // recordMemberSessionAttempt 必須直接消費 session.evidenceChanged，不得自己
+  // 另外從 session.outcome 重新推導一次。用一個（現實中不會發生，但足以讓兩種
+  // wiring 產生不同結果的）分歧值來證明：如果 coordinator.ts 是自己重算
+  // `outcome === 'progressed'`，這裡會得到跟斷言相反的結果。
+  // ---------------------------------------------------------------------------
+  {
+    const taskId = 'coord-evidence-changed-is-not-recomputed';
+
+    // outcome 是 'no_change'，但 evidenceChanged 明確設為 true：若 coordinator.ts
+    // 忠實消費這個欄位，noProgressCount 必須被重置為 0；若它偷偷從 outcome 重新
+    // 推導，noProgressCount 會變成 1。
+    const runA = makeTaskRun({ taskId, workspaceId: CANONICAL_WORKSPACE_ID, phase: 'doing', noProgressCount: 1, ownerIntervened: true });
+    const sessionClaimsEvidenceChangedDespiteNoChangeOutcome = makeMemberSessionResult({
+      outcome: 'no_change',
+      evidenceChanged: true,
+    });
+    const evidenceSnapshot = makeEvidence({ taskId, status: 'Doing', commentCount: 1 });
+    const transitionA = recordMemberSessionAttempt(runA, sessionClaimsEvidenceChangedDespiteNoChangeOutcome, evidenceSnapshot);
+    assert.strictEqual(
+      transitionA.run.noProgressCount,
+      0,
+      'recordMemberSessionAttempt 必須直接使用 session.evidenceChanged，不能自己從 outcome 重新推導',
+    );
+    assert.strictEqual(transitionA.run.ownerIntervened, false);
+
+    // 反過來：outcome 是 'progressed'，但 evidenceChanged 明確設為 false——同樣必須
+    // 尊重 evidenceChanged，把這次算成一次無進展的 attempt。
+    const runB = makeTaskRun({ taskId, workspaceId: CANONICAL_WORKSPACE_ID, phase: 'doing', noProgressCount: 0 });
+    const sessionClaimsProgressedButEvidenceUnchanged = makeMemberSessionResult({
+      outcome: 'progressed',
+      evidenceChanged: false,
+    });
+    const transitionB = recordMemberSessionAttempt(runB, sessionClaimsProgressedButEvidenceUnchanged, evidenceSnapshot);
+    assert.strictEqual(
+      transitionB.run.noProgressCount,
+      1,
+      'recordMemberSessionAttempt 必須直接使用 session.evidenceChanged，即使 outcome 宣稱 progressed',
+    );
   }
 }
 
