@@ -3249,6 +3249,42 @@ async function runDeployTests(): Promise<void> {
     }
 
     // ---------------------------------------------------------------------------
+    // B2b：崩潰復原——上一次 createIntegrationWorktree 建立的暫時 worktree，
+    //     在 coordinator process 被中斷（OOM／host reboot／SIGKILL）、還沒跑到
+    //     removeIntegrationWorktree 清理之前就殘留在原地。下一次對「同一個
+    //     taskId」呼叫 createIntegrationWorktree 必須偵測到這個殘留、自動清掉，
+    //     再從乾淨狀態重新建立——絕不能讓 `git worktree add` 直接對著已存在的
+    //     路徑／已註冊的 worktree 拋出未結構化的 error，把這個 task 的部署路徑
+    //     永久卡死到需要人工介入才能恢復。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-stale-integration-worktree';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'stale integration worktree content\n');
+      const worktreePath = join(repoRoot, 'sim-work', 'integration', taskId);
+
+      // 第一次呼叫：正常建立，但刻意不呼叫 removeIntegrationWorktree——模擬
+      // process 在清理之前就被中斷，讓這個暫時 worktree 就地殘留。
+      const first = await createIntegrationWorktree(repoRoot, taskId, taskBranch);
+      assert.strictEqual(first.conflict, false);
+      assert.ok(existsSync(worktreePath), '第一次呼叫之後，殘留的暫時 worktree 必須還在原地（模擬中斷前的狀態）');
+      const worktreeListAfterFirst = g(['worktree', 'list', '--porcelain']);
+      assert.ok(worktreeListAfterFirst.includes(`worktree ${worktreePath}`), '殘留的 worktree 必須仍然註冊在 git 的 worktree 清單裡');
+
+      // 第二次呼叫（同一個 taskId／taskBranch，模擬 coordinator 重啟後對同一個 task
+      // 重新跑一次 acceptance sequence）：不得拋出原始的 git error，必須偵測到殘留、
+      // 自動清掉，再成功建立一個全新的暫時 worktree。
+      const second = await createIntegrationWorktree(repoRoot, taskId, taskBranch);
+      assert.strictEqual(second.conflict, false, '偵測到殘留 worktree 後，第二次呼叫必須成功清乾淨並重新建立，而不是丟出原始 git error');
+      assert.strictEqual(second.path, worktreePath);
+      assert.ok(existsSync(worktreePath), '清乾淨重建之後，worktree 目錄必須存在');
+
+      await removeIntegrationWorktree(repoRoot, second);
+      assert.strictEqual(existsSync(worktreePath), false, '正常清理之後，worktree 目錄不得殘留');
+      const worktreeListAfterCleanup = g(['worktree', 'list', '--porcelain']);
+      assert.ok(!worktreeListAfterCleanup.includes(`worktree ${worktreePath}`), '正常清理之後，git 的 worktree 清單裡也不得再看到它');
+    }
+
+    // ---------------------------------------------------------------------------
     // B3：full test failure——temp integration worktree 裡的 `npm test` 步驟失敗。
     //     `npm run build`／`git diff --check` 不得被執行；worktree 依然要被清掉。
     // ---------------------------------------------------------------------------

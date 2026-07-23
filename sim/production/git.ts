@@ -574,12 +574,50 @@ function integrationWorktreePath(repoRoot: string, taskId: string): string {
   return join(repoRoot, 'sim-work', 'integration', taskId);
 }
 
+/** `worktreePath` 目前是否已經被 `repoRoot` 註冊成一個 linked worktree（不論目錄本身還在不在）。 */
+async function isPathRegisteredAsWorktree(repoRoot: string, worktreePath: string): Promise<boolean> {
+  const list = await git(['worktree', 'list', '--porcelain'], repoRoot);
+  return list.split('\n').some((line) => line === `worktree ${worktreePath}`);
+}
+
+/**
+ * 強制清掉 `repoRoot` 底下、路徑為 `worktreePath` 的 linked worktree——不論它現在是
+ * 正常註冊狀態、卡在合併衝突處理到一半，還是目錄已經被手動刪掉但 git 的
+ * `.git/worktrees/…` metadata 還留著。`createIntegrationWorktree` 用它防禦性地清掉
+ * 上一次可能殘留的暫時 worktree；`removeIntegrationWorktree` 用它做正常收尾清理——
+ * 兩邊共用同一份邏輯，不重寫兩次。
+ */
+async function forceRemoveWorktreeAt(repoRoot: string, worktreePath: string): Promise<void> {
+  try {
+    await execFileAsync('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot });
+  } catch {
+    // worktree 可能因為合併衝突處理、或上一次呼叫被中斷（OOM／host reboot／
+    // SIGKILL）而留在奇怪狀態：用 rmSync 兜底清掉目錄本身，再讓 git 自己的
+    // metadata（.git/worktrees/…）跟上真正的檔案系統狀態。
+    rmSync(worktreePath, { recursive: true, force: true });
+    try {
+      await execFileAsync('git', ['worktree', 'prune'], { cwd: repoRoot });
+    } catch {
+      // ignore：prune 失敗不影響正確性，只是留下不會再被使用的 metadata。
+    }
+  }
+}
+
 /**
  * 在一個獨立、用完即丟的臨時 worktree（從目前 master HEAD detach 出來）裡，嘗試把
  * taskBranch `merge --no-ff --no-commit` 進去，純粹用來偵測合併衝突
  * （"integration conflict" fixture）——完全不影響 repoRoot 真正的 master branch，
  * 也不會在這個暫時 worktree 留下任何 commit。呼叫端必須在使用完畢後（不論衝突與否）
  * 呼叫 removeIntegrationWorktree 清掉它。
+ *
+ * 這個 worktree 永遠是用完即丟、detached 的：每次呼叫都應該從乾淨狀態開始，沒有
+ * 「重用既有內容」的語意（不像 ensureTaskWorktree 那樣要保留跨呼叫、已 commit 的
+ * task 工作）。如果 coordinator process 在上一次呼叫、清理跑到之前就被中斷
+ * （OOM、host reboot、systemctl stop、SIGKILL），這個路徑底下可能會殘留一個舊的
+ * 暫時 worktree——若不先清掉，`git worktree add` 會直接對著已存在的路徑／已註冊的
+ * worktree 拋出未結構化的 error，讓這個 task 的部署路徑永久卡死到需要人工手動
+ * `git worktree remove --force` 才能恢復。因此每次呼叫都先防禦性偵測並清掉任何
+ * 殘留，再從乾淨狀態重新建立。
  */
 export async function createIntegrationWorktree(
   repoRoot: string,
@@ -588,6 +626,11 @@ export async function createIntegrationWorktree(
 ): Promise<IntegrationWorktree> {
   const masterSha = await git(['rev-parse', 'master'], repoRoot);
   const worktreePath = integrationWorktreePath(repoRoot, taskId);
+
+  if (existsSync(worktreePath) || (await isPathRegisteredAsWorktree(repoRoot, worktreePath))) {
+    await forceRemoveWorktreeAt(repoRoot, worktreePath);
+  }
+
   await git(['worktree', 'add', '--detach', worktreePath, masterSha], repoRoot);
   try {
     await git(['merge', '--no-ff', '--no-commit', taskBranch], worktreePath);
@@ -604,18 +647,7 @@ export async function createIntegrationWorktree(
 
 /** 清掉 createIntegrationWorktree 建立的暫時 worktree；不論成功或衝突都必須呼叫。 */
 export async function removeIntegrationWorktree(repoRoot: string, worktree: IntegrationWorktree): Promise<void> {
-  try {
-    await execFileAsync('git', ['worktree', 'remove', '--force', worktree.path], { cwd: repoRoot });
-  } catch {
-    // worktree 可能因為合併衝突處理留在奇怪狀態；用 rmSync 兜底，再讓 git 自己的
-    // metadata（.git/worktrees/…）跟上真正的檔案系統狀態。
-    rmSync(worktree.path, { recursive: true, force: true });
-    try {
-      await execFileAsync('git', ['worktree', 'prune'], { cwd: repoRoot });
-    } catch {
-      // ignore：prune 失敗不影響正確性，只是留下不會再被使用的 metadata。
-    }
-  }
+  await forceRemoveWorktreeAt(repoRoot, worktree.path);
 }
 
 /**
