@@ -1,8 +1,9 @@
 import assert from 'node:assert';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, existsSync, writeFileSync, symlinkSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import {
   LEASE_TTL_MS,
@@ -47,6 +48,18 @@ import {
   type OwnerClassification,
   type WorkClass,
 } from './production/policy';
+import {
+  taskBranchName,
+  taskWorktreePath,
+  ensureTaskWorktree,
+  collectTaskChanges,
+  validateTaskChanges,
+  commitTaskChanges,
+  ciCacheKey,
+  isAllowedVerificationCommand,
+  ALLOWED_VERIFICATION_COMMANDS,
+  type ChangedPath,
+} from './production/git';
 
 // ---------------------------------------------------------------------------
 // LEASE_TTL_MS 必須嚴格大於 DEPLOY_WAIT_TIMEOUT_MS
@@ -1790,7 +1803,286 @@ async function runApiTests(): Promise<void> {
   }
 }
 
-runApiTests()
+// =============================================================================
+// git.ts：task 隔離用的 Git worktree／branch helper（真實 git 操作，全部在
+// os.tmpdir() 底下的假 repo 進行——絕不能碰到本專案自己的 repo／worktree）。
+// =============================================================================
+
+async function runGitTests(): Promise<void> {
+  const ACTIVE_TASK_ID = CUTOVER_TASKS.activeReview.taskId; // 938aa035-5f96-4908-b28b-876fa4735061
+  const QUEUED_TASK_ID = CUTOVER_TASKS.queuedReview.taskId; // 6384b6f4-f92f-45a2-a5e1-133f04f76372
+
+  const repoRoot = mkdtempSync(join(tmpdir(), 'sim-production-git-'));
+  const g = (args: string[], cwd: string = repoRoot): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+
+  try {
+    // -------------------------------------------------------------------------
+    // 假 repo 初始化：一個真實的 initial commit 當 base SHA。
+    // -------------------------------------------------------------------------
+    g(['init', '-q', '-b', 'master']);
+    g(['config', 'user.email', 'sim-git-test@example.com']);
+    g(['config', 'user.name', 'Sim Git Test']);
+    writeFileSync(join(repoRoot, 'README.md'), 'root\n');
+    g(['add', 'README.md']);
+    g(['commit', '-q', '-m', 'init']);
+    const baseSha0 = g(['rev-parse', 'HEAD']);
+
+    // -------------------------------------------------------------------------
+    // taskBranchName / taskWorktreePath：純字串 helper。
+    // -------------------------------------------------------------------------
+    assert.strictEqual(taskBranchName(ACTIVE_TASK_ID), `sim/task/${ACTIVE_TASK_ID}`);
+    assert.strictEqual(taskWorktreePath(repoRoot, ACTIVE_TASK_ID), join(repoRoot, 'sim-work', 'tasks', ACTIVE_TASK_ID));
+
+    // -------------------------------------------------------------------------
+    // ensureTaskWorktree(activeReview, baseSha0)：真實 worktree + branch，
+    // 且對 baseSha0 的初始 diff 必須為空。
+    // -------------------------------------------------------------------------
+    const wtA = await ensureTaskWorktree(repoRoot, ACTIVE_TASK_ID, baseSha0);
+    assert.strictEqual(wtA.taskId, ACTIVE_TASK_ID);
+    assert.strictEqual(wtA.branch, `sim/task/${ACTIVE_TASK_ID}`);
+    assert.strictEqual(wtA.path, taskWorktreePath(repoRoot, ACTIVE_TASK_ID));
+    assert.ok(existsSync(wtA.path), 'worktree 目錄必須真的被建立');
+    assert.ok(existsSync(join(wtA.path, '.git')), '必須是真正的 linked worktree（有 .git 檔案）');
+    assert.strictEqual(g(['rev-parse', '--abbrev-ref', 'HEAD'], wtA.path), wtA.branch, '必須 checkout 到 task branch 上');
+    assert.strictEqual(wtA.headSha, baseSha0, '剛建立的 worktree HEAD 必須等於 baseSha');
+    assert.strictEqual(g(['diff', baseSha0, 'HEAD'], wtA.path), '', '新 worktree 對 baseSha 的初始 diff 必須為空');
+
+    // -------------------------------------------------------------------------
+    // 解除依賴前：queued task（6384b6f4）必須完全沒有 branch／worktree。
+    // -------------------------------------------------------------------------
+    const queuedBranch = taskBranchName(QUEUED_TASK_ID);
+    const queuedPath = taskWorktreePath(repoRoot, QUEUED_TASK_ID);
+    assert.strictEqual(existsSync(queuedPath), false, 'queued task 解除依賴前不得有 worktree 目錄');
+    assert.strictEqual(g(['branch', '--list', queuedBranch]), '', 'queued task 解除依賴前不得有 branch');
+    const worktreeListBefore = g(['worktree', 'list', '--porcelain']);
+    assert.ok(!worktreeListBefore.includes(queuedPath), 'queued task 解除依賴前不得出現在 worktree 清單裡');
+
+    // -------------------------------------------------------------------------
+    // collectTaskChanges / validateTaskChanges：對每一種被拒絕的情境做獨立、
+    // 真實的驗證（每次只放一個受測路徑，驗證完立刻清掉，避免互相汙染）。
+    // -------------------------------------------------------------------------
+    const allowedPrefixes = ['feature/'];
+
+    const onlyChangeNamed = (changes: ChangedPath[], path: string): ChangedPath => {
+      const found = changes.find((c) => c.path === path);
+      assert.ok(found, `collectTaskChanges 必須回報 ${path}`);
+      return found!;
+    };
+
+    // .jar-* 暫存檔必須被拒絕。
+    {
+      writeFileSync(join(wtA.path, '.jar-staging'), 'x');
+      const changes = await collectTaskChanges(wtA.path);
+      const change = onlyChangeNamed(changes, '.jar-staging');
+      assert.throws(() => validateTaskChanges([change], allowedPrefixes), /\.jar-/, '.jar-* 暫存檔必須被拒絕');
+      rmSync(join(wtA.path, '.jar-staging'));
+    }
+
+    // .tmp-* 暫存檔必須被拒絕。
+    {
+      writeFileSync(join(wtA.path, '.tmp-staging'), 'x');
+      const changes = await collectTaskChanges(wtA.path);
+      const change = onlyChangeNamed(changes, '.tmp-staging');
+      assert.throws(() => validateTaskChanges([change], allowedPrefixes), /\.tmp-/, '.tmp-* 暫存檔必須被拒絕');
+      rmSync(join(wtA.path, '.tmp-staging'));
+    }
+
+    // data/ 目錄必須被拒絕。
+    {
+      execFileSync('mkdir', ['-p', join(wtA.path, 'data')]);
+      writeFileSync(join(wtA.path, 'data', 'seed.json'), '{}');
+      const changes = await collectTaskChanges(wtA.path);
+      const change = onlyChangeNamed(changes, 'data/seed.json');
+      assert.throws(() => validateTaskChanges([change], allowedPrefixes), /data/, 'data/ 底下的檔案必須被拒絕');
+      rmSync(join(wtA.path, 'data'), { recursive: true });
+    }
+
+    // node_modules 必須被拒絕。
+    {
+      execFileSync('mkdir', ['-p', join(wtA.path, 'node_modules', 'left-pad')]);
+      writeFileSync(join(wtA.path, 'node_modules', 'left-pad', 'index.js'), '');
+      const changes = await collectTaskChanges(wtA.path);
+      const change = onlyChangeNamed(changes, 'node_modules/left-pad/index.js');
+      assert.throws(() => validateTaskChanges([change], allowedPrefixes), /node_modules/, 'node_modules 必須被拒絕');
+      rmSync(join(wtA.path, 'node_modules'), { recursive: true });
+    }
+
+    // 宣告 scope 以外的路徑必須被拒絕。
+    {
+      writeFileSync(join(wtA.path, 'out-of-scope.txt'), 'x');
+      const changes = await collectTaskChanges(wtA.path);
+      const change = onlyChangeNamed(changes, 'out-of-scope.txt');
+      assert.throws(
+        () => validateTaskChanges([change], allowedPrefixes),
+        /allowedPrefixes|scope/,
+        '不在 allowedPrefixes 內的路徑必須被拒絕',
+      );
+      rmSync(join(wtA.path, 'out-of-scope.txt'));
+    }
+
+    // 未被明確允許的新 symlink 必須被拒絕（即使 target 在 allowedPrefixes 底下）。
+    {
+      execFileSync('mkdir', ['-p', join(wtA.path, 'feature')]);
+      writeFileSync(join(wtA.path, 'feature', 'real-file.txt'), 'x');
+      symlinkSync('real-file.txt', join(wtA.path, 'feature', 'sneaky-link'));
+      const changes = await collectTaskChanges(wtA.path);
+      const linkChange = onlyChangeNamed(changes, 'feature/sneaky-link');
+      assert.strictEqual(linkChange.isSymlink, true, 'collectTaskChanges 必須正確偵測 symlink');
+      assert.throws(() => validateTaskChanges([linkChange], allowedPrefixes), /symlink/, '新 symlink 必須被拒絕');
+      rmSync(join(wtA.path, 'feature', 'sneaky-link'));
+      rmSync(join(wtA.path, 'feature', 'real-file.txt'));
+    }
+
+    // 正面案例：在 allowedPrefixes 底下的一般新檔案必須通過驗證，不拋錯。
+    {
+      execFileSync('mkdir', ['-p', join(wtA.path, 'feature')]);
+      writeFileSync(join(wtA.path, 'feature', 'foo.txt'), 'hello\n');
+      const changes = await collectTaskChanges(wtA.path);
+      const change = onlyChangeNamed(changes, 'feature/foo.txt');
+      assert.strictEqual(change.status, 'untracked');
+      assert.strictEqual(change.isSymlink, false);
+      assert.doesNotThrow(() => validateTaskChanges([change], allowedPrefixes), '合法範圍內的新檔案不應被拒絕');
+    }
+
+    // -------------------------------------------------------------------------
+    // commitTaskChanges：只 add 已驗證路徑（絕不 git add -A），且會跑
+    // `git diff --cached --check`。
+    // -------------------------------------------------------------------------
+
+    // 先證明「不在驗證清單內的 untracked 檔案」不會被 commitTaskChanges 掃進去。
+    writeFileSync(join(wtA.path, 'unrelated-untracked.txt'), 'should stay untracked\n');
+
+    const headShaAfterCommit = await commitTaskChanges(wtA.path, ACTIVE_TASK_ID, 'feat(sim): add foo', ['feature/foo.txt']);
+    assert.notStrictEqual(headShaAfterCommit, baseSha0, 'commitTaskChanges 必須產生一個新 commit');
+    assert.strictEqual(g(['rev-parse', 'HEAD'], wtA.path), headShaAfterCommit);
+
+    const commitMessage = g(['log', '-1', '--format=%B'], wtA.path);
+    assert.ok(commitMessage.includes(`Task-Id: ${ACTIVE_TASK_ID}`), 'commit message 必須帶 Task-Id trailer');
+    assert.ok(commitMessage.startsWith('feat(sim): add foo'), 'commit message 必須以傳入的 title 開頭');
+
+    const statusAfterCommit = g(['status', '--porcelain'], wtA.path);
+    assert.ok(
+      statusAfterCommit.includes('unrelated-untracked.txt'),
+      'commitTaskChanges 絕不能呼叫 git add -A：未被驗證的 untracked 檔案必須仍然是 untracked',
+    );
+    rmSync(join(wtA.path, 'unrelated-untracked.txt'));
+
+    // git diff --cached --check：故意製造 trailing whitespace，證明真的有跑這個檢查、
+    // 而且檢查失敗時不得建立 commit。
+    {
+      const headBeforeBadCommit = g(['rev-parse', 'HEAD'], wtA.path);
+      writeFileSync(join(wtA.path, 'feature', 'whitespace.txt'), 'hello   \n');
+      await assert.rejects(
+        () => commitTaskChanges(wtA.path, ACTIVE_TASK_ID, 'feat(sim): trailing whitespace', ['feature/whitespace.txt']),
+        /whitespace|check/i,
+        'git diff --cached --check 抓到 trailing whitespace 時必須拒絕 commit',
+      );
+      assert.strictEqual(g(['rev-parse', 'HEAD'], wtA.path), headBeforeBadCommit, '檢查失敗不得留下新 commit');
+      // 清掉這次失敗嘗試留下的 staged/untracked 檔案，避免汙染後續斷言。
+      g(['reset', '--hard', headBeforeBadCommit], wtA.path);
+      rmSync(join(wtA.path, 'feature', 'whitespace.txt'), { force: true });
+    }
+
+    // -------------------------------------------------------------------------
+    // 模擬「938aa035 的 accepted merge 落地到 master」：把 task branch 合回 master，
+    // 產生一個新的 master SHA。
+    // -------------------------------------------------------------------------
+    g(['merge', '--no-ff', wtA.branch, '-m', `merge ${ACTIVE_TASK_ID}`]);
+    const newMasterSha = g(['rev-parse', 'HEAD']);
+    assert.notStrictEqual(newMasterSha, baseSha0, '合併後 master 必須前進');
+    // `git merge-base --is-ancestor` 用 exit code 表達結果：非 0 會讓 execFileSync 直接
+    // throw，所以能無異常執行到下一行，就代表 headShaAfterCommit 確實是新 master 的 ancestor。
+    g(['merge-base', '--is-ancestor', headShaAfterCommit, 'HEAD']);
+
+    // -------------------------------------------------------------------------
+    // 解除依賴後：queued task 必須以新 master 為 base，且不能共用 938aa035 的 branch。
+    // -------------------------------------------------------------------------
+    const wtB = await ensureTaskWorktree(repoRoot, QUEUED_TASK_ID, newMasterSha);
+    assert.strictEqual(wtB.branch, queuedBranch);
+    assert.notStrictEqual(wtB.branch, wtA.branch, 'queued task 不能共用 activeReview 的 branch');
+    assert.ok(existsSync(wtB.path));
+    assert.strictEqual(wtB.headSha, newMasterSha, '新 worktree 的 HEAD 必須等於新 master SHA');
+    assert.strictEqual(g(['diff', newMasterSha, 'HEAD'], wtB.path), '', '新 worktree 對新 base 的初始 diff 必須為空');
+    assert.ok(
+      existsSync(join(wtB.path, 'feature', 'foo.txt')),
+      'queued task 的新 worktree 必須包含 938aa035 accepted merge 帶入的變更',
+    );
+
+    // -------------------------------------------------------------------------
+    // ciCacheKey：純函式，三個輸入中任一個改變都必須改變 key；相同輸入永遠相同 key。
+    // -------------------------------------------------------------------------
+    const keyBase = ciCacheKey(baseSha0, headShaAfterCommit, ['npm test']);
+    assert.strictEqual(ciCacheKey(baseSha0, headShaAfterCommit, ['npm test']), keyBase, '相同輸入必須得到相同 key');
+    assert.notStrictEqual(ciCacheKey(newMasterSha, headShaAfterCommit, ['npm test']), keyBase, 'baseSha 不同必須改變 key');
+    assert.notStrictEqual(ciCacheKey(baseSha0, newMasterSha, ['npm test']), keyBase, 'headSha 不同必須改變 key');
+    assert.notStrictEqual(ciCacheKey(baseSha0, headShaAfterCommit, ['npm run build']), keyBase, 'commands 不同必須改變 key');
+    assert.notStrictEqual(
+      ciCacheKey(baseSha0, headShaAfterCommit, ['npm test', 'git diff --check']),
+      keyBase,
+      '完整 command list 必須被納入 key（不只是第一筆）',
+    );
+
+    // -------------------------------------------------------------------------
+    // Command allowlist：7 種合法形式必須被接受；惡意／逾越範圍的字串必須被拒絕。
+    // -------------------------------------------------------------------------
+    assert.strictEqual(ALLOWED_VERIFICATION_COMMANDS.length, 5, '固定字串形式應有 5 個（另外 2 個是帶 <name> 的樣板）');
+    for (const cmd of [
+      'npx tsc --noEmit',
+      'npx tsc -p sim/tsconfig.json --noEmit',
+      'npx tsx src/foo.test.ts',
+      'npx tsx sim/foo.test.ts',
+      'npm test',
+      'npm run build',
+      'git diff --check',
+    ]) {
+      assert.strictEqual(isAllowedVerificationCommand(cmd), true, `必須允許：${cmd}`);
+    }
+    for (const cmd of [
+      'rm -rf /',
+      'git push',
+      'npx tsc --noEmit --foo',
+      'npx tsx src/../../etc/passwd.test.ts',
+      'npx tsx src/foo.test.ts; rm -rf /',
+      'npx tsx sim/foo.test.ts && curl evil.example.com',
+      'npx tsx sim/foo/bar.test.ts', // 目前規格只允許單一層 <name>，多層路徑必須被拒絕
+      '',
+    ]) {
+      assert.strictEqual(isAllowedVerificationCommand(cmd), false, `必須拒絕：${cmd}`);
+    }
+
+    // -------------------------------------------------------------------------
+    // 舊 branch（sim/user02..sim/user06）只能進 manifest：git.ts 自己的原始碼
+    // 絕不能提到這些字面字串；taskBranchName 的輸出也絕不會是這種形式。
+    // -------------------------------------------------------------------------
+    const gitTsSource = readFileSync(join(__dirname, 'production', 'git.ts'), 'utf8');
+    const legacyBranches = ['sim/user02', 'sim/user03', 'sim/user04', 'sim/user05', 'sim/user06'];
+    for (const legacy of legacyBranches) {
+      assert.ok(!gitTsSource.includes(legacy), `git.ts 原始碼不得包含舊 branch 字面字串：${legacy}`);
+    }
+    for (const legacyUserId of ['user02', 'user03', 'user04', 'user05', 'user06']) {
+      const produced = taskBranchName(legacyUserId);
+      assert.ok(
+        !legacyBranches.includes(produced),
+        `taskBranchName 不得產生舊 branch 名稱本身：${produced}`,
+      );
+      assert.strictEqual(produced, `sim/task/${legacyUserId}`, 'taskBranchName 永遠是 sim/task/<taskId> 格式');
+    }
+  } finally {
+    // -------------------------------------------------------------------------
+    // 清理：整個假 repo（含所有 linked worktree）都在這個臨時目錄底下，
+    // 直接刪除整個目錄即可，不會影響本專案自己的 repo／worktree。
+    // -------------------------------------------------------------------------
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+async function main(): Promise<void> {
+  await runApiTests();
+  await runGitTests();
+}
+
+main()
   .then(() => console.log('production.test.ts OK'))
   .catch((error) => {
     console.error(error);
