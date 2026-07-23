@@ -230,17 +230,17 @@ git checkout -b feature/production-coordinator
 - 新增：`sim/production/state.ts`
 - 新增：`sim/production.test.ts`
 
-- [ ] **步驟 1：撰寫會失敗的 state tests。**
+- [x] **步驟 1：撰寫會失敗的 state tests。**
 
 測試 `LEASE_TTL_MS`（45 分鐘）嚴格大於 `DEPLOY_WAIT_TIMEOUT_MS`（35 分鐘）——這條斷言必須直接比較兩個常數，避免日後單獨調高 deploy 逾時而悄悄製造雙 coordinator。另測試 task lease 只能被 claim 一次、過期 lease 可重新 claim、重複 action key 會被拒絕、成功 checkpoint 在重新開啟資料庫後仍存在、CI 結果以 base／head／command hash 作為 key，而且 completion attempt 最多三次。另驗證 `queued` task 可持久化 `workerId=null`、`branch=null`；重新開啟 DB 後仍不得取得執行 lease 或建立 AI action，且只能由固定 release condition 或新的人工決策轉出 queued。
 
-- [ ] **步驟 2：執行 focused test，確認 import 失敗。**
+- [x] **步驟 2：執行 focused test，確認 import 失敗。**
 
 執行：`npx tsx sim/production.test.ts`
 
 預期：FAIL，因為 `sim/production/state.ts` 尚不存在。
 
-- [ ] **步驟 3：定義穩定的內部型別。**
+- [x] **步驟 3：定義穩定的內部型別。**
 
 ```ts
 export type WorkPhase =
@@ -275,7 +275,7 @@ export interface TaskRun {
 }
 ```
 
-- [ ] **步驟 4：建立 coordinator schema。**
+- [x] **步驟 4：建立 coordinator schema。**
 
 `openCoordinatorState(path)` 必須在 transaction 中建立以下資料表：
 
@@ -288,7 +288,7 @@ export interface TaskRun {
 
 `workerId` 只表示 coordinator 當次執行者；看板的 status／assignee／version 必須保留在 API `TaskSnapshot` 與 cutover manifest，不得混入 `TaskRun`。提供具型別的函式，處理 lease claim／release、task checkpoint upsert、action begin／complete／fail、CI lookup／store、completion enqueue／attempt，以及 tick begin／end。
 
-- [ ] **步驟 5：執行測試與 typecheck。**
+- [x] **步驟 5：執行測試與 typecheck。**
 
 執行：
 
@@ -299,7 +299,7 @@ npx tsc -p sim/tsconfig.json --noEmit
 
 預期：PASS；重新開啟暫存 DB 後，所有已 commit 資料列仍存在。
 
-- [ ] **步驟 6：提交 state foundation。**
+- [x] **步驟 6：提交 state foundation。**
 
 ```bash
 git add sim/production/types.ts sim/production/state.ts sim/production.test.ts
