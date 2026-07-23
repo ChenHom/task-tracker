@@ -58,7 +58,19 @@ import {
   ciCacheKey,
   isAllowedVerificationCommand,
   ALLOWED_VERIFICATION_COMMANDS,
+  DEPLOY_WAIT_TIMEOUT_MS,
+  waitForDeployment,
+  assertSystemdReadyForDeploy,
+  createIntegrationWorktree,
+  removeIntegrationWorktree,
+  mergeTaskIntoMaster,
+  revertMasterMerge,
   type ChangedPath,
+  type SystemdReadback,
+  type GetSystemdReadback,
+  type HealthCheckResult,
+  type CheckHealth,
+  type DeployWaitBaseline,
 } from './production/git';
 import {
   runMemberSession,
@@ -74,15 +86,24 @@ import {
   recordMemberSessionAttempt,
   shouldResumeFromHumanBlocked,
   humanBlockedActionKey,
+  runDeployAcceptance,
+  performMasterRevert,
+  resolveRollbackWait,
+  assertNoFatalCoordinatorError,
+  deploymentRollbackActionKey,
+  type AcceptanceCheckResult,
+  type AcceptanceCheck,
+  type IntegrationCommandRunner,
+  type FatalCoordinatorError,
 } from './production/coordinator';
 
 // ---------------------------------------------------------------------------
 // LEASE_TTL_MS 必須嚴格大於 DEPLOY_WAIT_TIMEOUT_MS
 // ---------------------------------------------------------------------------
-// DEPLOY_WAIT_TIMEOUT_MS 的權威定義在 sim/production/git.ts（任務 6，尚未建立）。
-// 這裡先以同值的 local literal 鎖住兩者的大小關係：任何一邊日後單獨調整，
-// 這條斷言都會失敗，逼著調整者同時檢視另一邊，避免悄悄做出雙 coordinator 的風險。
-const DEPLOY_WAIT_TIMEOUT_MS = 35 * 60 * 1000;
+// DEPLOY_WAIT_TIMEOUT_MS 的權威定義現在就在 sim/production/git.ts（任務 6）；
+// 這裡直接 import 那個真正的常數做比較，不再自己維護一份同值的 local literal——
+// 兩者只可能有一份會漂移，而 import 保證漂移不可能發生。
+assert.strictEqual(DEPLOY_WAIT_TIMEOUT_MS, 35 * 60 * 1000, 'DEPLOY_WAIT_TIMEOUT_MS 必須固定為 35 分鐘');
 assert.strictEqual(LEASE_TTL_MS, 45 * 60 * 1000, 'LEASE_TTL_MS 必須固定為 45 分鐘');
 assert.ok(
   LEASE_TTL_MS > DEPLOY_WAIT_TIMEOUT_MS,
@@ -2788,11 +2809,1093 @@ function runCoordinatorTests(): void {
   }
 }
 
+// =============================================================================
+// 任務 6：整合、部署 readback 與自動 revert。
+//
+// 唯一真正執行的是 git 操作本身（temporary integration worktree 的合併衝突偵測、
+// 真正的 `merge --no-ff`、真正的 `git revert -m 1 --no-edit`），全部在
+// os.tmpdir() 底下的假 repo 進行。systemd readback、health check、CI 步驟的執行
+// 全部是注入的假函式——這個 subsystem 不會、也不應該真的呼叫 systemctl 或真的
+// 對 3000 port 發 HTTP 請求；34／35 分鐘的等待也全部靠假時鐘 + 假 sleep 模擬，
+// 全程不會真的等待任何時間。
+// =============================================================================
+
+function makeReadback(overrides: Partial<SystemdReadback> = {}): SystemdReadback {
+  return {
+    pathActive: true,
+    serviceActiveState: 'inactive',
+    invocationId: 'invocation-0',
+    execMainStartTimestampMonotonic: 1000,
+    result: 'success',
+    execMainStatus: 0,
+    deployedRev: 'unset',
+    ...overrides,
+  };
+}
+
+function makeHealth(overrides: Partial<HealthCheckResult> = {}): HealthCheckResult {
+  return { status: 'ok', db: true, rev: 'unset', ...overrides };
+}
+
+/** 假時鐘：now() 回傳目前值；advance() 手動推進，模擬「經過了 N 毫秒」而不需要真的等待。 */
+function makeFakeClock(startMs = 0): { now: () => number; advance: (deltaMs: number) => void } {
+  let ms = startMs;
+  return {
+    now: () => ms,
+    advance: (deltaMs: number) => {
+      ms += deltaMs;
+    },
+  };
+}
+
+/** 近乎零延遲的假 sleep：測試絕不真的等待，時間推進全部靠 readback 假時鐘的 side effect。 */
+const noSleep = async (_ms: number): Promise<void> => {};
+
+/**
+ * 依序消費的假 getSystemdReadback：每次呼叫先把假時鐘依這一步宣告的 `advanceMs`
+ * 推進，再回傳這一步的 reading（用 thunk 而不是預先算好的物件，讓呼叫端可以在
+ * reading 真正被消費的當下才去讀「目前真實的 master HEAD」之類的動態值）。
+ *
+ * 呼叫次數超過提供的步驟數就直接 throw——這是「不得在已經觀察到結果之後又補跑
+ * 一輪 poll 去掩蓋結果」的具體回歸測試：如果實作在該回傳的時候還多 poll 一次，
+ * 測試會立刻爆炸並指出呼叫次數，而不是悄悄吃掉一個不存在的步驟或誤用前一步的值。
+ */
+function makeReadbackSequence(
+  clock: { advance: (deltaMs: number) => void },
+  steps: Array<{ advanceMs?: number; reading: () => SystemdReadback }>,
+): { fn: GetSystemdReadback; callCount: () => number } {
+  let i = 0;
+  const fn: GetSystemdReadback = async () => {
+    if (i >= steps.length) {
+      throw new Error(
+        `getSystemdReadback fixture 已耗盡（第 ${i + 1} 次呼叫，但只準備了 ${steps.length} 步）—— ` +
+          `代表實作呼叫 getSystemdReadback 的次數超過測試預期，可能是在已經該回傳結果之後又多跑了一輪`,
+      );
+    }
+    const step = steps[i++];
+    if (step.advanceMs) clock.advance(step.advanceMs);
+    return step.reading();
+  };
+  return { fn, callCount: () => i };
+}
+
+function makeCountingCheck(result: AcceptanceCheckResult): { fn: AcceptanceCheck; state: { calls: number } } {
+  const state = { calls: 0 };
+  const fn: AcceptanceCheck = async () => {
+    state.calls++;
+    return result;
+  };
+  return { fn, state };
+}
+
+function makeCountingIntegrationRunner(
+  failing: Record<string, { exitCode: number; output: string }> = {},
+): { fn: IntegrationCommandRunner; calls: string[] } {
+  const calls: string[] = [];
+  const fn: IntegrationCommandRunner = async (command) => {
+    calls.push(command);
+    if (failing[command]) return failing[command];
+    return { exitCode: 0, output: '' };
+  };
+  return { fn, calls };
+}
+
+function initDeployTestRepo(): { repoRoot: string; g: (args: string[], cwd?: string) => string } {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'sim-production-deploy-'));
+  const g = (args: string[], cwd: string = repoRoot): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  g(['init', '-q', '-b', 'master']);
+  g(['config', 'user.email', 'sim-deploy-test@example.com']);
+  g(['config', 'user.name', 'Sim Deploy Test']);
+  writeFileSync(join(repoRoot, 'README.md'), 'root\n');
+  g(['add', 'README.md']);
+  g(['commit', '-q', '-m', 'init']);
+  return { repoRoot, g };
+}
+
+/** 從目前 master HEAD 分支出一個 task branch，加一個 allowedPrefixes 底下的檔案並 commit，再切回 master。 */
+function makeDeployTaskBranch(
+  g: (args: string[], cwd?: string) => string,
+  repoRoot: string,
+  taskId: string,
+  fileContent: string,
+): string {
+  const branch = `sim/task/${taskId}`;
+  const baseSha = g(['rev-parse', 'master']);
+  g(['checkout', '-q', '-b', branch, baseSha]);
+  execFileSync('mkdir', ['-p', join(repoRoot, 'feature')]);
+  writeFileSync(join(repoRoot, 'feature', `${taskId}.txt`), fileContent);
+  g(['add', `feature/${taskId}.txt`]);
+  g(['commit', '-q', '-m', `feat: ${taskId}`]);
+  g(['checkout', '-q', 'master']);
+  return branch;
+}
+
+async function runDeployTests(): Promise<void> {
+  // ===========================================================================
+  // Part A：waitForDeployment（git.ts）——唯一的部署 readback 等待／逾時決議函式。
+  // 純函式邏輯，不需要真實 git repo；用假時鐘＋依序消費的假 readback 精準控制
+  // 「第幾次 poll、經過多久」。merge-wait 與 revert-wait 共用這一個函式（下面
+  // Part C 的 revert 測試會再次呼叫它，不是另外寫一份）。
+  // ===========================================================================
+
+  // ---------------------------------------------------------------------------
+  // A1：baseline 本身（先前 invocation）反覆出現，不能被誤判成「新一輪已結束」。
+  //     直到真的出現新 invocationId + 更晚的 timestamp，且該輪已結束、success，
+  //     才算數；deployObservedOutOfBand 必須是 false（是靠正常 fast path 偵測到的，
+  //     不是逾時後才用 deployed_rev／health rev 湊出來的）。
+  // ---------------------------------------------------------------------------
+  {
+    const clock = makeFakeClock(0);
+    const baseline: DeployWaitBaseline = { invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000 };
+    const seq = makeReadbackSequence(clock, [
+      { advanceMs: 5000, reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, deployedRev: 'old-sha' }) },
+      { advanceMs: 5000, reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, deployedRev: 'old-sha' }) },
+      { advanceMs: 5000, reading: () => makeReadback({ invocationId: 'inv-1', execMainStartTimestampMonotonic: 4000, serviceActiveState: 'inactive', deployedRev: 'target-sha' }) },
+    ]);
+    let healthCalls = 0;
+    const checkHealth: CheckHealth = async () => {
+      healthCalls++;
+      return makeHealth({ rev: 'target-sha' });
+    };
+    const result = await waitForDeployment({
+      targetSha: 'target-sha',
+      baseline,
+      getReadback: seq.fn,
+      checkHealth,
+      now: clock.now,
+      sleep: noSleep,
+    });
+    assert.strictEqual(result.outcome, 'success', 'baseline 重複出現多輪後，真正的新 invocation 結束時必須判定成功');
+    if (result.outcome === 'success') {
+      assert.strictEqual(result.deployObservedOutOfBand, false, '透過正常 poll 偵測到的成功，不是逾時 out-of-band 決議');
+    }
+    assert.strictEqual(seq.callCount(), 3, '必須剛好呼叫 3 次 getReadback（2 次仍是 baseline + 1 次真正的新 invocation）');
+    assert.strictEqual(healthCalls, 1, 'health 只應該在確認新 invocation 成功之後被呼叫一次');
+  }
+
+  // ---------------------------------------------------------------------------
+  // A2：path-triggered invocation failure（result != success）——不逾時、快速失敗，
+  //     且絕不能因為「還是查一下 health」而多打一次 health（invocation 本身已經
+  //     失敗，後面的檢查在邏輯上不可能成立，不需要真的呼叫）。
+  // ---------------------------------------------------------------------------
+  {
+    const clock = makeFakeClock(0);
+    const baseline: DeployWaitBaseline = { invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000 };
+    const seq = makeReadbackSequence(clock, [
+      { advanceMs: 3000, reading: () => makeReadback({ invocationId: 'inv-1', execMainStartTimestampMonotonic: 2000, serviceActiveState: 'inactive', result: 'exit-code', execMainStatus: 1, deployedRev: 'old-sha' }) },
+    ]);
+    let healthCalls = 0;
+    const checkHealth: CheckHealth = async () => {
+      healthCalls++;
+      return makeHealth();
+    };
+    const result = await waitForDeployment({
+      targetSha: 'target-sha',
+      baseline,
+      getReadback: seq.fn,
+      checkHealth,
+      now: clock.now,
+      sleep: noSleep,
+    });
+    assert.strictEqual(result.outcome, 'deployment_failure', 'result != success 必須立刻判定 deployment failure');
+    assert.strictEqual(healthCalls, 0, 'invocation 本身失敗時絕不能再去呼叫 health check');
+    assert.strictEqual(seq.callCount(), 1, '不得補跑第二輪 poll 去掩蓋這次觀察到的失敗');
+  }
+
+  // ---------------------------------------------------------------------------
+  // A3：health rev mismatch——invocation 與 deployed_rev 都通過，但 /api/health
+  //     回報的 rev 不等於 target，整體仍必須判定 deployment failure。
+  // ---------------------------------------------------------------------------
+  {
+    const clock = makeFakeClock(0);
+    const baseline: DeployWaitBaseline = { invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000 };
+    const seq = makeReadbackSequence(clock, [
+      { advanceMs: 3000, reading: () => makeReadback({ invocationId: 'inv-1', execMainStartTimestampMonotonic: 2000, serviceActiveState: 'inactive', result: 'success', execMainStatus: 0, deployedRev: 'target-sha' }) },
+    ]);
+    const checkHealth: CheckHealth = async () => makeHealth({ rev: 'stale-sha' });
+    const result = await waitForDeployment({
+      targetSha: 'target-sha',
+      baseline,
+      getReadback: seq.fn,
+      checkHealth,
+      now: clock.now,
+      sleep: noSleep,
+    });
+    assert.strictEqual(result.outcome, 'deployment_failure', 'health rev 與 target 不符必須判定 deployment failure');
+    if (result.outcome === 'deployment_failure') {
+      assert.match(result.reason, /health/i);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // A4：34 分鐘後才成功——因為 pgrep sim/run.ts 等待而晚到，仍在 35 分鐘預算內，
+  //     不得逾時；必須走正常成功路徑（deployObservedOutOfBand=false）。
+  // ---------------------------------------------------------------------------
+  {
+    const clock = makeFakeClock(0);
+    const baseline: DeployWaitBaseline = { invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000 };
+    const THIRTY_FOUR_MIN = 34 * 60 * 1000;
+    const seq = makeReadbackSequence(clock, [
+      { advanceMs: THIRTY_FOUR_MIN, reading: () => makeReadback({ invocationId: 'inv-1', execMainStartTimestampMonotonic: 999999, serviceActiveState: 'inactive', result: 'success', execMainStatus: 0, deployedRev: 'target-sha' }) },
+    ]);
+    const checkHealth: CheckHealth = async () => makeHealth({ rev: 'target-sha' });
+    const result = await waitForDeployment({
+      targetSha: 'target-sha',
+      baseline,
+      getReadback: seq.fn,
+      checkHealth,
+      now: clock.now,
+      sleep: noSleep,
+    });
+    assert.strictEqual(result.outcome, 'success', '34 分鐘後才成功仍在 35 分鐘預算內，不得判定逾時');
+    if (result.outcome === 'success') {
+      assert.strictEqual(result.deployObservedOutOfBand, false, '在預算內透過正常 poll 偵測到的成功不是 out-of-band');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // A5：逾時（>= 35 分鐘）且 deployed_rev／health rev 都已等於 target——視為成功，
+  //     並標記 deployObservedOutOfBand=true（可能是遺漏觸發後的人工 start，或單純
+  //     readback 延遲）。
+  // ---------------------------------------------------------------------------
+  {
+    const clock = makeFakeClock(0);
+    const baseline: DeployWaitBaseline = { invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000 };
+    const THIRTY_FIVE_MIN = 35 * 60 * 1000;
+    const seq = makeReadbackSequence(clock, [
+      // 逾時前反覆是「還沒看到新 invocation」；最後一步把時間推過 35 分鐘門檻。
+      { advanceMs: THIRTY_FIVE_MIN, reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, serviceActiveState: 'active', deployedRev: 'target-sha' }) },
+    ]);
+    const checkHealth: CheckHealth = async () => makeHealth({ rev: 'target-sha' });
+    const result = await waitForDeployment({
+      targetSha: 'target-sha',
+      baseline,
+      getReadback: seq.fn,
+      checkHealth,
+      now: clock.now,
+      sleep: noSleep,
+    });
+    assert.strictEqual(result.outcome, 'success', '逾時但 deployed_rev／health rev 都等於 target 必須視為成功');
+    if (result.outcome === 'success') {
+      assert.strictEqual(result.deployObservedOutOfBand, true, '逾時後才決議出的成功必須標記 deployObservedOutOfBand=true');
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // A6：逾時且 deployed_rev 不符，但 service 仍 active——回傳 DeploymentIndeterminate，
+  //     且下一個 tick 用「同一個 baseline／target SHA」重新呼叫 waitForDeployment
+  //     （不重新 merge／revert）就能收斂成功——這就是「下一個 tick 重新 readback」
+  //     在這個函式層級的具體樣子。
+  // ---------------------------------------------------------------------------
+  {
+    const clock = makeFakeClock(0);
+    const baseline: DeployWaitBaseline = { invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000 };
+    const THIRTY_FIVE_MIN = 35 * 60 * 1000;
+
+    const seq1 = makeReadbackSequence(clock, [
+      { advanceMs: THIRTY_FIVE_MIN, reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, serviceActiveState: 'active', deployedRev: 'old-sha' }) },
+    ]);
+    const checkHealth: CheckHealth = async () => makeHealth({ rev: 'old-sha' });
+    const result1 = await waitForDeployment({
+      targetSha: 'target-sha',
+      baseline,
+      getReadback: seq1.fn,
+      checkHealth,
+      now: clock.now,
+      sleep: noSleep,
+    });
+    assert.strictEqual(result1.outcome, 'deployment_indeterminate', '逾時且 deployed_rev 不符、service 仍 active 必須是 DeploymentIndeterminate');
+
+    // 下一個 tick：同一個 baseline、同一個 target SHA，重新呼叫 waitForDeployment。
+    // 這次立刻看到新 invocation 已經結束且成功——必須收斂成功，且不得因為第一次
+    // 逾時就對「同一個 target SHA」提前放棄或永久卡死。
+    const seq2 = makeReadbackSequence(clock, [
+      { advanceMs: 1000, reading: () => makeReadback({ invocationId: 'inv-1', execMainStartTimestampMonotonic: 2000, serviceActiveState: 'inactive', result: 'success', execMainStatus: 0, deployedRev: 'target-sha' }) },
+    ]);
+    const result2 = await waitForDeployment({
+      targetSha: 'target-sha',
+      baseline,
+      getReadback: seq2.fn,
+      checkHealth: async () => makeHealth({ rev: 'target-sha' }),
+      now: clock.now,
+      sleep: noSleep,
+    });
+    assert.strictEqual(result2.outcome, 'success', '下一個 tick 以同一 target SHA 重新 readback 後必須能成功收斂');
+  }
+
+  // ---------------------------------------------------------------------------
+  // A7：逾時且 deployed_rev 不符、service 已 inactive——確認 .path 觸發遺漏，
+  //     回傳該 target SHA 的 deployment failure（這正是計畫步驟 1 列的
+  //     「merge 後沒有新 invocation」）。
+  // ---------------------------------------------------------------------------
+  {
+    const clock = makeFakeClock(0);
+    const baseline: DeployWaitBaseline = { invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000 };
+    const THIRTY_FIVE_MIN = 35 * 60 * 1000;
+    const seq = makeReadbackSequence(clock, [
+      { advanceMs: THIRTY_FIVE_MIN, reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, serviceActiveState: 'inactive', deployedRev: 'old-sha' }) },
+    ]);
+    const result = await waitForDeployment({
+      targetSha: 'target-sha',
+      baseline,
+      getReadback: seq.fn,
+      checkHealth: async () => makeHealth({ rev: 'old-sha' }),
+      now: clock.now,
+      sleep: noSleep,
+    });
+    assert.strictEqual(result.outcome, 'deployment_failure', '逾時且 deployed_rev 不符、service 已 inactive 必須確認 .path 觸發遺漏並判定失敗');
+  }
+
+  // ===========================================================================
+  // Part B：runDeployAcceptance（coordinator.ts）——固定 acceptance sequence 的
+  // orchestration，含真正的 git 合併衝突偵測與真正的 merge --no-ff。
+  // ===========================================================================
+
+  const repo = initDeployTestRepo();
+  try {
+    const { repoRoot, g } = repo;
+
+    // ---------------------------------------------------------------------------
+    // B1：branch CI failure——最早的一步就失敗，之後任何步驟（含建立 integration
+    //     worktree）都不得被執行；master HEAD 完全不變。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-branch-ci-fail';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'branch ci fail content\n');
+      const masterBefore = g(['rev-parse', 'master']);
+      const integrationRunner = makeCountingIntegrationRunner();
+      const taskSpecific = makeCountingCheck({ passed: true, detail: 'n/a' });
+      const liveAcceptance = makeCountingCheck({ passed: true, detail: 'n/a' });
+      let readbackCalls = 0;
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: false, detail: 'branch CI failed on task branch' }),
+        runIntegrationCommand: integrationRunner.fn,
+        runTaskSpecificAcceptance: taskSpecific.fn,
+        getSystemdReadback: async () => {
+          readbackCalls++;
+          return makeReadback();
+        },
+        checkHealth: async () => makeHealth(),
+        runTaskLiveAcceptance: liveAcceptance.fn,
+        now: () => 0,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'branch_ci_failed');
+      assert.strictEqual(g(['rev-parse', 'master']), masterBefore, 'branch CI failure 之後 master 完全不得前進');
+      assert.strictEqual(integrationRunner.calls.length, 0, 'branch CI 失敗後不得執行任何 integration command');
+      assert.strictEqual(taskSpecific.state.calls, 0);
+      assert.strictEqual(readbackCalls, 0, 'branch CI 失敗後不得讀取 systemd readback');
+      assert.strictEqual(liveAcceptance.state.calls, 0);
+      assert.strictEqual(existsSync(join(repoRoot, 'sim-work', 'integration', taskId)), false, '不得留下 integration worktree');
+    }
+
+    // ---------------------------------------------------------------------------
+    // B2：integration conflict——真正的合併衝突偵測（temp worktree 對目前 master
+    //     跑 `merge --no-ff --no-commit`），衝突後必須清掉暫時 worktree、master
+    //     不變、後續步驟都不執行。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-integration-conflict';
+      // 讓 task branch 與 master 各自修改同一個檔案，製造真正的合併衝突。
+      const baseSha = g(['rev-parse', 'master']);
+      const branch = `sim/task/${taskId}`;
+      g(['checkout', '-q', '-b', branch, baseSha]);
+      execFileSync('mkdir', ['-p', join(repoRoot, 'feature')]);
+      writeFileSync(join(repoRoot, 'feature', 'conflict-target.txt'), 'task version\n');
+      g(['add', 'feature/conflict-target.txt']);
+      g(['commit', '-q', '-m', 'task change conflict-target']);
+      g(['checkout', '-q', 'master']);
+      execFileSync('mkdir', ['-p', join(repoRoot, 'feature')]);
+      writeFileSync(join(repoRoot, 'feature', 'conflict-target.txt'), 'master version\n');
+      g(['add', 'feature/conflict-target.txt']);
+      g(['commit', '-q', '-m', 'master change conflict-target']);
+
+      const masterBefore = g(['rev-parse', 'master']);
+      const integrationRunner = makeCountingIntegrationRunner();
+      let readbackCalls = 0;
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch: branch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: integrationRunner.fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: async () => {
+          readbackCalls++;
+          return makeReadback();
+        },
+        checkHealth: async () => makeHealth(),
+        runTaskLiveAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        now: () => 0,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'integration_conflict');
+      assert.strictEqual(g(['rev-parse', 'master']), masterBefore, 'integration conflict 之後 master 完全不得前進');
+      assert.strictEqual(integrationRunner.calls.length, 0, '衝突偵測到後不得執行任何 integration command');
+      assert.strictEqual(readbackCalls, 0, '衝突之後不得讀取 systemd readback');
+      assert.strictEqual(existsSync(join(repoRoot, 'sim-work', 'integration', taskId)), false, '衝突之後必須清掉暫時 worktree');
+      const worktreeList = g(['worktree', 'list', '--porcelain']);
+      assert.ok(!worktreeList.includes(join(repoRoot, 'sim-work', 'integration', taskId)), '衝突之後 git 自己的 worktree 清單裡也不該再看到它');
+    }
+
+    // ---------------------------------------------------------------------------
+    // B3：full test failure——temp integration worktree 裡的 `npm test` 步驟失敗。
+    //     `npm run build`／`git diff --check` 不得被執行；worktree 依然要被清掉。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-full-test-fail';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'full test fail content\n');
+      const masterBefore = g(['rev-parse', 'master']);
+      const integrationRunner = makeCountingIntegrationRunner({ 'npm test': { exitCode: 1, output: '3 tests failed' } });
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: integrationRunner.fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: async () => makeReadback(),
+        checkHealth: async () => makeHealth(),
+        runTaskLiveAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        now: () => 0,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'integration_command_failed');
+      if (result.kind === 'integration_command_failed') {
+        assert.strictEqual(result.command, 'npm test');
+      }
+      assert.deepStrictEqual(integrationRunner.calls, ['npm test'], 'npm test 失敗後不得再跑 npm run build／git diff --check');
+      assert.strictEqual(g(['rev-parse', 'master']), masterBefore, 'full test failure 之後 master 完全不得前進');
+      assert.strictEqual(existsSync(join(repoRoot, 'sim-work', 'integration', taskId)), false, '失敗之後仍必須清掉暫時 worktree');
+    }
+
+    // ---------------------------------------------------------------------------
+    // B4：merge 前 build failure——`npm run build` 失敗；`git diff --check` 不得執行。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-build-fail';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'build fail content\n');
+      const masterBefore = g(['rev-parse', 'master']);
+      const integrationRunner = makeCountingIntegrationRunner({ 'npm run build': { exitCode: 1, output: 'tsc error' } });
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: integrationRunner.fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: async () => makeReadback(),
+        checkHealth: async () => makeHealth(),
+        runTaskLiveAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        now: () => 0,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'integration_command_failed');
+      if (result.kind === 'integration_command_failed') {
+        assert.strictEqual(result.command, 'npm run build');
+      }
+      assert.deepStrictEqual(integrationRunner.calls, ['npm test', 'npm run build'], 'build 失敗後不得再跑 git diff --check');
+      assert.strictEqual(g(['rev-parse', 'master']), masterBefore, 'build failure 之後 master 完全不得前進');
+    }
+
+    // ---------------------------------------------------------------------------
+    // B5：task-specific acceptance failure（額外覆蓋，不在計畫列的 11 項核心情境
+    //     內，但同屬固定 sequence 的一步，補上證明它也會正確短路）。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-task-specific-fail';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'task specific fail content\n');
+      const masterBefore = g(['rev-parse', 'master']);
+      const integrationRunner = makeCountingIntegrationRunner();
+      let readbackCalls = 0;
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: integrationRunner.fn,
+        runTaskSpecificAcceptance: async () => ({ passed: false, detail: 'acceptance criteria not met' }),
+        getSystemdReadback: async () => {
+          readbackCalls++;
+          return makeReadback();
+        },
+        checkHealth: async () => makeHealth(),
+        runTaskLiveAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        now: () => 0,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'task_specific_acceptance_failed');
+      assert.deepStrictEqual(integrationRunner.calls, ['npm test', 'npm run build', 'git diff --check']);
+      assert.strictEqual(readbackCalls, 0, 'task-specific acceptance 失敗後不得讀取 systemd readback');
+      assert.strictEqual(g(['rev-parse', 'master']), masterBefore);
+    }
+
+    // ---------------------------------------------------------------------------
+    // B6：sim-autodeploy.path inactive——merge 前置條件檢查失敗；merge 絕不得發生。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-path-inactive';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'path inactive content\n');
+      const masterBefore = g(['rev-parse', 'master']);
+      const liveAcceptance = makeCountingCheck({ passed: true, detail: 'ok' });
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: makeCountingIntegrationRunner().fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: async () => makeReadback({ pathActive: false }),
+        checkHealth: async () => makeHealth(),
+        runTaskLiveAcceptance: liveAcceptance.fn,
+        now: () => 0,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'deploy_precondition_failed');
+      if (result.kind === 'deploy_precondition_failed') {
+        assert.match(result.detail, /path/i);
+      }
+      assert.strictEqual(g(['rev-parse', 'master']), masterBefore, 'path inactive 時絕不得 merge');
+      assert.strictEqual(liveAcceptance.state.calls, 0);
+    }
+
+    // ---------------------------------------------------------------------------
+    // B7：merge 前 service 尚 active——同樣的前置條件檢查失敗；merge 絕不得發生。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-service-active';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'service active content\n');
+      const masterBefore = g(['rev-parse', 'master']);
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: makeCountingIntegrationRunner().fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: async () => makeReadback({ pathActive: true, serviceActiveState: 'active' }),
+        checkHealth: async () => makeHealth(),
+        runTaskLiveAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        now: () => 0,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'deploy_precondition_failed');
+      if (result.kind === 'deploy_precondition_failed') {
+        assert.match(result.detail, /service/i);
+      }
+      assert.strictEqual(g(['rev-parse', 'master']), masterBefore, 'service 仍 active 時絕不得 merge');
+    }
+
+    // ---------------------------------------------------------------------------
+    // B8：fatal_blocked 短路——已經有記錄在案的 fatal coordinator error 時，
+    //     整個函式必須在第一行就拒絕，完全不執行任何步驟（regression guard：
+    //     這就是「revert 部署失敗後停止全部後續 live action」的具體證明）。
+    // ---------------------------------------------------------------------------
+    {
+      const fatal: FatalCoordinatorError = { taskId: 'deploy-fatal-blocked', sha: 'deadbeef', reason: '先前記錄的 fatal error（測試用）' };
+      const branchCi = makeCountingCheck({ passed: true, detail: 'ok' });
+      const integrationRunner = makeCountingIntegrationRunner();
+      const taskSpecific = makeCountingCheck({ passed: true, detail: 'ok' });
+      const liveAcceptance = makeCountingCheck({ passed: true, detail: 'ok' });
+      let readbackCalls = 0;
+      let healthCalls = 0;
+
+      const result = await runDeployAcceptance({
+        taskId: 'deploy-fatal-blocked',
+        repoRoot,
+        taskBranch: 'sim/task/never-used',
+        existingFatalError: fatal,
+        runBranchCi: branchCi.fn,
+        runIntegrationCommand: integrationRunner.fn,
+        runTaskSpecificAcceptance: taskSpecific.fn,
+        getSystemdReadback: async () => {
+          readbackCalls++;
+          return makeReadback();
+        },
+        checkHealth: async () => {
+          healthCalls++;
+          return makeHealth();
+        },
+        runTaskLiveAcceptance: liveAcceptance.fn,
+        now: () => 0,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'fatal_blocked');
+      if (result.kind === 'fatal_blocked') {
+        assert.strictEqual(result.fatal, fatal);
+      }
+      assert.strictEqual(branchCi.state.calls, 0, 'fatal 記錄在案時，連 branch CI 都不得執行');
+      assert.strictEqual(integrationRunner.calls.length, 0);
+      assert.strictEqual(taskSpecific.state.calls, 0);
+      assert.strictEqual(readbackCalls, 0);
+      assert.strictEqual(healthCalls, 0);
+      assert.strictEqual(liveAcceptance.state.calls, 0);
+      assert.throws(() => assertNoFatalCoordinatorError(fatal), /fatal/i, 'assertNoFatalCoordinatorError 必須對非 null 的 fatal 拋錯');
+      assert.doesNotThrow(() => assertNoFatalCoordinatorError(null), 'assertNoFatalCoordinatorError(null) 不得拋錯');
+    }
+
+    // ---------------------------------------------------------------------------
+    // B9：完整成功路徑（額外覆蓋，不在核心 11 項情境內，但沒有它就從未驗證過整條
+    //     sequence 真的能走到底）——merge 真的落地、waitForDeployment 透過正常
+    //     fast path 判定成功、task live acceptance 也通過。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-happy-path';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'happy path content\n');
+      const masterBefore = g(['rev-parse', 'master']);
+      const clock = makeFakeClock(0);
+      const liveAcceptance = makeCountingCheck({ passed: true, detail: 'ok' });
+
+      const seq = makeReadbackSequence(clock, [
+        // 第一次呼叫：merge 前置條件檢查 + baseline 擷取。
+        { reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, deployedRev: masterBefore }) },
+        // 第二次呼叫（waitForDeployment 的第一輪 poll）：新 invocation 已經結束、成功。
+        { advanceMs: 4000, reading: () => makeReadback({ invocationId: 'inv-1', execMainStartTimestampMonotonic: 2000, serviceActiveState: 'inactive', result: 'success', execMainStatus: 0, deployedRev: g(['rev-parse', 'master']) }) },
+      ]);
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: makeCountingIntegrationRunner().fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: seq.fn,
+        checkHealth: async () => makeHealth({ rev: g(['rev-parse', 'master']) }),
+        runTaskLiveAcceptance: liveAcceptance.fn,
+        now: clock.now,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'deployed', `預期成功部署，實際：${JSON.stringify(result)}`);
+      if (result.kind === 'deployed') {
+        assert.notStrictEqual(result.mergeSha, masterBefore, 'merge 必須真的讓 master 前進');
+        assert.strictEqual(result.mergeSha, g(['rev-parse', 'master']), 'runDeployAcceptance 回報的 mergeSha 必須等於 master 目前真正的 HEAD');
+        assert.strictEqual(result.deployObservedOutOfBand, false);
+      }
+      assert.strictEqual(liveAcceptance.state.calls, 1, '成功部署後必須執行一次 task live acceptance');
+      assert.strictEqual(existsSync(join(repoRoot, 'sim-work', 'integration', taskId)), false, '成功之後暫時 integration worktree 也必須被清掉');
+    }
+
+    // ---------------------------------------------------------------------------
+    // B10：merge 後沒有新 invocation（逾時且 service 已 inactive）——透過完整
+    //     runDeployAcceptance 走一次，證明 orchestration 層正確把 git.ts 的
+    //     deployment_failure 轉成 deploy_failed_post_merge、且 live acceptance
+    //     不會被執行。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-no-new-invocation';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'no new invocation content\n');
+      const clock = makeFakeClock(0);
+      const liveAcceptance = makeCountingCheck({ passed: true, detail: 'ok' });
+      const THIRTY_FIVE_MIN = 35 * 60 * 1000;
+
+      const seq = makeReadbackSequence(clock, [
+        { reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, deployedRev: 'stale-sha' }) },
+        { advanceMs: THIRTY_FIVE_MIN, reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, serviceActiveState: 'inactive', deployedRev: 'stale-sha' }) },
+      ]);
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: makeCountingIntegrationRunner().fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: seq.fn,
+        checkHealth: async () => makeHealth({ rev: 'stale-sha' }),
+        runTaskLiveAcceptance: liveAcceptance.fn,
+        now: clock.now,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'deploy_failed_post_merge', `預期 deploy_failed_post_merge，實際：${JSON.stringify(result)}`);
+      assert.strictEqual(liveAcceptance.state.calls, 0, '部署失敗時不得執行 task live acceptance');
+    }
+
+    // ---------------------------------------------------------------------------
+    // B11：merge 後逾時且 service 仍 active——deploy_indeterminate；同一個 tick
+    //     裡絕不執行 task live acceptance（零 revert、零 status change、零
+    //     completion comment的具體表現：這裡就是「完全不繼續往下走」）。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-indeterminate-merge';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'indeterminate merge content\n');
+      const clock = makeFakeClock(0);
+      const liveAcceptance = makeCountingCheck({ passed: true, detail: 'ok' });
+      const THIRTY_FIVE_MIN = 35 * 60 * 1000;
+
+      const seq = makeReadbackSequence(clock, [
+        { reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, deployedRev: 'stale-sha' }) },
+        { advanceMs: THIRTY_FIVE_MIN, reading: () => makeReadback({ invocationId: 'inv-0', execMainStartTimestampMonotonic: 1000, serviceActiveState: 'active', deployedRev: 'stale-sha' }) },
+      ]);
+
+      const result = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch,
+        existingFatalError: null,
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: makeCountingIntegrationRunner().fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: seq.fn,
+        checkHealth: async () => makeHealth({ rev: 'stale-sha' }),
+        runTaskLiveAcceptance: liveAcceptance.fn,
+        now: clock.now,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(result.kind, 'deploy_indeterminate', `預期 deploy_indeterminate，實際：${JSON.stringify(result)}`);
+      assert.strictEqual(liveAcceptance.state.calls, 0, 'DeploymentIndeterminate 的這個 tick 絕不得執行 task live acceptance（也就不會有後續的 status／completion comment）');
+    }
+
+    // ===========================================================================
+    // Part C：performMasterRevert／resolveRollbackWait（coordinator.ts）——步驟 4
+    // 的失敗復原：真正的 `git revert -m 1 --no-edit`，readback 等待沿用 Part A
+    // 已經測過的同一個 waitForDeployment。
+    // ===========================================================================
+
+    // ---------------------------------------------------------------------------
+    // C1：成功 revert 並由另一個新 invocation 恢復 health。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-rollback-success';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'rollback success content\n');
+      const mergeSha = await mergeTaskIntoMaster(repoRoot, taskBranch, taskId);
+
+      const revertResult = await performMasterRevert(taskId, repoRoot, mergeSha, async () =>
+        makeReadback({ pathActive: true, serviceActiveState: 'inactive', invocationId: 'inv-fail', execMainStartTimestampMonotonic: 5000, deployedRev: mergeSha }),
+      );
+      assert.strictEqual(revertResult.kind, 'reverted', `預期 reverted，實際：${JSON.stringify(revertResult)}`);
+      if (revertResult.kind !== 'reverted') throw new Error('unreachable');
+      const { revertSha, baseline } = revertResult;
+      assert.notStrictEqual(revertSha, mergeSha);
+      assert.strictEqual(g(['rev-parse', 'master']), revertSha, 'performMasterRevert 必須真的讓 master 前進到新的 revert commit');
+
+      const clock = makeFakeClock(0);
+      const seq = makeReadbackSequence(clock, [
+        { advanceMs: 2000, reading: () => makeReadback({ invocationId: 'inv-fail', execMainStartTimestampMonotonic: 5000, serviceActiveState: 'inactive', deployedRev: mergeSha }) },
+        { advanceMs: 2000, reading: () => makeReadback({ invocationId: 'inv-rollback', execMainStartTimestampMonotonic: 8000, serviceActiveState: 'inactive', result: 'success', execMainStatus: 0, deployedRev: revertSha }) },
+      ]);
+
+      const waitResult = await resolveRollbackWait({
+        taskId,
+        mergeSha,
+        revertSha,
+        baseline,
+        getSystemdReadback: seq.fn,
+        checkHealth: async () => makeHealth({ rev: revertSha }),
+        now: clock.now,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(waitResult.kind, 'rolled_back', `預期 rolled_back，實際：${JSON.stringify(waitResult)}`);
+      if (waitResult.kind === 'rolled_back') {
+        assert.strictEqual(waitResult.notice.actionKey, deploymentRollbackActionKey(taskId, mergeSha));
+        assert.ok(waitResult.notice.content.includes(mergeSha));
+        assert.ok(waitResult.notice.content.includes(revertSha));
+        assert.ok(waitResult.notice.content.includes('@user09'));
+      }
+    }
+
+    // ---------------------------------------------------------------------------
+    // C2：rollback invocation 本身明確失敗——立刻升級 fatal，且該 fatal 必須讓
+    //     `assertNoFatalCoordinatorError` 拋錯，並讓 runDeployAcceptance 對這個
+    //     task 的任何後續呼叫立刻 fatal_blocked（revert 部署失敗後停止全部後續
+    //     live action）。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-rollback-fails';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'rollback fails content\n');
+      const mergeSha = await mergeTaskIntoMaster(repoRoot, taskBranch, taskId);
+
+      const revertResult = await performMasterRevert(taskId, repoRoot, mergeSha, async () =>
+        makeReadback({ pathActive: true, serviceActiveState: 'inactive', invocationId: 'inv-fail-2', execMainStartTimestampMonotonic: 5000, deployedRev: mergeSha }),
+      );
+      assert.strictEqual(revertResult.kind, 'reverted');
+      if (revertResult.kind !== 'reverted') throw new Error('unreachable');
+      const { revertSha, baseline } = revertResult;
+
+      const clock = makeFakeClock(0);
+      const seq = makeReadbackSequence(clock, [
+        { advanceMs: 2000, reading: () => makeReadback({ invocationId: 'inv-rollback-fail', execMainStartTimestampMonotonic: 9000, serviceActiveState: 'inactive', result: 'exit-code', execMainStatus: 1, deployedRev: 'stale-sha' }) },
+      ]);
+
+      const waitResult = await resolveRollbackWait({
+        taskId,
+        mergeSha,
+        revertSha,
+        baseline,
+        getSystemdReadback: seq.fn,
+        checkHealth: async () => makeHealth(),
+        now: clock.now,
+        sleep: noSleep,
+      });
+
+      assert.strictEqual(waitResult.kind, 'fatal', `預期 fatal，實際：${JSON.stringify(waitResult)}`);
+      if (waitResult.kind !== 'fatal') throw new Error('unreachable');
+      assert.throws(() => assertNoFatalCoordinatorError(waitResult.fatal), /fatal/i);
+
+      // 後續任何一次 runDeployAcceptance 呼叫（不論是同一個 task 或任何 task）都必須
+      // 立刻被這個 fatal 檔下來，完全不執行任何步驟。
+      const branchCi = makeCountingCheck({ passed: true, detail: 'ok' });
+      const followUp = await runDeployAcceptance({
+        taskId,
+        repoRoot,
+        taskBranch: 'sim/task/never-used-again',
+        existingFatalError: waitResult.fatal,
+        runBranchCi: branchCi.fn,
+        runIntegrationCommand: makeCountingIntegrationRunner().fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: async () => makeReadback(),
+        checkHealth: async () => makeHealth(),
+        runTaskLiveAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        now: () => 0,
+        sleep: noSleep,
+      });
+      assert.strictEqual(followUp.kind, 'fatal_blocked');
+      assert.strictEqual(branchCi.state.calls, 0, 'fatal 之後，連下一次呼叫的 branch CI 都不得執行——這就是「停止全部後續 live action」');
+    }
+
+    // ---------------------------------------------------------------------------
+    // C3：rollback DeploymentIndeterminate 連續兩個 tick 仍未收斂——第二次才升級
+    //     為 fatal（第一次不能，必須先給機會收斂）。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-rollback-indeterminate-fatal';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'rollback indeterminate fatal content\n');
+      const mergeSha = await mergeTaskIntoMaster(repoRoot, taskBranch, taskId);
+
+      const revertResult = await performMasterRevert(taskId, repoRoot, mergeSha, async () =>
+        makeReadback({ pathActive: true, serviceActiveState: 'inactive', invocationId: 'inv-fail-3', execMainStartTimestampMonotonic: 5000, deployedRev: mergeSha }),
+      );
+      assert.strictEqual(revertResult.kind, 'reverted');
+      if (revertResult.kind !== 'reverted') throw new Error('unreachable');
+      const { revertSha, baseline } = revertResult;
+      const THIRTY_FIVE_MIN = 35 * 60 * 1000;
+
+      // 第一個 tick：逾時且 service 仍 active -> rollback_indeterminate（count=1，不是 fatal）。
+      const clock1 = makeFakeClock(0);
+      const seq1 = makeReadbackSequence(clock1, [
+        { advanceMs: THIRTY_FIVE_MIN, reading: () => makeReadback({ invocationId: 'inv-fail-3', execMainStartTimestampMonotonic: 5000, serviceActiveState: 'active', deployedRev: 'stale-sha' }) },
+      ]);
+      const tick1 = await resolveRollbackWait({
+        taskId,
+        mergeSha,
+        revertSha,
+        baseline,
+        getSystemdReadback: seq1.fn,
+        checkHealth: async () => makeHealth({ rev: 'stale-sha' }),
+        now: clock1.now,
+        sleep: noSleep,
+      });
+      assert.strictEqual(tick1.kind, 'rollback_indeterminate', `第一次逾時不得升級為 fatal，實際：${JSON.stringify(tick1)}`);
+      if (tick1.kind !== 'rollback_indeterminate') throw new Error('unreachable');
+      assert.strictEqual(tick1.rollbackIndeterminateCount, 1);
+      // 這一步不得真的再 revert 一次——直接沿用同一個 revertSha／baseline 進第二個 tick 即可證明。
+      assert.strictEqual(g(['rev-parse', 'master']), revertSha, '第一次 indeterminate 之後 master 不得再變動（沒有第二次 revert）');
+
+      // 第二個 tick：仍然 indeterminate -> 這次必須升級為 fatal。
+      const clock2 = makeFakeClock(0);
+      const seq2 = makeReadbackSequence(clock2, [
+        { advanceMs: THIRTY_FIVE_MIN, reading: () => makeReadback({ invocationId: 'inv-fail-3', execMainStartTimestampMonotonic: 5000, serviceActiveState: 'active', deployedRev: 'stale-sha' }) },
+      ]);
+      const tick2 = await resolveRollbackWait({
+        taskId,
+        mergeSha,
+        revertSha,
+        baseline,
+        getSystemdReadback: seq2.fn,
+        checkHealth: async () => makeHealth({ rev: 'stale-sha' }),
+        now: clock2.now,
+        sleep: noSleep,
+        previousRollbackIndeterminateCount: tick1.rollbackIndeterminateCount,
+      });
+      assert.strictEqual(tick2.kind, 'fatal', `連續兩個 tick 都是 indeterminate 必須升級為 fatal，實際：${JSON.stringify(tick2)}`);
+    }
+
+    // ---------------------------------------------------------------------------
+    // C4：rollback DeploymentIndeterminate 一次之後，第二個 tick 收斂成功——
+    //     不得因為第一次 indeterminate 就提早判死或提早升級 fatal。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-rollback-indeterminate-then-success';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'rollback indeterminate then success content\n');
+      const mergeSha = await mergeTaskIntoMaster(repoRoot, taskBranch, taskId);
+
+      const revertResult = await performMasterRevert(taskId, repoRoot, mergeSha, async () =>
+        makeReadback({ pathActive: true, serviceActiveState: 'inactive', invocationId: 'inv-fail-4', execMainStartTimestampMonotonic: 5000, deployedRev: mergeSha }),
+      );
+      assert.strictEqual(revertResult.kind, 'reverted');
+      if (revertResult.kind !== 'reverted') throw new Error('unreachable');
+      const { revertSha, baseline } = revertResult;
+      const THIRTY_FIVE_MIN = 35 * 60 * 1000;
+
+      const clock1 = makeFakeClock(0);
+      const seq1 = makeReadbackSequence(clock1, [
+        { advanceMs: THIRTY_FIVE_MIN, reading: () => makeReadback({ invocationId: 'inv-fail-4', execMainStartTimestampMonotonic: 5000, serviceActiveState: 'active', deployedRev: 'stale-sha' }) },
+      ]);
+      const tick1 = await resolveRollbackWait({
+        taskId,
+        mergeSha,
+        revertSha,
+        baseline,
+        getSystemdReadback: seq1.fn,
+        checkHealth: async () => makeHealth({ rev: 'stale-sha' }),
+        now: clock1.now,
+        sleep: noSleep,
+      });
+      assert.strictEqual(tick1.kind, 'rollback_indeterminate');
+      if (tick1.kind !== 'rollback_indeterminate') throw new Error('unreachable');
+
+      const clock2 = makeFakeClock(0);
+      const seq2 = makeReadbackSequence(clock2, [
+        { advanceMs: 3000, reading: () => makeReadback({ invocationId: 'inv-rollback-4', execMainStartTimestampMonotonic: 9000, serviceActiveState: 'inactive', result: 'success', execMainStatus: 0, deployedRev: revertSha }) },
+      ]);
+      const tick2 = await resolveRollbackWait({
+        taskId,
+        mergeSha,
+        revertSha,
+        baseline,
+        getSystemdReadback: seq2.fn,
+        checkHealth: async () => makeHealth({ rev: revertSha }),
+        now: clock2.now,
+        sleep: noSleep,
+        previousRollbackIndeterminateCount: tick1.rollbackIndeterminateCount,
+      });
+      assert.strictEqual(tick2.kind, 'rolled_back', `第二個 tick 應該成功收斂，實際：${JSON.stringify(tick2)}`);
+    }
+
+    // ---------------------------------------------------------------------------
+    // C5：master HEAD !== mergeSha——revert 前的 sanity guard。如果在等待部署
+    //     readback 期間 master 又被別的東西推進了，performMasterRevert 絕不能盲目
+    //     revert 現在的 master HEAD（那可能是完全不相干的 commit）；必須拒絕並
+    //     回傳 fatal，交由人工介入。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-master-moved';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'master moved content\n');
+      const mergeSha = await mergeTaskIntoMaster(repoRoot, taskBranch, taskId);
+
+      // 模擬「master 在等待期間又被別的東西推進」：直接在 repoRoot 上再加一個
+      // 與這次 revert 完全不相干的 commit。
+      writeFileSync(join(repoRoot, 'unrelated-advance.txt'), 'x\n');
+      g(['add', 'unrelated-advance.txt']);
+      g(['commit', '-q', '-m', 'unrelated advance while waiting for readback']);
+      const masterAfterUnrelatedAdvance = g(['rev-parse', 'master']);
+      assert.notStrictEqual(masterAfterUnrelatedAdvance, mergeSha);
+
+      const revertResult = await performMasterRevert(taskId, repoRoot, mergeSha, async () =>
+        makeReadback({ pathActive: true, serviceActiveState: 'inactive', deployedRev: mergeSha }),
+      );
+
+      assert.strictEqual(revertResult.kind, 'fatal', 'master HEAD !== mergeSha 時絕不能盲目 revert，必須拒絕並回報 fatal');
+      assert.strictEqual(g(['rev-parse', 'master']), masterAfterUnrelatedAdvance, '拒絕 revert 之後 master 不得再被這次呼叫改動');
+      if (revertResult.kind === 'fatal') {
+        assert.strictEqual(revertResult.fatal.sha, mergeSha);
+        assert.match(revertResult.fatal.reason, /master HEAD|mergeSha/i);
+      }
+    }
+
+    // ---------------------------------------------------------------------------
+    // C6：revert 前置條件失敗（service 仍 active）——同樣拒絕、回傳 fatal，
+    //     不嘗試 revert。
+    // ---------------------------------------------------------------------------
+    {
+      const taskId = 'deploy-revert-precondition-fail';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'revert precondition fail content\n');
+      const mergeSha = await mergeTaskIntoMaster(repoRoot, taskBranch, taskId);
+      const masterBefore = g(['rev-parse', 'master']);
+
+      const revertResult = await performMasterRevert(taskId, repoRoot, mergeSha, async () =>
+        makeReadback({ pathActive: true, serviceActiveState: 'active', deployedRev: mergeSha }),
+      );
+
+      assert.strictEqual(revertResult.kind, 'fatal');
+      assert.strictEqual(g(['rev-parse', 'master']), masterBefore, 'service 仍 active 時不得執行 revert');
+    }
+  } finally {
+    rmSync(repo.repoRoot, { recursive: true, force: true });
+  }
+
+  // ===========================================================================
+  // Part D：regression guard——coordinator 絕不呼叫 `systemctl start
+  // sim-autodeploy.service`（事實上這個 subsystem 沒有任何路徑會呼叫真正的
+  // systemctl：readback 永遠透過注入的 getSystemdReadback／checkHealth 函式取得，
+  // 兩者的型別簽章本身就沒有參數可以表達「start」這個動作）。這裡用原始碼靜態
+  // 掃描把這件事變成一條會失敗的回歸測試，而不只是「程式碼裡沒有這行」的論證。
+  // ===========================================================================
+  {
+    const gitTsSource = readFileSync(join(__dirname, 'production', 'git.ts'), 'utf8');
+    const coordinatorTsSource = readFileSync(join(__dirname, 'production', 'coordinator.ts'), 'utf8');
+
+    // coordinator.ts 完全不得 import node:child_process——它只透過注入的函式跟
+    // systemd／HTTP 互動，結構上就不可能自己 shell out 呼叫任何東西（更不用說
+    // systemctl start）。
+    assert.ok(
+      !coordinatorTsSource.includes('child_process'),
+      'coordinator.ts 不得 import node:child_process：它必須只透過注入的 getSystemdReadback／checkHealth 跟外界互動',
+    );
+
+    // git.ts 是這個 subsystem 唯一允許 shell out 的檔案，但每一次呼叫
+    // execFile／execFileAsync，實際執行的程式都必須是 'git'——逐一掃描原始碼裡
+    // 每一次呼叫，而不是只檢查「沒有出現 systemctl 這個字」（註解裡本來就會提到
+    // systemctl 這個字，用來解釋 readback adapter 對應的真實語意；重點是「程式碼
+    // 真正會執行的程式只有 git」）。
+    const execFileCallRe = /execFileAsync\(\s*'([^']+)'|(?<!Async)execFile\(\s*'([^']+)'/g;
+    let match: RegExpExecArray | null;
+    let execFileCallCount = 0;
+    while ((match = execFileCallRe.exec(gitTsSource)) !== null) {
+      execFileCallCount++;
+      const program = match[1] ?? match[2];
+      assert.strictEqual(
+        program,
+        'git',
+        `git.ts 每一次 execFile／execFileAsync 呼叫的程式都必須是 'git'，但發現呼叫了 '${program}'（這正是「絕不呼叫 systemctl」這條規則的具體檢查）`,
+      );
+    }
+    assert.ok(
+      execFileCallCount >= 5,
+      `sanity check：這個掃描本身至少要找到幾次 execFile 呼叫才有意義（實際找到 ${execFileCallCount} 次）——` +
+        `數字太低代表 regex 本身可能壞了，沒有真的在檢查任何東西`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   await runApiTests();
   await runGitTests();
   await runAgentTests();
   runCoordinatorTests();
+  await runDeployTests();
 }
 
 main()

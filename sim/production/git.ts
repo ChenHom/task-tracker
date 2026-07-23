@@ -8,7 +8,7 @@
 // （command injection）。
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, lstatSync } from 'node:fs';
+import { existsSync, lstatSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -324,4 +324,335 @@ const TEST_COMMAND_RE = /^npx tsx (?:src|sim)\/[A-Za-z0-9_][A-Za-z0-9_-]*\.test\
 export function isAllowedVerificationCommand(command: string): boolean {
   if (ALLOWED_VERIFICATION_COMMANDS.includes(command)) return true;
   return TEST_COMMAND_RE.test(command);
+}
+
+// =============================================================================
+// 任務 6：部署 readback（唯一允許的 systemd 互動：讀取狀態，永遠不 start／stop 任何
+// unit）。這裡只定義可注入的介面與純粹依賴注入的等待／逾時決議邏輯——真正呼叫
+// `systemctl show` 的實作、真正的 `/api/health` HTTP 呼叫，都是呼叫端（未來任務 8 的
+// CLI）的責任，這個檔案本身不 import node:http、不 shell out 呼叫 systemctl。
+// =============================================================================
+
+/**
+ * 等待部署 readback 逾時固定 35 分鐘：必須嚴格大於 sim-autodeploy.sh 最長 30 分鐘的
+ * `pgrep sim/run.ts` 等待，否則一次正常、只是恰好撞上 sweep in-flight 的部署會被誤判
+ * 逾時。這個大小關係由 sim/production/state.ts 的 LEASE_TTL_MS 與
+ * production.test.ts 共同斷言（LEASE_TTL_MS 必須嚴格大於這個值）。
+ */
+export const DEPLOY_WAIT_TIMEOUT_MS = 35 * 60 * 1000;
+
+/**
+ * `systemctl show sim-autodeploy.path` / `systemctl show sim-autodeploy.service` 讀回的
+ * 精簡快照。真正的實作（未來任務 8）會 shell out 呼叫 `systemctl --user show`
+ * 並解析對應欄位；這裡的呼叫端一律注入假函式，回傳測試想模擬的任何組合。
+ */
+export interface SystemdReadback {
+  /** `sim-autodeploy.path` 目前是否為 active（沒有它，merge／revert 完全不會被觸發）。 */
+  pathActive: boolean;
+  /** `sim-autodeploy.service` 目前的 ActiveState，正常情況只會是 'active' 或 'inactive'。 */
+  serviceActiveState: string;
+  /** 這次（或上一次）invocation 的 systemd InvocationID。 */
+  invocationId: string;
+  /** 這次（或上一次）invocation 的 ExecMainStartTimestampMonotonic（單調遞增）。 */
+  execMainStartTimestampMonotonic: number;
+  /** systemd 回報的 Result（例如 'success'、'exit-code'……）。 */
+  result: string;
+  /** ExecMainStatus：service 的 main process exit code。 */
+  execMainStatus: number;
+  /** `sim-autodeploy.sh` 寫入的 `deployed_rev` 狀態檔內容。 */
+  deployedRev: string;
+}
+
+/** 可注入的 systemd readback 讀取器：一律唯讀，永遠不會、也不應該去 start／stop 任何 unit。 */
+export type GetSystemdReadback = () => Promise<SystemdReadback>;
+
+/** `/api/health` 的精簡形狀（呼應 api.ts 的 TaskTrackerClient.health()，但這裡永遠是注入的假函式）。 */
+export interface HealthCheckResult {
+  status: string;
+  db: boolean;
+  rev: string;
+}
+
+export type CheckHealth = () => Promise<HealthCheckResult>;
+
+/** merge／revert 前擷取的 baseline：判斷「有沒有出現新一輪 invocation」唯一的比對基準。 */
+export interface DeployWaitBaseline {
+  invocationId: string;
+  execMainStartTimestampMonotonic: number;
+}
+
+export type DeployWaitResult =
+  | {
+      outcome: 'success';
+      targetSha: string;
+      invocationId: string;
+      deployedRev: string;
+      healthRev: string;
+      /**
+       * true 代表這次成功是逾時後改以 deployed_rev／health rev 比對決議出來的
+       * （這一輪 invocation 可能是遺漏觸發後的人工 start，或單純 readback 延遲），
+       * 不是我們親眼觀察到「新 invocation 結束」而確認的。
+       */
+      deployObservedOutOfBand: boolean;
+    }
+  | { outcome: 'deployment_failure'; targetSha: string; reason: string }
+  | { outcome: 'deployment_indeterminate'; targetSha: string; reason: string };
+
+export interface WaitForDeploymentInput {
+  targetSha: string;
+  baseline: DeployWaitBaseline;
+  getReadback: GetSystemdReadback;
+  checkHealth: CheckHealth;
+  /** 目前時間來源（毫秒）。真正實作可以是 `() => Date.now()`；測試一律注入假時鐘。 */
+  now: () => number;
+  /** 每輪 poll 之間的延遲注入點；測試一律注入近乎零延遲的假函式，不真的 sleep。 */
+  sleep?: (ms: number) => Promise<void>;
+  /** 真正實作的 poll 間隔；純測試邏輯不關心這個值（sleep 已經被注入成近乎零延遲）。 */
+  pollIntervalMs?: number;
+}
+
+function isNewFinishedInvocation(reading: SystemdReadback, baseline: DeployWaitBaseline): boolean {
+  // 兩個訊號都必須同時成立才算「真的出現新一輪 invocation」：只看 timestamp 遞增，
+  // 萬一注入的假資料打錯只改了一個欄位，也不會被誤判成新的一輪；只看 invocationId
+  // 不同，也無法排除時鐘倒退之類的異常快照。只要有一個訊號還沒動，就保守地當作
+  // 「還是先前那一輪」繼續等，寧可多等一輪、逾時後仍有三路決議兜底，也不要在訊號
+  // 互相矛盾時貿然判定「新一輪已經結束」——這正是「不能把先前 invocation 或第二次
+  // 重試誤認為目前 generation 的成功」這條要求的核心。
+  const invocationChanged = reading.invocationId !== baseline.invocationId;
+  const timestampAdvanced = reading.execMainStartTimestampMonotonic > baseline.execMainStartTimestampMonotonic;
+  if (!invocationChanged || !timestampAdvanced) return false;
+  return reading.serviceActiveState !== 'active';
+}
+
+/** 一輪新 invocation 真的結束了：檢查它自己的 Result／ExecMainStatus，再核對 deployed_rev 與 health rev。 */
+async function resolveFinishedInvocation(
+  reading: SystemdReadback,
+  targetSha: string,
+  checkHealth: CheckHealth,
+): Promise<DeployWaitResult> {
+  if (reading.result !== 'success' || reading.execMainStatus !== 0) {
+    return {
+      outcome: 'deployment_failure',
+      targetSha,
+      reason:
+        `path-triggered invocation ${reading.invocationId} 結束但 result=${JSON.stringify(reading.result)}` +
+        ` execMainStatus=${reading.execMainStatus}（非 success/0）`,
+    };
+  }
+  if (reading.deployedRev !== targetSha) {
+    return {
+      outcome: 'deployment_failure',
+      targetSha,
+      reason: `invocation ${reading.invocationId} 回報 success，但 deployed_rev=${reading.deployedRev} 不等於 target ${targetSha}`,
+    };
+  }
+  const health = await checkHealth();
+  if (health.status !== 'ok' || health.db !== true || health.rev !== targetSha) {
+    return {
+      outcome: 'deployment_failure',
+      targetSha,
+      reason:
+        `invocation 與 deployed_rev 都通過，但 /api/health 不符：status=${health.status} db=${health.db} ` +
+        `rev=${health.rev}（要求 status=ok, db=true, rev=${targetSha}）`,
+    };
+  }
+  return {
+    outcome: 'success',
+    targetSha,
+    invocationId: reading.invocationId,
+    deployedRev: reading.deployedRev,
+    healthRev: health.rev,
+    deployObservedOutOfBand: false,
+  };
+}
+
+/**
+ * 逾時後的三路決議（步驟 5）：不得直接判定 deployment failure，必須先看
+ * deployed_rev／health rev 是否已經悄悄收斂，再看 service 是否仍 active。
+ */
+async function resolveDeployWaitTimeout(
+  reading: SystemdReadback,
+  targetSha: string,
+  checkHealth: CheckHealth,
+): Promise<DeployWaitResult> {
+  if (reading.deployedRev === targetSha) {
+    const health = await checkHealth();
+    if (health.rev === targetSha) {
+      return {
+        outcome: 'success',
+        targetSha,
+        invocationId: reading.invocationId,
+        deployedRev: reading.deployedRev,
+        healthRev: health.rev,
+        deployObservedOutOfBand: true,
+      };
+    }
+  }
+  if (reading.serviceActiveState === 'active') {
+    return {
+      outcome: 'deployment_indeterminate',
+      targetSha,
+      reason:
+        `等待 ${DEPLOY_WAIT_TIMEOUT_MS}ms 後逾時：deployed_rev=${reading.deployedRev}（要求 ${targetSha}），` +
+        `但 sim-autodeploy.service 仍是 active——決議延後到下一個 tick 以同一 target SHA 重新 readback`,
+    };
+  }
+  return {
+    outcome: 'deployment_failure',
+    targetSha,
+    reason:
+      `等待 ${DEPLOY_WAIT_TIMEOUT_MS}ms 後逾時：deployed_rev=${reading.deployedRev}（要求 ${targetSha}），` +
+      `且 sim-autodeploy.service 已 inactive——確認 .path 觸發遺漏`,
+  };
+}
+
+/**
+ * 唯一的部署 readback 等待／逾時決議函式：merge-wait 與 revert-wait 都呼叫這一個
+ * 函式，不得各自維護一份等價邏輯。
+ *
+ * 每一輪呼叫 `getReadback()`：
+ * - 若讀到「相對 baseline 是新一輪、且已經跑完」的 invocation，立刻依那一輪自己的
+ *   Result／ExecMainStatus／deployed_rev／health rev 決議（成功或失敗），絕不再多跑
+ *   一輪去掩蓋這次觀察到的結果。
+ * - 否則檢查是否已經超過 DEPLOY_WAIT_TIMEOUT_MS；若尚未超過就 sleep 一輪再繼續 poll；
+ *   若已超過，改用最後一次 reading 做三路逾時決議（見 resolveDeployWaitTimeout）。
+ *
+ * `now` 與 `sleep` 都是注入點：測試餵入近乎零延遲的假 sleep，並用假時鐘（例如每次
+ * `getReadback` 呼叫時順手把假時鐘往前推）模擬「34 分鐘後成功」「35 分鐘後逾時」等
+ * 邊界情境，全程不需要真的等待任何時間。
+ */
+export async function waitForDeployment(input: WaitForDeploymentInput): Promise<DeployWaitResult> {
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const pollIntervalMs = input.pollIntervalMs ?? 5000;
+  const waitStartedAt = input.now();
+
+  for (;;) {
+    const reading = await input.getReadback();
+
+    if (isNewFinishedInvocation(reading, input.baseline)) {
+      return resolveFinishedInvocation(reading, input.targetSha, input.checkHealth);
+    }
+
+    const elapsed = input.now() - waitStartedAt;
+    if (elapsed >= DEPLOY_WAIT_TIMEOUT_MS) {
+      return resolveDeployWaitTimeout(reading, input.targetSha, input.checkHealth);
+    }
+
+    await sleep(pollIntervalMs);
+  }
+}
+
+/**
+ * merge／revert 前的必要前置條件：`.path` 必須 active（沒有它就沒有任何觸發器在監看
+ * ref 變化），`.service` 必須不是 active（代表沒有前一輪 invocation 可能還在跑）。
+ * 不符合就直接 throw，呼叫端必須在丟出這個之後完全不做任何 mutation（不 merge、
+ * 不 revert）。這裡永遠不會、也不允許把「不符合」偷偷改成呼叫 `systemctl start`
+ * 去讓它符合——這個檔案沒有任何路徑會建構 systemctl 的 start 指令。
+ */
+export function assertSystemdReadyForDeploy(readback: SystemdReadback, label: string): void {
+  if (!readback.pathActive) {
+    throw new Error(`${label}: sim-autodeploy.path 不是 active——沒有可觸發部署的機制，拒絕繼續`);
+  }
+  if (readback.serviceActiveState === 'active') {
+    throw new Error(`${label}: sim-autodeploy.service 仍是 active——可能還有前一輪 invocation 在跑，拒絕繼續`);
+  }
+}
+
+// =============================================================================
+// 任務 6：整合／合併／回退——真正的 git 操作（這個檔案是唯一允許 shell out 的地方）。
+// =============================================================================
+
+/** `sim-work/integration/<taskId>` 底下、用完即丟的暫時 worktree，只用來偵測合併衝突。 */
+export interface IntegrationWorktree {
+  path: string;
+  conflict: boolean;
+  conflictDetail: string | null;
+}
+
+function integrationWorktreePath(repoRoot: string, taskId: string): string {
+  assertSafeTaskId(taskId);
+  return join(repoRoot, 'sim-work', 'integration', taskId);
+}
+
+/**
+ * 在一個獨立、用完即丟的臨時 worktree（從目前 master HEAD detach 出來）裡，嘗試把
+ * taskBranch `merge --no-ff --no-commit` 進去，純粹用來偵測合併衝突
+ * （"integration conflict" fixture）——完全不影響 repoRoot 真正的 master branch，
+ * 也不會在這個暫時 worktree 留下任何 commit。呼叫端必須在使用完畢後（不論衝突與否）
+ * 呼叫 removeIntegrationWorktree 清掉它。
+ */
+export async function createIntegrationWorktree(
+  repoRoot: string,
+  taskId: string,
+  taskBranch: string,
+): Promise<IntegrationWorktree> {
+  const masterSha = await git(['rev-parse', 'master'], repoRoot);
+  const worktreePath = integrationWorktreePath(repoRoot, taskId);
+  await git(['worktree', 'add', '--detach', worktreePath, masterSha], repoRoot);
+  try {
+    await git(['merge', '--no-ff', '--no-commit', taskBranch], worktreePath);
+  } catch (err) {
+    try {
+      await execFileAsync('git', ['merge', '--abort'], { cwd: worktreePath });
+    } catch {
+      // best-effort：即使 abort 也失敗，removeIntegrationWorktree 仍會強制清掉整個目錄。
+    }
+    return { path: worktreePath, conflict: true, conflictDetail: (err as Error).message };
+  }
+  return { path: worktreePath, conflict: false, conflictDetail: null };
+}
+
+/** 清掉 createIntegrationWorktree 建立的暫時 worktree；不論成功或衝突都必須呼叫。 */
+export async function removeIntegrationWorktree(repoRoot: string, worktree: IntegrationWorktree): Promise<void> {
+  try {
+    await execFileAsync('git', ['worktree', 'remove', '--force', worktree.path], { cwd: repoRoot });
+  } catch {
+    // worktree 可能因為合併衝突處理留在奇怪狀態；用 rmSync 兜底，再讓 git 自己的
+    // metadata（.git/worktrees/…）跟上真正的檔案系統狀態。
+    rmSync(worktree.path, { recursive: true, force: true });
+    try {
+      await execFileAsync('git', ['worktree', 'prune'], { cwd: repoRoot });
+    } catch {
+      // ignore：prune 失敗不影響正確性，只是留下不會再被使用的 metadata。
+    }
+  }
+}
+
+/**
+ * 把 taskBranch 真正合併進 repoRoot 的 master（`--no-ff`，保留可回溯、可 revert 的
+ * merge commit）。呼叫前防禦性確認 repoRoot 目前真的 checkout 在 master 上——這個
+ * repoRoot 永遠是 sim-autodeploy.path 監看的唯一 master checkout，這裡不重新推導
+ * 這個不變量，只是不盲目信任它。回傳新的 master HEAD（mergeSha）。
+ */
+export async function mergeTaskIntoMaster(repoRoot: string, taskBranch: string, taskId: string): Promise<string> {
+  const currentBranch = await git(['symbolic-ref', '--short', 'HEAD'], repoRoot);
+  if (currentBranch !== 'master') {
+    throw new Error(
+      `mergeTaskIntoMaster: repoRoot 目前 checkout 在 "${currentBranch}"，不是 "master"——拒絕合併`,
+    );
+  }
+  await git(['merge', '--no-ff', taskBranch, '-m', `merge ${taskId}`], repoRoot);
+  return git(['rev-parse', 'HEAD'], repoRoot);
+}
+
+export type RevertMasterMergeResult = { ok: true; revertSha: string } | { ok: false; reason: string };
+
+/**
+ * Revert 一個已經合併進 master 的 merge commit（`git revert -m 1 --no-edit`）。
+ * 呼叫前先確認 master 目前的 HEAD 真的還是 mergeSha——如果在等待部署 readback 期間
+ * master 又被別的東西推進了（不該發生，但不能盲目相信呼叫端的假設），拒絕 revert
+ * 並回報原因，交由呼叫端把這個當成需要人工介入的訊號，而不是 revert 一個可能完全
+ * 不相干的 commit。
+ */
+export async function revertMasterMerge(repoRoot: string, mergeSha: string): Promise<RevertMasterMergeResult> {
+  const currentHead = await git(['rev-parse', 'master'], repoRoot);
+  if (currentHead !== mergeSha) {
+    return {
+      ok: false,
+      reason: `master HEAD (${currentHead}) 已經不等於預期的 mergeSha (${mergeSha})——拒絕 revert 可能不相干的 commit`,
+    };
+  }
+  await git(['revert', '-m', '1', '--no-edit', mergeSha], repoRoot);
+  const revertSha = await git(['rev-parse', 'HEAD'], repoRoot);
+  return { ok: true, revertSha };
 }

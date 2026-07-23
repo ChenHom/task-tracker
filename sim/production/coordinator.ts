@@ -14,6 +14,18 @@
 import type { TaskRun } from './types';
 import { recordMemberAttempt, shouldResumeHumanBlocked, taskEvidenceFingerprint, type TaskEvidence } from './policy';
 import type { MemberSessionResult } from './agent';
+import {
+  waitForDeployment,
+  assertSystemdReadyForDeploy,
+  createIntegrationWorktree,
+  removeIntegrationWorktree,
+  mergeTaskIntoMaster,
+  revertMasterMerge,
+  type SystemdReadback,
+  type GetSystemdReadback,
+  type CheckHealth,
+  type DeployWaitBaseline,
+} from './git';
 
 export interface HumanBlockedNotice {
   /**
@@ -105,4 +117,341 @@ export function recordMemberSessionAttempt(
  */
 export function shouldResumeFromHumanBlocked(run: TaskRun, currentEvidence: TaskEvidence): boolean {
   return shouldResumeHumanBlocked(run, currentEvidence);
+}
+
+// =============================================================================
+// 任務 6：整合、部署 readback 與自動 revert。
+//
+// 這裡實作計畫步驟 3（固定 acceptance sequence）與步驟 4（失敗復原／revert／fatal
+// 升級）的「協調」部分——真正的 git merge／revert／worktree 操作，以及唯一的
+// systemd readback 等待／逾時決議函式（waitForDeployment），都定義在 git.ts；這裡
+// 只負責照著固定順序呼叫它們，並把 CI 步驟、systemd readback、health check 這三種
+// 「正式環境會是真正呼叫」但這個 subsystem 目前永遠是注入假函式的動作串起來。
+//
+// 部署 revision 通過 readback 前，這裡的函式完全不 import、也不呼叫任何
+// TaskTrackerClient／看板 API——這個邊界不是靠檢查達成的，而是靠「這個檔案的簽名
+// 裡根本沒有能做那件事的參數」達成的（呼應 agent.ts 的 OwnerSession 唯讀契約）。
+// =============================================================================
+
+/** 任一 acceptance／task-specific／live 驗收步驟的注入結果：pass/fail + 人類可讀細節。 */
+export interface AcceptanceCheckResult {
+  passed: boolean;
+  detail: string;
+}
+
+/** 正式環境會是真正跑檢查的實作；這裡永遠是呼叫端（測試）注入的假函式。 */
+export type AcceptanceCheck = () => Promise<AcceptanceCheckResult>;
+
+/** 在暫時 integration worktree 裡執行單一指令（npm test／npm run build／git diff --check）的注入器。 */
+export type IntegrationCommandRunner = (
+  command: string,
+  worktreePath: string,
+) => Promise<{ exitCode: number; output: string }>;
+
+/** 固定順序：對應計畫步驟 3 的 `npm test -> npm run build -> git diff --check`。 */
+const INTEGRATION_COMMANDS: readonly string[] = ['npm test', 'npm run build', 'git diff --check'];
+
+/**
+ * Coordinator 記錄在案的致命錯誤：只有 rollback invocation 明確失敗，或
+ * DeploymentIndeterminate 連續兩個 tick 仍未收斂時才會產生（見
+ * resolveRollbackWait）。一旦存在，`assertNoFatalCoordinatorError` 必須讓後續所有
+ * AI／mutation action 一律拒絕，直到人工清除。這裡不持久化它（state.ts 不在本任務的
+ * 檔案清單內）——由呼叫端負責保存並在下一次呼叫任何 mutation 前重新餵回來。
+ */
+export interface FatalCoordinatorError {
+  taskId: string;
+  sha: string;
+  reason: string;
+}
+
+/** 任何後續 AI／mutation action 的呼叫端，都必須在動手前先呼叫這個 guard。 */
+export function assertNoFatalCoordinatorError(fatal: FatalCoordinatorError | null): void {
+  if (fatal) {
+    throw new Error(
+      `coordinator fatal error 已經記錄在案（task ${fatal.taskId}, sha ${fatal.sha}）：${fatal.reason}——` +
+        `在人工清除這個錯誤之前，拒絕執行任何後續 AI／mutation action`,
+    );
+  }
+}
+
+export interface RunDeployAcceptanceInput {
+  taskId: string;
+  repoRoot: string;
+  taskBranch: string;
+  /** 非 null 代表這個 task 已經有記錄在案的 fatal error——整個函式立刻拒絕、不執行任何步驟。 */
+  existingFatalError: FatalCoordinatorError | null;
+  runBranchCi: AcceptanceCheck;
+  runIntegrationCommand: IntegrationCommandRunner;
+  runTaskSpecificAcceptance: AcceptanceCheck;
+  getSystemdReadback: GetSystemdReadback;
+  checkHealth: CheckHealth;
+  runTaskLiveAcceptance: AcceptanceCheck;
+  now: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export type DeployAcceptanceResult =
+  | { kind: 'fatal_blocked'; fatal: FatalCoordinatorError }
+  | { kind: 'branch_ci_failed'; detail: string }
+  | { kind: 'integration_conflict'; detail: string }
+  | { kind: 'integration_command_failed'; command: string; detail: string }
+  | { kind: 'task_specific_acceptance_failed'; detail: string }
+  | { kind: 'deploy_precondition_failed'; detail: string }
+  | { kind: 'deployed'; mergeSha: string; deployObservedOutOfBand: boolean }
+  | { kind: 'deploy_indeterminate'; targetSha: string; detail: string }
+  | { kind: 'deploy_failed_post_merge'; mergeSha: string; reason: string };
+
+/**
+ * 計畫步驟 3 的固定 acceptance sequence：
+ *
+ *   task branch CI -> temporary integration worktree -> npm test -> npm run build
+ *   -> git diff --check -> task-specific acceptance
+ *   -> require path active／service inactive -> snapshot baseline -> merge --no-ff
+ *   -> waitForDeployment -> task live acceptance
+ *
+ * 任何一步失敗立刻回傳對應的失敗 kind，不繼續往下走。merge 之後才會遇到的失敗
+ * （deploy_indeterminate／deploy_failed_post_merge）由呼叫端決定下一步：
+ * indeterminate 就什麼都不做、等下一個 tick 用同一個 mergeSha 重新呼叫
+ * waitForDeployment（不必重新跑這整個 sequence）；failed_post_merge 則呼叫
+ * `performMasterRevert` 進入步驟 4 的復原流程。
+ */
+export async function runDeployAcceptance(input: RunDeployAcceptanceInput): Promise<DeployAcceptanceResult> {
+  if (input.existingFatalError) {
+    return { kind: 'fatal_blocked', fatal: input.existingFatalError };
+  }
+
+  const branchCi = await input.runBranchCi();
+  if (!branchCi.passed) {
+    return { kind: 'branch_ci_failed', detail: branchCi.detail };
+  }
+
+  const integration = await createIntegrationWorktree(input.repoRoot, input.taskId, input.taskBranch);
+  if (integration.conflict) {
+    await removeIntegrationWorktree(input.repoRoot, integration);
+    return { kind: 'integration_conflict', detail: integration.conflictDetail ?? 'merge conflict' };
+  }
+
+  try {
+    for (const command of INTEGRATION_COMMANDS) {
+      const result = await input.runIntegrationCommand(command, integration.path);
+      if (result.exitCode !== 0) {
+        return { kind: 'integration_command_failed', command, detail: result.output };
+      }
+    }
+
+    const taskSpecific = await input.runTaskSpecificAcceptance();
+    if (!taskSpecific.passed) {
+      return { kind: 'task_specific_acceptance_failed', detail: taskSpecific.detail };
+    }
+  } finally {
+    await removeIntegrationWorktree(input.repoRoot, integration);
+  }
+
+  const preMergeReadback = await input.getSystemdReadback();
+  try {
+    assertSystemdReadyForDeploy(preMergeReadback, `task ${input.taskId} pre-merge`);
+  } catch (err) {
+    return { kind: 'deploy_precondition_failed', detail: (err as Error).message };
+  }
+
+  const baseline: DeployWaitBaseline = {
+    invocationId: preMergeReadback.invocationId,
+    execMainStartTimestampMonotonic: preMergeReadback.execMainStartTimestampMonotonic,
+  };
+
+  const mergeSha = await mergeTaskIntoMaster(input.repoRoot, input.taskBranch, input.taskId);
+
+  const waitResult = await waitForDeployment({
+    targetSha: mergeSha,
+    baseline,
+    getReadback: input.getSystemdReadback,
+    checkHealth: input.checkHealth,
+    now: input.now,
+    sleep: input.sleep,
+  });
+
+  if (waitResult.outcome === 'deployment_indeterminate') {
+    return { kind: 'deploy_indeterminate', targetSha: mergeSha, detail: waitResult.reason };
+  }
+  if (waitResult.outcome === 'deployment_failure') {
+    return { kind: 'deploy_failed_post_merge', mergeSha, reason: waitResult.reason };
+  }
+
+  const liveAcceptance = await input.runTaskLiveAcceptance();
+  if (!liveAcceptance.passed) {
+    return {
+      kind: 'deploy_failed_post_merge',
+      mergeSha,
+      reason: `task live acceptance failed after deploy: ${liveAcceptance.detail}`,
+    };
+  }
+
+  return { kind: 'deployed', mergeSha, deployObservedOutOfBand: waitResult.deployObservedOutOfBand };
+}
+
+// ---------------------------------------------------------------------------
+// 步驟 4：失敗復原（revert）。
+// ---------------------------------------------------------------------------
+
+/** 去重用的 deployment-rollback 留言。 */
+export interface DeploymentRollbackNotice {
+  actionKey: string;
+  content: string;
+}
+
+/** 去重 key：同一個 mergeSha 的 rollback 永遠得到同一把 key，重跑不會造出第二則留言。 */
+export function deploymentRollbackActionKey(taskId: string, mergeSha: string): string {
+  return `deployment_rollback_notice:${taskId}:${mergeSha}`;
+}
+
+function buildDeploymentRollbackNotice(
+  taskId: string,
+  mergeSha: string,
+  revertSha: string,
+  reason: string,
+): DeploymentRollbackNotice {
+  const actionKey = deploymentRollbackActionKey(taskId, mergeSha);
+  const content =
+    `@user09 這個 task 合併後的部署失敗，已自動 revert。\n` +
+    `merge commit: ${mergeSha}\n` +
+    `revert commit: ${revertSha}\n` +
+    `失敗原因：${reason}\n` +
+    `task status 維持 Review，需要人工檢視後決定下一步。\n` +
+    `action_key: ${actionKey}`;
+  return { actionKey, content };
+}
+
+export type PerformMasterRevertResult =
+  | { kind: 'reverted'; revertSha: string; baseline: DeployWaitBaseline }
+  | { kind: 'fatal'; fatal: FatalCoordinatorError };
+
+/**
+ * 步驟 4 的一次性動作：確認 master HEAD === mergeSha、確認 systemd 前置條件（path
+ * active／service inactive），才真的執行 `git revert -m 1 --no-edit`，並擷取新的
+ * invocation baseline。這個函式只應該對同一個 mergeSha 呼叫一次——重試收斂交給
+ * `resolveRollbackWait`（用同一個 revertSha／baseline 重新 readback，不會、也不需要
+ * 再 revert 第二次）。
+ *
+ * 任何一個前置條件不成立都直接回傳 fatal：這是失敗復原的最後一道防線，如果連它都
+ * 無法安全進行，代表現況已經超出這個 subsystem 能自動處理的範圍，必須交給人工。
+ */
+export async function performMasterRevert(
+  taskId: string,
+  repoRoot: string,
+  mergeSha: string,
+  getSystemdReadback: GetSystemdReadback,
+): Promise<PerformMasterRevertResult> {
+  const readback: SystemdReadback = await getSystemdReadback();
+  try {
+    assertSystemdReadyForDeploy(readback, `task ${taskId} pre-revert`);
+  } catch (err) {
+    return {
+      kind: 'fatal',
+      fatal: { taskId, sha: mergeSha, reason: `refusing to revert: ${(err as Error).message}` },
+    };
+  }
+
+  const revertResult = await revertMasterMerge(repoRoot, mergeSha);
+  if (!revertResult.ok) {
+    return { kind: 'fatal', fatal: { taskId, sha: mergeSha, reason: revertResult.reason } };
+  }
+
+  return {
+    kind: 'reverted',
+    revertSha: revertResult.revertSha,
+    baseline: {
+      invocationId: readback.invocationId,
+      execMainStartTimestampMonotonic: readback.execMainStartTimestampMonotonic,
+    },
+  };
+}
+
+export interface ResolveRollbackWaitInput {
+  taskId: string;
+  mergeSha: string;
+  revertSha: string;
+  baseline: DeployWaitBaseline;
+  getSystemdReadback: GetSystemdReadback;
+  checkHealth: CheckHealth;
+  now: () => number;
+  sleep?: (ms: number) => Promise<void>;
+  /** 前一個 tick（若有）遺留的連續 DeploymentIndeterminate 計數；第一次呼叫省略即為 0。 */
+  previousRollbackIndeterminateCount?: number;
+}
+
+export type ResolveRollbackWaitResult =
+  | { kind: 'rolled_back'; mergeSha: string; revertSha: string; notice: DeploymentRollbackNotice }
+  | {
+      kind: 'rollback_indeterminate';
+      mergeSha: string;
+      revertSha: string;
+      rollbackIndeterminateCount: number;
+      detail: string;
+    }
+  | { kind: 'fatal'; fatal: FatalCoordinatorError };
+
+/**
+ * 等待 revert 觸發的下一個且唯一的新 invocation（與 merge-wait 共用同一個
+ * `waitForDeployment`），並套用步驟 4 的 rollback 專屬決議：
+ *
+ * - 成功：deployed_rev／health rev 都等於 revertSha -> `rolled_back`，附上去重的
+ *   deployment-rollback 留言（task 維持 Review，由呼叫端決定要不要真的張貼）。
+ * - DeploymentIndeterminate：不升級為 fatal（除非這已經是連續第二次）——呼叫端把
+ *   `rollbackIndeterminateCount` 原封不動存起來，下一個 tick 用同一個
+ *   revertSha／baseline 再呼叫一次這個函式（不重新 revert）。
+ * - 明確失敗，或連續兩次 tick 都是 Indeterminate：`fatal`——呼叫端必須把這個
+ *   FatalCoordinatorError 存起來，之後每次執行 AI／mutation action 前都用
+ *   `assertNoFatalCoordinatorError` 檔下來。
+ */
+export async function resolveRollbackWait(input: ResolveRollbackWaitInput): Promise<ResolveRollbackWaitResult> {
+  const previousCount = input.previousRollbackIndeterminateCount ?? 0;
+
+  const waitResult = await waitForDeployment({
+    targetSha: input.revertSha,
+    baseline: input.baseline,
+    getReadback: input.getSystemdReadback,
+    checkHealth: input.checkHealth,
+    now: input.now,
+    sleep: input.sleep,
+  });
+
+  if (waitResult.outcome === 'success') {
+    const reason = waitResult.deployObservedOutOfBand
+      ? 'deployment failed post-merge; automatic revert succeeded (readback observed out-of-band)'
+      : 'deployment failed post-merge; automatic revert succeeded';
+    return {
+      kind: 'rolled_back',
+      mergeSha: input.mergeSha,
+      revertSha: input.revertSha,
+      notice: buildDeploymentRollbackNotice(input.taskId, input.mergeSha, input.revertSha, reason),
+    };
+  }
+
+  if (waitResult.outcome === 'deployment_indeterminate') {
+    const nextCount = previousCount + 1;
+    if (nextCount >= 2) {
+      return {
+        kind: 'fatal',
+        fatal: {
+          taskId: input.taskId,
+          sha: input.revertSha,
+          reason: `rollback readback 連續 ${nextCount} 個 tick 都是 DeploymentIndeterminate：${waitResult.reason}`,
+        },
+      };
+    }
+    return {
+      kind: 'rollback_indeterminate',
+      mergeSha: input.mergeSha,
+      revertSha: input.revertSha,
+      rollbackIndeterminateCount: nextCount,
+      detail: waitResult.reason,
+    };
+  }
+
+  // deployment_failure：rollback invocation 本身明確失敗——立刻升級 fatal，
+  // 不得再補跑第二輪去掩蓋這個結果。
+  return {
+    kind: 'fatal',
+    fatal: { taskId: input.taskId, sha: input.revertSha, reason: `rollback deployment failed: ${waitResult.reason}` },
+  };
 }
