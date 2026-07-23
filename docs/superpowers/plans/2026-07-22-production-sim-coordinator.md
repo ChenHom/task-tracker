@@ -313,7 +313,7 @@ git commit -m "feat(sim): add durable coordinator state"
 - 新增：`sim/production/policy.ts`
 - 修改：`sim/production.test.ts`
 
-- [ ] **步驟 1：新增會失敗的 HTTP 與 policy tests。**
+- [x] **步驟 1：新增會失敗的 HTTP 與 policy tests。**
 
 使用暫存 `node:http` server，在第一次 login 時主動中斷 socket，第二次 request 才成功。驗證安全 request 會重試、`error.cause` 會保留、mutation 結果不確定時會先 readback 而非盲目重送，而且單一 workspace 失敗不會阻擋另一個 workspace 的 action。
 
@@ -331,13 +331,13 @@ Policy fixture 必須證明：
 - 上述結果在 coordinator restart 後不變，且任何 member 都不超過 WIP1。
 - 尚未到期且沒有變更的主討論，不會建立 Owner action。
 
-- [ ] **步驟 2：執行 focused test，確認失敗。**
+- [x] **步驟 2：執行 focused test，確認失敗。**
 
 執行：`npx tsx sim/production.test.ts`
 
 預期：FAIL，因為 API 與 policy module 尚不存在。
 
-- [ ] **步驟 3：實作短生命週期 HTTP request。**
+- [x] **步驟 3：實作短生命週期 HTTP request。**
 
 以 `node:http.request` 建立 `TaskTrackerClient`，設定 `agent: false`、明確 timeout、cookie jar 與 JSON／status 驗證。Health、login 與 GET 遇到暫時性 socket／timeout／5xx 失敗時可重試。Comment 與 PATCH request 必須使用穩定 action key；response 不確定時先讀取 resource，再決定是否重試。
 
@@ -354,7 +354,7 @@ patchTaskField(taskId: string, field: 'status' | 'assignee', value: unknown): Pr
 listNotifications(): Promise<NotificationSnapshot[]>;
 ```
 
-- [ ] **步驟 4：實作 deterministic policy functions。**
+- [x] **步驟 4：實作 deterministic policy functions。**
 
 匯出以下 pure functions：
 
@@ -370,7 +370,7 @@ shouldResumeHumanBlocked(run: TaskRun, snapshot: TaskEvidence): boolean;
 
 Discovery 必須以 ID／canonical title 雙重規則排除 `CUTOVER_TASKS.mainPolicy`（`[規則] 主工作區協作與交接`）與 `CUTOVER_TASKS.legacyCanonicalDiscussion`（canonical `[討論] 方向與下一步`），這兩筆永遠不產生 Owner／member／branch action。`mainDiscussionNeedsOwner(status)` 不得再作為 production policy：只有 evidence fingerprint、期限事件或新留言使 snapshot 發生可執行變化時才建立主討論 Owner action；未變更的 Todo 必須保持零 action。
 
-- [ ] **步驟 5：執行 focused tests 與 typecheck。**
+- [x] **步驟 5：執行 focused tests 與 typecheck。**
 
 ```bash
 npx tsx sim/production.test.ts
@@ -379,7 +379,7 @@ npx tsc -p sim/tsconfig.json --noEmit
 
 預期：PASS。
 
-- [ ] **步驟 6：提交 API 與 scheduling policy。**
+- [x] **步驟 6：提交 API 與 scheduling policy。**
 
 ```bash
 git add sim/production/api.ts sim/production/policy.ts sim/production.test.ts
