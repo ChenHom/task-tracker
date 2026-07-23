@@ -392,17 +392,17 @@ git commit -m "feat(sim): add resilient API scheduling"
 - 新增：`sim/production/git.ts`
 - 修改：`sim/production.test.ts`
 
-- [ ] **步驟 1：新增會失敗的暫存 repository tests。**
+- [x] **步驟 1：新增會失敗的暫存 repository tests。**
 
 證明 active task `938aa035-5f96-4908-b28b-876fa4735061` 會對應到 branch `sim/task/938aa035-5f96-4908-b28b-876fa4735061` 與 worktree `sim-work/tasks/938aa035-5f96-4908-b28b-876fa4735061`。驗證 queued 的 `6384b6f4-f92f-45a2-a5e1-133f04f76372` 在解除依賴前不得建立 branch／worktree；解除後必須以包含 `938aa035...` accepted merge 的新 master 為 base，且不能共用第一個 task 的 branch。暫存檔與 `node_modules` symlink 必須被拒絕，而且只 stage 已通過驗證的路徑。`sim/user02` 至 `sim/user06` 的舊 branch／worktree／SHA 只能進 manifest，不能作為 base、source、Git command 參數或 member prompt context；新 worktree 的初始 diff 必須為空。
 
-- [ ] **步驟 2：執行 focused test，確認失敗。**
+- [x] **步驟 2：執行 focused test，確認失敗。**
 
 執行：`npx tsx sim/production.test.ts`
 
 預期：FAIL，因為 `sim/production/git.ts` 尚不存在。
 
-- [ ] **步驟 3：實作 task branch 與安全變更 helper。**
+- [x] **步驟 3：實作 task branch 與安全變更 helper。**
 
 匯出：
 
@@ -418,7 +418,7 @@ ciCacheKey(baseSha: string, headSha: string, commands: string[]): string;
 
 `commitTaskChanges` 必須呼叫 `git add -- <validated paths>` 與 `git diff --cached --check`，且永遠不得呼叫 `git add -A`。拒絕 `.jar-*`、`.tmp-*`、`data/`、`node_modules`、宣告 scope 以外的檔案，以及未被 task 明確允許該精確路徑的任何新 symlink。
 
-- [ ] **步驟 4：新增 command allowlist 與 CI cache 行為。**
+- [x] **步驟 4：新增 command allowlist 與 CI cache 行為。**
 
 Member verification command 只允許以下形式：
 
@@ -432,7 +432,7 @@ Member verification command 只允許以下形式：
 
 只 cache 成功結果，並把完整 command list 納入 key。
 
-- [ ] **步驟 5：執行測試與 typecheck。**
+- [x] **步驟 5：執行測試與 typecheck。**
 
 ```bash
 npx tsx sim/production.test.ts
@@ -441,7 +441,7 @@ npx tsc -p sim/tsconfig.json --noEmit
 
 預期：PASS。
 
-- [ ] **步驟 6：提交 Git 隔離功能。**
+- [x] **步驟 6：提交 Git 隔離功能。**
 
 ```bash
 git add sim/production/git.ts sim/production.test.ts
