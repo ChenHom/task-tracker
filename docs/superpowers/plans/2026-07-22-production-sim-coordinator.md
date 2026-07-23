@@ -455,17 +455,17 @@ git commit -m "feat(sim): isolate work by task"
 - 修改：`sim/production/coordinator.ts`
 - 修改：`sim/production.test.ts`
 
-- [ ] **步驟 1：新增 false-success session 的失敗測試。**
+- [x] **步驟 1：新增 false-success session 的失敗測試。**
 
 Fixture 必須涵蓋：exit 0 但沒有 diff／comment／status 變更；產生有效 diff 後 exit 1；member 有 commit 卻沒有 Review transition；重複 blocker 文字；以及試圖編輯程式的 Owner output。只有完整具備預期證據時才能回傳 `progressed`。
 
-- [ ] **步驟 2：執行 focused test，確認失敗。**
+- [x] **步驟 2：執行 focused test，確認失敗。**
 
 執行：`npx tsx sim/production.test.ts`
 
 預期：FAIL，因為 agent／coordinator module 尚未完成。
 
-- [ ] **步驟 3：定義結構化 session output。**
+- [x] **步驟 3：定義結構化 session output。**
 
 ```ts
 export interface MemberSessionOutput {
@@ -486,15 +486,15 @@ export interface OwnerDecision {
 
 Prompt 只提供一個 task ID、其 acceptance criteria、相關 comments、已宣告 file scope、verification command allowlist 與 task worktree，並禁止另選 task。Owner prompt 為 read-only，且明確把 API mutation、Git merge、部署與留言交給 driver。
 
-- [ ] **步驟 4：實作 session 後證據檢查。**
+- [x] **步驟 4：實作 session 後證據檢查。**
 
 Member 成功必須具備通過驗證的 task commit、focused verification PASS、由 driver 建立的摘要留言，以及 driver 對 Doing -> Review 的 readback。Owner acceptance 必須是引用已審查 head SHA 的結構化決策；process exit 只供診斷。
 
-- [ ] **步驟 5：實作卡關轉移。**
+- [x] **步驟 5：實作卡關轉移。**
 
 兩次完整 member attempt 都沒有進展後，enqueue 一次 Owner intervention。介入後只再允許一次 member attempt；若證據仍無變化，持久化 `human_blocked`、留下唯一含 action key 的 `@user09` 留言、保留 task status／assignee，並停止後續 AI action，直到出現新的 user09 comment 或尚未記錄的人工 task mutation。
 
-- [ ] **步驟 6：執行測試並提交。**
+- [x] **步驟 6：執行測試並提交。**
 
 ```bash
 npx tsx sim/production.test.ts
