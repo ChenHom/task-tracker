@@ -510,19 +510,19 @@ git commit -m "feat(sim): verify agent side effects"
 - 修改：`sim/production/coordinator.ts`
 - 修改：`sim/production.test.ts`
 
-- [ ] **步驟 1：以注入的 command result 新增會失敗的 integration／deployment tests。**
+- [x] **步驟 1：以注入的 command result 新增會失敗的 integration／deployment tests。**
 
 涵蓋：branch CI failure、integration conflict、full test failure、merge 前 build failure、`sim-autodeploy.path` inactive、merge 前 service 尚 active、merge 後沒有新 invocation、path-triggered invocation failure、health rev mismatch、成功 revert 並由另一個新 invocation 恢復 health，以及 revert 部署失敗後停止全部後續 live action。測試要證明 coordinator 從不呼叫 `systemctl start sim-autodeploy.service`，而且不能把先前 invocation 或第二次重試誤認為目前 generation 的成功。
 
 逾時分支另需三筆 fixture：invocation 因 `pgrep sim/run.ts` 等待而在 34 分鐘後才成功時不得逾時；逾時且 `deployedRev`／health rev 都等於 target SHA 時視為成功並標記 `deployObservedOutOfBand=true`；逾時且 `deployedRev` 不符但 service 仍 active 時回傳 `DeploymentIndeterminate`，該 tick 零 revert、零 status change、零 completion comment，下一個 tick 以同一 target SHA 重新 readback 後可成功收斂。
 
-- [ ] **步驟 2：執行 focused test，確認失敗。**
+- [x] **步驟 2：執行 focused test，確認失敗。**
 
 執行：`npx tsx sim/production.test.ts`
 
 預期：FAIL，因為 acceptance／deploy functions 尚不存在。
 
-- [ ] **步驟 3：實作固定 acceptance sequence。**
+- [x] **步驟 3：實作固定 acceptance sequence。**
 
 ```text
 task branch CI
@@ -544,11 +544,11 @@ task branch CI
 
 部署 revision 通過 readback 前，不得變更任何 task status 或 completion comment。
 
-- [ ] **步驟 4：實作失敗復原。**
+- [x] **步驟 4：實作失敗復原。**
 
 若 merge 後失敗，必須先確認 `master HEAD === mergeSha`、等待失敗 invocation 已結束，再擷取新的 invocation baseline，執行 `git revert -m 1 --no-edit <mergeSha>`，並等待 revert ref change 觸發的下一個且唯一的新 invocation；要求該 invocation 成功、`deployed_rev` 與 health rev 都等於 revert commit。Revert 的等待沿用步驟 5 的 35 分鐘逾時與同一套逾時決議：逾時且兩個 rev 都已等於 revert commit 視為 rollback 成功；逾時且 service 仍 active 回傳 `DeploymentIndeterminate`，該 tick 不升級為 fatal，下一個 tick 以同一 revert SHA 重新 readback。Task 維持 Review，並留下去重的 deployment-rollback comment。只有在 rollback invocation 明確失敗，或 `DeploymentIndeterminate` 連續兩個 tick 仍未收斂時，才記錄 fatal coordinator error 並拒絕後續所有 AI／mutation action。
 
-- [ ] **步驟 5：以 path invocation generation 實作唯一部署 readback。**
+- [x] **步驟 5：以 path invocation generation 實作唯一部署 readback。**
 
 在 `sim/production/git.ts` 定義可注入的 systemd readback adapter，至少回傳 `pathActive`、`serviceActiveState`、`invocationId`、`execMainStartTimestampMonotonic`、`result`、`execMainStatus` 與 `deployedRev`。merge／revert 前都先要求 path active 且 service inactive，再保存 baseline；ref 變更後輪詢直到看到 start timestamp 增加且該 invocation 結束。`Result != success`／`ExecMainStatus != 0` 立即回傳該 target SHA 的 deployment failure。不得主動 start service，也不得在失敗後補跑第二輪來掩蓋 path invocation 的結果。
 
@@ -562,7 +562,7 @@ task branch CI
 
 本任務不修改 `deploy/sim-autodeploy.sh`，並保留 line 13～17 對 `tsx sim/run.ts` 的 wait。共用 run lock 只防 sim process 彼此重疊，不能保護 in-flight 舊 sweep 不被 task-tracker restart 打斷；production coordinator 也不能加入 `pgrep sim/production.ts`，否則會和自己等待的 deploy 形成循環等待。
 
-- [ ] **步驟 6：執行測試並提交。**
+- [x] **步驟 6：執行測試並提交。**
 
 ```bash
 npx tsx sim/production.test.ts
