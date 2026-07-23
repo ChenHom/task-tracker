@@ -25,7 +25,7 @@ import {
   endTick,
   getTick,
 } from './production/state';
-import type { TaskRun } from './production/types';
+import type { TaskRun, ActionOutcome } from './production/types';
 import { TaskTrackerClient, UncertainMutationError } from './production/api';
 import {
   MAIN_WORKSPACE_ID,
@@ -60,6 +60,21 @@ import {
   ALLOWED_VERIFICATION_COMMANDS,
   type ChangedPath,
 } from './production/git';
+import {
+  runMemberSession,
+  runOwnerSession,
+  type MemberSessionOutput,
+  type MemberSessionResult,
+  type MemberSessionRunner,
+  type MemberSessionDriverActions,
+  type OwnerDecision,
+  type OwnerSessionRunner,
+} from './production/agent';
+import {
+  recordMemberSessionAttempt,
+  shouldResumeFromHumanBlocked,
+  humanBlockedActionKey,
+} from './production/coordinator';
 
 // ---------------------------------------------------------------------------
 // LEASE_TTL_MS 必須嚴格大於 DEPLOY_WAIT_TIMEOUT_MS
@@ -2162,9 +2177,489 @@ async function runGitTests(): Promise<void> {
   }
 }
 
+// =============================================================================
+// agent.ts：Owner／Member session 執行層——只信獨立驗證過的副作用，不信 exit code
+// 或 runner 自稱的 summary／blocker（真實 git 操作，全部在 os.tmpdir() 底下的假 repo
+// 進行）。
+// =============================================================================
+
+async function runAgentTests(): Promise<void> {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'sim-production-agent-'));
+  const g = (args: string[], cwd: string = repoRoot): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+
+  try {
+    g(['init', '-q', '-b', 'master']);
+    g(['config', 'user.email', 'sim-agent-test@example.com']);
+    g(['config', 'user.name', 'Sim Agent Test']);
+    writeFileSync(join(repoRoot, 'README.md'), 'root\n');
+    g(['add', 'README.md']);
+    g(['commit', '-q', '-m', 'init']);
+    const baseSha0 = g(['rev-parse', 'HEAD']);
+
+    const allowedPrefixes = ['feature/'];
+
+    function makeOutput(overrides: Partial<MemberSessionOutput> = {}): MemberSessionOutput {
+      return {
+        summary: overrides.summary ?? 'did the work',
+        changedPaths: overrides.changedPaths ?? [],
+        verificationCommands: overrides.verificationCommands ?? [],
+        blocker: overrides.blocker ?? null,
+      };
+    }
+
+    function makeRunner(exitCode: number, output: MemberSessionOutput): MemberSessionRunner {
+      return async () => ({ exitCode, output });
+    }
+
+    function makeVerify(result: { exitCode: number } = { exitCode: 0 }): {
+      run: (command: string, worktreePath: string) => Promise<{ exitCode: number; output: string }>;
+      calls: string[];
+    } {
+      const calls: string[] = [];
+      return {
+        calls,
+        run: async (command: string) => {
+          calls.push(command);
+          return { exitCode: result.exitCode, output: '' };
+        },
+      };
+    }
+
+    function makeDriverActions(opts: {
+      reviewResult?: TaskStatus | null;
+      commentResult?: { commentId: string } | null;
+    }): { actions: MemberSessionDriverActions; counters: { reviewCalls: number; commentCalls: number } } {
+      const counters = { reviewCalls: 0, commentCalls: 0 };
+      const actions: MemberSessionDriverActions = {
+        confirmReviewTransition: async () => {
+          counters.reviewCalls += 1;
+          return opts.reviewResult ?? null;
+        },
+        createSummaryComment: async () => {
+          counters.commentCalls += 1;
+          return opts.commentResult ?? null;
+        },
+      };
+      return { actions, counters };
+    }
+
+    // -------------------------------------------------------------------------
+    // 宣告的 verification command 不在 allowlist 上：整批拒絕，不執行任何 command，
+    // 也不呼叫 driver 的任何副作用。
+    // -------------------------------------------------------------------------
+    {
+      const taskId = 'agent-fixture-disallowed-cmd';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      const verify = makeVerify();
+      const driver = makeDriverActions({});
+      const result = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: null,
+        runner: makeRunner(0, makeOutput({ verificationCommands: ['rm -rf /'] })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+      assert.strictEqual(result.outcome, 'retryable_failure', '宣告不在 allowlist 上的 verification command 必須整批拒絕');
+      assert.match(result.evidence.rejectedReason ?? '', /allowlist/);
+      assert.strictEqual(result.evidenceChanged, false);
+      assert.strictEqual(verify.calls.length, 0, '被拒絕的 session 不應該執行任何 verification command');
+      assert.strictEqual(driver.counters.reviewCalls, 0, '被拒絕的 session 不應該呼叫 driver 的 Review readback');
+      assert.strictEqual(driver.counters.commentCalls, 0, '被拒絕的 session 不應該呼叫 driver 建立摘要留言');
+    }
+
+    // -------------------------------------------------------------------------
+    // false-success fixture 1：exit 0，但沒有真實 diff／comment／status 變更——
+    // 不管 runner 自稱多成功，都必須是 no_change。
+    // -------------------------------------------------------------------------
+    {
+      const taskId = 'agent-fixture-false-success-noop';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      const verify = makeVerify();
+      const driver = makeDriverActions({}); // reviewResult/commentResult 都缺席 -> null
+      const result = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: null,
+        runner: makeRunner(0, makeOutput({ summary: '（自稱）已完成' })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+      assert.strictEqual(result.outcome, 'no_change', 'exit 0 但沒有真實 diff／comment／status 變更時，不得回傳 progressed');
+      assert.strictEqual(result.evidenceChanged, false);
+      assert.strictEqual(result.evidence.commitSha, null);
+      assert.strictEqual(result.evidence.reviewTransitionConfirmed, false);
+      assert.strictEqual(result.evidence.summaryCommentId, null);
+    }
+
+    // -------------------------------------------------------------------------
+    // false-success fixture 2：產生有效 diff 後 exit 1。這裡刻意拆成兩個對照組，
+    // 把「exit code 只供診斷」的雙向意義都證明到：
+    //   (a) 證據齊全（commit+verification PASS+summary comment+Review transition）
+    //       時，即使 exitCode=1 仍然是 progressed——exit code 不會讓它變得更糟。
+    //   (b) 證據不齊全（缺 Review transition）時，即使有真實 commit，也不是
+    //       progressed，但同樣不會因為 exitCode=1 被誤判成比 no_change 更差的
+        //       retryable_failure——exit code 也不會讓它變得更好或更壞，一切只看證據。
+    // -------------------------------------------------------------------------
+    {
+      const taskId = 'agent-fixture-exit1-full-evidence';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      execFileSync('mkdir', ['-p', join(wt.path, 'feature')]);
+      writeFileSync(join(wt.path, 'feature', 'exit1-full.txt'), 'hello\n');
+
+      const verify = makeVerify({ exitCode: 0 });
+      const driver = makeDriverActions({ reviewResult: 'Review', commentResult: { commentId: 'comment-full-1' } });
+      const result = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: null,
+        runner: makeRunner(1, makeOutput({ summary: 'implemented X', verificationCommands: ['npm test'] })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+
+      assert.strictEqual(result.exitCode, 1);
+      assert.strictEqual(
+        result.outcome,
+        'progressed',
+        'exit code 只供診斷：四項證據齊全時，即使 exitCode=1 仍必須是 progressed',
+      );
+      assert.strictEqual(result.evidenceChanged, true);
+      assert.ok(result.evidence.commitSha, '必須產生真實 commit');
+      assert.strictEqual(g(['rev-parse', 'HEAD'], wt.path), result.evidence.commitSha);
+      const msg = g(['log', '-1', '--format=%B'], wt.path);
+      assert.ok(msg.includes(`Task-Id: ${taskId}`), '真實 commit 必須帶 Task-Id trailer（由 commitTaskChanges 蓋章）');
+    }
+    {
+      const taskId = 'agent-fixture-exit1-partial-evidence';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      execFileSync('mkdir', ['-p', join(wt.path, 'feature')]);
+      writeFileSync(join(wt.path, 'feature', 'exit1-partial.txt'), 'hello\n');
+
+      const verify = makeVerify({ exitCode: 0 });
+      // driver 沒有確認 Review transition（reviewResult 缺席 -> null）。
+      const driver = makeDriverActions({ commentResult: { commentId: 'comment-partial-1' } });
+      const result = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: null,
+        runner: makeRunner(1, makeOutput({ summary: 'partially implemented', verificationCommands: ['npm test'] })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+
+      assert.strictEqual(
+        result.outcome,
+        'no_change',
+        '有效 diff + exit 1，但缺 Review transition 證據：不得是 progressed，也不因 exit code 被判定成更差的 retryable_failure',
+      );
+      assert.strictEqual(result.evidenceChanged, false);
+      assert.ok(result.evidence.commitSha, '即使不是 progressed，真實 commit 仍然必須被獨立記錄下來');
+    }
+
+    // -------------------------------------------------------------------------
+    // false-success fixture 3（最清楚的一組）：member 有真實 commit，卻沒有
+    // Doing -> Review 的 driver readback——不得是 progressed。
+    // -------------------------------------------------------------------------
+    {
+      const taskId = 'agent-fixture-commit-no-review-transition';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      execFileSync('mkdir', ['-p', join(wt.path, 'feature')]);
+      writeFileSync(join(wt.path, 'feature', 'commit-no-review.txt'), 'hello\n');
+
+      const verify = makeVerify({ exitCode: 0 });
+      const driver = makeDriverActions({ commentResult: { commentId: 'comment-no-review-1' } });
+      const result = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: null,
+        runner: makeRunner(0, makeOutput({ summary: 'implemented Y', verificationCommands: ['npm test'] })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+
+      assert.strictEqual(result.outcome, 'no_change', 'member 有真實 commit，但 driver 沒有讀回 Doing -> Review：不得是 progressed');
+      assert.strictEqual(result.evidenceChanged, false);
+      assert.ok(result.evidence.commitSha, '真實 commit 必須存在（獨立於 outcome 判斷）');
+      assert.strictEqual(result.evidence.reviewTransitionConfirmed, false);
+      assert.strictEqual(driver.counters.reviewCalls, 1, '有真實 commit 時，必須真的呼叫 driver 的 Review readback（不是短路跳過）');
+    }
+
+    // -------------------------------------------------------------------------
+    // false-success fixture 4：重複 blocker 文字不算新證據。
+    // -------------------------------------------------------------------------
+    {
+      const taskId = 'agent-fixture-duplicate-blocker';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      const blockerText = '卡在缺少測試資料庫連線';
+      const verify = makeVerify();
+      const driver = makeDriverActions({});
+
+      const result = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: blockerText, // 上一次 attempt 回報的 blocker 跟這次一模一樣
+        runner: makeRunner(1, makeOutput({ blocker: blockerText })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+      assert.strictEqual(result.outcome, 'no_change');
+      assert.strictEqual(result.evidence.blockerRepeated, true, '重複的 blocker 文字必須被偵測為「不是新證據」');
+      assert.strictEqual(result.evidenceChanged, false, '重複 blocker 不得被當成有進展餵給 recordMemberAttempt');
+
+      // 對照組：blocker 文字不同——blockerRepeated 必須是 false，證明這個欄位真的
+      //在比對文字內容，不是恆真或恆假的裝飾欄位；但 outcome／evidenceChanged 依然
+      // 一樣（兩者只取決於是否真的有可驗證副作用，不取決於 blocker 文字是否換了）。
+      const differentBlockerResult = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: '卡在別的原因',
+        runner: makeRunner(1, makeOutput({ blocker: blockerText })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+      assert.strictEqual(differentBlockerResult.outcome, 'no_change');
+      assert.strictEqual(differentBlockerResult.evidence.blockerRepeated, false);
+      assert.strictEqual(differentBlockerResult.evidenceChanged, false, 'evidenceChanged 只取決於是否真的 progressed，不取決於 blocker 文字是否換了');
+    }
+
+    // -------------------------------------------------------------------------
+    // false-success fixture 5：試圖編輯程式的 Owner output 必須被拒絕。Owner 的
+    // read-only 契約不是靠信任 runner 自稱，而是獨立檢查 worktree 目前真正的變更。
+    // -------------------------------------------------------------------------
+    {
+      const taskId = 'agent-fixture-owner-edit-code';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      const reviewedHeadSha = wt.headSha;
+
+      const ownerRunner: OwnerSessionRunner = async (context) => {
+        // 模擬一個失控的 Owner-driving AI：明明被告知唯讀，卻直接編輯了 worktree 檔案。
+        execFileSync('mkdir', ['-p', join(context.worktreePath, 'feature')]);
+        writeFileSync(join(context.worktreePath, 'feature', 'sneaky-owner-edit.txt'), 'should not happen\n');
+        return {
+          exitCode: 0,
+          decision: {
+            action: 'accept',
+            rationale: `looks good, accepting ${reviewedHeadSha}`,
+            evidenceCommentIds: ['c1'],
+          },
+        };
+      };
+
+      const result = await runOwnerSession({
+        taskId,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        reviewedHeadSha,
+        worktreePath: wt.path,
+        runner: ownerRunner,
+      });
+
+      assert.strictEqual(result.valid, false, '試圖編輯程式的 Owner output 必須被拒絕，不能被當成有效決策');
+      assert.strictEqual(result.decision, null);
+      assert.match(result.rejectedReason ?? '', /read-only|edit/);
+
+      rmSync(join(wt.path, 'feature'), { recursive: true, force: true });
+    }
+
+    // -------------------------------------------------------------------------
+    // Owner accept 決策必須引用被驗收的 head SHA（OwnerDecision 沒有專屬欄位，
+    // 用 rationale 是否提到這個 SHA 當引用證據）；其餘 action（例如 dispatch）
+    // 不受此限制。
+    // -------------------------------------------------------------------------
+    {
+      const taskId = 'agent-fixture-owner-accept-sha';
+      const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
+      const reviewedHeadSha = wt.headSha;
+
+      const resultNoSha = await runOwnerSession({
+        taskId,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        reviewedHeadSha,
+        worktreePath: wt.path,
+        runner: async () => ({
+          exitCode: 0,
+          decision: { action: 'accept', rationale: 'looks fine to me', evidenceCommentIds: [] },
+        }),
+      });
+      assert.strictEqual(resultNoSha.valid, false, 'accept 決策沒有引用被驗收的 head SHA 必須被拒絕');
+      assert.strictEqual(resultNoSha.decision, null);
+
+      const resultWithSha = await runOwnerSession({
+        taskId,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        reviewedHeadSha,
+        worktreePath: wt.path,
+        runner: async () => ({
+          exitCode: 0,
+          decision: { action: 'accept', rationale: `accepting head ${reviewedHeadSha} after review`, evidenceCommentIds: ['c1'] },
+        }),
+      });
+      assert.strictEqual(resultWithSha.valid, true);
+      assert.strictEqual(resultWithSha.decision?.action, 'accept');
+
+      const resultDispatch = await runOwnerSession({
+        taskId,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        reviewedHeadSha,
+        worktreePath: wt.path,
+        runner: async () => ({
+          exitCode: 0,
+          decision: { action: 'dispatch', rationale: 'assign to member X', evidenceCommentIds: [] },
+        }),
+      });
+      assert.strictEqual(resultDispatch.valid, true, 'dispatch 等非 accept action 不受 head SHA 引用限制');
+      assert.strictEqual(resultDispatch.decision?.action, 'dispatch');
+    }
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+// =============================================================================
+// coordinator.ts：卡關轉移／Owner 介入狀態機（純函式，零 I/O）。委派 policy.ts
+// 既有的 recordMemberAttempt／shouldResumeHumanBlocked，這裡只驗證 wiring 本身。
+// =============================================================================
+
+function makeMemberSessionResult(
+  overrides: Partial<MemberSessionResult> & { outcome: ActionOutcome },
+): MemberSessionResult {
+  return {
+    outcome: overrides.outcome,
+    exitCode: overrides.exitCode ?? 0,
+    output: overrides.output ?? { summary: '', changedPaths: [], verificationCommands: [], blocker: null },
+    evidence: overrides.evidence ?? {
+      commitSha: null,
+      commitChangedPaths: [],
+      verificationPassed: false,
+      verificationRanCommands: [],
+      reviewTransitionConfirmed: false,
+      reviewStatus: null,
+      summaryCommentId: null,
+      blockerRepeated: false,
+      rejectedReason: null,
+    },
+    evidenceChanged: overrides.evidenceChanged ?? overrides.outcome === 'progressed',
+  };
+}
+
+function runCoordinatorTests(): void {
+  // ---------------------------------------------------------------------------
+  // 連續兩次無進展 member attempt -> Owner intervention；介入後再一次無進展 ->
+  // human_blocked。只有「剛好跨過門檻」的那一次呼叫才回報 true／建立留言。
+  // ---------------------------------------------------------------------------
+  {
+    const taskId = 'coord-stuck-task';
+    const run0 = makeTaskRun({ taskId, workspaceId: CANONICAL_WORKSPACE_ID, phase: 'doing' });
+    const evidenceSnapshot = makeEvidence({ taskId, status: 'Doing', commentCount: 1 });
+
+    const t1 = recordMemberSessionAttempt(
+      run0,
+      makeMemberSessionResult({ outcome: 'no_change', output: { summary: '', changedPaths: [], verificationCommands: [], blocker: 'stuck-1' } }),
+      evidenceSnapshot,
+    );
+    assert.strictEqual(t1.run.noProgressCount, 1);
+    assert.strictEqual(t1.run.ownerIntervened, false);
+    assert.strictEqual(t1.ownerInterventionRequested, false);
+    assert.strictEqual(t1.humanBlockedNotice, null);
+
+    const t2 = recordMemberSessionAttempt(
+      t1.run,
+      makeMemberSessionResult({ outcome: 'no_change', output: { summary: '', changedPaths: [], verificationCommands: [], blocker: 'stuck-2' } }),
+      evidenceSnapshot,
+    );
+    assert.strictEqual(t2.run.noProgressCount, 2);
+    assert.strictEqual(t2.run.ownerIntervened, true, '連續兩次無進展必須觸發 Owner 介入');
+    assert.strictEqual(t2.ownerInterventionRequested, true, '剛好跨過門檻的這次呼叫必須回報 ownerInterventionRequested');
+    assert.strictEqual(t2.humanBlockedNotice, null, '介入本身不等於 human_blocked');
+
+    const noProgress3 = makeMemberSessionResult({ outcome: 'no_change', output: { summary: '', changedPaths: [], verificationCommands: [], blocker: 'still-stuck' } });
+    const t3 = recordMemberSessionAttempt(t2.run, noProgress3, evidenceSnapshot);
+    assert.strictEqual(t3.run.phase, 'human_blocked', '介入後再一次無進展必須轉為 human_blocked');
+    assert.strictEqual(t3.ownerInterventionRequested, false, '已經介入過，不該重複回報 ownerInterventionRequested');
+    assert.ok(t3.humanBlockedNotice, '剛好轉入 human_blocked 的這次呼叫必須產生唯一的 @user09 留言');
+    assert.ok(t3.humanBlockedNotice!.content.includes('@user09'));
+    assert.ok(t3.humanBlockedNotice!.content.includes('still-stuck'));
+    assert.strictEqual(t3.humanBlockedNotice!.actionKey, humanBlockedActionKey(taskId, t3.run.noProgressCount));
+
+    // 冪等：完全相同的輸入再呼叫一次，必須得到完全相同、可去重的 action key。
+    const t3Again = recordMemberSessionAttempt(t2.run, noProgress3, evidenceSnapshot);
+    assert.strictEqual(t3Again.humanBlockedNotice!.actionKey, t3.humanBlockedNotice!.actionKey, '相同輸入必須得到相同、可去重的 action key');
+
+    // human_blocked 之後：證據未變化不得恢復；出現新證據（新留言、期限事件，或
+    // 尚未記錄的人工 task mutation）才恢復——直接委派 policy.ts 的比對邏輯。
+    assert.strictEqual(shouldResumeFromHumanBlocked(t3.run, evidenceSnapshot), false, '證據未變化時，human_blocked 不得自行恢復');
+    const changedEvidence = makeEvidence({ ...evidenceSnapshot, commentCount: evidenceSnapshot.commentCount + 1 });
+    assert.strictEqual(shouldResumeFromHumanBlocked(t3.run, changedEvidence), true, '出現新證據後必須可以恢復');
+  }
+
+  // ---------------------------------------------------------------------------
+  // 真正 progressed 的 session 必須重置 noProgressCount／ownerIntervened，且絕不
+  // 產生 human_blocked 留言——委派 policy.ts 的 recordMemberAttempt，不是這裡自己
+  // 重寫的邏輯。
+  // ---------------------------------------------------------------------------
+  {
+    const taskId = 'coord-recovering-task';
+    const stuckRun = makeTaskRun({
+      taskId,
+      workspaceId: CANONICAL_WORKSPACE_ID,
+      phase: 'doing',
+      noProgressCount: 1,
+      ownerIntervened: true,
+    });
+    const progressedSession = makeMemberSessionResult({
+      outcome: 'progressed',
+      evidence: {
+        commitSha: 'abc123',
+        commitChangedPaths: ['feature/x.txt'],
+        verificationPassed: true,
+        verificationRanCommands: ['npm test'],
+        reviewTransitionConfirmed: true,
+        reviewStatus: 'Review',
+        summaryCommentId: 'comment-1',
+        blockerRepeated: false,
+        rejectedReason: null,
+      },
+    });
+    const evidenceSnapshot = makeEvidence({ taskId, status: 'Review', commentCount: 2 });
+    const transition = recordMemberSessionAttempt(stuckRun, progressedSession, evidenceSnapshot);
+    assert.strictEqual(transition.run.noProgressCount, 0);
+    assert.strictEqual(transition.run.ownerIntervened, false, '真正的進展必須清除舊的 Owner 介入旗標');
+    assert.strictEqual(transition.ownerInterventionRequested, false);
+    assert.strictEqual(transition.humanBlockedNotice, null);
+  }
+}
+
 async function main(): Promise<void> {
   await runApiTests();
   await runGitTests();
+  await runAgentTests();
+  runCoordinatorTests();
 }
 
 main()
