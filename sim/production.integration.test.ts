@@ -688,6 +688,182 @@ async function testSameTickDoesNotDoubleBookAssignee(): Promise<void> {
 }
 
 // =============================================================================
+// testAssignMemberDoesNotCollideWithOwnerDispatch（Important-1 殘留缺口回歸測試）：
+// 同一輪迭代裡，`selectCoordinatorActions` 把 deferredAssignment 的 `assign_member`
+// action（policy.ts 固定指派給 user05）排在一般 `owner_dispatch` action 前面，兩者
+// 共用同一份 frozen snapshot。如果 dispatchAssignMember 沒有把它解出的 assigneeId
+// 記進 claimedAssigneesThisIteration，緊接著同一輪的 owner_dispatch 呼叫
+// resolveDispatchAssignee 時，user05 在這份快照裡仍然「看起來」空閒，可能被重複指派
+// 給另一個 unassigned Todo task——同一人同一輪被指派兩個任務。這裡用最小 fixture
+// 重現：一個真的滿足 gate（938aa035 Done）的 deferredAssignment task（027c0052）+
+// 一個一般 unassigned Todo task，候選 member 只有 user05 跟 member2 兩人，且刻意讓
+// user05 的 userId 排序在 member2 之前（sort 出來會是「第一個空閒」），驗證一般
+// Todo task 最終落在 member2 身上，而不是被重複指派給已經拿到 deferredAssignment
+// 的 user05。
+// =============================================================================
+async function testAssignMemberDoesNotCollideWithOwnerDispatch(): Promise<void> {
+  const repoRoot = initTestRepo();
+  const dbDir = mkdtempSync(join(tmpdir(), 'sim-production-integration-collide-db-'));
+  const dbPath = join(dbDir, 'coordinator.db');
+
+  const GENERIC_TASK_ID = 'generic-unassigned-todo';
+  const GATE_TASK_ID = CUTOVER_TASKS.deferredAssignment.afterTaskId; // 938aa035...（也是 activeReview.taskId）
+  const DEFERRED_TASK_ID = CUTOVER_TASKS.deferredAssignment.taskId; // 027c0052...
+  // 刻意讓 user05 排序在 member2 之前，讓「若沒有正確互相看見對方認領狀態，兩個 task
+  // 都會被重複指派給 user05（排序後第一個空閒候選人）」這件事在測試裡是可辨識的。
+  const USER05_ID = 'aaa-user05-fake-id';
+  const MEMBER2_ID = 'zzz-member2-fake-id';
+
+  interface CollideTaskState {
+    status: string;
+    assigneeId: string | null;
+    version: number;
+  }
+  const tasks: Record<string, CollideTaskState> = {
+    [GATE_TASK_ID]: { status: 'Done', assigneeId: USER05_ID, version: 9 },
+    [DEFERRED_TASK_ID]: { status: 'Todo', assigneeId: null, version: 1 },
+    [GENERIC_TASK_ID]: { status: 'Todo', assigneeId: null, version: 1 },
+  };
+  const comments: Record<string, FakeComment[]> = { [GATE_TASK_ID]: [], [DEFERRED_TASK_ID]: [], [GENERIC_TASK_ID]: [] };
+  let commentSeq = 0;
+
+  const handler = (req: IncomingMessage, res: ServerResponse) => {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (req.url === '/api/health' && req.method === 'GET') return json(200, { status: 'ok', db: true, rev: 'fake-rev' });
+    if (req.url === '/api/auth/login' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'tt_session=owner-session; HttpOnly; Path=/' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.url === `/api/workspaces/${CANONICAL_WORKSPACE_ID}/tasks` && req.method === 'GET') {
+      return json(
+        200,
+        Object.entries(tasks).map(([taskId, t]) => ({
+          task_id: taskId,
+          workspace_id: CANONICAL_WORKSPACE_ID,
+          title: `task ${taskId}`,
+          status: t.status,
+          assignee_id: t.assigneeId,
+          due_at: null,
+          version: t.version,
+          updated_at: null,
+        })),
+      );
+    }
+    if (req.url === `/api/workspaces/${MAIN_WORKSPACE_ID}/tasks` && req.method === 'GET') return json(200, []);
+    if (req.url === `/api/workspaces/${CANONICAL_WORKSPACE_ID}/members` && req.method === 'GET') {
+      return json(200, [
+        { user_id: OWNER_ID, role: 'Owner', joined_at: '2026-01-01T00:00:00.000Z', email: OWNER_EMAIL, name: 'Owner' },
+        { user_id: USER09_ID, role: 'Member', joined_at: '2026-01-01T00:00:00.000Z', email: USER09_EMAIL, name: 'User09' },
+        {
+          user_id: USER05_ID,
+          role: 'Member',
+          joined_at: '2026-01-01T00:00:00.000Z',
+          email: CUTOVER_TASKS.deferredAssignment.assigneeEmail,
+          name: 'User05',
+        },
+        { user_id: MEMBER2_ID, role: 'Member', joined_at: '2026-01-01T00:00:00.000Z', email: 'member2@test.local', name: 'Member2' },
+      ]);
+    }
+    for (const taskId of [GATE_TASK_ID, DEFERRED_TASK_ID, GENERIC_TASK_ID]) {
+      if (req.url === `/api/tasks/${taskId}` && req.method === 'GET') {
+        const t = tasks[taskId];
+        return json(200, {
+          task_id: taskId,
+          workspace_id: CANONICAL_WORKSPACE_ID,
+          title: `task ${taskId}`,
+          status: t.status,
+          assignee_id: t.assigneeId,
+          due_at: null,
+          version: t.version,
+          updated_at: null,
+        });
+      }
+      if (req.url === `/api/tasks/${taskId}` && req.method === 'PATCH') {
+        readJsonBody(req)
+          .then((body) => {
+            if ('assignee' in body) tasks[taskId].assigneeId = body.assignee;
+            if ('status' in body) tasks[taskId].status = body.status;
+            tasks[taskId].version++;
+            json(200, { ok: true });
+          })
+          .catch(() => json(400, { error: 'bad body' }));
+        return;
+      }
+      if (req.url === `/api/tasks/${taskId}/comments` && req.method === 'GET') return json(200, comments[taskId]);
+      if (req.url === `/api/tasks/${taskId}/comments` && req.method === 'POST') {
+        readJsonBody(req)
+          .then((body) => {
+            const commentId = `collide-comment-${++commentSeq}`;
+            comments[taskId].push({
+              comment_id: commentId,
+              task_id: taskId,
+              user_id: OWNER_ID,
+              content: body.content,
+              created_at: '2026-01-01T00:00:00.000Z',
+            });
+            json(201, { id: commentId });
+          })
+          .catch(() => json(400, { error: 'bad body' }));
+        return;
+      }
+    }
+    if (req.url === '/api/notifications' && req.method === 'GET') return json(200, []);
+    json(404, { error: 'not found' });
+  };
+
+  const { port, close } = await startFakeServer(handler);
+  try {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const ownerSessionRunner: OwnerSessionRunner = async () => ({
+      exitCode: 0,
+      decision: { action: 'dispatch', rationale: 'assign whoever is free', evidenceCommentIds: [] },
+    });
+    const memberSessionRunner: MemberSessionRunner = async () => ({
+      exitCode: 0,
+      output: { summary: '', changedPaths: [], verificationCommands: [], blocker: 'not implemented yet in this test' },
+    });
+
+    const result = await runOnce({
+      live: true,
+      baseUrl,
+      dbPath,
+      repoRoot,
+      now: () => new Date(),
+      isServiceActive: async () => true,
+      allowedPrefixes: ['feature/'],
+      runOwnerSession: ownerSessionRunner,
+      runMemberSession: memberSessionRunner,
+      sleep: async () => {},
+    });
+
+    const deferredAssignee = tasks[DEFERRED_TASK_ID].assigneeId;
+    const genericAssignee = tasks[GENERIC_TASK_ID].assigneeId;
+
+    assert.strictEqual(
+      deferredAssignee,
+      USER05_ID,
+      `deferredAssignment task 應該固定指派給 user05，實際 lines:\n${result.lines.join('\n')}`,
+    );
+    assert.ok(genericAssignee, `一般 unassigned Todo task 也應該在同一輪被指派出去，實際 lines:\n${result.lines.join('\n')}`);
+    assert.notStrictEqual(
+      genericAssignee,
+      USER05_ID,
+      'user05 已經在同一輪迭代裡被 deferredAssignment 認領，owner_dispatch 不得把同一個人再指派給另一個 task（WIP1 違規）',
+    );
+    assert.strictEqual(genericAssignee, MEMBER2_ID, '排除 user05 之後，一般 Todo task 應該落到唯一剩下的候選 member2 身上');
+  } finally {
+    await close();
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(dbDir, { recursive: true, force: true });
+  }
+}
+
+// =============================================================================
 // testExitCodeCutoverPrerequisiteMissing：`00123ef0...`（completedPrerequisite）
 // 存在但完成證據鏈不完整（status 不是 Done）——exit 2，dry-run 與 live 都要驗證，且
 // 兩者都必須零 mutation（live 模式必須在呼叫任何 AI runner／dispatch 之前就短路，
@@ -1031,6 +1207,7 @@ async function main(): Promise<void> {
   await testHappyPathTickLifecycle();
   await testStuckDoingRecoversAfterWorktreeFailure();
   await testSameTickDoesNotDoubleBookAssignee();
+  await testAssignMemberDoesNotCollideWithOwnerDispatch();
   await testExitCodeCutoverPrerequisiteMissing();
   await testExitCodeDiscoveryUnavailable();
   testDescribeCutoverDisposition();

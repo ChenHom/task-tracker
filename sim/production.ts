@@ -875,7 +875,7 @@ async function dispatchAction(
       case 'owner_dispatch':
         return await dispatchOwnerDispatch(deps, action, snapshot, claimed, claimedAssigneesThisIteration);
       case 'assign_member':
-        return await dispatchAssignMember(deps, action, claimed);
+        return await dispatchAssignMember(deps, action, claimed, claimedAssigneesThisIteration);
       case 'member_work':
         return await dispatchMemberWork(deps, action, claimed);
       case 'owner_review':
@@ -1029,8 +1029,26 @@ async function dispatchOwnerDispatch(
   return assignAndStartDoing(deps, action, run, assigneeId);
 }
 
-async function dispatchAssignMember(deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun): Promise<'progressed' | 'no_change'> {
+async function dispatchAssignMember(
+  deps: ResolvedDeps,
+  action: CoordinatorAction,
+  run: TaskRun,
+  claimedAssigneesThisIteration: Set<string>,
+): Promise<'progressed' | 'no_change'> {
   if (!action.assigneeId) return 'no_change';
+
+  // 雙向碰撞防護：這一輪迭代裡，assign_member（policy.ts 固定指派，例如
+  // deferredAssignment／user05）跟 owner_dispatch（一般 unassigned Todo 的
+  // resolveDispatchAssignee heuristic）共用同一個 claimedAssigneesThisIteration。
+  // 目前 selectCoordinatorActions 把固定 cutover disposition（含 assign_member）排在
+  // 一般 generic candidates（含 owner_dispatch）前面，所以正常情況下這裡會先跑、
+  // owner_dispatch 後跑，靠 resolveDispatchAssignee 那邊的檢查就夠了；但這裡仍然主動
+  // 檢查反過來的方向——如果同一輪稍早已經有別的 dispatch（不論哪一種 kind）把這個
+  // assigneeId 記為已認領，就不得再無條件 PATCH 造成雙重指派，保守地延後到下一個 tick
+  // 重新評估（此時完全還沒有任何 mutation，延後是安全的）。
+  if (claimedAssigneesThisIteration.has(action.assigneeId)) return 'no_change';
+  claimedAssigneesThisIteration.add(action.assigneeId);
+
   return assignAndStartDoing(deps, action, run, action.assigneeId);
 }
 
