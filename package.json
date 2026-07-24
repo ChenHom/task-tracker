@@ -11,6 +11,7 @@
     "test": "npm run lint && npm run typecheck && node --import tsx src/test.ts && node --import tsx sim/run.test.ts && node --import tsx sim/escalateNotify.test.ts",
     "seed": "tsx src/seed.ts",
     "sim": "tsx sim/run.ts",
+    "sim:production": "tsx sim/production.ts",
     "lint": "eslint public/js"
   },
   "devDependencies": {

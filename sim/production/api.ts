@@ -123,6 +123,57 @@ function mapNotification(row: WireNotificationRow): NotificationSnapshot {
   };
 }
 
+export interface MemberSnapshot {
+  userId: string;
+  role: string;
+  email: string;
+  name: string;
+}
+
+interface WireMemberRow {
+  user_id: string;
+  role: string;
+  joined_at: string;
+  email: string;
+  name: string;
+}
+
+function mapMember(row: WireMemberRow): MemberSnapshot {
+  return { userId: row.user_id, role: row.role, email: row.email, name: row.name };
+}
+
+export interface AuditEventSnapshot {
+  id: number;
+  aggregateId: string;
+  aggregateVersion: number;
+  eventType: string;
+  payload: Record<string, unknown>;
+  actorId: string;
+  occurredAt: string;
+}
+
+interface WireAuditEventRow {
+  id: number;
+  aggregate_id: string;
+  aggregate_version: number;
+  event_type: string;
+  payload: Record<string, unknown>;
+  metadata: { actor_id: string };
+  occurred_at: string;
+}
+
+function mapAuditEvent(row: WireAuditEventRow): AuditEventSnapshot {
+  return {
+    id: row.id,
+    aggregateId: row.aggregate_id,
+    aggregateVersion: row.aggregate_version,
+    eventType: row.event_type,
+    payload: row.payload,
+    actorId: row.metadata.actor_id,
+    occurredAt: row.occurred_at,
+  };
+}
+
 export class TaskTrackerClient {
   private readonly baseUrl: URL;
   private readonly timeoutMs: number;
@@ -349,5 +400,30 @@ export class TaskTrackerClient {
     const res = await this.safeRequest('GET', '/api/notifications');
     if (res.status !== 200) throw new Error(`listNotifications failed: HTTP ${res.status} ${res.body}`);
     return (JSON.parse(res.body) as WireNotificationRow[]).map(mapNotification);
+  }
+
+  /** 目前登入者的 canonical identity（`/api/auth/me`）。唯讀，供 production.ts 解析 canonical Owner ID。 */
+  async whoAmI(): Promise<{ id: string; email: string; name: string }> {
+    const res = await this.safeRequest('GET', '/api/auth/me');
+    if (res.status !== 200) throw new Error(`whoAmI failed: HTTP ${res.status} ${res.body}`);
+    return JSON.parse(res.body) as { id: string; email: string; name: string };
+  }
+
+  /** 一個 workspace 的成員清單（含 email -> canonical user ID 對應）。唯讀。 */
+  async listMembers(workspaceId: string): Promise<MemberSnapshot[]> {
+    const res = await this.safeRequest('GET', `/api/workspaces/${encodeURIComponent(workspaceId)}/members`);
+    if (res.status !== 200) throw new Error(`listMembers failed: HTTP ${res.status} ${res.body}`);
+    return (JSON.parse(res.body) as WireMemberRow[]).map(mapMember);
+  }
+
+  /**
+   * 一個 aggregate 的完整 audit trail（`/api/audit?aggregate_id=...`）。唯讀，供
+   * production.ts 驗證 `00123ef0...` 的 assignment audit event（見 policy.ts 的
+   * `PrerequisiteEvidence.assignmentEvent`）。
+   */
+  async getAuditTrail(aggregateId: string): Promise<AuditEventSnapshot[]> {
+    const res = await this.safeRequest('GET', `/api/audit?aggregate_id=${encodeURIComponent(aggregateId)}`);
+    if (res.status !== 200) throw new Error(`getAuditTrail failed: HTTP ${res.status} ${res.body}`);
+    return (JSON.parse(res.body) as WireAuditEventRow[]).map(mapAuditEvent);
   }
 }

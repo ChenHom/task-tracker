@@ -1,0 +1,10 @@
+[Unit]
+Description=Task Tracker production sim coordinator
+After=task-tracker.service
+Requires=task-tracker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hom/code/task-tracker
+ExecStart=/home/hom/.nvm/versions/node/v24.3.0/bin/npx tsx sim/production.ts --once --live
+Environment=PATH=/home/hom/.nvm/versions/node/v24.3.0/bin:/usr/local/bin:/usr/bin:/bin

@@ -676,6 +676,34 @@ export type RevertMasterMergeResult = { ok: true; revertSha: string } | { ok: fa
  * 並回報原因，交由呼叫端把這個當成需要人工介入的訊號，而不是 revert 一個可能完全
  * 不相干的 commit。
  */
+// =============================================================================
+// 任務 8：唯讀 ancestry／commit message 查詢（供 production.ts 驗證
+// `00123ef0...` 的完成證據鏈——acceptedHead.hasTaskIdTrailer、
+// acceptedMerge.headIsAncestor、liveRevIsMergeOrDescendant）。純讀取，
+// 不修改任何 ref、不建立 worktree。
+// =============================================================================
+
+/** `ancestorSha` 是否真的是 `descendantSha` 的祖先（或就是同一個 commit）。唯讀查詢，不 throw。 */
+export async function isAncestor(repoRoot: string, ancestorSha: string, descendantSha: string): Promise<boolean> {
+  if (ancestorSha === descendantSha) return true;
+  try {
+    await execFileAsync('git', ['merge-base', '--is-ancestor', ancestorSha, descendantSha], { cwd: repoRoot });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 讀取一個 commit 的完整 commit message（供呼叫端檢查 `Task-Id:` trailer 等）。 */
+export async function getCommitMessage(repoRoot: string, sha: string): Promise<string> {
+  return git(['log', '-1', '--format=%B', sha], repoRoot);
+}
+
+/** 解析任一 ref（預設 `HEAD`）目前指向的 commit SHA。唯讀查詢。 */
+export async function getHeadSha(repoRoot: string, ref = 'HEAD'): Promise<string> {
+  return git(['rev-parse', ref], repoRoot);
+}
+
 export async function revertMasterMerge(repoRoot: string, mergeSha: string): Promise<RevertMasterMergeResult> {
   const currentHead = await git(['rev-parse', 'master'], repoRoot);
   if (currentHead !== mergeSha) {
