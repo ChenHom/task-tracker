@@ -627,17 +627,17 @@ git commit -m "feat(sim): report verified completions"
 - 新增：`sim/production.integration.test.ts`
 - 修改：`package.json`
 
-- [ ] **步驟 1：新增 no-AI integration test。**
+- [x] **步驟 1：新增 no-AI integration test。**
 
 使用暫存 SQLite app DB、fake task-tracker HTTP server、fake agent adapter 與暫存 Git repo。執行一個 tick，從 Todo assignment 走到 Review 及模擬 deployment／completion；重新開啟 state 後，證明第二個 tick 不會建立重複副作用。
 
-- [ ] **步驟 2：執行 integration test，確認失敗。**
+- [x] **步驟 2：執行 integration test，確認失敗。**
 
 執行：`npx tsx sim/production.integration.test.ts`
 
 預期：FAIL，因為 production entry point 尚不存在。
 
-- [ ] **步驟 3：實作安全 CLI 模式。**
+- [x] **步驟 3：實作安全 CLI 模式。**
 
 - `npx tsx sim/production.ts --once` 執行唯讀 discovery 並列印 planned action；不可呼叫 AI 或 mutation。
 - `npx tsx sim/production.ts --once --live` 允許 AI 與 mutation，只供明確人工授權或 systemd 使用。
@@ -652,7 +652,7 @@ git commit -m "feat(sim): report verified completions"
 
 每個 tick 記錄 scheduled／start／end 時間、app rev、各 workspace 的 discovered／processed／skipped／error 數、AI call、task transition、deploy result、notification result 與 aggregate outcome。獨立 task error 會被彙整；任何 partial failure 都會在所有可安全完成的獨立 action 結束後，使 service 以非零碼結束。
 
-- [ ] **步驟 4：新增 systemd unit，安裝後保持 disabled。**
+- [x] **步驟 4：新增 systemd unit，安裝後保持 disabled。**
 
 `deploy/sim-coordinator.service`:
 
@@ -684,7 +684,7 @@ Unit=sim-coordinator.service
 WantedBy=timers.target
 ```
 
-- [ ] **步驟 5：新增 package script 並執行 no-AI 驗證。**
+- [x] **步驟 5：新增 package script 並執行 no-AI 驗證。**
 
 為 CLI 新增 `sim:production`。不得 enable 或 start timer。
 
@@ -698,7 +698,7 @@ npx tsc -p sim/tsconfig.json --noEmit
 
 預期：integration PASS；service 為 active、health HTTP 200；dry-run 必須逐筆列出 `938aa035... -> user06／active`、`6384b6f4... -> queued／unassigned`、`00123ef0... -> 任務 1 已完成前置條件／cutover 無 action`、`10e65231... -> 前置條件通過後機械式結案`、`027c0052... -> 等待 938 Done 後交給 user05`，另列 `mainPolicy`／`legacyCanonicalDiscussion` 為 excluded，但不得建立 comment、task change、branch、AI call 或 deploy。若 `00123ef0...` 的任一完成證據缺漏，dry-run 必須明確回報 `CutoverPrerequisiteMissing`、exit `2` 與零個 planned mutation；server／health／owner login／required workspace readback 不可用時回報 `DiscoveryUnavailable`、exit `3` 與零個 planned mutation。
 
-- [ ] **步驟 6：提交 production entry point。**
+- [x] **步驟 6：提交 production entry point。**
 
 ```bash
 git add sim/production.ts sim/production.integration.test.ts deploy/sim-coordinator.service deploy/sim-coordinator.timer package.json
