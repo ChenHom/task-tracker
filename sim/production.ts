@@ -460,7 +460,7 @@ async function gatherPrerequisiteEvidence(
 // 不影響 selectCoordinatorActions 本身的決策（那才是唯一權威的排程來源）。
 // =============================================================================
 
-function describeCutoverDisposition(
+export function describeCutoverDisposition(
   tasks: TaskSnapshot[],
   userIdsByEmail: Record<string, string>,
   prerequisiteSatisfied: boolean,
@@ -477,7 +477,24 @@ function describeCutoverDisposition(
   const activeReviewTask = tasks.find((t) => t.taskId === CUTOVER_TASKS.activeReview.taskId);
   lines.push(`${shortId(CUTOVER_TASKS.activeReview.taskId)} -> ${shortName(activeReviewTask?.assigneeId ?? null)}／active`);
 
-  lines.push(`${shortId(CUTOVER_TASKS.queuedReview.taskId)} -> queued／unassigned`);
+  // queuedReview（6384b6f4...）：CUTOVER_TASKS.queuedReview.afterTaskId 目前只是 policy.ts
+  // 裡的一個資料欄位，selectCoordinatorActions 完全沒有讀它——真正把這個 task 機械式退回
+  // Todo／unassigned／queued checkpoint（Review -> Doing -> Todo -> 清除 assignee 三步
+  // PATCH）是任務 9 sim/production/migrate.ts 的 `--apply` 職責，這裡不得也不需要提前
+  // 實作那段 DEP-gating／bootstrap 邏輯：任務 11 的 cutover 順序保證 migrate.ts --apply
+  // 一定先跑過，才會啟用正式 live timer，所以 selectCoordinatorActions 目前不用特別處理
+  // 這個 task 也不會有 mutation-safety 風險。但 disposition 報表本身必須誠實反映「現在」
+  // 的真實 live 狀態，不能不看 tasks 就印一句寫死的 "queued／unassigned"——那句話只有在
+  // task 9 真的 reconcile 完成、live 狀態也確實收斂之後才是事實。
+  const queuedReviewTask = tasks.find((t) => t.taskId === CUTOVER_TASKS.queuedReview.taskId);
+  const queuedReviewConverged = queuedReviewTask?.status === 'Todo' && !queuedReviewTask.assigneeId;
+  lines.push(
+    `${shortId(CUTOVER_TASKS.queuedReview.taskId)} -> ${
+      queuedReviewConverged
+        ? 'queued／unassigned'
+        : `尚待任務 9 reconciliation（目前：${queuedReviewTask?.status ?? '未知'}／${shortName(queuedReviewTask?.assigneeId ?? null)}）`
+    }`,
+  );
 
   lines.push(
     `${shortId(CUTOVER_TASKS.completedPrerequisite.taskId)} -> ${
