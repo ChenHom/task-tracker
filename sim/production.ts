@@ -70,6 +70,7 @@ import {
   type MemberSessionRunner,
   type VerificationCommandRunner,
   type MemberSessionDriverActions,
+  type MemberSessionResult,
 } from './production/agent';
 import {
   recordMemberSessionAttempt,
@@ -82,6 +83,7 @@ import {
   type IntegrationCommandRunner,
   type SendDiscordMessage,
   type FatalCoordinatorError,
+  type MemberAttemptTransition,
 } from './production/coordinator';
 import { postCompletionAndTransitionToDone } from './production/completion';
 import type { TaskRun, WorkPhase } from './production/types';
@@ -806,9 +808,14 @@ async function runLiveDispatchLoop(deps: ResolvedDeps, tickId: string): Promise<
 
     summary.discovered += actions.length;
     let progressedAny = false;
+    // 同一輪迭代裡，所有 action 都是從同一次 gatherSnapshot 算出來的同一份（凍結）
+    // snapshot——如果這一輪同時有兩個以上的 unassigned Todo task 要 dispatch，
+    // resolveDispatchAssignee 不能只看這份凍結快照，還必須知道「這一輪稍早已經被
+    // 指派出去的人」，否則兩個 task 會各自獨立解出同一個「目前沒人在忙」的 member。
+    const claimedAssigneesThisIteration = new Set<string>();
     for (const action of actions) {
       try {
-        const outcome = await dispatchAction(deps, action, snapshot, tickId);
+        const outcome = await dispatchAction(deps, action, snapshot, tickId, claimedAssigneesThisIteration);
         if (outcome === 'progressed') {
           summary.processed++;
           progressedAny = true;
@@ -849,6 +856,7 @@ async function dispatchAction(
   action: CoordinatorAction,
   snapshot: CoordinatorSnapshot,
   tickId: string,
+  claimedAssigneesThisIteration: Set<string>,
 ): Promise<'progressed' | 'no_change' | 'skipped'> {
   let run = getTaskRun(deps.db, action.taskId);
   if (!run) {
@@ -865,7 +873,7 @@ async function dispatchAction(
   try {
     switch (action.kind) {
       case 'owner_dispatch':
-        return await dispatchOwnerDispatch(deps, action, snapshot, claimed);
+        return await dispatchOwnerDispatch(deps, action, snapshot, claimed, claimedAssigneesThisIteration);
       case 'assign_member':
         return await dispatchAssignMember(deps, action, claimed);
       case 'member_work':
@@ -887,10 +895,24 @@ async function dispatchAction(
 // 建立 task 專屬 worktree／branch。單欄位 PATCH、每步都 read back、固定 action key。
 // ---------------------------------------------------------------------------
 
-function resolveDispatchAssignee(members: MemberSnapshot[], tasks: TaskSnapshot[], excludeEmails: string[]): string | null {
+/**
+ * `alreadyClaimedThisBatch` 是同一個 tick 迭代裡、比這個 action 更早被 dispatch 且
+ * 已經解出 assigneeId 的集合——`tasks`（來自單一 gatherSnapshot 快照）在整個
+ * runLiveDispatchLoop 的一輪迭代裡是共用、凍結的同一份資料，同一輪裡先前的
+ * owner_dispatch 呼叫即使剛把某個 member 指派出去，這份快照也不會反映出來。沒有這個
+ * 參數，同一輪裡兩個同時 idle 的 unassigned Todo task 會各自獨立算出「目前沒人在忙」，
+ * 雙雙解到同一個「第一個空閒」member，造成真正的 WIP1 違規（同一人同時扛两個 task）。
+ */
+function resolveDispatchAssignee(
+  members: MemberSnapshot[],
+  tasks: TaskSnapshot[],
+  excludeEmails: string[],
+  alreadyClaimedThisBatch: ReadonlySet<string>,
+): string | null {
   const busy = new Set(
     tasks.filter((t) => t.status === 'Doing' || t.status === 'Review').map((t) => t.assigneeId).filter((id): id is string => Boolean(id)),
   );
+  for (const id of alreadyClaimedThisBatch) busy.add(id);
   const candidates = members.filter((m) => !excludeEmails.includes(m.email)).sort((a, b) => (a.userId < b.userId ? -1 : 1));
   const free = candidates.find((m) => !busy.has(m.userId));
   return free?.userId ?? null;
@@ -961,25 +983,48 @@ async function dispatchOwnerDispatch(
   action: CoordinatorAction,
   snapshot: CoordinatorSnapshot,
   run: TaskRun,
+  claimedAssigneesThisIteration: Set<string>,
 ): Promise<'progressed' | 'no_change'> {
   const members = await deps.ownerClient.listMembers(action.workspaceId);
-  const assigneeId = resolveDispatchAssignee(members, snapshot.tasks, [OWNER_EMAIL, USER09_EMAIL]);
+  const assigneeId = resolveDispatchAssignee(members, snapshot.tasks, [OWNER_EMAIL, USER09_EMAIL], claimedAssigneesThisIteration);
   if (!assigneeId) return 'no_change';
 
   const task = snapshot.tasks.find((t) => t.taskId === action.taskId);
   if (!task) return 'no_change';
 
-  // Owner 的分類／派工理由由 AI session 產生；實際指派機制是機械式的（見上）。這裡直接呼叫
-  // 注入的原始 runner，不經過 agent.ts 的 runOwnerSession() 包裝——包裝層的唯讀違規檢查
-  // 是針對「有真實 task worktree 可能被誤改」設計的，dispatch 階段還沒有 worktree（要指派
-  // 給誰、之後才建立），沒有東西可以被誤改，不適用那層檢查。
-  await deps.runOwnerSession!({
+  // Owner 的派工理由由 AI session 產生，而且真的會被使用——貼成一則 `【OWNER派工】`
+  // 留言（呼應 dispatchOwnerReview 的 `【OWNER退回】`、dispatchMainDiscussion 的
+  // 結論留言，都是把 decision.rationale 真正記錄下來，不是叫了一次 AI 卻把結果丟掉）。
+  // 這裡直接呼叫注入的原始 runner，不經過 agent.ts 的 runOwnerSession() 包裝——包裝層
+  // 的唯讀違規檢查是針對「有真實 task worktree 可能被誤改」設計的，dispatch 階段還沒有
+  // worktree（要指派給誰、之後才建立），沒有東西可以被誤改，不適用那層檢查。
+  const { decision } = await deps.runOwnerSession!({
     taskId: action.taskId,
     acceptanceCriteria: task.title,
     comments: [],
     reviewedHeadSha: '',
     worktreePath: '',
   });
+  if (!decision) return 'no_change'; // AI 沒有給出可用的決策，這次不指派，下一個 tick 重新評估
+
+  const noticeKey = `dispatch_notice:${action.taskId}:${assigneeId}`;
+  if (!getAction(deps.db, noticeKey)) {
+    beginAction(deps.db, { actionKey: noticeKey, taskId: action.taskId, kind: 'dispatch_notice' }, deps.now());
+    try {
+      await deps.ownerClient.postCommentOnce(action.taskId, `【OWNER派工】${decision.rationale}\naction_key: ${noticeKey}`, noticeKey);
+      completeAction(deps.db, noticeKey, null, deps.now());
+    } catch (err) {
+      failAction(deps.db, noticeKey, (err as Error).message, deps.now());
+      throw err;
+    }
+  }
+
+  // 這一輪迭代裡先於本次 dispatch 已經解出的 assignee，必須在真正 PATCH assignee 之前
+  // 就先記入「已認領」，讓同一輪要 dispatch 的其他 unassigned Todo task 不會再把同一個
+  // 人算成空閒（見 resolveDispatchAssignee 的註解）。即使接下來的 assignAndStartDoing
+  // 因為 worktree 建立失敗而丟出例外，assignee PATCH 本身很可能已經先成功落地，這裡
+  // 仍然保守地把這個人視為已認領。
+  claimedAssigneesThisIteration.add(assigneeId);
 
   return assignAndStartDoing(deps, action, run, assigneeId);
 }
@@ -994,14 +1039,121 @@ async function dispatchAssignMember(deps: ResolvedDeps, action: CoordinatorActio
 // 摘要留言）走 ownerClient；no-progress／human_blocked 狀態機交給 coordinator.ts。
 // ---------------------------------------------------------------------------
 
+/**
+ * 把一次「完整嘗試但沒有可驗證進展」的結果（不論是真正的 member session 失敗，還是
+ * worktree 建立這種更早期的機械式失敗）餵進 policy.ts 既有的 no-progress／Owner
+ * 介入／human_blocked 狀態機，並在剛好轉入 human_blocked 時貼出唯一、去重的
+ * `@user09` 留言。兩個呼叫端（dispatchMemberWork 正常路徑、worktree 重試失敗路徑）
+ * 共用同一份邏輯，不重寫兩次——這正是修正「worktree 建立失敗後永久 silent no_change」
+ * 這個 Critical bug的核心：不管失敗發生在哪一步，都必須流進同一套會累計、會升級、
+ * 最終會留下人類看得到的訊號的狀態機，不能有任何一條路徑悄悄繞過它。
+ */
+async function applyMemberAttemptTransition(
+  deps: ResolvedDeps,
+  action: CoordinatorAction,
+  run: TaskRun,
+  result: MemberSessionResult,
+  task: TaskSnapshot,
+): Promise<MemberAttemptTransition> {
+  const currentEvidence = await buildTaskEvidence(deps.ownerClient, task);
+  const transition = recordMemberSessionAttempt(run, result, currentEvidence);
+
+  if (transition.humanBlockedNotice) {
+    const key = transition.humanBlockedNotice.actionKey;
+    if (!getAction(deps.db, key)) {
+      beginAction(deps.db, { actionKey: key, taskId: action.taskId, kind: 'human_blocked_notice' }, deps.now());
+      try {
+        await deps.ownerClient.postCommentOnce(action.taskId, transition.humanBlockedNotice.content, key);
+        completeAction(deps.db, key, null, deps.now());
+      } catch (err) {
+        failAction(deps.db, key, (err as Error).message, deps.now());
+      }
+    }
+  }
+
+  return transition;
+}
+
 async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun): Promise<'progressed' | 'no_change'> {
-  if (!run.branch) return 'no_change';
-  const worktreePath = taskWorktreePath(deps.repoRoot, action.taskId);
   const task = await deps.ownerClient.getTask(action.taskId);
+
+  let workingRun = run;
+  if (!workingRun.branch) {
+    // 上一次 dispatch（owner_dispatch／assign_member）在 assign＋Doing PATCH 都已經
+    // durable 完成之後才呼叫 ensureTaskWorktree；如果那一步曾經失敗（disk full／
+    // 上一輪被殺掉留下的 stale lock／權限錯誤……），看板這時已經是 Doing／已指派，
+    // selectCoordinatorActions 只會再選到 member_work，不會再回到 owner_dispatch，
+    // 所以這裡必須自己重試——ensureTaskWorktree 本身是冪等的（worktree 目錄已存在
+        // 就直接重用），可以安全地在每個 tick 重複呼叫，直到成功為止。絕對不能維持原本
+    // 「bare `if (!run.branch) return 'no_change'`」那種永久 silent no_change：那會讓
+    // task 卡死、noProgressCount 永遠不動、--status 永遠回報 healthy，卻沒有任何人
+    // 看得到訊號。
+    try {
+      const masterSha = workingRun.baseSha ?? (await getHeadSha(deps.repoRoot, 'master'));
+      const worktree = await ensureTaskWorktree(deps.repoRoot, action.taskId, masterSha);
+      workingRun = upsertTaskCheckpoint(
+        deps.db,
+        {
+          taskId: action.taskId,
+          workspaceId: action.workspaceId,
+          phase: 'doing',
+          workerId: workingRun.workerId,
+          branch: worktree.branch,
+          baseSha: worktree.baseSha,
+          headSha: worktree.headSha,
+          evidenceFingerprint: workingRun.evidenceFingerprint,
+          noProgressCount: workingRun.noProgressCount,
+          ownerIntervened: workingRun.ownerIntervened,
+        },
+        deps.now(),
+      );
+    } catch (err) {
+      // 重試仍然失敗：這次嘗試同樣沒有可驗證進展，餵進跟 member session 失敗完全相同的
+      // no-progress／Owner 介入／human_blocked 狀態機，連續失敗最終會走到人類看得見的
+      // @user09 留言，而不是永遠卡住又永遠回報健康。
+      const syntheticResult: MemberSessionResult = {
+        outcome: 'retryable_failure',
+        exitCode: -1,
+        output: { summary: '', changedPaths: [], verificationCommands: [], blocker: `task worktree 建立失敗：${(err as Error).message}` },
+        evidence: {
+          commitSha: null,
+          commitChangedPaths: [],
+          verificationPassed: false,
+          verificationRanCommands: [],
+          reviewTransitionConfirmed: false,
+          reviewStatus: null,
+          summaryCommentId: null,
+          blockerRepeated: false,
+          rejectedReason: `ensureTaskWorktree failed: ${(err as Error).message}`,
+        },
+        evidenceChanged: false,
+      };
+      const transition = await applyMemberAttemptTransition(deps, action, workingRun, syntheticResult, task);
+      upsertTaskCheckpoint(
+        deps.db,
+        {
+          taskId: action.taskId,
+          workspaceId: action.workspaceId,
+          phase: transition.run.phase,
+          workerId: workingRun.workerId,
+          branch: null,
+          baseSha: workingRun.baseSha,
+          headSha: workingRun.headSha,
+          evidenceFingerprint: transition.run.evidenceFingerprint,
+          noProgressCount: transition.run.noProgressCount,
+          ownerIntervened: transition.run.ownerIntervened,
+        },
+        deps.now(),
+      );
+      return 'no_change';
+    }
+  }
+
+  const worktreePath = taskWorktreePath(deps.repoRoot, action.taskId);
   const comments = (await deps.ownerClient.listComments(action.taskId)).map((c) => c.content);
   const previousBlocker = comments.length > 0 ? null : null; // 沒有獨立持久化上一次 blocker 文字，保守視為無上一輪
 
-  const summaryActionKeyBase = `member_summary:${action.taskId}:${run.headSha ?? 'none'}`;
+  const summaryActionKeyBase = `member_summary:${action.taskId}:${workingRun.headSha ?? 'none'}`;
 
   const driverActions: MemberSessionDriverActions = {
     confirmReviewTransition: async () => {
@@ -1049,21 +1201,7 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     driverActions,
   });
 
-  const currentEvidence = await buildTaskEvidence(deps.ownerClient, task);
-  const transition = recordMemberSessionAttempt(run, result, currentEvidence);
-
-  if (transition.humanBlockedNotice) {
-    const key = transition.humanBlockedNotice.actionKey;
-    if (!getAction(deps.db, key)) {
-      beginAction(deps.db, { actionKey: key, taskId: action.taskId, kind: 'human_blocked_notice' }, deps.now());
-      try {
-        await deps.ownerClient.postCommentOnce(action.taskId, transition.humanBlockedNotice.content, key);
-        completeAction(deps.db, key, null, deps.now());
-      } catch (err) {
-        failAction(deps.db, key, (err as Error).message, deps.now());
-      }
-    }
-  }
+  const transition = await applyMemberAttemptTransition(deps, action, workingRun, result, task);
 
   upsertTaskCheckpoint(
     deps.db,
@@ -1071,10 +1209,10 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
       taskId: action.taskId,
       workspaceId: action.workspaceId,
       phase: result.outcome === 'progressed' ? 'review' : transition.run.phase,
-      workerId: run.workerId,
-      branch: run.branch,
-      baseSha: run.baseSha,
-      headSha: result.evidence.commitSha ?? run.headSha,
+      workerId: workingRun.workerId,
+      branch: workingRun.branch,
+      baseSha: workingRun.baseSha,
+      headSha: result.evidence.commitSha ?? workingRun.headSha,
       evidenceFingerprint: transition.run.evidenceFingerprint,
       noProgressCount: transition.run.noProgressCount,
       ownerIntervened: transition.run.ownerIntervened,
@@ -1192,6 +1330,32 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
       return 'no_change'; // comment_failed／patch_failed：下一個 tick 從 readback-first 續跑
     }
     case 'deploy_indeterminate':
+      // 已知、刻意延後的落差（code-quality review Important-3；不是遺漏）：
+      // coordinator.ts 對 runDeployAcceptance 上方的註解明文記載「indeterminate 就什麼
+      // 都不做，等下一個 tick 用同一個 mergeSha 重新呼叫 waitForDeployment（不必重新跑
+      // 這整個 sequence)」，但這裡目前完全沒有照做——下一個 tick 的 owner_review 會對
+      // 同一個 reviewedHeadSha 重新跑一次全新的 AI review，若 accept 就把整條
+      // runDeployAcceptance（branch CI／整合 worktree／task-specific acceptance／
+      // merge）從頭重跑一次。
+      //
+      // 為什麼現在不直接修：要正確 resume waitForDeployment，必須把這次的
+      // targetSha（= mergeSha）與 waitForDeployment 用的 baseline
+      // （invocationId／execMainStartTimestampMonotonic）持久化到下一個 tick——但
+      // coordinator.ts 的 `DeployAcceptanceResult`（見該檔）目前 'deploy_indeterminate'
+      // 這個 variant 只回傳 `{ kind, targetSha, detail }`，並沒有把當時用的 baseline
+      // 一併帶出來。要接上 resume 邏輯，得先擴充 coordinator.ts 的公開回傳型別（並同步
+      // 調整 production.test.ts 裡對它 exact shape 的既有斷言）——這是比這個檔案（單純
+      // CLI 組裝層）更核心、影響面更廣的變更，不適合在這次的安全 CLI 任務裡順手做掉。
+      // WorkPhase（types.ts）裡尚未使用的 'integrating'／'deployed' 兩個值，就是為了將來
+      // 補上這段 resume 邏輯而預留的掛勾。
+      //
+      // 目前這樣做「不安全嗎」：不算破壞性，只是浪費：mergeTaskIntoMaster 用 `--no-ff`，
+      // 重跑只會多一個 merge commit，不會讓歷史損毀；但如果 AI 這次重新審查剛好翻盤成
+      // reject，就會對「可能已經部署成功」的 head 貼一則「退回 Doing」留言，卻沒有觸發
+      // 任何 revert（revert 只在 deploy_failed_post_merge 才會觸發）——這是已知、範圍
+      // 明確界定的殘留風險，DeploymentIndeterminate 本身依 waitForDeployment 的三路決議
+      // 設計已經是很罕見的邊界情況（逾時 + deployed_rev 不符 + service 仍 active 三者
+      // 同時成立才會走到這裡），不是每次 timeout 都會命中。
       return 'no_change';
     case 'deploy_failed_post_merge': {
       const revert = await performMasterRevert(action.taskId, deps.repoRoot, deployResult.mergeSha, deps.getSystemdReadback);

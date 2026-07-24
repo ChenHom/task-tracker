@@ -19,7 +19,7 @@ import type { MemberSessionRunner } from './production/agent';
 import type { IntegrationCommandRunner, AcceptanceCheckResult, SendDiscordMessage } from './production/coordinator';
 import type { GetSystemdReadback, CheckHealth, SystemdReadback } from './production/git';
 import { CUTOVER_TASKS, MAIN_POLICY_TITLE, LEGACY_CANONICAL_DISCUSSION_TITLE, type TaskSnapshot } from './production/policy';
-import { openCoordinatorState, beginTick, endTick, claimLease, upsertTaskCheckpoint } from './production/state';
+import { openCoordinatorState, beginTick, endTick, claimLease, upsertTaskCheckpoint, getTaskRun } from './production/state';
 
 // ---------------------------------------------------------------------------
 // 暫存 Git repo：master + README，一路讓 ensureTaskWorktree／createIntegrationWorktree／
@@ -117,7 +117,7 @@ interface FakeServerState {
   notifSeq: number;
 }
 
-function makeFakeServerHandler(state: FakeServerState) {
+function makeFakeServerHandler(state: FakeServerState, taskId: string = FAKE_TASK_ID) {
   return (req: IncomingMessage, res: ServerResponse) => {
     const cookie = req.headers.cookie ?? '';
     const isUser09 = cookie.includes('tt_session=user09-session');
@@ -145,7 +145,7 @@ function makeFakeServerHandler(state: FakeServerState) {
     if (req.url === `/api/workspaces/${CANONICAL_WORKSPACE_ID}/tasks` && req.method === 'GET') {
       json(200, [
         {
-          task_id: FAKE_TASK_ID,
+          task_id: taskId,
           workspace_id: CANONICAL_WORKSPACE_ID,
           title: 'fake integration task',
           status: state.taskStatus,
@@ -171,9 +171,9 @@ function makeFakeServerHandler(state: FakeServerState) {
       return;
     }
 
-    if (req.url === `/api/tasks/${FAKE_TASK_ID}` && req.method === 'GET') {
+    if (req.url === `/api/tasks/${taskId}` && req.method === 'GET') {
       json(200, {
-        task_id: FAKE_TASK_ID,
+        task_id: taskId,
         workspace_id: CANONICAL_WORKSPACE_ID,
         title: 'fake integration task',
         status: state.taskStatus,
@@ -185,7 +185,7 @@ function makeFakeServerHandler(state: FakeServerState) {
       return;
     }
 
-    if (req.url === `/api/tasks/${FAKE_TASK_ID}` && req.method === 'PATCH') {
+    if (req.url === `/api/tasks/${taskId}` && req.method === 'PATCH') {
       state.patchCalls++;
       readJsonBody(req)
         .then((body) => {
@@ -198,18 +198,18 @@ function makeFakeServerHandler(state: FakeServerState) {
       return;
     }
 
-    if (req.url === `/api/tasks/${FAKE_TASK_ID}/comments` && req.method === 'GET') {
+    if (req.url === `/api/tasks/${taskId}/comments` && req.method === 'GET') {
       json(200, state.comments);
       return;
     }
-    if (req.url === `/api/tasks/${FAKE_TASK_ID}/comments` && req.method === 'POST') {
+    if (req.url === `/api/tasks/${taskId}/comments` && req.method === 'POST') {
       state.postCommentCalls++;
       readJsonBody(req)
         .then((body) => {
           const commentId = `comment-${++state.commentSeq}`;
           const comment: FakeComment = {
             comment_id: commentId,
-            task_id: FAKE_TASK_ID,
+            task_id: taskId,
             user_id: OWNER_ID,
             content: body.content,
             created_at: `2026-01-01T00:00:${String(state.commentSeq).padStart(2, '0')}.000Z`,
@@ -220,7 +220,7 @@ function makeFakeServerHandler(state: FakeServerState) {
             state.notifications.push({
               notification_id: `notif-${++state.notifSeq}`,
               recipient_id: USER09_ID,
-              source_task_id: FAKE_TASK_ID,
+              source_task_id: taskId,
               source_comment_id: commentId,
               snippet: String(body.content).slice(0, 50),
               created_at: comment.created_at,
@@ -372,7 +372,7 @@ async function testHappyPathTickLifecycle(): Promise<void> {
     const discordCallsAfterFirst = discordCalls;
 
     assert.strictEqual(patchCallsAfterFirst, 4, '恰好 4 次單欄位 PATCH：assignee, status=Doing, status=Review, status=Done');
-    assert.strictEqual(postCommentCallsAfterFirst, 2, '恰好 2 則留言：member 摘要 + SYSTEM 完成留言');
+    assert.strictEqual(postCommentCallsAfterFirst, 3, '恰好 3 則留言：OWNER派工 + member 摘要 + SYSTEM 完成留言');
     assert.strictEqual(discordCallsAfterFirst, 1, '恰好 1 次 Discord 傳送（單一 batch）');
 
     // ---- 重新開啟 state：第二個 tick 不得建立任何重複副作用 ----
@@ -382,6 +382,304 @@ async function testHappyPathTickLifecycle(): Promise<void> {
     assert.strictEqual(state.patchCalls, patchCallsAfterFirst, '第二個 tick 不得再 PATCH 任何欄位');
     assert.strictEqual(state.postCommentCalls, postCommentCallsAfterFirst, '第二個 tick 不得再貼任何留言');
     assert.strictEqual(discordCalls, discordCallsAfterFirst, '第二個 tick 不得再送出任何 Discord 訊息');
+  } finally {
+    await close();
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(dbDir, { recursive: true, force: true });
+  }
+}
+
+// =============================================================================
+// testStuckDoingRecoversAfterWorktreeFailure（Critical 回歸測試）：assign＋Doing PATCH
+// 都已經 durable 完成之後，ensureTaskWorktree 這一步失敗（這裡用「repo 沒有 master
+// ref」重現，模擬 disk full／stale lock／權限錯誤等真實情境）。修好之前的 bug：
+// dispatchMemberWork 對 `run.branch === null` 是一句永久 silent `return 'no_change'`
+// ——task 卡在 Doing、branch 永遠是 null、noProgressCount 永遠不動、後續每個 tick 都
+// 回報 exit 0，卻沒有任何人看得到訊號。這裡驗證兩件事：
+//   (a) 在 repo 仍然壞掉的期間，連續失敗會被正確計入 no-progress／Owner 介入／
+//       human_blocked 狀態機，最終貼出一則人類看得到的 @user09 留言（不是永遠沉默）；
+//   (b) repo 修好之後，下一個 tick 的 worktree 重試會成功，task 能繼續往前走
+//       （不是永久卡死，有路徑可以恢復）。
+// =============================================================================
+async function testStuckDoingRecoversAfterWorktreeFailure(): Promise<void> {
+  const STUCK_TASK_ID = 'stuck-task-1';
+  const dbDir = mkdtempSync(join(tmpdir(), 'sim-production-integration-stuck-db-'));
+  const dbPath = join(dbDir, 'coordinator.db');
+
+  // 一個「壞掉」的 repo：git repo 存在，但完全沒有 commit，所以連 `master` ref 都不
+  // 存在——ensureTaskWorktree 內部的 `getHeadSha(repoRoot, 'master')` 會直接拋錯，
+  // 完全不需要真的去模擬磁碟滿或檔案權限錯誤，效果等價（「這一步會 throw」才是重點）。
+  const brokenRepoRoot = mkdtempSync(join(tmpdir(), 'sim-production-integration-stuck-repo-'));
+  execFileSync('git', ['init', '-q', '-b', 'master'], { cwd: brokenRepoRoot });
+
+  const state: FakeServerState = {
+    taskStatus: 'Todo',
+    taskAssignee: null,
+    taskVersion: 1,
+    comments: [],
+    notifications: [],
+    patchCalls: 0,
+    postCommentCalls: 0,
+    commentSeq: 0,
+    notifSeq: 0,
+  };
+  const { port, close } = await startFakeServer(makeFakeServerHandler(state, STUCK_TASK_ID));
+
+  try {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const ownerSessionRunner: OwnerSessionRunner = async () => ({
+      exitCode: 0,
+      decision: { action: 'dispatch', rationale: 'assign to member1', evidenceCommentIds: [] },
+    });
+    // member session runner 這裡永遠不應該真的被呼叫到（worktree 一直建立不出來，
+    // dispatchMemberWork 會在呼叫 runMemberSession 之前就先 return），一旦被呼叫就是
+    // 這個測試想抓的另一種 regression，所以讓它直接 throw。
+    const memberSessionRunner: MemberSessionRunner = async () => {
+      throw new Error('member session runner 不應該在 worktree 都還沒建立成功時被呼叫');
+    };
+
+    const baseOptions = {
+      live: true as const,
+      baseUrl,
+      dbPath,
+      now: () => new Date(),
+      isServiceActive: async () => true,
+      allowedPrefixes: ['feature/'],
+      runOwnerSession: ownerSessionRunner,
+      runMemberSession: memberSessionRunner,
+      runVerificationCommand: async () => ({ exitCode: 0, output: 'ok' }),
+      runIntegrationCommand: async () => ({ exitCode: 0, output: 'ok' }),
+      runBranchCi: async () => ({ passed: true, detail: 'ok' }) as AcceptanceCheckResult,
+      runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }) as AcceptanceCheckResult,
+      runTaskLiveAcceptance: async () => ({ passed: true, detail: 'ok' }) as AcceptanceCheckResult,
+      getSystemdReadback: (async () => {
+        throw new Error('不應該在這個測試裡被呼叫（從沒走到 deploy 階段）');
+      }) as GetSystemdReadback,
+      checkHealth: (async () => ({ status: 'ok', db: true, rev: 'n/a' })) as CheckHealth,
+      sendDiscordMessage: (async () => true) as SendDiscordMessage,
+      newId: (() => {
+        let n = 0;
+        return () => `id-${++n}`;
+      })(),
+      sleep: async () => {},
+    };
+
+    // ---- tick 1：owner_dispatch。assign／Doing PATCH 成功（走假 HTTP server，跟 git
+    //      無關），但 ensureTaskWorktree 因為 repo 沒有 master 而失敗——這個 tick 本身
+    //      算一次 tick-level error（exit 1），這跟修 bug 前的行為一致，不是這次要修的
+    //      部分；重點是「之後」的 tick 不能永遠沉默。
+    const tick1 = await runOnce({ ...baseOptions, repoRoot: brokenRepoRoot });
+    assert.strictEqual(tick1.exitCode, 1, `tick1 應該因為 worktree 建立失敗回報 exit 1，實際 lines:\n${tick1.lines.join('\n')}`);
+    assert.strictEqual(state.taskStatus, 'Doing', 'assign／Doing PATCH 應該已經 durable 完成，即使 worktree 建立失敗');
+    assert.strictEqual(state.taskAssignee, MEMBER_ID);
+
+    const dbAfterTick1 = openCoordinatorState(dbPath);
+    const runAfterTick1 = getTaskRun(dbAfterTick1, STUCK_TASK_ID);
+    dbAfterTick1.close();
+    assert.ok(runAfterTick1, 'tick1 之後應該已經有 task_run checkpoint');
+    assert.strictEqual(runAfterTick1?.branch, null, 'worktree 建立失敗，branch 應該仍是 null');
+
+    // ---- tick 2、3：repo 仍然是壞的。board 已經是 Doing／已指派，
+    //      selectCoordinatorActions 只會選到 member_work；bug 修好前這裡會永久 silent
+    //      no_change、noProgressCount 永遠不動；修好後每次都要真的重試 worktree、
+    //      失敗後正確計入 no-progress 狀態機。
+    for (let i = 0; i < 2; i++) {
+      const tick = await runOnce({ ...baseOptions, repoRoot: brokenRepoRoot });
+      assert.strictEqual(tick.exitCode, 0, `worktree 重試失敗屬於已追蹤的 no-progress，不是 tick-level error，應該還是 exit 0（第 ${i + 2} 個 tick）`);
+    }
+    const dbAfterTick3 = openCoordinatorState(dbPath);
+    const runAfterTick3 = getTaskRun(dbAfterTick3, STUCK_TASK_ID);
+    dbAfterTick3.close();
+    assert.strictEqual(runAfterTick3?.branch, null, 'repo 還沒修好，branch 應該仍是 null');
+    assert.ok((runAfterTick3?.noProgressCount ?? 0) >= 2, `noProgressCount 必須真的在累計（不是永遠沉默的 0），實際：${runAfterTick3?.noProgressCount}`);
+
+    // ---- tick 4：再一次失敗，這次應該剛好跨過 Owner 介入 + human_blocked 門檻，
+    //      貼出一則人類看得到的 @user09 留言——這正是「不是永遠沉默」的證據。
+    await runOnce({ ...baseOptions, repoRoot: brokenRepoRoot });
+    assert.ok(
+      state.comments.some((c) => c.content.includes('@user09') && c.content.includes('已卡關')),
+      `連續失敗最終必須貼出人類看得到的 human_blocked 留言，實際留言：\n${state.comments.map((c) => c.content).join('\n---\n')}`,
+    );
+    const dbAfterTick4 = openCoordinatorState(dbPath);
+    const runAfterTick4 = getTaskRun(dbAfterTick4, STUCK_TASK_ID);
+    dbAfterTick4.close();
+    assert.strictEqual(runAfterTick4?.phase, 'human_blocked', 'task 應該已經轉入 human_blocked（不是永久沉默地卡在 doing）');
+
+    // ---- 恢復路徑：把 repo 修好（補一個 commit，讓 master ref 存在）。human_blocked
+    //      的留言本身改變了 evidence fingerprint，下一個 tick 會自然恢復嘗試；這次
+    //      worktree 應該真的建立成功，task 可以繼續往前走（不是永久卡死）。
+    writeFileSync(join(brokenRepoRoot, 'README.md'), 'root\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: brokenRepoRoot });
+    execFileSync('git', ['config', 'user.email', 'stuck-repair@example.com'], { cwd: brokenRepoRoot });
+    execFileSync('git', ['config', 'user.name', 'Stuck Repair' ], { cwd: brokenRepoRoot });
+    execFileSync('git', ['commit', '-q', '-m', 'repair: repo now has a master ref'], { cwd: brokenRepoRoot });
+
+    await runOnce({ ...baseOptions, repoRoot: brokenRepoRoot });
+    const dbAfterRepair = openCoordinatorState(dbPath);
+    const runAfterRepair = getTaskRun(dbAfterRepair, STUCK_TASK_ID);
+    dbAfterRepair.close();
+    assert.ok(runAfterRepair?.branch, `repo 修好之後，下一個 tick 的 worktree 重試應該成功並記錄 branch，實際：${JSON.stringify(runAfterRepair)}`);
+  } finally {
+    await close();
+    rmSync(brokenRepoRoot, { recursive: true, force: true });
+    rmSync(dbDir, { recursive: true, force: true });
+  }
+}
+
+// =============================================================================
+// testSameTickDoesNotDoubleBookAssignee（Important-1 回歸測試）：同一輪迭代裡有兩個
+// 同時 idle 的 unassigned Todo task，也有兩個同時空閒的 candidate member——修好前
+// resolveDispatchAssignee 只看單一凍結快照，兩個 task 會各自獨立解出同一個「第一個
+// 空閒」member，造成真正的 WIP1 違規（同一人同時扛兩個 task）。這裡驗證兩個 task
+// 最終必須落在兩個「不同」的 member 身上。
+// =============================================================================
+async function testSameTickDoesNotDoubleBookAssignee(): Promise<void> {
+  const repoRoot = initTestRepo();
+  const dbDir = mkdtempSync(join(tmpdir(), 'sim-production-integration-doublebook-db-'));
+  const dbPath = join(dbDir, 'coordinator.db');
+
+  const TASK_A = 'double-book-task-a';
+  const TASK_B = 'double-book-task-b';
+  const MEMBER1_ID = 'db-member1-id';
+  const MEMBER2_ID = 'db-member2-id';
+
+  interface DoubleBookTaskState {
+    status: string;
+    assigneeId: string | null;
+    version: number;
+  }
+  const tasks: Record<string, DoubleBookTaskState> = {
+    [TASK_A]: { status: 'Todo', assigneeId: null, version: 1 },
+    [TASK_B]: { status: 'Todo', assigneeId: null, version: 1 },
+  };
+  const comments: Record<string, FakeComment[]> = { [TASK_A]: [], [TASK_B]: [] };
+  let commentSeq = 0;
+
+  const handler = (req: IncomingMessage, res: ServerResponse) => {
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (req.url === '/api/health' && req.method === 'GET') return json(200, { status: 'ok', db: true, rev: 'fake-rev' });
+    if (req.url === '/api/auth/login' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'tt_session=owner-session; HttpOnly; Path=/' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.url === `/api/workspaces/${CANONICAL_WORKSPACE_ID}/tasks` && req.method === 'GET') {
+      return json(
+        200,
+        Object.entries(tasks).map(([taskId, t]) => ({
+          task_id: taskId,
+          workspace_id: CANONICAL_WORKSPACE_ID,
+          title: `task ${taskId}`,
+          status: t.status,
+          assignee_id: t.assigneeId,
+          due_at: null,
+          version: t.version,
+          updated_at: null,
+        })),
+      );
+    }
+    if (req.url === `/api/workspaces/${MAIN_WORKSPACE_ID}/tasks` && req.method === 'GET') return json(200, []);
+    if (req.url === `/api/workspaces/${CANONICAL_WORKSPACE_ID}/members` && req.method === 'GET') {
+      return json(200, [
+        { user_id: OWNER_ID, role: 'Owner', joined_at: '2026-01-01T00:00:00.000Z', email: OWNER_EMAIL, name: 'Owner' },
+        { user_id: USER09_ID, role: 'Member', joined_at: '2026-01-01T00:00:00.000Z', email: USER09_EMAIL, name: 'User09' },
+        { user_id: MEMBER1_ID, role: 'Member', joined_at: '2026-01-01T00:00:00.000Z', email: 'db-member1@test.local', name: 'M1' },
+        { user_id: MEMBER2_ID, role: 'Member', joined_at: '2026-01-01T00:00:00.000Z', email: 'db-member2@test.local', name: 'M2' },
+      ]);
+    }
+    for (const taskId of [TASK_A, TASK_B]) {
+      if (req.url === `/api/tasks/${taskId}` && req.method === 'GET') {
+        const t = tasks[taskId];
+        return json(200, {
+          task_id: taskId,
+          workspace_id: CANONICAL_WORKSPACE_ID,
+          title: `task ${taskId}`,
+          status: t.status,
+          assignee_id: t.assigneeId,
+          due_at: null,
+          version: t.version,
+          updated_at: null,
+        });
+      }
+      if (req.url === `/api/tasks/${taskId}` && req.method === 'PATCH') {
+        readJsonBody(req)
+          .then((body) => {
+            if ('assignee' in body) tasks[taskId].assigneeId = body.assignee;
+            if ('status' in body) tasks[taskId].status = body.status;
+            tasks[taskId].version++;
+            json(200, { ok: true });
+          })
+          .catch(() => json(400, { error: 'bad body' }));
+        return;
+      }
+      if (req.url === `/api/tasks/${taskId}/comments` && req.method === 'GET') return json(200, comments[taskId]);
+      if (req.url === `/api/tasks/${taskId}/comments` && req.method === 'POST') {
+        readJsonBody(req)
+          .then((body) => {
+            const commentId = `db-comment-${++commentSeq}`;
+            comments[taskId].push({
+              comment_id: commentId,
+              task_id: taskId,
+              user_id: OWNER_ID,
+              content: body.content,
+              created_at: '2026-01-01T00:00:00.000Z',
+            });
+            json(201, { id: commentId });
+          })
+          .catch(() => json(400, { error: 'bad body' }));
+        return;
+      }
+    }
+    if (req.url === '/api/notifications' && req.method === 'GET') return json(200, []);
+    json(404, { error: 'not found' });
+  };
+
+  const { port, close } = await startFakeServer(handler);
+  try {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const ownerSessionRunner: OwnerSessionRunner = async () => ({
+      exitCode: 0,
+      decision: { action: 'dispatch', rationale: 'assign whoever is free', evidenceCommentIds: [] },
+    });
+    // member session 這裡故意回報「沒有真實變更」（no_change），讓兩個 task 在 dispatch
+    // 之後就停在 Doing，不需要為這個測試額外準備完整的 deploy-acceptance fixture——
+    // 這個測試只關心「dispatch 這一步有沒有把兩個 task 指派給同一個人」。
+    const memberSessionRunner: MemberSessionRunner = async () => ({
+      exitCode: 0,
+      output: { summary: '', changedPaths: [], verificationCommands: [], blocker: 'not implemented yet in this test' },
+    });
+
+    const result = await runOnce({
+      live: true,
+      baseUrl,
+      dbPath,
+      repoRoot,
+      now: () => new Date(),
+      isServiceActive: async () => true,
+      allowedPrefixes: ['feature/'],
+      runOwnerSession: ownerSessionRunner,
+      runMemberSession: memberSessionRunner,
+      sleep: async () => {},
+    });
+
+    const assigneeA = tasks[TASK_A].assigneeId;
+    const assigneeB = tasks[TASK_B].assigneeId;
+    assert.ok(assigneeA, `task A 應該被指派，實際 lines:\n${result.lines.join('\n')}`);
+    assert.ok(assigneeB, `task B 應該被指派，實際 lines:\n${result.lines.join('\n')}`);
+    assert.notStrictEqual(
+      assigneeA,
+      assigneeB,
+      '同一輪迭代裡兩個同時 idle 的 unassigned Todo task 不得被指派給同一個 member（WIP1 違規）',
+    );
+    assert.deepStrictEqual(
+      new Set([assigneeA, assigneeB]),
+      new Set([MEMBER1_ID, MEMBER2_ID]),
+      '兩個 task 應該剛好分別落在兩個不同的候選 member 身上',
+    );
   } finally {
     await close();
     rmSync(repoRoot, { recursive: true, force: true });
@@ -731,6 +1029,8 @@ function testRunStatus(): void {
 // ---------------------------------------------------------------------------
 async function main(): Promise<void> {
   await testHappyPathTickLifecycle();
+  await testStuckDoingRecoversAfterWorktreeFailure();
+  await testSameTickDoesNotDoubleBookAssignee();
   await testExitCodeCutoverPrerequisiteMissing();
   await testExitCodeDiscoveryUnavailable();
   testDescribeCutoverDisposition();
