@@ -1,0 +1,10 @@
+[Unit]
+Description=Run production sim coordinator every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+Persistent=false
+Unit=sim-coordinator.service
+
+[Install]
+WantedBy=timers.target

@@ -137,6 +137,13 @@
 - 已加入 sim harness、主協作工作區治理、Commenter 邊界與後續 backlog。
 - live sim、quota、跨 workspace 搬移等工作仍以 [docs/tasks/current.md](docs/tasks/current.md) 為最新交接來源。
 
+### Production Sim Coordinator（cutover 準備中）
+
+- `sim/production.ts` 加上 `sim/production/{types,state,api,policy,git,agent,coordinator,completion,cutoverTasks,migrate}.ts`：取代 legacy `sim/run.ts` Owner／Team sweep 的正式環境協調器，只服務兩個固定 workspace（主協作工作區、task-tracker canonical workspace），以 SQLite（`sim-logs/production-coordinator.db`）持久化 checkpoint／action 冪等／heartbeat，每個 task 有自己的 branch＋worktree。
+- 開發已在 `feature/production-coordinator` 完成並通過 regression gate，但**尚未啟用**：`deploy/sim-coordinator.service`／`.timer` 安裝後保持 disabled，需另取得明確人工 live 授權（計畫任務 11）才會接手排程；在那之前 legacy sweep（`sim/run.ts`、`sim-sweep-owner.timer`、`sim-sweep-team.timer`）維持唯一正式路徑。
+- `sim/production/migrate.ts` 負責既有五筆卡關 task 的固定 cutover disposition 與冪等 reconciliation（唯讀 manifest／generation-bound preflight／`--apply --live`）。
+- 完整契約（exit code、WIP1、human-blocked、部署 acceptance／revert sequence、completion digest、rollback procedure、五筆 fixed disposition）見 [docs/operations.md](docs/operations.md) 的「Production Sim Coordinator」「Cutover reconciliation」章節；不在此重複。
+
 ### AI Quota Boundary
 
 - Codex 與 Claude 的 credentials、外部 usage requests、retry/backoff 與 snapshot persistence 由獨立 `/home/hom/services/ai-quota` repo 負責。
