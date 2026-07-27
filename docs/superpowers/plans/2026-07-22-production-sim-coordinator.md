@@ -711,7 +711,7 @@ git commit -m "feat(sim): add production coordinator service"
 - 新增：`sim/production/migrate.ts`
 - 修改：`sim/production.test.ts`
 
-- [ ] **步驟 1：新增會失敗的 manifest 與 reconciliation tests。**
+- [x] **步驟 1：新增會失敗的 manifest 與 reconciliation tests。**
 
 Manifest 必須包含 task ID／version／status／assignee、branch head／dirty／ahead state、目前 notification cursor、outbox cursor、舊 timer state、cutover generation、planned disposition、固定 assignee email、coordinator phase、release dependency，以及 `00123ef0...` 的 Task 1 授權時間、canonical Owner ID、assignment baseline version、user03 canonical ID、assignment audit event ID／aggregate version／actor ID、task branch、accepted head／merge SHA、Owner acceptance ID、live rev、`【SYSTEM完成】` comment ID、user09 notification ID、完整證據 fingerprint 與 `readyForApply`。以下四個階段都以 `00123ef0...` 的任務 1 完成證據已通過為前置條件：
 
@@ -731,7 +731,7 @@ Task-specific fixture 必須再證明：
 - Fake Git／agent adapter 的 command、diff 與 prompt 不得含 `933b974`、`f94b69e`、`sim/user02` 或 `sim/user06`，證明舊 commit、dirty diff 與檔案沒有被重用。
 - `mainPolicy` 與 `legacyCanonicalDiscussion` 都出現在 manifest 的 excluded readback 中，但永遠不建立 checkpoint、lease、Owner／member action、branch 或 mutation。
 
-- [ ] **步驟 2：編碼固定 migration set。**
+- [x] **步驟 2：編碼固定 migration set。**
 
 ```ts
 export const CUTOVER_TASKS = {
@@ -764,11 +764,11 @@ export const CUTOVER_TASKS = {
 } as const;
 ```
 
-- [ ] **步驟 3：實作唯讀 manifest 模式。**
+- [x] **步驟 3：實作唯讀 manifest 模式。**
 
 預設 invocation 只寫入 Git 已忽略的 `sim-logs/cutover-<timestamp>/manifest.json`。它必須沿同一證據鏈 read back 並計算 `00123ef0...` 的 prerequisite fingerprint、cutover generation 與 `readyForApply`；證據不完整時記錄 `CutoverPrerequisiteMissing`，不得列出任何 task／Git／AI planned mutation。另提供唯讀的 `--preflight --live --expect-generation <generation>`：重新計算 fingerprint，只有 generation 與全部證據仍相符時才 exit 0，否則不得呼叫任何 mutation adapter。不得 reset、remove、clean、commit 或改變舊 worktree。保留 user02 dirty files 與所有舊 branch。
 
-- [ ] **步驟 4：實作經授權且冪等的 reconciliation。**
+- [x] **步驟 4：實作經授權且冪等的 reconciliation。**
 
 只有使用 `--apply --live` 時才執行：
 
@@ -782,7 +782,7 @@ export const CUTOVER_TASKS = {
 - 每個 comment／PATCH／checkpoint／branch action 都使用固定 action key，且任何 mutation 後都必須 read back。
 - 不得將任何既有 user09 notification 標示已讀。
 
-- [ ] **步驟 5：執行測試並提交。**
+- [x] **步驟 5：執行測試並提交。**
 
 ```bash
 npx tsx sim/production.test.ts
