@@ -826,7 +826,7 @@ git add docs/operations.md docs/owner-sweep-guide.md design.md
 git commit -m "docs(sim): prepare production coordinator cutover"
 ```
 
-- [ ] **步驟 5：把 feature branch 合併回 master 並驗證單次部署。**
+- [x] **步驟 5：把 feature branch 合併回 master 並驗證單次部署。**
 
 任務 11 的 systemd unit 指向主 worktree 的 master，因此 coordinator 程式碼必須先進 master。合併前確認步驟 3 的完整 gate 已 PASS、worktree 乾淨，且本次變更只動 `sim/`、`deploy/` 與 `docs/`，沒有夾帶 `src/`。
 
