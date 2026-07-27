@@ -20,7 +20,10 @@ async function git(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
-async function branchExists(repoRoot: string, branch: string): Promise<boolean> {
+// 匯出給 sim/production/migrate.ts（任務 9）：manifest 的唯讀 branch 描述（是否已經
+// 存在這個 task 專屬 branch）需要這個查詢；不新增第二套「這個 branch 存不存在」的
+// 判斷邏輯，直接重用 ensureTaskWorktree 內部已經在用的這個 helper。
+export async function branchExists(repoRoot: string, branch: string): Promise<boolean> {
   try {
     await execFileAsync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repoRoot });
     return true;
@@ -702,6 +705,16 @@ export async function getCommitMessage(repoRoot: string, sha: string): Promise<s
 /** 解析任一 ref（預設 `HEAD`）目前指向的 commit SHA。唯讀查詢。 */
 export async function getHeadSha(repoRoot: string, ref = 'HEAD'): Promise<string> {
   return git(['rev-parse', ref], repoRoot);
+}
+
+/**
+ * `headRef` 領先 `baseRef` 幾個 commit（`git rev-list --count base..head`）。唯讀查詢，
+ * 供 sim/production/migrate.ts 的唯讀 manifest 描述一個既有 task branch 目前「ahead」
+ * master 幾個 commit（純粹是給人看的稽核欄位，不影響任何 reconciliation 決策）。
+ */
+export async function countCommitsAhead(repoRoot: string, baseRef: string, headRef: string): Promise<number> {
+  const out = await git(['rev-list', '--count', `${baseRef}..${headRef}`], repoRoot);
+  return Number(out);
 }
 
 export async function revertMasterMerge(repoRoot: string, mergeSha: string): Promise<RevertMasterMergeResult> {

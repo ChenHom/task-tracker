@@ -15,42 +15,13 @@ export const CANONICAL_WORKSPACE_ID = 'd9da9945-ce5f-400f-806e-1d75e95e313a';
 export const ALLOWED_WORKSPACE_IDS: readonly string[] = [MAIN_WORKSPACE_ID, CANONICAL_WORKSPACE_ID];
 
 // ---------------------------------------------------------------------------
-// CUTOVER_TASKS：權威完整版本由任務 9 的 sim/production/migrate.ts 定義。
-// 這裡只先放 policy.ts 需要的子集，值必須與該權威版本 byte-for-byte 相同
-// （這些是真實、永久的看板 task ID，不是測試用假資料）。
+// CUTOVER_TASKS／MAIN_POLICY_TITLE／LEGACY_CANONICAL_DISCUSSION_TITLE：權威定義在
+// ./cutoverTasks（零依賴的中立模組，見該檔頭註解）。這裡只 re-export，不得另外
+// 維護一份副本——sim/production/migrate.ts（任務 9）import 的是同一個模組，
+// 保證兩邊永遠是同一份字面值，不可能漂移。
 // ---------------------------------------------------------------------------
-export const CUTOVER_TASKS = {
-  mainDiscussion: '10e65231-a4b2-4bdb-aab4-9f3c5fb0e916',
-  mainPolicy: '27ec8d7e-8605-468c-9f2c-13a80bef2a5a',
-  legacyCanonicalDiscussion: '8be538bc-ffc6-4122-9757-026a54ba813f',
-  activeReview: {
-    taskId: '938aa035-5f96-4908-b28b-876fa4735061',
-    assigneeEmail: 'user06@test.local',
-    classification: 'bug',
-  },
-  queuedReview: {
-    taskId: '6384b6f4-f92f-45a2-a5e1-133f04f76372',
-    assigneeEmail: null,
-    afterTaskId: '938aa035-5f96-4908-b28b-876fa4735061',
-  },
-  completedPrerequisite: {
-    taskId: '00123ef0-81cb-410e-aed1-d6d1fb925ed6',
-    implementedByPlanTask: 1,
-    implementerEmail: 'user03@test.local',
-    taskBranch: 'sim/task/00123ef0-81cb-410e-aed1-d6d1fb925ed6',
-    requiredStatus: 'Done',
-  },
-  deferredAssignment: {
-    taskId: '027c0052-46d5-4da7-90fa-dd8efb2219fc',
-    assigneeEmail: 'user05@test.local',
-    classification: 'approved',
-    afterTaskId: '938aa035-5f96-4908-b28b-876fa4735061',
-  },
-} as const;
-
-// 雙重規則排除用的 canonical title（ID 為主、title 為輔的 defense-in-depth）。
-export const MAIN_POLICY_TITLE = '[規則] 主工作區協作與交接';
-export const LEGACY_CANONICAL_DISCUSSION_TITLE = '[討論] 方向與下一步';
+export { CUTOVER_TASKS, MAIN_POLICY_TITLE, LEGACY_CANONICAL_DISCUSSION_TITLE } from './cutoverTasks';
+import { CUTOVER_TASKS, MAIN_POLICY_TITLE, LEGACY_CANONICAL_DISCUSSION_TITLE } from './cutoverTasks';
 
 // ---------------------------------------------------------------------------
 // 共用型別
@@ -338,6 +309,52 @@ export function validatePrerequisiteEvidence(evidence: PrerequisiteEvidence | nu
   if (notification.recipientId !== evidence.user09CanonicalId) return false;
 
   return true;
+}
+
+/**
+ * 把 `00123ef0...` 完整完成證據鏈的每一環序列化成一個確定性 fingerprint（沿用
+ * taskEvidenceFingerprint 的手法：固定順序的陣列，不依賴物件 key 插入順序）。
+ *
+ * 供 sim/production/migrate.ts（任務 9）的唯讀 manifest／generation-bound preflight
+ * 共用：兩邊都必須呼叫「同一個」fingerprint 函式，manifest 產生時把它跟 cutover
+ * generation 一起持久化，preflight 重新 read back 證據鏈後再算一次、比對是否仍然
+ * 相同——如果各自維護一份計算邏輯，兩邊的 hash 算法本身就可能漂移，讓比對失去意義。
+ * `null` evidence（找不到 00123ef0 或還沒有任何完成留言）回傳空字串，與任何真正算出
+ * 來的 hash 都不同，因此天生就會讓 preflight 判定不相符。
+ */
+export function prerequisiteEvidenceFingerprint(evidence: PrerequisiteEvidence | null): string {
+  if (!evidence) return '';
+  const canonical = JSON.stringify([
+    evidence.status,
+    evidence.task1AuthorizedAt,
+    evidence.canonicalOwnerId,
+    evidence.user03CanonicalId,
+    evidence.user09CanonicalId,
+    evidence.assignmentEvent?.eventId ?? null,
+    evidence.assignmentEvent?.actorId ?? null,
+    evidence.assignmentEvent?.payloadAssigneeId ?? null,
+    evidence.assignmentEvent?.createdAt ?? null,
+    evidence.acceptedHead?.sha ?? null,
+    evidence.acceptedHead?.branch ?? null,
+    evidence.acceptedHead?.hasTaskIdTrailer ?? null,
+    evidence.ownerAcceptance?.acceptanceId ?? null,
+    evidence.ownerAcceptance?.referencedHeadSha ?? null,
+    evidence.acceptedMerge?.sha ?? null,
+    evidence.acceptedMerge?.headIsAncestor ?? null,
+    evidence.liveRev,
+    evidence.liveRevIsMergeOrDescendant,
+    evidence.completionComment?.commentId ?? null,
+    evidence.completionComment?.referencesTask1AuthorizedAt ?? null,
+    evidence.completionComment?.referencesAssignmentEventId ?? null,
+    evidence.completionComment?.referencesAcceptanceId ?? null,
+    evidence.completionComment?.referencesHeadSha ?? null,
+    evidence.completionComment?.referencesMergeSha ?? null,
+    evidence.completionComment?.referencesLiveRev ?? null,
+    evidence.notification?.notificationId ?? null,
+    evidence.notification?.recipientId ?? null,
+    evidence.notification?.sourceCommentId ?? null,
+  ]);
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 // ---------------------------------------------------------------------------

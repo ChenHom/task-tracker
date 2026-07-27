@@ -95,8 +95,10 @@ import type { TaskRun, WorkPhase } from './production/types';
 const ROOT = join(__dirname, '..');
 export const DB_PATH = join(ROOT, 'sim-logs', 'production-coordinator.db');
 const BASE_URL = 'http://localhost:3000';
-const OWNER_EMAIL = 'user01@test.local';
-const USER09_EMAIL = 'user09@test.local';
+// 匯出給 sim/production/migrate.ts（任務 9）：cutover reconciliation 需要用同一組
+// canonical Owner／user09 email 登入，不得自己另外維護一份同值的 literal。
+export const OWNER_EMAIL = 'user01@test.local';
+export const USER09_EMAIL = 'user09@test.local';
 // 既有 seed 慣例（見 sim/run.ts 的 PASSWORD 常數、src/seed.ts）：所有 user01~09 共用同一組
 // local seed credential。硬編在原始碼裡（不走 env var／CLI arg），不寫入任何 log／manifest／error。
 const PASSWORD = 'test1234';
@@ -297,8 +299,25 @@ function parseCompletionCommentFields(content: string): ParsedCompletionFields {
   };
 }
 
-async function gatherPrerequisiteEvidence(
-  deps: GatherSnapshotDeps,
+// 匯出給 sim/production/migrate.ts（任務 9）重用：`00123ef0...` 的完整完成證據鏈
+// 只應該有一份獨立驗證邏輯（見下方函式頭註解），manifest／apply 都必須呼叫同一個
+// 函式，不得各自重新實作一份會漂移的複本。
+//
+// 這裡刻意只要求呼叫端提供 gatherPrerequisiteEvidence 真正用到的那個子集
+// （`Pick<TaskTrackerClient, ...>`：只保留這裡實際呼叫的 method 簽名，不是完整
+// class），而不是完整的 GatherSnapshotDeps（那個型別的 ownerClient／user09Client
+// 是具體的 TaskTrackerClient class，帶有 private 欄位，測試沒辦法用一般 plain
+// object 去滿足它）。gatherSnapshot() 呼叫這個函式時傳入的仍然是完整的
+// GatherSnapshotDeps——結構上一定滿足這個更窄的介面（多出來的欄位不影響），
+// 這裡只是放寬「呼叫端最少需要準備什麼」，不是重寫任何驗證邏輯。
+export interface PrerequisiteEvidenceDeps {
+  ownerClient: Pick<TaskTrackerClient, 'listComments' | 'getAuditTrail' | 'whoAmI' | 'health'>;
+  user09Client: Pick<TaskTrackerClient, 'listNotifications'>;
+  repoRoot: string;
+}
+
+export async function gatherPrerequisiteEvidence(
+  deps: PrerequisiteEvidenceDeps,
   tasks: TaskSnapshot[],
   userIdsByEmail: Record<string, string>,
 ): Promise<PrerequisiteEvidence | null> {

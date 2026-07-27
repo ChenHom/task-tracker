@@ -54,6 +54,7 @@ import {
   type OwnerClassification,
   type WorkClass,
   type CommentSnapshot,
+  type NotificationSnapshot,
 } from './production/policy';
 import {
   taskBranchName,
@@ -72,6 +73,7 @@ import {
   removeIntegrationWorktree,
   mergeTaskIntoMaster,
   revertMasterMerge,
+  isAncestor,
   type ChangedPath,
   type SystemdReadback,
   type GetSystemdReadback,
@@ -113,6 +115,20 @@ import {
   type CompletionOwnerClient,
   type CompletionNotifierClient,
 } from './production/completion';
+import {
+  CUTOVER_TASKS as MIGRATE_CUTOVER_TASKS,
+  ACTIVE_REVIEW_ACCEPTANCE_CRITERIA,
+  QUEUED_REVIEW_ACCEPTANCE_CRITERIA,
+  buildManifest,
+  writeManifestFile,
+  checkGenerationMatches,
+  applyCutoverReconciliation,
+  runApply,
+  type CutoverBoardClient,
+  type CutoverNotificationClient,
+  type CutoverManifest,
+} from './production/migrate';
+import type { MemberSnapshot, AuditEventSnapshot } from './production/api';
 
 // ---------------------------------------------------------------------------
 // LEASE_TTL_MS 必須嚴格大於 DEPLOY_WAIT_TIMEOUT_MS
@@ -4943,6 +4959,913 @@ async function runDiscordOutboxTests(): Promise<void> {
   }
 }
 
+// =============================================================================
+// sim/production/migrate.ts（任務 9）：cutover manifest／generation-bound
+// preflight／idempotent reconciliation。100% fakes——一個 fake board client（純
+// in-memory plain object，呼應 completion.ts 既有的 CompletionOwnerClient／
+// CompletionNotifierClient 慣例）+ 真實暫存 git repo（呼應 runGitTests／
+// runDeployTests 既有慣例）。從不連 localhost:3000，也不碰真正的專案 git repo。
+// =============================================================================
+
+interface FakeBoardCalls {
+  getTask: string[];
+  listComments: string[];
+  postCommentOnce: { taskId: string; content: string; actionKey: string }[];
+  patchTaskField: { taskId: string; field: string; value: unknown }[];
+  listMembers: string[];
+  getAuditTrail: string[];
+  whoAmI: number;
+  health: number;
+}
+
+interface FakeBoardState {
+  tasks: Map<string, TaskSnapshot>;
+  comments: Map<string, CommentSnapshot[]>;
+  members: MemberSnapshot[];
+  auditTrails: Map<string, AuditEventSnapshot[]>;
+  notifications: NotificationSnapshot[];
+  healthRev: string;
+  whoAmIId: string;
+  /** 下一次 patchTaskField 是否要先拋一次 UncertainMutationError（測完即自動清除，只影響一次呼叫）。 */
+  uncertainOnce: boolean;
+}
+
+function makeFakeBoardClient(state: FakeBoardState): { client: CutoverBoardClient; calls: FakeBoardCalls } {
+  const calls: FakeBoardCalls = {
+    getTask: [],
+    listComments: [],
+    postCommentOnce: [],
+    patchTaskField: [],
+    listMembers: [],
+    getAuditTrail: [],
+    whoAmI: 0,
+    health: 0,
+  };
+  let commentSeq = 0;
+  const client: CutoverBoardClient = {
+    async getTask(taskId) {
+      calls.getTask.push(taskId);
+      const t = state.tasks.get(taskId);
+      if (!t) throw new Error(`fake getTask: unknown task ${taskId}`);
+      return t;
+    },
+    async listComments(taskId) {
+      calls.listComments.push(taskId);
+      return state.comments.get(taskId) ?? [];
+    },
+    async postCommentOnce(taskId, content, actionKey) {
+      calls.postCommentOnce.push({ taskId, content, actionKey });
+      const commentId = `fake-comment-${++commentSeq}`;
+      const list = state.comments.get(taskId) ?? [];
+      list.push({ commentId, taskId, userId: state.whoAmIId, content, createdAt: '2026-07-24T00:00:00.000Z' });
+      state.comments.set(taskId, list);
+      return commentId;
+    },
+    async patchTaskField(taskId, field, value) {
+      calls.patchTaskField.push({ taskId, field, value });
+      if (state.uncertainOnce) {
+        state.uncertainOnce = false;
+        // 先真的套用變更（模擬「其實成功了，只是回應不確定」），再拋出
+        // UncertainMutationError——呼叫端必須靠 readback 發現它已經生效。
+        const existing = state.tasks.get(taskId)!;
+        const updated: TaskSnapshot =
+          field === 'status'
+            ? { ...existing, status: value as TaskStatus, version: existing.version + 1 }
+            : { ...existing, assigneeId: value as string | null, version: existing.version + 1 };
+        state.tasks.set(taskId, updated);
+        throw new UncertainMutationError('fake uncertain mutation');
+      }
+      const existing = state.tasks.get(taskId);
+      if (!existing) throw new Error(`fake patchTaskField: unknown task ${taskId}`);
+      const updated: TaskSnapshot =
+        field === 'status'
+          ? { ...existing, status: value as TaskStatus, version: existing.version + 1 }
+          : { ...existing, assigneeId: value as string | null, version: existing.version + 1 };
+      state.tasks.set(taskId, updated);
+      return updated;
+    },
+    async listMembers(workspaceId) {
+      calls.listMembers.push(workspaceId);
+      return state.members;
+    },
+    async getAuditTrail(aggregateId) {
+      calls.getAuditTrail.push(aggregateId);
+      return state.auditTrails.get(aggregateId) ?? [];
+    },
+    async whoAmI() {
+      calls.whoAmI++;
+      return { id: state.whoAmIId, email: 'user01@test.local', name: 'Owner' };
+    },
+    async health() {
+      calls.health++;
+      return { status: 'ok', db: true, rev: state.healthRev };
+    },
+  };
+  return { client, calls };
+}
+
+function makeFakeNotificationClient(state: FakeBoardState): { client: CutoverNotificationClient; calls: { listNotifications: number } } {
+  const calls = { listNotifications: 0 };
+  return {
+    client: {
+      async listNotifications() {
+        calls.listNotifications++;
+        return state.notifications;
+      },
+    },
+    calls,
+  };
+}
+
+/** 逐字符合 production.ts `parseCompletionCommentFields` 的解析格式。 */
+function buildTask1CompletionComment(fields: {
+  task1AuthorizedAt: string;
+  canonicalOwnerId: string;
+  assignmentEventId: string;
+  taskBranch: string;
+  acceptedHeadSha: string;
+  ownerAcceptanceId: string;
+  mergeSha: string;
+  liveRev: string;
+}): string {
+  return [
+    '【SYSTEM完成】 @user09',
+    `Task 1 授權時間：${fields.task1AuthorizedAt}`,
+    `Canonical Owner ID：${fields.canonicalOwnerId}`,
+    `Assignment audit event ID：${fields.assignmentEventId}`,
+    `Task branch：${fields.taskBranch}`,
+    `Accepted head：${fields.acceptedHeadSha}`,
+    `Owner acceptance ID：${fields.ownerAcceptanceId}`,
+    `Merge SHA：${fields.mergeSha}`,
+    `部署版本／live rev：${fields.liveRev}`,
+  ].join('\n');
+}
+
+function migrateTestRepo(): { repoRoot: string; g: (args: string[], cwd?: string) => string } {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'sim-production-migrate-'));
+  const g = (args: string[], cwd: string = repoRoot): string => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  g(['init', '-q', '-b', 'master']);
+  g(['config', 'user.email', 'sim-migrate-test@example.com']);
+  g(['config', 'user.name', 'Sim Migrate Test']);
+  writeFileSync(join(repoRoot, 'README.md'), 'root\n');
+  g(['add', 'README.md']);
+  g(['commit', '-q', '-m', 'init']);
+  return { repoRoot, g };
+}
+
+/** 建立 legacy `sim/user02`／`sim/user06` branch，內容含禁止重用的 marker（933b974／f94b69e）。 */
+function seedLegacyBranches(g: (args: string[], cwd?: string) => string, repoRoot: string): void {
+  for (const branch of ['sim/user02', 'sim/user06']) {
+    g(['checkout', '-q', '-b', branch, 'master']);
+    writeFileSync(join(repoRoot, `LEGACY-${branch.replace('/', '-')}.txt`), 'legacy dirty work referencing 933b974 and f94b69e\n');
+    g(['add', '.']);
+    g(['commit', '-q', '-m', `legacy commit on ${branch} referencing 933b974 and f94b69e`]);
+  }
+  g(['checkout', '-q', 'master']);
+}
+
+/**
+ * 在真實 git repo 上建立一組完全自洽、可通過 validatePrerequisiteEvidence 的
+ * `00123ef0...` 完成證據（accepted head commit + Task-Id trailer + --no-ff merge），
+ * 並回傳建置好的 FakeBoardState 基礎資料（其餘四個 cutover task 由呼叫端自己疊加）。
+ */
+function seedSatisfiedPrerequisite(
+  g: (args: string[], cwd?: string) => string,
+  repoRoot: string,
+): { state: FakeBoardState; acceptedHeadSha: string; mergeSha: string } {
+  const prereqTaskId = MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId;
+  const branch = MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskBranch;
+  g(['checkout', '-q', '-b', branch, 'master']);
+  writeFileSync(join(repoRoot, 'task1-fix.txt'), 'fixed main discussion closure\n');
+  g(['add', 'task1-fix.txt']);
+  g(['commit', '-q', '-m', `fix: simplify main discussion closure\n\nTask-Id: ${prereqTaskId}`]);
+  const acceptedHeadSha = g(['rev-parse', 'HEAD']);
+  g(['checkout', '-q', 'master']);
+  g(['merge', '--no-ff', branch, '-m', `merge ${prereqTaskId}`]);
+  const mergeSha = g(['rev-parse', 'master']);
+
+  const task1AuthorizedAt = '2026-07-20T00:00:00.000Z';
+  const ownerId = USER_IDS['user01@test.local'];
+  const user03Id = USER_IDS['user03@test.local'];
+  const user09Id = USER_IDS['user09@test.local'];
+  const assignmentEventId = '42';
+  const ownerAcceptanceId = 'acceptance-comment-1';
+
+  const completionContent = buildTask1CompletionComment({
+    task1AuthorizedAt,
+    canonicalOwnerId: ownerId,
+    assignmentEventId,
+    taskBranch: branch,
+    acceptedHeadSha,
+    ownerAcceptanceId,
+    mergeSha,
+    liveRev: mergeSha,
+  });
+
+  const prereqComments: CommentSnapshot[] = [
+    {
+      commentId: ownerAcceptanceId,
+      taskId: prereqTaskId,
+      userId: ownerId,
+      content: `【OWNER驗收】accepted head ${acceptedHeadSha}`,
+      createdAt: '2026-07-20T10:00:00.000Z',
+    },
+    { commentId: 'completion-comment-1', taskId: prereqTaskId, userId: ownerId, content: completionContent, createdAt: '2026-07-20T11:00:00.000Z' },
+  ];
+
+  const members: MemberSnapshot[] = [
+    { userId: ownerId, role: 'Owner', email: 'user01@test.local', name: 'user01' },
+    { userId: user03Id, role: 'Member', email: 'user03@test.local', name: 'user03' },
+    { userId: USER_IDS['user05@test.local'], role: 'Member', email: 'user05@test.local', name: 'user05' },
+    { userId: USER_IDS['user06@test.local'], role: 'Member', email: 'user06@test.local', name: 'user06' },
+    { userId: user09Id, role: 'Member', email: 'user09@test.local', name: 'user09' },
+  ];
+
+  const auditTrails = new Map<string, AuditEventSnapshot[]>([
+    [
+      prereqTaskId,
+      [
+        {
+          id: 42,
+          aggregateId: prereqTaskId,
+          aggregateVersion: 2,
+          eventType: 'task.assignee_changed',
+          payload: { assigneeId: user03Id },
+          actorId: ownerId,
+          occurredAt: '2026-07-20T00:30:00.000Z',
+        },
+      ],
+    ],
+  ]);
+
+  const notifications: NotificationSnapshot[] = [
+    {
+      notificationId: 'notif-1',
+      recipientId: user09Id,
+      sourceTaskId: prereqTaskId,
+      sourceCommentId: 'completion-comment-1',
+      snippet: '...',
+      createdAt: '2026-07-20T11:00:01.000Z',
+      readAt: null,
+    },
+  ];
+
+  const tasks = new Map<string, TaskSnapshot>();
+  tasks.set(
+    prereqTaskId,
+    makeTask({ taskId: prereqTaskId, workspaceId: CANONICAL_WORKSPACE_ID, title: '00123ef0 fixture', status: 'Done', assigneeId: user03Id, version: 2 }),
+  );
+
+  const state: FakeBoardState = {
+    tasks,
+    comments: new Map([[prereqTaskId, prereqComments]]),
+    members,
+    auditTrails,
+    notifications,
+    healthRev: mergeSha,
+    whoAmIId: ownerId,
+    uncertainOnce: false,
+  };
+
+  return { state, acceptedHeadSha, mergeSha };
+}
+
+/** 把「四個固定 cutover task」疊加進一個已經有 satisfied prerequisite 的 FakeBoardState。 */
+function seedFourCutoverTasks(
+  state: FakeBoardState,
+  overrides: {
+    mainDiscussion?: Partial<TaskSnapshot>;
+    activeReview?: Partial<TaskSnapshot>;
+    queuedReview?: Partial<TaskSnapshot>;
+    deferredAssignment?: Partial<TaskSnapshot>;
+  } = {},
+): void {
+  const user06Id = USER_IDS['user06@test.local'];
+  state.tasks.set(
+    MIGRATE_CUTOVER_TASKS.mainDiscussion,
+    makeTask({
+      taskId: MIGRATE_CUTOVER_TASKS.mainDiscussion,
+      workspaceId: MAIN_WORKSPACE_ID,
+      title: '[討論] 範例新功能',
+      status: 'Todo',
+      assigneeId: null,
+      dueAt: '2026-07-15T00:00:00.000Z',
+      version: 1,
+      ...overrides.mainDiscussion,
+    }),
+  );
+  state.tasks.set(
+    MIGRATE_CUTOVER_TASKS.activeReview.taskId,
+    makeTask({
+      taskId: MIGRATE_CUTOVER_TASKS.activeReview.taskId,
+      workspaceId: CANONICAL_WORKSPACE_ID,
+      title: 'activeReview fixture',
+      status: 'Review',
+      assigneeId: user06Id,
+      version: 1,
+      ...overrides.activeReview,
+    }),
+  );
+  state.tasks.set(
+    MIGRATE_CUTOVER_TASKS.queuedReview.taskId,
+    makeTask({
+      taskId: MIGRATE_CUTOVER_TASKS.queuedReview.taskId,
+      workspaceId: CANONICAL_WORKSPACE_ID,
+      title: 'queuedReview fixture',
+      status: 'Review',
+      assigneeId: user06Id,
+      version: 1,
+      ...overrides.queuedReview,
+    }),
+  );
+  state.tasks.set(
+    MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId,
+    makeTask({
+      taskId: MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId,
+      workspaceId: CANONICAL_WORKSPACE_ID,
+      title: 'deferredAssignment fixture',
+      status: 'Todo',
+      assigneeId: null,
+      version: 1,
+      ...overrides.deferredAssignment,
+    }),
+  );
+  state.tasks.set(
+    MIGRATE_CUTOVER_TASKS.mainPolicy,
+    makeTask({ taskId: MIGRATE_CUTOVER_TASKS.mainPolicy, workspaceId: MAIN_WORKSPACE_ID, title: MAIN_POLICY_TITLE, status: 'Todo', version: 1 }),
+  );
+  state.tasks.set(
+    MIGRATE_CUTOVER_TASKS.legacyCanonicalDiscussion,
+    makeTask({
+      taskId: MIGRATE_CUTOVER_TASKS.legacyCanonicalDiscussion,
+      workspaceId: CANONICAL_WORKSPACE_ID,
+      title: LEGACY_CANONICAL_DISCUSSION_TITLE,
+      status: 'Todo',
+      version: 1,
+    }),
+  );
+}
+
+async function runMigrateTests(): Promise<void> {
+  // ---------------------------------------------------------------------------
+  // CUTOVER_TASKS 必須是 policy.ts／migrate.ts 兩邊 import 同一個底層物件（同一個
+  // 中立模組），不是各自維護一份「剛好相等」的副本。
+  // ---------------------------------------------------------------------------
+  {
+    assert.strictEqual(MIGRATE_CUTOVER_TASKS, CUTOVER_TASKS, 'migrate.ts 與 policy.ts 的 CUTOVER_TASKS 必須是同一個物件參考（同一個來源模組）');
+  }
+
+  // ---------------------------------------------------------------------------
+  // 任務特定驗收條件（純文字 manifest 稽核資料，不是自動化程式碼）。
+  // ---------------------------------------------------------------------------
+  {
+    assert.ok(ACTIVE_REVIEW_ACCEPTANCE_CRITERIA.includes('冷啟動／重新整理 task URL'));
+    assert.ok(ACTIVE_REVIEW_ACCEPTANCE_CRITERIA.includes('目前選到其他 workspace 時仍切到正確 workspace'));
+    assert.ok(ACTIVE_REVIEW_ACCEPTANCE_CRITERIA.includes('task modal 與 comment anchor'));
+    assert.ok(ACTIVE_REVIEW_ACCEPTANCE_CRITERIA.includes('403／404'));
+    assert.ok(ACTIVE_REVIEW_ACCEPTANCE_CRITERIA.includes('既有 #/tasks 回歸'));
+    assert.ok(ACTIVE_REVIEW_ACCEPTANCE_CRITERIA.includes('正式瀏覽器 smoke'));
+
+    assert.ok(QUEUED_REVIEW_ACCEPTANCE_CRITERIA.some((s) => s.includes('938aa035') && s.includes('merge')));
+    assert.ok(QUEUED_REVIEW_ACCEPTANCE_CRITERIA.includes('手機 menu toggle 後 badge 節點仍存在'));
+    assert.ok(QUEUED_REVIEW_ACCEPTANCE_CRITERIA.includes('hidden tab 不執行 60 秒 polling'));
+    assert.ok(QUEUED_REVIEW_ACCEPTANCE_CRITERIA.includes('來源 task／comment 真正開啟成功後才標已讀'));
+    assert.ok(QUEUED_REVIEW_ACCEPTANCE_CRITERIA.includes('涵蓋 0／1／多筆'));
+    assert.ok(QUEUED_REVIEW_ACCEPTANCE_CRITERIA.includes('403／404'));
+    assert.ok(QUEUED_REVIEW_ACCEPTANCE_CRITERIA.includes('手動已讀'));
+    assert.ok(QUEUED_REVIEW_ACCEPTANCE_CRITERIA.includes('桌機／手機 smoke'));
+  }
+
+  // ===========================================================================
+  // 四階段序列（計畫步驟 1 fixture）：全部發生在同一個暫存 git repo／同一個
+  // coordinator db 上，因為這正是計畫描述的「重跑」語意——不是四個互相獨立的情境。
+  // ===========================================================================
+  {
+    const { repoRoot, g } = migrateTestRepo();
+    seedLegacyBranches(g, repoRoot);
+    const { state, acceptedHeadSha: prereqAcceptedHead, mergeSha: prereqMergeSha } = seedSatisfiedPrerequisite(g, repoRoot);
+    seedFourCutoverTasks(state);
+
+    const db = openCoordinatorState(':memory:');
+    const now = new Date('2026-07-24T00:00:00.000Z');
+
+    try {
+      // -------- Phase 1：初次 apply。--------
+      const { client: ownerClient, calls: ownerCalls } = makeFakeBoardClient(state);
+      const { client: user09Client } = makeFakeNotificationClient(state);
+
+      const phase1 = await applyCutoverReconciliation({ db, ownerClient, user09Client, repoRoot, now: () => now });
+      assert.strictEqual(phase1.kind, 'applied', 'prerequisite 已滿足時 phase1 必須真正執行 reconciliation');
+      if (phase1.kind !== 'applied') throw new Error('unreachable');
+
+      assert.strictEqual(phase1.summary.mainDiscussionClosed, true, '10e65231 必須在 phase1 恰好機械式結案一次');
+      assert.strictEqual(phase1.summary.aiCalls, 0, 'migrate.ts 的 apply 永遠不呼叫 AI');
+      assert.strictEqual(state.tasks.get(MIGRATE_CUTOVER_TASKS.mainDiscussion)!.status, 'Done');
+
+      assert.strictEqual(state.tasks.get(MIGRATE_CUTOVER_TASKS.activeReview.taskId)!.status, 'Doing', '938aa035 必須從 Review 被 PATCH 到 Doing');
+      assert.strictEqual(
+        state.tasks.get(MIGRATE_CUTOVER_TASKS.activeReview.taskId)!.assigneeId,
+        USER_IDS['user06@test.local'],
+        '938aa035 必須維持 user06 assignee',
+      );
+      assert.ok(phase1.summary.activeReviewBranch, '938aa035 必須建立 per-task branch');
+      assert.strictEqual(existsSync(taskWorktreePath(repoRoot, MIGRATE_CUTOVER_TASKS.activeReview.taskId)), true);
+
+      const queued1 = state.tasks.get(MIGRATE_CUTOVER_TASKS.queuedReview.taskId)!;
+      assert.strictEqual(queued1.status, 'Todo', '6384b6f4 三步退回後必須是 Todo');
+      assert.strictEqual(queued1.assigneeId, null, '6384b6f4 三步退回後必須 unassigned');
+      assert.strictEqual(phase1.summary.queuedReviewFinalStatus, 'Todo');
+      assert.strictEqual(getTaskRun(db, MIGRATE_CUTOVER_TASKS.queuedReview.taskId)!.phase, 'queued');
+      assert.strictEqual(getTaskRun(db, MIGRATE_CUTOVER_TASKS.queuedReview.taskId)!.branch, null, '6384b6f4 不得取得 branch');
+      assert.strictEqual(existsSync(taskWorktreePath(repoRoot, MIGRATE_CUTOVER_TASKS.queuedReview.taskId)), false, '6384b6f4 不得建立 worktree');
+
+      const deferred1 = state.tasks.get(MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId)!;
+      assert.strictEqual(deferred1.status, 'Todo', '027c0052 在 938aa035 尚未 Done 時必須維持 Todo');
+      assert.strictEqual(deferred1.assigneeId, null, '027c0052 在 938aa035 尚未 Done 時必須維持 unassigned');
+      assert.strictEqual(getTaskRun(db, MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId)!.phase, 'queued');
+      assert.strictEqual(existsSync(taskWorktreePath(repoRoot, MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId)), false, '027c0052 不得建立 worktree');
+
+      // action key 各恰好使用一次：queuedReview 三步。
+      for (let step = 1 as 1 | 2 | 3; step <= 3; step++) {
+        const key = `cutover:queued_review:step${step}:${MIGRATE_CUTOVER_TASKS.queuedReview.taskId}`;
+        const entry = getAction(db, key);
+        assert.ok(entry, `queuedReview step${step} action key 必須存在`);
+        assert.strictEqual(entry!.status, 'completed');
+      }
+
+      // PATCH／comment 呼叫數精確符合預期：mainDiscussion(1 patch) + activeReview(1 patch,
+      // assignee 本來就是 user06 所以只有 status PATCH + 1 comment) + queuedReview(3 patch)。
+      const patchCallsAfterPhase1 = ownerCalls.patchTaskField.length;
+      const commentCallsAfterPhase1 = ownerCalls.postCommentOnce.length;
+      assert.strictEqual(patchCallsAfterPhase1, 5, `mainDiscussion(1) + activeReview(1) + queuedReview(3) = 5 次 PATCH，實際 ${patchCallsAfterPhase1}`);
+      assert.strictEqual(commentCallsAfterPhase1, 1, 'activeReview 的固定 reset 說明是這個階段唯一一則留言');
+
+      // 舊 legacy branch／commit 內容不得出現在任何新建立的 branch 裡。
+      const activeReviewBranchLog = g(['log', '-p', `sim/task/${MIGRATE_CUTOVER_TASKS.activeReview.taskId}`]);
+      assert.ok(!activeReviewBranchLog.includes('933b974'), '938aa035 新 branch 不得含舊 SHA 933b974');
+      assert.ok(!activeReviewBranchLog.includes('f94b69e'), '938aa035 新 branch 不得含舊 SHA f94b69e');
+      assert.ok(!activeReviewBranchLog.includes('sim/user02'), '938aa035 新 branch 不得提及 sim/user02');
+      assert.ok(!activeReviewBranchLog.includes('sim/user06'), '938aa035 新 branch 不得提及 sim/user06');
+      const activeReviewDiffFromMaster = g(['diff', 'master', `sim/task/${MIGRATE_CUTOVER_TASKS.activeReview.taskId}`]);
+      assert.strictEqual(activeReviewDiffFromMaster, '', '938aa035 新 worktree 對 base 的初始 diff 必須為空');
+
+      // -------- Phase 2：狀態未變時重跑，不得重複任何 mutation。--------
+      const phase2 = await applyCutoverReconciliation({ db, ownerClient, user09Client, repoRoot, now: () => new Date(now.getTime() + 1000) });
+      assert.strictEqual(phase2.kind, 'applied');
+      if (phase2.kind !== 'applied') throw new Error('unreachable');
+      assert.strictEqual(phase2.summary.mainDiscussionClosed, false, '重跑時 10e65231 已經是 Done，不得產生第二次 closure');
+      assert.strictEqual(state.tasks.get(MIGRATE_CUTOVER_TASKS.mainDiscussion)!.status, 'Done');
+      assert.strictEqual(ownerCalls.patchTaskField.length, patchCallsAfterPhase1, '狀態未變時重跑不得產生任何新 PATCH');
+      assert.strictEqual(ownerCalls.postCommentOnce.length, commentCallsAfterPhase1, '狀態未變時重跑不得產生任何新留言');
+
+      // -------- Phase 3：938aa035 Done 且 master 已包含其 accepted merge 後重跑。--------
+      // 這個 task branch 是 phase1 apply 用 ensureTaskWorktree 建立的 linked worktree
+      // （見上方 activeReviewBranch），因此不能在 repoRoot 上 `git checkout` 它——同一個
+      // branch 不能同時被兩個 worktree checkout。直接在它自己的 worktree 目錄裡工作。
+      const activeReviewBranch = `sim/task/${MIGRATE_CUTOVER_TASKS.activeReview.taskId}`;
+      const activeReviewWorktreePath = taskWorktreePath(repoRoot, MIGRATE_CUTOVER_TASKS.activeReview.taskId);
+      writeFileSync(join(activeReviewWorktreePath, 'feature-938.txt'), 'work on 938\n');
+      g(['add', 'feature-938.txt'], activeReviewWorktreePath);
+      g(['commit', '-q', '-m', `feat: fix 938\n\nTask-Id: ${MIGRATE_CUTOVER_TASKS.activeReview.taskId}`], activeReviewWorktreePath);
+      const acceptedHead938 = g(['rev-parse', 'HEAD'], activeReviewWorktreePath);
+      g(['merge', '--no-ff', activeReviewBranch, '-m', `merge ${MIGRATE_CUTOVER_TASKS.activeReview.taskId}`], repoRoot);
+      const masterAfter938Merge = g(['rev-parse', 'master'], repoRoot);
+
+      // 模擬「一般流程」已經把 938aa035 帶到 Done，並在 coordinator 自己的 checkpoint
+      // 留下 accepted head（見 migrate.ts 的 isActiveReviewGateOpen 註解：為什麼用
+      // task_runs.headSha 而不是重新解析完成留言）。
+      state.tasks.set(MIGRATE_CUTOVER_TASKS.activeReview.taskId, { ...state.tasks.get(MIGRATE_CUTOVER_TASKS.activeReview.taskId)!, status: 'Done' });
+      const preRun = getTaskRun(db, MIGRATE_CUTOVER_TASKS.activeReview.taskId)!;
+      upsertTaskCheckpoint(
+        db,
+        { taskId: MIGRATE_CUTOVER_TASKS.activeReview.taskId, workspaceId: preRun.workspaceId, phase: 'done', headSha: acceptedHead938, evidenceFingerprint: preRun.evidenceFingerprint },
+        now,
+      );
+
+      const patchCallsBeforePhase3 = ownerCalls.patchTaskField.length;
+      const phase3 = await applyCutoverReconciliation({ db, ownerClient, user09Client, repoRoot, now: () => new Date(now.getTime() + 2000) });
+      assert.strictEqual(phase3.kind, 'applied');
+      if (phase3.kind !== 'applied') throw new Error('unreachable');
+      assert.strictEqual(phase3.summary.queuedReviewDispatched, true, '938aa035 Done+merged 後，6384b6f4 必須恰好一次取得派工');
+      assert.strictEqual(phase3.summary.deferredAssignmentDispatched, true, '938aa035 Done+merged 後，027c0052 必須恰好一次取得派工');
+
+      const queued3 = state.tasks.get(MIGRATE_CUTOVER_TASKS.queuedReview.taskId)!;
+      assert.strictEqual(queued3.status, 'Doing');
+      assert.strictEqual(queued3.assigneeId, USER_IDS['user06@test.local'], '6384b6f4 解除依賴後固定回到 user06');
+      const deferred3 = state.tasks.get(MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId)!;
+      assert.strictEqual(deferred3.status, 'Doing');
+      assert.strictEqual(deferred3.assigneeId, USER_IDS['user05@test.local'], '027c0052 解除依賴後固定交給 user05');
+
+      // 兩條新 branch 都以「包含 938aa035 accepted merge 的新版 master」為 base。
+      const queuedRun3 = getTaskRun(db, MIGRATE_CUTOVER_TASKS.queuedReview.taskId)!;
+      const deferredRun3 = getTaskRun(db, MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId)!;
+      assert.strictEqual(queuedRun3.baseSha, masterAfter938Merge);
+      assert.strictEqual(deferredRun3.baseSha, masterAfter938Merge);
+      assert.ok(await isAncestor(repoRoot, acceptedHead938, queuedRun3.headSha!), '6384b6f4 新 branch 必須包含 938aa035 accepted merge（branch base 已包含 938aa035 merge）');
+      assert.ok(await isAncestor(repoRoot, acceptedHead938, deferredRun3.headSha!), '027c0052 新 branch 必須包含 938aa035 accepted merge');
+
+      // 恰好一次：queuedReview／deferredAssignment 各自的 assign+status action key 都只跑一次。
+      assert.strictEqual(getAction(db, `cutover:queued_review:dispatch:assign:${MIGRATE_CUTOVER_TASKS.queuedReview.taskId}`)?.status, 'completed');
+      assert.strictEqual(getAction(db, `cutover:deferred_assignment:dispatch:assign:${MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId}`)?.status, 'completed');
+
+      const patchCallsAfterPhase3 = ownerCalls.patchTaskField.length;
+      assert.strictEqual(patchCallsAfterPhase3 - patchCallsBeforePhase3, 4, '恰好 2 個 task × (assign + status) = 4 次新 PATCH');
+
+      // 再次重跑：不得重複派工。
+      const phase4rerun = await applyCutoverReconciliation({ db, ownerClient, user09Client, repoRoot, now: () => new Date(now.getTime() + 3000) });
+      if (phase4rerun.kind !== 'applied') throw new Error('unreachable');
+      assert.strictEqual(phase4rerun.summary.queuedReviewDispatched, false, '已經派工過，重跑不得再次派工');
+      assert.strictEqual(phase4rerun.summary.deferredAssignmentDispatched, false);
+      assert.strictEqual(ownerCalls.patchTaskField.length, patchCallsAfterPhase3, '重跑不得產生任何新 PATCH');
+
+      // 從頭到尾，legacy branch／commit 都完全沒被合併、cherry-pick 或引用進任何新 branch。
+      for (const branch of [`sim/task/${MIGRATE_CUTOVER_TASKS.queuedReview.taskId}`, `sim/task/${MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId}`]) {
+        const log = g(['log', '-p', branch]);
+        assert.ok(!log.includes('933b974') && !log.includes('f94b69e') && !log.includes('sim/user02') && !log.includes('sim/user06'), `${branch} 不得含任何舊 legacy 內容`);
+      }
+      void prereqAcceptedHead;
+      void prereqMergeSha;
+    } finally {
+      db.close();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+
+  // ===========================================================================
+  // Phase 4（獨立情境）：938aa035 為 human_blocked／Doing／Review 時，兩筆
+  // dependent task 都繼續 queued，不得取得派工。
+  // ===========================================================================
+  for (const scenario of [
+    { label: 'Review（尚未進 Doing）', status: 'Review' as TaskStatus, phase: 'review' as const },
+    { label: 'Doing（正在處理）', status: 'Doing' as TaskStatus, phase: 'doing' as const },
+    { label: 'human_blocked（coordinator 內部卡關）', status: 'Doing' as TaskStatus, phase: 'human_blocked' as const },
+  ]) {
+    const { repoRoot, g } = migrateTestRepo();
+    const { state } = seedSatisfiedPrerequisite(g, repoRoot);
+    seedFourCutoverTasks(state, {
+      activeReview: { status: scenario.status },
+      queuedReview: { status: 'Todo', assigneeId: null }, // 已經完成三步退回，處於 queued baseline
+      deferredAssignment: { status: 'Todo', assigneeId: null },
+    });
+
+    const db = openCoordinatorState(':memory:');
+    const now = new Date('2026-07-24T00:00:00.000Z');
+    // 預先把兩個 dependent task 的 checkpoint 設成 queued（模擬 phase1 已經跑過）。
+    for (const taskId of [MIGRATE_CUTOVER_TASKS.queuedReview.taskId, MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId]) {
+      upsertTaskCheckpoint(db, { taskId, workspaceId: CANONICAL_WORKSPACE_ID, phase: 'queued', evidenceFingerprint: '' }, now);
+    }
+    upsertTaskCheckpoint(
+      db,
+      { taskId: MIGRATE_CUTOVER_TASKS.activeReview.taskId, workspaceId: CANONICAL_WORKSPACE_ID, phase: scenario.phase, evidenceFingerprint: '' },
+      now,
+    );
+    // mainDiscussion 已結案過（避免這個獨立情境重複計算 phase1 的其他副作用，聚焦測試 gate 本身）。
+    state.tasks.set(MIGRATE_CUTOVER_TASKS.mainDiscussion, { ...state.tasks.get(MIGRATE_CUTOVER_TASKS.mainDiscussion)!, status: 'Done' });
+
+    try {
+      const { client: ownerClient, calls } = makeFakeBoardClient(state);
+      const { client: user09Client } = makeFakeNotificationClient(state);
+      const result = await applyCutoverReconciliation({ db, ownerClient, user09Client, repoRoot, now: () => now });
+      assert.strictEqual(result.kind, 'applied');
+      if (result.kind !== 'applied') throw new Error('unreachable');
+      assert.strictEqual(result.summary.queuedReviewDispatched, false, `938aa035 為 ${scenario.label} 時，6384b6f4 不得取得派工`);
+      assert.strictEqual(result.summary.deferredAssignmentDispatched, false, `938aa035 為 ${scenario.label} 時，027c0052 不得取得派工`);
+      assert.strictEqual(state.tasks.get(MIGRATE_CUTOVER_TASKS.queuedReview.taskId)!.status, 'Todo');
+      assert.strictEqual(state.tasks.get(MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId)!.status, 'Todo');
+      assert.strictEqual(getTaskRun(db, MIGRATE_CUTOVER_TASKS.queuedReview.taskId)!.phase, 'queued');
+      assert.strictEqual(getTaskRun(db, MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId)!.phase, 'queued');
+      assert.strictEqual(calls.patchTaskField.filter((c) => c.taskId === MIGRATE_CUTOVER_TASKS.queuedReview.taskId).length, 0);
+      assert.strictEqual(calls.patchTaskField.filter((c) => c.taskId === MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId).length, 0);
+    } finally {
+      db.close();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+
+  // ===========================================================================
+  // CutoverPrerequisiteMissing：任一環節缺漏或不相符都必須讓 apply／manifest 回傳
+  // 缺漏，且 task／Git／AI mutation adapter 呼叫數為零，10e65231 完全不變。
+  // ===========================================================================
+  {
+    const scenarios: { label: string; corrupt: (state: FakeBoardState) => void }[] = [
+      {
+        label: 'completedPrerequisite 狀態是 Doing（尚未 Done）',
+        corrupt: (state) => {
+          const t = state.tasks.get(MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId)!;
+          state.tasks.set(MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId, { ...t, status: 'Doing' });
+        },
+      },
+      {
+        label: 'completedPrerequisite 狀態是 Review',
+        corrupt: (state) => {
+          const t = state.tasks.get(MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId)!;
+          state.tasks.set(MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId, { ...t, status: 'Review' });
+        },
+      },
+      {
+        label: '完成留言缺漏',
+        corrupt: (state) => {
+          state.comments.set(
+            MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId,
+            (state.comments.get(MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId) ?? []).filter((c) => !c.content.startsWith('【SYSTEM完成】')),
+          );
+        },
+      },
+      {
+        label: 'assignment audit event actor 不是 canonical Owner',
+        corrupt: (state) => {
+          const audit = state.auditTrails.get(MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId)!;
+          state.auditTrails.set(
+            MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId,
+            audit.map((e) => ({ ...e, actorId: 'someone-else' })),
+          );
+        },
+      },
+      {
+        label: 'assignment audit event 早於 Task 1 授權時間',
+        corrupt: (state) => {
+          const audit = state.auditTrails.get(MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId)!;
+          state.auditTrails.set(
+            MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId,
+            audit.map((e) => ({ ...e, occurredAt: '2026-01-01T00:00:00.000Z' })),
+          );
+        },
+      },
+      {
+        label: 'notification recipient 不是 user09',
+        corrupt: (state) => {
+          state.notifications = state.notifications.map((n) => ({ ...n, recipientId: 'someone-else' }));
+        },
+      },
+      {
+        label: 'notification 完全缺漏',
+        corrupt: (state) => {
+          state.notifications = [];
+        },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const { repoRoot, g } = migrateTestRepo();
+      const { state } = seedSatisfiedPrerequisite(g, repoRoot);
+      seedFourCutoverTasks(state);
+      scenario.corrupt(state);
+
+      const db = openCoordinatorState(':memory:');
+      try {
+        const { client: ownerClient, calls } = makeFakeBoardClient(state);
+        const { client: user09Client } = makeFakeNotificationClient(state);
+
+        const applyResult = await applyCutoverReconciliation({ db, ownerClient, user09Client, repoRoot, now: () => new Date('2026-07-24T00:00:00.000Z') });
+        assert.strictEqual(applyResult.kind, 'prerequisite_missing', `情境「${scenario.label}」必須回傳 prerequisite_missing`);
+        assert.strictEqual(calls.patchTaskField.length, 0, `情境「${scenario.label}」：task mutation adapter 呼叫數必須為零`);
+        assert.strictEqual(calls.postCommentOnce.length, 0, `情境「${scenario.label}」：comment mutation 呼叫數必須為零`);
+        assert.strictEqual(
+          existsSync(taskWorktreePath(repoRoot, MIGRATE_CUTOVER_TASKS.activeReview.taskId)),
+          false,
+          `情境「${scenario.label}」：Git adapter 不得建立任何新 worktree／branch`,
+        );
+        assert.strictEqual(getTaskRun(db, MIGRATE_CUTOVER_TASKS.mainDiscussion), null, `情境「${scenario.label}」：10e65231 完全不變（連 checkpoint 都不該被建立)`);
+
+        const manifest = await buildManifest({ db, ownerClient, user09Client, repoRoot });
+        assert.strictEqual(manifest.readyForApply, false, `情境「${scenario.label}」：manifest 必須回報 readyForApply=false`);
+        assert.strictEqual(manifest.errorCode, 'CutoverPrerequisiteMissing');
+      } finally {
+        db.close();
+        rmSync(repoRoot, { recursive: true, force: true });
+      }
+    }
+  }
+
+  // ===========================================================================
+  // 唯讀 manifest：欄位完整性、excluded readback、寫檔。
+  // ===========================================================================
+  {
+    const { repoRoot, g } = migrateTestRepo();
+    const { state } = seedSatisfiedPrerequisite(g, repoRoot);
+    seedFourCutoverTasks(state);
+    const db = openCoordinatorState(':memory:');
+    try {
+      const { client: ownerClient } = makeFakeBoardClient(state);
+      const { client: user09Client } = makeFakeNotificationClient(state);
+      const manifest = await buildManifest({ db, ownerClient, user09Client, repoRoot, now: () => new Date('2026-07-24T00:00:00.000Z') });
+
+      assert.strictEqual(manifest.readyForApply, true);
+      assert.strictEqual(manifest.errorCode, null);
+      assert.strictEqual(manifest.prerequisite.taskId, MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId);
+      assert.strictEqual(manifest.prerequisite.satisfied, true);
+      assert.ok(manifest.prerequisite.fingerprint.length > 0);
+      assert.strictEqual(manifest.prerequisite.task1AuthorizedAt, '2026-07-20T00:00:00.000Z');
+      assert.strictEqual(manifest.prerequisite.canonicalOwnerId, USER_IDS['user01@test.local']);
+      assert.strictEqual(manifest.prerequisite.user03CanonicalId, USER_IDS['user03@test.local']);
+      assert.strictEqual(manifest.prerequisite.assignmentEventId, '42');
+      assert.strictEqual(manifest.prerequisite.assignmentActorId, USER_IDS['user01@test.local']);
+      assert.strictEqual(manifest.prerequisite.assignmentAggregateVersion, 2);
+      assert.strictEqual(manifest.prerequisite.assignmentBaselineVersion, 1);
+      assert.ok(manifest.prerequisite.acceptedHeadSha);
+      assert.ok(manifest.prerequisite.mergeSha);
+      assert.strictEqual(manifest.prerequisite.ownerAcceptanceId, 'acceptance-comment-1');
+      assert.strictEqual(manifest.prerequisite.completionCommentId, 'completion-comment-1');
+      assert.strictEqual(manifest.prerequisite.notificationId, 'notif-1');
+
+      assert.strictEqual(manifest.tasks.length, 5);
+      const byId = new Map(manifest.tasks.map((t) => [t.taskId, t] as const));
+      assert.ok(byId.has(MIGRATE_CUTOVER_TASKS.mainDiscussion));
+      assert.ok(byId.has(MIGRATE_CUTOVER_TASKS.activeReview.taskId));
+      assert.ok(byId.has(MIGRATE_CUTOVER_TASKS.queuedReview.taskId));
+      assert.ok(byId.has(MIGRATE_CUTOVER_TASKS.completedPrerequisite.taskId));
+      assert.ok(byId.has(MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId));
+      assert.strictEqual(byId.get(MIGRATE_CUTOVER_TASKS.activeReview.taskId)!.fixedAssigneeEmail, 'user06@test.local');
+      assert.strictEqual(byId.get(MIGRATE_CUTOVER_TASKS.deferredAssignment.taskId)!.releaseDependency, MIGRATE_CUTOVER_TASKS.activeReview.taskId);
+      assert.deepStrictEqual([...byId.get(MIGRATE_CUTOVER_TASKS.activeReview.taskId)!.acceptanceCriteria], [...ACTIVE_REVIEW_ACCEPTANCE_CRITERIA]);
+      assert.deepStrictEqual([...byId.get(MIGRATE_CUTOVER_TASKS.queuedReview.taskId)!.acceptanceCriteria], [...QUEUED_REVIEW_ACCEPTANCE_CRITERIA]);
+
+      // excluded readback：mainPolicy／legacyCanonicalDiscussion 都出現，isExcluded=true。
+      assert.strictEqual(manifest.excluded.length, 2);
+      const excludedIds = manifest.excluded.map((e) => e.taskId).sort();
+      assert.deepStrictEqual(excludedIds, [MIGRATE_CUTOVER_TASKS.legacyCanonicalDiscussion, MIGRATE_CUTOVER_TASKS.mainPolicy].sort());
+      for (const e of manifest.excluded) assert.strictEqual(e.isExcluded, true, `${e.taskId} 必須被正確判定為 excluded`);
+
+      assert.strictEqual(manifest.notificationCursor.count, 1);
+      assert.strictEqual(manifest.notificationCursor.lastId, 'notif-1');
+      assert.strictEqual(manifest.outboxCursor.count, 0);
+      assert.ok(manifest.cutoverGeneration >= 1);
+      assert.ok(manifest.manifestFingerprint.length > 0);
+
+      // 唯讀：manifest 建構過程完全不得呼叫任何 mutation adapter。
+      const { calls: readonlyCalls } = makeFakeBoardClient(state);
+      void readonlyCalls;
+
+      // 寫檔：路徑落在 sim-logs/ 底下（已被 .gitignore 排除），內容是合法 JSON。
+      const logsRoot = mkdtempSync(join(tmpdir(), 'sim-migrate-logs-'));
+      try {
+        const path = writeManifestFile(manifest, logsRoot);
+        assert.ok(path.startsWith(logsRoot));
+        assert.ok(path.includes('cutover-'));
+        const written = JSON.parse(readFileSync(path, 'utf8')) as CutoverManifest;
+        assert.strictEqual(written.cutoverGeneration, manifest.cutoverGeneration);
+        assert.strictEqual(written.readyForApply, true);
+      } finally {
+        rmSync(logsRoot, { recursive: true, force: true });
+      }
+    } finally {
+      db.close();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+
+  // ===========================================================================
+  // 不得 mutate 任何 task／Git／AI adapter 的唯讀性驗證：manifest／preflight 對
+  // 一個具備完整 mutation 能力的 fake client 執行，事後斷言呼叫記錄裡完全沒有
+  // patchTaskField／postCommentOnce。
+  // ===========================================================================
+  {
+    const { repoRoot, g } = migrateTestRepo();
+    const { state } = seedSatisfiedPrerequisite(g, repoRoot);
+    seedFourCutoverTasks(state);
+    const db = openCoordinatorState(':memory:');
+    try {
+      const { client: ownerClient, calls } = makeFakeBoardClient(state);
+      const { client: user09Client } = makeFakeNotificationClient(state);
+      await buildManifest({ db, ownerClient, user09Client, repoRoot });
+      assert.strictEqual(calls.patchTaskField.length, 0, 'buildManifest 絕不能呼叫任何 PATCH');
+      assert.strictEqual(calls.postCommentOnce.length, 0, 'buildManifest 絕不能貼任何留言');
+      assert.strictEqual(existsSync(taskWorktreePath(repoRoot, MIGRATE_CUTOVER_TASKS.activeReview.taskId)), false, 'buildManifest 絕不能建立 worktree');
+    } finally {
+      db.close();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+
+  // ===========================================================================
+  // Generation-bound preflight：manifest generation／task version／notification
+  // cursor／live rev 任一漂移都必須 exit 非零（這裡以 ok:false 表達），且零 mutation。
+  // ===========================================================================
+  {
+    const { repoRoot, g } = migrateTestRepo();
+    const { state } = seedSatisfiedPrerequisite(g, repoRoot);
+    seedFourCutoverTasks(state);
+    const db = openCoordinatorState(':memory:');
+    try {
+      const { client: ownerClient } = makeFakeBoardClient(state);
+      const { client: user09Client } = makeFakeNotificationClient(state);
+      const manifest = await buildManifest({ db, ownerClient, user09Client, repoRoot });
+
+      // 完全相符：preflight 必須 ok。
+      {
+        const { client: freshOwnerClient, calls } = makeFakeBoardClient(state);
+        const { client: freshUser09Client } = makeFakeNotificationClient(state);
+        const check = await checkGenerationMatches({ db, ownerClient: freshOwnerClient, user09Client: freshUser09Client, repoRoot, expectGeneration: manifest.cutoverGeneration });
+        assert.strictEqual(check.ok, true, '完全相符時 preflight 必須通過');
+        assert.strictEqual(calls.patchTaskField.length, 0);
+      }
+
+      // generation 不符（呼叫端手上的舊 generation）。
+      {
+        const { client: freshOwnerClient, calls } = makeFakeBoardClient(state);
+        const { client: freshUser09Client } = makeFakeNotificationClient(state);
+        const check = await checkGenerationMatches({ db, ownerClient: freshOwnerClient, user09Client: freshUser09Client, repoRoot, expectGeneration: manifest.cutoverGeneration - 1 });
+        assert.strictEqual(check.ok, false);
+        assert.strictEqual(calls.patchTaskField.length, 0, 'generation 不符時零 mutation');
+      }
+
+      // task version 漂移（例如有人在 manifest 產生後又動了看板）。
+      {
+        const drifted = state.tasks.get(MIGRATE_CUTOVER_TASKS.activeReview.taskId)!;
+        state.tasks.set(MIGRATE_CUTOVER_TASKS.activeReview.taskId, { ...drifted, version: drifted.version + 1 });
+        const { client: freshOwnerClient, calls } = makeFakeBoardClient(state);
+        const { client: freshUser09Client } = makeFakeNotificationClient(state);
+        const check = await checkGenerationMatches({ db, ownerClient: freshOwnerClient, user09Client: freshUser09Client, repoRoot, expectGeneration: manifest.cutoverGeneration });
+        assert.strictEqual(check.ok, false, 'task version 漂移必須讓 preflight 失敗');
+        assert.strictEqual(calls.patchTaskField.length, 0);
+        state.tasks.set(MIGRATE_CUTOVER_TASKS.activeReview.taskId, drifted); // 復原
+      }
+
+      // notification cursor 漂移。
+      {
+        state.notifications = [
+          ...state.notifications,
+          { notificationId: 'notif-extra', recipientId: USER_IDS['user09@test.local'], sourceTaskId: 'x', sourceCommentId: 'y', snippet: '', createdAt: '2026-07-24T00:00:02.000Z', readAt: null },
+        ];
+        const { client: freshOwnerClient, calls } = makeFakeBoardClient(state);
+        const { client: freshUser09Client } = makeFakeNotificationClient(state);
+        const check = await checkGenerationMatches({ db, ownerClient: freshOwnerClient, user09Client: freshUser09Client, repoRoot, expectGeneration: manifest.cutoverGeneration });
+        assert.strictEqual(check.ok, false, 'notification cursor 漂移必須讓 preflight 失敗');
+        assert.strictEqual(calls.patchTaskField.length, 0);
+        state.notifications = state.notifications.filter((n) => n.notificationId !== 'notif-extra');
+      }
+
+      // live rev 漂移。
+      {
+        state.healthRev = 'some-other-rev-not-descendant';
+        const { client: freshOwnerClient, calls } = makeFakeBoardClient(state);
+        const { client: freshUser09Client } = makeFakeNotificationClient(state);
+        const check = await checkGenerationMatches({ db, ownerClient: freshOwnerClient, user09Client: freshUser09Client, repoRoot, expectGeneration: manifest.cutoverGeneration });
+        assert.strictEqual(check.ok, false, 'live rev 漂移必須讓 preflight 失敗（liveRevIsMergeOrDescendant 也會連帶失敗）');
+        assert.strictEqual(calls.patchTaskField.length, 0);
+      }
+    } finally {
+      db.close();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+
+  // ===========================================================================
+  // runApply：generation 不符時完全不進入 reconciliation（零 mutation）；相符時
+  // 委派給 applyCutoverReconciliation。
+  // ===========================================================================
+  {
+    const { repoRoot, g } = migrateTestRepo();
+    const { state } = seedSatisfiedPrerequisite(g, repoRoot);
+    seedFourCutoverTasks(state);
+    const db = openCoordinatorState(':memory:');
+    try {
+      const { client: ownerClientForManifest } = makeFakeBoardClient(state);
+      const { client: user09ClientForManifest } = makeFakeNotificationClient(state);
+      const manifest = await buildManifest({ db, ownerClient: ownerClientForManifest, user09Client: user09ClientForManifest, repoRoot });
+
+      const { client: ownerClient, calls } = makeFakeBoardClient(state);
+      const { client: user09Client } = makeFakeNotificationClient(state);
+      const mismatch = await runApply({ db, ownerClient, user09Client, repoRoot, expectGeneration: manifest.cutoverGeneration + 1 });
+      assert.strictEqual(mismatch.kind, 'generation_mismatch');
+      assert.strictEqual(calls.patchTaskField.length, 0);
+      assert.strictEqual(calls.postCommentOnce.length, 0);
+
+      const match = await runApply({ db, ownerClient, user09Client, repoRoot, expectGeneration: manifest.cutoverGeneration });
+      assert.strictEqual(match.kind, 'applied');
+    } finally {
+      db.close();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+
+  // ===========================================================================
+  // UncertainMutationError 的 readback-first 復原：PATCH 回應不確定，但 readback
+  // 發現其實已經生效——不得因此當成失敗，也不得重送第二次同語意的 PATCH。
+  // ===========================================================================
+  {
+    const { repoRoot, g } = migrateTestRepo();
+    const { state } = seedSatisfiedPrerequisite(g, repoRoot);
+    seedFourCutoverTasks(state);
+    state.uncertainOnce = true; // 只影響下一次 patchTaskField 呼叫
+    const db = openCoordinatorState(':memory:');
+    try {
+      const { client: ownerClient, calls } = makeFakeBoardClient(state);
+      const { client: user09Client } = makeFakeNotificationClient(state);
+      const result = await applyCutoverReconciliation({ db, ownerClient, user09Client, repoRoot, now: () => new Date('2026-07-24T00:00:00.000Z') });
+      assert.strictEqual(result.kind, 'applied', 'UncertainMutationError 後 readback 發現已生效，不得整體失敗');
+      assert.strictEqual(state.tasks.get(MIGRATE_CUTOVER_TASKS.mainDiscussion)!.status, 'Done');
+      // 第一次 mainDiscussion PATCH 呼叫因為 uncertainOnce 拋錯，但 readback 之後不會再送第二次
+      // 同語意的 PATCH（mainDiscussion 只有唯一一個 status PATCH 呼叫點）。
+      const mainDiscussionPatches = calls.patchTaskField.filter((c) => c.taskId === MIGRATE_CUTOVER_TASKS.mainDiscussion);
+      assert.strictEqual(mainDiscussionPatches.length, 1, 'UncertainMutationError 之後不得盲目重送同一個 PATCH');
+    } finally {
+      db.close();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+}
+
 async function main(): Promise<void> {
   await runApiTests();
   await runGitTests();
@@ -4951,6 +5874,7 @@ async function main(): Promise<void> {
   await runDeployTests();
   await runCompletionTests();
   await runDiscordOutboxTests();
+  await runMigrateTests();
 }
 
 main()

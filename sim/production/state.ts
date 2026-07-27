@@ -7,6 +7,7 @@ import type {
   CiRunRecord,
   CompletionRecord,
   CompletionStatus,
+  CoordinatorMeta,
   TaskRun,
   TickRecord,
   WorkPhase,
@@ -589,6 +590,41 @@ export function recordBatchAttempt(
     throw new Error(`recordBatchAttempt: no completion_outbox rows for batch ${batchId}`);
   }
   return rows.map((row) => recordCompletionAttempt(db, row.completionId, outcome, now));
+}
+
+// ---------------------------------------------------------------------------
+// coordinator_meta：schema version／cutover generation（任務 9：
+// sim/production/migrate.ts 的 generation-bound preflight 用它判斷 manifest
+// 是否仍是「最新一次」——見該檔頭註解。這個 table 從任務 2 就存在（單列、
+// INSERT OR IGNORE 預設 cutover_generation=0），這裡只是任務 9 第一次真正需要
+// 讀寫它時才補上的存取函式，不重新設計 schema。
+// ---------------------------------------------------------------------------
+
+interface CoordinatorMetaRow {
+  schema_version: number;
+  cutover_generation: number;
+  updated_at: string;
+}
+
+export function getCoordinatorMeta(db: DatabaseSync): CoordinatorMeta {
+  const row = db
+    .prepare('SELECT schema_version, cutover_generation, updated_at FROM coordinator_meta WHERE id = 1')
+    .get() as CoordinatorMetaRow | undefined;
+  if (!row) {
+    throw new Error('getCoordinatorMeta: coordinator_meta row missing (db not opened via openCoordinatorState?)');
+  }
+  return { schemaVersion: row.schema_version, cutoverGeneration: row.cutover_generation, updatedAt: row.updated_at };
+}
+
+/** 把 cutover generation 前進到一個新值。呼叫端（migrate.ts）負責保證單調遞增。 */
+export function recordCutoverGeneration(db: DatabaseSync, generation: number, now: Date = new Date()): CoordinatorMeta {
+  const result = db
+    .prepare('UPDATE coordinator_meta SET cutover_generation = ?, updated_at = ? WHERE id = 1')
+    .run(generation, now.toISOString());
+  if (result.changes === 0) {
+    throw new Error('recordCutoverGeneration: coordinator_meta row missing (db not opened via openCoordinatorState?)');
+  }
+  return getCoordinatorMeta(db);
 }
 
 // ---------------------------------------------------------------------------
