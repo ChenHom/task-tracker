@@ -245,3 +245,173 @@ Review statuses are:
 ### Permission boundary
 
 The Claude member tool allowlist blocks direct Git commands, and Codex keeps its `workspace-write` sandbox. This is cooperative-agent protection, not hostile-code isolation: driver CI executes branch code on the host. Run the harness and CI inside a container or VM before accepting untrusted code or prompts.
+
+## Production Sim Coordinator（cutover 準備中）
+
+`sim/production.ts`（加上 `sim/production/{types,state,api,policy,git,agent,coordinator,completion,cutoverTasks,migrate}.ts`）是取代 `sim/run.ts` Owner／Team sweep 的正式環境協調器。**尚未啟用**：`feature/production-coordinator` 合併進 master 只交付程式碼，不代表已授權 live AI 或看板 mutation；啟用程序見計畫任務 11，本節只記錄啟用前必須知道的契約。**任務 11 完成 runtime cutover 之前，本節下方「Legacy sweep 仍是復原路徑」所描述的舊路徑必須維持可用**——它是任務 11 失敗時的唯一回退目標。
+
+### 固定 workspace allowlist
+
+Coordinator 只服務兩個固定 workspace（`sim/production/policy.ts` 的 `ALLOWED_WORKSPACE_IDS`）：
+
+- 主協作工作區：`11a82028-fc50-466a-a723-e002032cd9a6`
+- task-tracker canonical workspace：`d9da9945-ce5f-400f-806e-1d75e95e313a`
+
+`--scenario`／`--fast`／`--smoke` 等 `sim/run.ts` 的實驗模式永遠不進入這個佇列。
+
+### 15 分鐘 timer，安裝後保持 disabled
+
+- `deploy/sim-coordinator.service`：oneshot，`ExecStart=... npx tsx sim/production.ts --once --live`。
+- `deploy/sim-coordinator.timer`：`OnCalendar=*-*-* *:00/15:00`、`Persistent=false`——每 15 分鐘觸發一次 oneshot service，不補跑錯過的排程。
+- 安裝（任務 11 步驟 2）只 `daemon-reload`，**不** enable／start：
+
+  ```bash
+  install -D -m644 deploy/sim-coordinator.service "$HOME/.config/systemd/user/sim-coordinator.service"
+  install -D -m644 deploy/sim-coordinator.timer "$HOME/.config/systemd/user/sim-coordinator.timer"
+  systemctl --user daemon-reload
+  systemctl --user is-enabled sim-coordinator.timer   # 必須是 disabled
+  ```
+
+  只有取得明確人工 live 授權，才執行任務 11 步驟 3-4 的 drain／apply／`enable --now` 程序。`sim-coordinator.service` 是 oneshot：成功後回到 `inactive (dead)` 是正常結果，不能拿 `is-active` 當成功 gate，必須讀 `Result=success`／`ExecMainStatus=0` 與 `--status` heartbeat。
+
+### dry-run／live 邊界與前置條件
+
+```bash
+npx tsx sim/production.ts --once          # 唯讀 discovery：印出 planned action，零 AI、零 mutation
+npx tsx sim/production.ts --once --live   # 授權 tick：允許 AI 與 mutation（只供人工授權或 systemd）
+npx tsx sim/production.ts --status        # 印出最後一個 tick 的 heartbeat／健康狀態
+```
+
+`--once` 是唯讀 live discovery，不是離線 fixture：依序要求 `task-tracker.service` active、`GET /api/health` 為 HTTP 200 且 body `status === 'ok'`、以 canonical Owner `user01@test.local`（既有 seed 密碼）登入成功、GET 兩個 allowlisted workspace 都成功、以 `user09@test.local` 登入成功（供 completion notification readback）。任一步失敗就是 `DiscoveryUnavailable`；密碼永遠不寫入 log／manifest／error。
+
+### Exit code 契約
+
+| Command | Exit | 意義 |
+| --- | --- | --- |
+| `--once` / `--once --live` | `0` | 完整 discovery，且 cutover prerequisite ready |
+| `--once` / `--once --live` | `2` | 完整 discovery，但 `CutoverPrerequisiteMissing`；本次 tick 零 mutation、零 AI |
+| `--once` / `--once --live` | `3` | `DiscoveryUnavailable`（service 未 active／health 非 200／login 失敗／required workspace GET 失敗）；零 mutation、零 AI |
+| `--once` / `--once --live` | `1` | 未分類程式錯誤。**不保證零 mutation**——這是唯一沒有副作用契約的結束路徑，下一個 tick 必須以 `action_log`（見下）與權威 readback 重新對帳，不得假設任何 planned mutation 已完成或未完成 |
+| `--status` | `0` | healthy：30 分鐘內有心跳，或存在有效 active lease |
+| `--status` | `1` | unhealthy：心跳過期且無 active lease |
+
+### Ledger／status command
+
+State 存在 `sim-logs/production-coordinator.db`（gitignored）。主要表格：`task_runs`（每個 task 的 checkpoint：phase／branch／lease／noProgressCount／evidenceFingerprint）、`action_log`（deterministic `action_key` 防止同一 mutation 重送，PK 直接擋重複 insert）、`ticks`（每次 tick 的 heartbeat）、`completion_outbox`（完成通知 batch／重試）、`coordinator_meta`（`cutover_generation`）。`--status` 讀最後一列 `ticks` 加上目前 `lease_until > now()` 的數量判斷健不健康。
+
+### WIP1
+
+每位 assignee 在同一次 tick 最多只取得一個非 blocked action（`selectCoordinatorActions` 用 `reservedAssignees` 集合去重）。`queued` 與尚未可恢復的 `human_blocked` task 完全不參與這個計算——它們既不佔用、也不釋放任何 assignee 的 WIP1 名額。同一次 live tick 的迭代內，`owner_dispatch`／`assign_member` 另外用 `claimedAssigneesThisIteration` 防止同一輪指派兩個 unassigned Todo 給同一個人。
+
+### Discussion policy（主討論 `10e65231...`）
+
+固定 24 小時窗口本身由 `src/mainDiscussion.ts` 的既有 policy 管理（`【全員回覆：N天】`，2-7 天、以半天遞增）；production coordinator 這一層只在兩種情況才產生 Owner action：evidence fingerprint（留言／狀態／期限）自上次 checkpoint 後已變化，或已超過固定期限（`dueAt <= now`）。狀態沒變化的巡檢不會重複觸發 AI。
+
+### Human-blocked 行為
+
+連續兩次「完整嘗試但沒有可驗證進展」（`OWNER_INTERVENTION_THRESHOLD = 2`）先標記 `ownerIntervened`；已介入後再一次無進展，轉為 `human_blocked` 並貼出唯一、去重的 `@user09` 留言（action key = `human_blocked_notice:<taskId>:<noProgressCount>`）。看板 status／assignee 維持不變；`human_blocked` 是 coordinator metadata，不是新的看板狀態，也不列入 WIP1。只有目前證據 fingerprint 與卡關當下不同（新留言、期限事件，或人工 task mutation）才會恢復嘗試。Provider／network failure（登入失敗、逾時等與「有沒有做出進展」無關的失敗）永遠不計入 noProgressCount。
+
+### Task branch 慣例
+
+每個 task 有自己的 branch `sim/task/<taskId>` 與 linked worktree `sim-work/tasks/<taskId>`（`sim/production/git.ts`）。正式環境不再使用 `sim/user02`～`sim/user06` 這類共享 branch；`ensureTaskWorktree` 冪等（worktree 已存在就重用，並驗證傳入的 `baseSha` 真的是既有 head 的祖先）。
+
+### Path-triggered autodeploy generation readback
+
+Coordinator 永遠不主動 `systemctl start` 任何 unit；`sim-autodeploy.path` 監看 master ref 是唯一觸發來源。等待邏輯（`waitForDeployment`，`sim/production/git.ts`）：
+
+1. merge／revert 前先 snapshot baseline（`invocationId` + `execMainStartTimestampMonotonic`）。
+2. 每輪 poll `systemctl --user show sim-autodeploy.path/.service`；只有 `invocationId` 改變**且** `execMainStartTimestampMonotonic` 前進**且** `serviceActiveState !== 'active'` 三者同時成立，才判定「新一輪已結束」。
+3. 新一輪結束後檢查它自己的 `Result=success`／`ExecMainStatus=0`，再核對 `deployed_rev` 與 `/api/health` rev 是否等於 target SHA；任一不符即 `deployment_failure`。
+4. 逾時 `DEPLOY_WAIT_TIMEOUT_MS`（35 分鐘）後三路決議：`deployed_rev`／health rev 已收斂 -> 成功（`deployObservedOutOfBand=true`）；仍未收斂但 `.service` 仍 active -> `deployment_indeterminate`（下一個 tick 用同一 target SHA 重新 readback，不重跑整個 sequence）；`.service` 已 inactive -> `deployment_failure`（`.path` 觸發遺漏）。
+
+`LEASE_TTL_MS`（45 分鐘，`sim/production/state.ts`）必須嚴格大於 `DEPLOY_WAIT_TIMEOUT_MS`（35 分鐘，`sim/production/git.ts`）：一個等待部署的 tick 合法可跑超過 35 分鐘，若 lease 先過期，`--status` 會誤報不健康，且過期 lease 可能被重新 claim，導致兩個 coordinator 同時處理同一 task。這個大小關係由 `sim/production.test.ts` 直接斷言。
+
+### Acceptance／deploy／revert sequence
+
+Owner accept 之後（`sim/production/coordinator.ts` 的 `runDeployAcceptance`），固定順序：
+
+```
+task branch CI -> 暫時 integration worktree（merge --no-ff --no-commit 偵測衝突）
+  -> npm test -> npm run build -> git diff --check -> task-specific acceptance
+  -> 要求 .path active／.service inactive -> snapshot baseline -> merge --no-ff 進 master
+  -> waitForDeployment -> task live acceptance -> deployed
+```
+
+任何一步失敗立刻回傳對應失敗 kind、不繼續往下走；下一個 tick 從失敗點重試（`deploy_indeterminate` 除外，見上一節）。Post-merge 部署失敗（`deploy_failed_post_merge`）觸發復原：`performMasterRevert`（確認 `.path` active／`.service` inactive、`git revert -m 1 --no-edit`）→ `resolveRollbackWait`（用同一個 `waitForDeployment` 等 revert 觸發的下一輪 invocation）。Rollback 成功貼出去重的 `deployment-rollback` 留言、task 維持 Review 待人工檢視；`rollback_indeterminate` 下一個 tick 用同一 revertSha 重試一次；明確失敗或連續兩個 tick 都 indeterminate 則記錄 `FatalCoordinatorError`——`assertNoFatalCoordinatorError` 之後會擋下該 task 的所有後續 AI／mutation action，直到人工清除。
+
+### Completion digest
+
+Task 進 Done 前，`sim/production/completion.ts` 依固定順序（persist outbox row -> 留言 -> user09 notification readback -> Review->Done PATCH）貼出這個逐字模板：
+
+```
+【SYSTEM完成】 @user09
+TASK：<title>（<taskId>）
+功能／修改：<owner-approved 摘要>
+驗證：<focused tests + integration + live acceptance>
+Commit：<accepted head/merge sha>
+部署版本：<health rev>
+執行識別：<completion_id>
+```
+
+`completion_id = taskId + ':' + acceptedHeadSha`；`執行識別` 該行同時是 readback 用的去重 marker。留言與 Review->Done PATCH 都是 readback-first、可安全重試；user09 notification 讀不到會直接 throw（資料完整性問題，不是可重試的預期失敗）。每個 tick 最多合併成一則 Discord 摘要，失敗後在接下來兩個 tick 各重試一次（總計 3 次），第 3 次失敗後標記 `notify_failed`，不再自動重試、不影響已確認的 Done。
+
+### Rollback procedure（切回 legacy sweep）
+
+任一 live tick 發生操作失敗時（任務 11 步驟 6）：
+
+```bash
+systemctl --user disable --now sim-coordinator.timer
+systemctl --user is-active sim-coordinator.service   # 等到 inactive、run lock 釋放才繼續；不得砍 in-flight AI
+systemctl --user enable --now sim-sweep-owner.timer sim-sweep-team.timer
+```
+
+不得同時啟用新舊 timer。保留 coordinator DB、log、manifest、branch 與 comment 供診斷；不清除、不 reset。
+
+## Legacy sweep 仍是可復原路徑（runtime cutover 完成前）
+
+本任務（計畫任務 10）**不修改** `sim/run.ts`、`sim/run.test.ts` 或 `deploy/sim-autodeploy.sh`。在 runtime cutover（計畫任務 11）成功完成兩個 live tick 之前，上方「Sim harness」章節描述的舊 Owner／Team scheduling、notification gate、`--sweep` flag 與 `deploy/sim-autodeploy.sh` 既有的 `pgrep sim/run.ts` 守衛都必須維持可用——任務 11 若失敗，回復流程就是重新 `enable --now sim-sweep-owner.timer sim-sweep-team.timer`，這條路徑一旦被拆除或改壞，任務 11 失敗時就沒有可以切回去的正式環境排程了。舊路徑要到計畫任務 12（兩個成功 live tick 後、另開 `feature/retire-legacy-sweep`）才會退役。
+
+## Cutover reconciliation（`sim/production/migrate.ts`）
+
+五筆既有卡關 task 的固定 cutover disposition（`sim/production/cutoverTasks.ts` 的 `CUTOVER_TASKS`，唯一權威定義）：
+
+| Task | 固定 disposition |
+| --- | --- |
+| `938aa035-5f96-4908-b28b-876fa4735061`（activeReview） | user06 唯一 active WIP；`00123ef0...` 前置條件通過後恢復/保留 assignee，PATCH Review -> Doing，從當時 master 建立乾淨 branch |
+| `6384b6f4-f92f-45a2-a5e1-133f04f76372`（queuedReview） | 依賴 `938aa035...`；解除前退回 Todo／unassigned／`queued`checkpoint |
+| `00123ef0-81cb-410e-aed1-d6d1fb925ed6`（completedPrerequisite） | 任務 1 唯一實作 task，Done 後 cutover 永遠不再指派或執行，只驗證完成證據鏈 |
+| `10e65231-a4b2-4bdb-aab4-9f3c5fb0e916`（mainDiscussion） | `00123ef0...` 前置條件通過後機械式結案一次，不建立新 Owner AI action |
+| `027c0052-46d5-4da7-90fa-dd8efb2219fc`（deferredAssignment） | 依賴 `938aa035...`；解除前維持 Todo／unassigned／`queued`；解除後固定指派 user05 |
+
+另有兩筆永遠排除（`isExcludedTask`，ID 為主、canonical title 為輔的雙重規則）：`27ec8d7e-8605-468c-9f2c-13a80bef2a5a`（`[規則] 主工作區協作與交接`，mainPolicy）與 `8be538bc-ffc6-4122-9757-026a54ba813f`（`[討論] 方向與下一步`，legacyCanonicalDiscussion）——两者只出現在 manifest 的 excluded 清單，永遠不建立 checkpoint、lease、action 或 mutation。
+
+`027c0052...`／`6384b6f4...` 的依賴解除條件是 `isActiveReviewGateOpen`：`938aa035...` 的看板 status 必須是 **Done**（不是 Doing／Review），**且**它的 accepted head（coordinator 自己 `task_runs` checkpoint 記錄的 `headSha`）必須驗證是目前 master 的祖先——這是「Done readback」，不是單看狀態欄位。gate 未開啟前兩者的 coordinator checkpoint 都固定寫成 `queued`。
+
+`queued` 是 coordinator metadata，不是看板狀態：
+
+- **不占 WIP**：`isBlockedTask` 在 generic 排程階段直接排除 `queued` task，它們既不佔用、也不會被算進任何 assignee 的 WIP1 名額。
+- **不會觸發 acceptance**：即使看板 status 暫時仍是 `Review`（例如三步退回序列途中），只要 coordinator checkpoint 的 phase 是 `queued`，`selectCoordinatorActions` 就不會為它產生 `owner_review` action。
+- **看板狀態一律是 Todo／unassigned**：`6384b6f4...` 退回 baseline 用固定三步、各自獨立 action key 的單欄位 PATCH（`Review -> Todo` 不是合法轉換，且一旦先清 assignee 就永久卡在 Review，因此順序鎖死）：
+  1. `Review -> Doing`（此時 assignee 仍是 user06，滿足 `src/task.ts` 對 Review -> Doing 的 assignee 非空守衛）
+  2. `Doing -> Todo`
+  3. 清除 assignee
+  中斷後依已完成的 action key 續跑，不從頭重做。
+
+CLI（`sim/production/migrate.ts`）三種模式：
+
+```bash
+npx tsx sim/production/migrate.ts
+# 唯讀 manifest：寫入 sim-logs/cutover-<timestamp>/manifest.json（gitignored）。
+# exit 0 = readyForApply；2 = CutoverPrerequisiteMissing；3 = DiscoveryUnavailable。
+
+npx tsx sim/production/migrate.ts --preflight --live --expect-generation <n>
+# 唯讀：重新計算 fingerprint，只有 generation 與全部證據仍相符才 exit 0；
+# 不符或 CutoverPrerequisiteMissing 則 exit 1；DiscoveryUnavailable 則 exit 3。
+# 不呼叫任何 task／Git／AI mutation adapter。
+
+npx tsx sim/production/migrate.ts --apply --live --expect-generation <n>
+# 唯一會真正 mutate 的模式：先重跑一次上面的 generation 檢查（不符 exit 1），
+# 通過後才執行 reconciliation。exit 0 = applied；2 = CutoverPrerequisiteMissing；3 = DiscoveryUnavailable。
+```
+
+全程零 AI：這個模組沒有任何函式簽名帶 AI runner 參數，「AI 呼叫數為零」是結構性保證。

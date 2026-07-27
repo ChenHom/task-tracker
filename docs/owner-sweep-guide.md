@@ -61,3 +61,9 @@ Owner 的責任是讓工作可被推進、驗收、結案，或明確停在可�
 Owner 是唯一派工者。每筆實作 task 建立或重新派工時，應依 eligible runner 的 profile 與目前 Todo/Doing 負載指定 `assignee_id`，並留下單一 `【OWNER派工】` 留言，說明負責人、專長理由與下一個可驗收成果。Member 只處理自己名下的 Todo/Doing，不 PATCH assignee，也不認領無主 task。
 
 無 assignee 的 Todo 採嚴格等待：team scheduler 完全不啟動 member，沒有逾時後自行認領或任何 fallback。Owner 沒有合適人選時保留無主狀態並留 `[ESCALATE]`，環境與 roster 未變時不重複診斷。
+
+## Production coordinator cutover（準備中）
+
+本文件描述的巡檢方式，是目前仍在運作的 legacy Owner／Team sweep（`sim/run.ts`）。正式環境 production coordinator（`sim/production.ts` 及 `sim/production/*`，見 [操作手冊](operations.md) 的「Production Sim Coordinator」與「Cutover reconciliation」章節）已完成開發但尚未啟用，安裝後仍保持 disabled，需另取得明確人工 live 授權才會接手排程；本節只是提前記錄啟用後的例外，巡檢方式在那之前不變。
+
+啟用後，以下五筆既有卡關 task 改由 `sim/production/migrate.ts` 的固定 cutover disposition 管理，**不**再由 Owner 依本文件的一般規則（第 3、4 條）自行判斷派工或驗收：`938aa035-5f96-4908-b28b-876fa4735061`、`6384b6f4-f92f-45a2-a5e1-133f04f76372`、`00123ef0-81cb-410e-aed1-d6d1fb925ed6`、`10e65231-a4b2-4bdb-aab4-9f3c5fb0e916`、`027c0052-46d5-4da7-90fa-dd8efb2219fc`。完整 disposition、排除清單與依賴解除條件見操作手冊。`[規則] 主工作區協作與交接`（`27ec8d7e...`）與 `[討論] 方向與下一步`（`8be538bc...`）維持排除，不受影響。
