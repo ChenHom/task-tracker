@@ -798,15 +798,15 @@ git commit -m "feat(sim): add idempotent cutover reconciliation"
 - 修改：`docs/owner-sweep-guide.md`
 - 修改：`design.md`
 
-- [ ] **步驟 1：更新 cutover 前操作文件。**
+- [x] **步驟 1：更新 cutover 前操作文件。**
 
 記錄固定 workspace allowlist、15 分鐘 coordinator、dry-run／live 邊界、live server／canonical Owner credential 前置條件、exit `2`／`3`、ledger／status command、WIP1、discussion policy、human-blocked 行為、task branch、path-triggered autodeploy generation readback、acceptance／deploy／revert sequence、completion digest、安裝後保持 disabled 的規則，以及 rollback procedure。文件必須同時記錄五筆 fixed cutover disposition、兩筆 excluded task、queued 不占 WIP、queued Review 不會觸發 acceptance，以及 `027c0052...`／`6384b6f4...` 只有在 `938aa035...` Done readback 後才解除依賴。另記錄 queued task 的看板狀態一律是 Todo／unassigned（含 `6384b6f4...` 退回 Todo 的固定三步順序）、`LEASE_TTL_MS` 與 `DEPLOY_WAIT_TIMEOUT_MS` 的大小關係，以及 exit `1` 不保證零 mutation 的對帳規則。
 
-- [ ] **步驟 2：明訂舊 sweep 仍是可復原路徑。**
+- [x] **步驟 2：明訂舊 sweep 仍是可復原路徑。**
 
 本任務不得修改 `sim/run.ts`、`sim/run.test.ts` 或 `deploy/sim-autodeploy.sh`。Runtime cutover 完成前，舊 Owner／Team scheduling、notification gate、sweep flag 與 `pgrep sim/run.ts` 守衛都要保持可用，否則任務 11 失敗時重新 enable 舊 timers 只會啟動一條已被拆除的路徑。
 
-- [ ] **步驟 3：執行文件與既有 regression gate。**
+- [x] **步驟 3：執行文件與既有 regression gate。**
 
 ```bash
 npx tsx sim/run.test.ts
@@ -819,7 +819,7 @@ git diff --check
 
 預期：全部 PASS。
 
-- [ ] **步驟 4：提交 cutover 文件。**
+- [x] **步驟 4：提交 cutover 文件。**
 
 ```bash
 git add docs/operations.md docs/owner-sweep-guide.md design.md
