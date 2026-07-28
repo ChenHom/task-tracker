@@ -32,6 +32,7 @@ import {
   MAIN_OWNER_TOOLS,
   MEMBER_TOOLS,
   notificationRouteForMember,
+  notificationGateEnabled,
   parseScenario,
   ROOT,
   runMemberSession,
@@ -54,6 +55,7 @@ import {
   runNotificationSweep,
   runNotificationSweepForMember,
   runNotificationGatedSession,
+  runNotificationGateOrNormal,
   type NotificationGateActor,
   type NotificationGateRequest,
   type NotificationSweepMember,
@@ -243,6 +245,25 @@ async function runNotificationGateTests(): Promise<void> {
   );
   assert.strictEqual(skipped, null);
   assert.strictEqual(regularRuns, 0, 'gate 未清空時不得進入一般 session');
+
+  assert.strictEqual(notificationGateEnabled({}), false, 'notification gate 預設必須停用');
+  assert.strictEqual(notificationGateEnabled({ SIM_NOTIFICATION_GATE: '1' }), true, '只有明確設為 1 才恢復 notification gate');
+  let gateCalls = 0;
+  let normalCalls = 0;
+  const bypassed = await runNotificationGateOrNormal(
+    false,
+    async () => {
+      gateCalls++;
+      return { ready: false, snapshotIds: ['unread'], preflightStarted: false };
+    },
+    async () => {
+      normalCalls++;
+      return { errored: false, timedOut: false };
+    },
+  );
+  assert.deepStrictEqual(bypassed, { errored: false, timedOut: false });
+  assert.strictEqual(gateCalls, 0, '停用時不得登入、讀取或標記任何 notification');
+  assert.strictEqual(normalCalls, 1, '停用時必須直接啟動一般 owner/member session');
 
   const general = fakeGateRequest({
     'GET /api/notifications': [

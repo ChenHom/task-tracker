@@ -31,7 +31,7 @@ const OWNER_THOUGHT = `【OWNER想法】
 現行可替代方案：人工提醒
 初步判斷：先採固定窗口
 希望成員確認的問題：兩天是否足夠`;
-const TWO_DAY_REQUEST = `【全員回覆：2天】
+const ONE_DAY_REQUEST = `【全員回覆：24小時】
 請補充或表示已閱讀。`;
 
 const db = new DatabaseSync(':memory:');
@@ -477,7 +477,7 @@ assert.throws(
 assert.strictEqual(loadEvents(discussionId, db).length, beforeDiscussionEvidence, '缺少窗口時不可追加 event');
 
 createComment(discussionId, 'main-owner', OWNER_THOUGHT, db, new Date('2026-07-14T08:00:00.000Z'));
-createComment(discussionId, 'main-owner', TWO_DAY_REQUEST, db, new Date('2026-07-14T08:00:00.000Z'));
+createComment(discussionId, 'main-owner', ONE_DAY_REQUEST, db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-user', '請交由前端成員接手。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【結論】\n採用。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【實作任務】工作區：目標工作區｜TASK：實作討論方向', db, new Date('2026-07-14T08:00:00.000Z'));
