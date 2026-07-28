@@ -12,6 +12,27 @@ import {
 import { navigate } from '../router.js';
 import { el, showError, formatTime, requireWorkspace } from '../utils.js';
 import { openTaskDetailModal } from './task-detail.js';
+import { syncGlobalWorkspaces } from '../sidebar.js';
+
+/**
+ * Renders a deep-link failure message (task not found / no access) in place of the board.
+ * @param {HTMLElement} container - The DOM container element where the page is rendered.
+ * @param {string} message - Human-readable failure reason from the API or lookup.
+ * @returns {void}
+ */
+function renderTaskLinkError(container, message) {
+  container.innerHTML = '';
+  const box = el('div', {
+    class: 'sketch-box task-link-error-card'
+  });
+  box.appendChild(el('h2', {}, '無法開啟此任務'));
+  box.appendChild(el('p', { class: 'error' }, message));
+  box.appendChild(el('a', {
+    href: '#/workspaces',
+    class: 'nav-btn task-link-error-link'
+  }, '前往工作區清單'));
+  container.appendChild(box);
+}
 
 /**
  * Controller representation for the Kanban Board View.
@@ -26,16 +47,42 @@ export const KanbanView = {
    * @returns {Promise<void>}
    */
   async render(container, rest, query) {
+    // Check if we are opening a specific task via `#/task/:taskId`
+    // The router registers both 'tasks' and 'task' view.
+    // When prefix is 'task', rest[0] contains the task ID.
+    const openTaskId = rest && rest[0];
+
+    // Cold start / refresh landing directly on #/task/:id: state.workspaceId is
+    // still empty (it's in-memory only), so resolve it from the task itself
+    // before falling back to the "no workspace selected" placeholder.
+    if (!state.workspaceId && openTaskId) {
+      container.innerHTML = '<p class="muted task-link-loading-placeholder">載入任務中...</p>';
+      let task;
+      try {
+        task = await api(`/api/tasks/${openTaskId}`);
+      } catch (err) {
+        renderTaskLinkError(container, err.message);
+        return;
+      }
+      let ws = state.globalWorkspaces.find(w => w.workspace_id === task.workspace_id);
+      if (!ws) {
+        await syncGlobalWorkspaces();
+        ws = state.globalWorkspaces.find(w => w.workspace_id === task.workspace_id);
+      }
+      if (!ws) {
+        renderTaskLinkError(container, '找不到此任務所屬的工作區，或您無權限存取');
+        return;
+      }
+      state.workspaceId = ws.workspace_id;
+      state.workspaceName = ws.name;
+    }
+
     if (!requireWorkspace(container)) return;
     const renderWorkspaceId = state.workspaceId;
     let loadGeneration = 0;
 
     const savedShowArchived = sessionStorage.getItem(`kanban_filter_show_archived_${renderWorkspaceId}`) === 'true';
 
-    // Check if we are opening a specific task via `#/task/:taskId`
-    // The router registers both 'tasks' and 'task' view.
-    // When prefix is 'task', rest[0] contains the task ID.
-    const openTaskId = rest && rest[0];
     const isMainWorkspace = renderWorkspaceId === MAIN_WORKSPACE_ID;
     let currentRole = 'Viewer';
     let canCreateTask = false;

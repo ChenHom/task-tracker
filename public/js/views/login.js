@@ -5,6 +5,7 @@ import { state } from '../state.js';
 import { navigate } from '../router.js';
 import { syncGlobalWorkspaces } from '../sidebar.js';
 import { showError } from '../utils.js';
+import { refreshNotificationBadge } from './notifications.js';
 
 /**
  * Controller representation for the Login page View.
@@ -55,6 +56,7 @@ export const LoginView = {
           // ignore
         }
         await syncGlobalWorkspaces();
+        refreshNotificationBadge();
         navigate('#/workspaces');
       } catch (err) {
         showError('login-error', err);

@@ -188,10 +188,13 @@ const mockDocument: any = {
 // Global state / callbacks stubs
 const state = {
   workspaceId: null as string | null,
+  workspaceName: null as string | null,
+  globalWorkspaces: [] as any[],
   userEmail: null as string | null,
   userName: null as string | null,
   clear: () => {
     state.workspaceId = null;
+    state.workspaceName = null;
     state.userEmail = null;
     state.userName = null;
   }
@@ -203,8 +206,10 @@ function navigate(hash: string) {
 }
 
 let syncWorkspacesCalled = false;
+let syncedGlobalWorkspaces: any[] = [];
 async function syncGlobalWorkspaces() {
   syncWorkspacesCalled = true;
+  state.globalWorkspaces = syncedGlobalWorkspaces;
 }
 
 function requireWorkspace(container: any) {
@@ -236,6 +241,29 @@ function showError(id: string, err: any) {
 
 let apiMock: ((path: string, options?: any) => Promise<any>) | null = null;
 
+let openTaskDetailModalCalls: Array<{ taskId: string; opts: any }> = [];
+function openTaskDetailModal(taskId: string, opts: any) {
+  openTaskDetailModalCalls.push({ taskId, opts });
+}
+
+let refreshNotificationBadgeCalls = 0;
+async function refreshNotificationBadge() {
+  refreshNotificationBadgeCalls++;
+}
+
+const ROLE_RANK: { [key: string]: number } = { Viewer: 0, Commenter: 1, Member: 2, Admin: 3, Owner: 4 };
+const hasRole = (role: string, minimum: string) => ROLE_RANK[role] >= ROLE_RANK[minimum];
+const MAIN_WORKSPACE_ID = '11a82028-fc50-466a-a723-e002032cd9a6';
+const MAIN_OWNER_EMAIL = 'user01@test.local';
+const MAIN_POLICY_TITLE = '[規則] 主工作區協作與交接';
+const MAIN_DISCUSSION_DESCRIPTION_TEMPLATE = '問題／優化想法：\n目前情況或影響：\n希望改善的結果：';
+
+const sessionStorageStore: { [key: string]: string } = {};
+const sessionStorage = {
+  getItem: (k: string) => (k in sessionStorageStore ? sessionStorageStore[k] : null),
+  setItem: (k: string, v: string) => { sessionStorageStore[k] = String(v); }
+};
+
 const sandbox = {
   document: mockDocument,
   window: {
@@ -253,6 +281,14 @@ const sandbox = {
   requireWorkspace,
   el,
   showError,
+  openTaskDetailModal,
+  refreshNotificationBadge,
+  hasRole,
+  MAIN_WORKSPACE_ID,
+  MAIN_OWNER_EMAIL,
+  MAIN_POLICY_TITLE,
+  MAIN_DISCUSSION_DESCRIPTION_TEMPLATE,
+  sessionStorage,
   AbortController,
   globalThis: {} as any
 };
@@ -280,20 +316,29 @@ loadViewModule('login.js', 'LoginView');
 loadViewModule('forgot-password.js', 'ForgotPasswordView');
 loadViewModule('search.js', 'SearchView');
 loadViewModule('audit.js', 'AuditView');
+loadViewModule('kanban.js', 'KanbanView');
 
 const LoginView = sandbox.globalThis.LoginView;
 const ForgotPasswordView = sandbox.globalThis.ForgotPasswordView;
 const SearchView = sandbox.globalThis.SearchView;
 const AuditView = sandbox.globalThis.AuditView;
+const KanbanView = sandbox.globalThis.KanbanView;
+
+const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0));
 
 // Reset helpers
 function resetViewsMocks() {
   containerChildren.length = 0;
   state.workspaceId = null;
+  state.workspaceName = null;
+  state.globalWorkspaces = [];
   state.userEmail = null;
   state.userName = null;
+  openTaskDetailModalCalls = [];
+  refreshNotificationBadgeCalls = 0;
   navigatedHash = null;
   syncWorkspacesCalled = false;
+  syncedGlobalWorkspaces = [];
   apiMock = null;
 }
 
@@ -353,6 +398,7 @@ async function runTests() {
     assert.strictEqual(state.userName, 'User 09');
     assert.strictEqual(syncWorkspacesCalled, true);
     assert.strictEqual(navigatedHash, '#/workspaces');
+    assert.strictEqual(refreshNotificationBadgeCalls, 1, '登入成功應重抓一次通知未讀數');
   }
 
   // Login failure
@@ -636,6 +682,170 @@ async function runTests() {
     assert.strictEqual(listEl.childNodes.length, 1);
     assert.ok(listEl.childNodes[0].classList.contains('audit-empty-text'));
     assert.strictEqual(listEl.childNodes[0].textContent, '（無相關事件日誌）');
+  }
+
+  // ==========================================
+  // [views/kanban.js] Tests — #/task/:id deep link cold start
+  // ==========================================
+
+  const boardApiMock = (workspaceId: string) => async (path: string) => {
+    if (path === `/api/workspaces/${workspaceId}/tasks`) return [];
+    if (path === `/api/workspaces/${workspaceId}/projects`) return [];
+    if (path === `/api/workspaces/${workspaceId}/members`) return [];
+    throw new Error('unexpected path: ' + path);
+  };
+
+  // Cold start deep link success: workspaceId=null resolved from cached globalWorkspaces
+  {
+    resetViewsMocks();
+    state.workspaceId = null;
+    state.globalWorkspaces = [{ workspace_id: 'ws-1', name: 'Workspace One' }];
+    const container = new MockElement('div');
+    containerChildren.push(container);
+
+    const board = boardApiMock('ws-1');
+    apiMock = async (path: string, options?: any) => {
+      if (path === '/api/tasks/task-123') return { task_id: 'task-123', workspace_id: 'ws-1', title: 'Some Task' };
+      return board(path);
+    };
+
+    await KanbanView.render(container, ['task-123'], new URLSearchParams());
+    await flushPromises();
+
+    assert.strictEqual(state.workspaceId, 'ws-1');
+    assert.strictEqual(state.workspaceName, 'Workspace One');
+    assert.strictEqual(syncWorkspacesCalled, false, '快取已有該工作區，不應重新 sync');
+    assert.strictEqual(openTaskDetailModalCalls.length, 1);
+    assert.strictEqual(openTaskDetailModalCalls[0].taskId, 'task-123');
+    assert.ok(!container.innerHTML.includes('尚未選擇工作區'));
+    assert.ok(!container.innerHTML.includes('無法開啟此任務'));
+  }
+
+  // Cold start deep link success: workspace missing from cache, resolved after re-sync
+  {
+    resetViewsMocks();
+    state.workspaceId = null;
+    state.globalWorkspaces = [];
+    assert.deepStrictEqual(state.globalWorkspaces, [], '重新同步前快取應為空');
+    syncedGlobalWorkspaces = [{ workspace_id: 'ws-2', name: 'Workspace Two' }];
+    const container = new MockElement('div');
+    containerChildren.push(container);
+
+    const board = boardApiMock('ws-2');
+    apiMock = async (path: string) => {
+      if (path === '/api/tasks/task-9') return { task_id: 'task-9', workspace_id: 'ws-2', title: 'Task 9' };
+      return board(path);
+    };
+
+    await KanbanView.render(container, ['task-9'], new URLSearchParams());
+    await flushPromises();
+
+    assert.strictEqual(syncWorkspacesCalled, true, '快取沒有該工作區時應觸發重新 sync');
+    assert.deepStrictEqual(state.globalWorkspaces, [{ workspace_id: 'ws-2', name: 'Workspace Two' }]);
+    assert.strictEqual(state.workspaceId, 'ws-2');
+    assert.strictEqual(state.workspaceName, 'Workspace Two');
+    assert.strictEqual(openTaskDetailModalCalls.length, 1);
+    assert.strictEqual(openTaskDetailModalCalls[0].taskId, 'task-9');
+  }
+
+  // Cold start deep link failure: workspace still missing after re-sync
+  {
+    resetViewsMocks();
+    state.workspaceId = null;
+    state.globalWorkspaces = [];
+    const container = new MockElement('div');
+    containerChildren.push(container);
+
+    apiMock = async (path: string) => {
+      if (path === '/api/tasks/task-10') return { task_id: 'task-10', workspace_id: 'ws-2', title: 'Task 10' };
+      throw new Error('unexpected path: ' + path);
+    };
+
+    await KanbanView.render(container, ['task-10'], new URLSearchParams());
+
+    assert.strictEqual(syncWorkspacesCalled, true, '快取沒有該工作區時應觸發重新 sync');
+    assert.strictEqual(state.workspaceId, null, '重新 sync 仍找不到工作區時不應變更 state');
+    assert.deepStrictEqual(state.globalWorkspaces, [], '重新 sync 失敗後快取應保持空白');
+    assert.ok(findElement(container, n => n.textContent === '找不到此任務所屬的工作區，或您無權限存取'));
+  }
+
+  // Cold start deep link: single-task API 404
+  {
+    resetViewsMocks();
+    state.workspaceId = null;
+    const container = new MockElement('div');
+    containerChildren.push(container);
+
+    apiMock = async () => { throw new Error('task 不存在'); };
+
+    await KanbanView.render(container, ['missing-task'], new URLSearchParams());
+
+    assert.strictEqual(state.workspaceId, null);
+    assert.ok(findElement(container, n => n.textContent === '無法開啟此任務'));
+    assert.ok(findElement(container, n => n.textContent === 'task 不存在'));
+  }
+
+  // Cold start deep link: single-task API 403
+  {
+    resetViewsMocks();
+    state.workspaceId = null;
+    const container = new MockElement('div');
+    containerChildren.push(container);
+
+    apiMock = async () => { throw new Error('權限不足'); };
+
+    await KanbanView.render(container, ['forbidden-task'], new URLSearchParams());
+
+    assert.strictEqual(state.workspaceId, null);
+    assert.ok(findElement(container, n => n.textContent === '無法開啟此任務'));
+    assert.ok(findElement(container, n => n.textContent === '權限不足'));
+  }
+
+  // Regression: workspace already selected + opening a task — deep-link fetch must be skipped
+  {
+    resetViewsMocks();
+    state.workspaceId = 'ws-1';
+    state.workspaceName = 'Workspace One';
+    const container = new MockElement('div');
+    containerChildren.push(container);
+
+    let singleTaskFetched = false;
+    const board = boardApiMock('ws-1');
+    apiMock = async (path: string) => {
+      if (path === '/api/tasks/task-123') { singleTaskFetched = true; return { task_id: 'task-123', workspace_id: 'ws-1' }; }
+      return board(path);
+    };
+
+    await KanbanView.render(container, ['task-123'], new URLSearchParams());
+    await flushPromises();
+
+    assert.strictEqual(singleTaskFetched, false, 'workspace 已選定時不應重新打單筆 task API');
+    assert.strictEqual(openTaskDetailModalCalls.length, 1);
+    assert.strictEqual(openTaskDetailModalCalls[0].taskId, 'task-123');
+  }
+
+  // Regression: existing #/tasks listing (no task id) unaffected
+  {
+    resetViewsMocks();
+    state.workspaceId = 'ws-1';
+    state.workspaceName = 'Workspace One';
+    const container = new MockElement('div');
+    containerChildren.push(container);
+
+    let singleTaskFetched = false;
+    const board = boardApiMock('ws-1');
+    apiMock = async (path: string) => {
+      if (path.startsWith('/api/tasks/')) { singleTaskFetched = true; return board(path); }
+      return board(path);
+    };
+
+    await KanbanView.render(container, [], new URLSearchParams());
+    await flushPromises();
+
+    assert.strictEqual(singleTaskFetched, false);
+    assert.strictEqual(openTaskDetailModalCalls.length, 0);
+    assert.ok(container.innerHTML.includes('kanban-board'));
+    assert.ok(!container.innerHTML.includes('尚未選擇工作區'));
   }
 
   console.log('frontendViews.test.ts OK');

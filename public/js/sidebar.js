@@ -105,18 +105,21 @@ export function updateSidebar(prefix) {
   const logoutBtn = document.getElementById('logout-btn');
   const wsNav = document.getElementById('workspace-nav');
   const wsSection = document.getElementById('workspace-section');
+  const notifNav = document.getElementById('nav-notifications');
 
   if (userEmail) {
     const userName = state.userName;
     userEmailEl.textContent = userName ? `${userName} (${userEmail})` : userEmail;
     logoutBtn.style.display = 'inline-flex';
     wsSection.style.display = 'block';
+    if (notifNav) notifNav.style.display = 'block';
     initSwitcherListener();
     renderWorkspaceSwitcher();
   } else {
     userEmailEl.textContent = '';
     logoutBtn.style.display = 'none';
     wsSection.style.display = 'none';
+    if (notifNav) notifNav.style.display = 'none';
   }
 
   if (state.workspaceId) {
