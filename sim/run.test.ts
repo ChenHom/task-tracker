@@ -25,10 +25,12 @@ import {
   formatReportMarkdown,
   formatReviewPacket,
   hasReviewChanges,
+  hasNonDependencyWorktreeChanges,
   isSweepWorkTask,
   isManagedRosterWorkspace,
   loadMembersFromUsers,
   mainDiscussionNeedsOwner,
+  memberWorktreePathspecs,
   MAIN_OWNER_TOOLS,
   MEMBER_TOOLS,
   notificationRouteForMember,
@@ -775,6 +777,19 @@ assert.strictEqual(
   2,
   'full sprint 與 team sweep 的 driver commit 都必須記錄實際一般工作模型',
 );
+const commitMemberWorkSource = source.match(/function commitMemberWork\(m: Member, round: number, model: string\): boolean \{[\s\S]*?\n\}/)?.[0] ?? '';
+assert.ok(
+  commitMemberWorkSource.includes("git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m))"),
+  'driver 代 commit 必須以排除 node_modules 的 pathspec stage，不能再無差別 git add -A',
+);
+assert.ok(
+  !commitMemberWorkSource.includes("git(['add', '-A'], wt(m))"),
+  'driver 不得直接 stage worktree 內所有檔案，否則 node_modules symlink 會被提交',
+);
+assert.ok(
+  commitMemberWorkSource.includes("git(['diff', '--cached', '--name-only'], wt(m))"),
+  'driver commit 前必須確認還有可提交的非依賴檔案，僅有 node_modules 時不得建立空 commit',
+);
 assert.strictEqual(isQuotaExhaustion('HTTP 429: quota exhausted'), true, 'quota 錯誤應可辨識');
 assert.strictEqual(isQuotaExhaustion('agy binary not found'), false, 'agy 不存在不可誤判為 quota');
 assert.strictEqual(isQuotaExhaustion('authentication failed'), false, '登入失敗不可誤判為 quota');
@@ -1046,6 +1061,35 @@ assert.throws(() => assertPathWithin(symlinkRoot, join(symlinkRoot, 'sim-work/us
 assert.doesNotThrow(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'master'));
 assert.throws(() => validateGitRootFacts('/tmp/repo/nested', '/tmp/repo', 'master'), /Git top-level/);
 assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test'), /必須位於 master/);
+
+// ── driver commit：node_modules symlink 不得進 index，正常 task 檔仍可提交 ──
+{
+  const repo = mkdtempSync(join(tmpdir(), 'member-commit-guard-'));
+  const dependencyTarget = mkdtempSync(join(tmpdir(), 'member-commit-deps-'));
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  g(['init', '-b', 'master']);
+  g(['config', 'user.email', 't@t']);
+  g(['config', 'user.name', 't']);
+  writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'base']);
+  symlinkSync(dependencyTarget, join(repo, 'node_modules'));
+  writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+  assert.strictEqual(
+    hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
+    true,
+    '正常 task 檔與 node_modules symlink 並存時，driver 仍必須處理正常修改',
+  );
+  g(['add', '-A', '--', ...memberWorktreePathspecs()]);
+  assert.deepStrictEqual(g(['diff', '--cached', '--name-only']).split('\n').filter(Boolean), ['app.ts']);
+  g(['commit', '-m', 'task change']);
+  assert.deepStrictEqual(g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean), ['app.ts']);
+  assert.strictEqual(
+    hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
+    false,
+    '只剩 node_modules symlink 時不可視為待提交的 member 工作成果',
+  );
+}
 
 const lockPath = join(dir, '.run.lock');
 const release = acquireRunLock(lockPath);

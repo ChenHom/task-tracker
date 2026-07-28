@@ -87,6 +87,17 @@ export function hasReviewChanges(ahead: number, dirty: boolean): boolean {
   return ahead > 0 || dirty;
 }
 
+export function hasNonDependencyWorktreeChanges(status: string): boolean {
+  return status.split('\n').some((entry) => {
+    const path = entry.slice(3);
+    return path !== '' && !path.split(/[\\/]/).includes('node_modules');
+  });
+}
+
+export function memberWorktreePathspecs(): string[] {
+  return ['.', ':(exclude)node_modules', ':(exclude)**/node_modules'];
+}
+
 export function dirtyReviewChecks(tscPath: string, testPath: string): { tsc: CommandCheck; test: CommandCheck } {
   const message = 'worktree 有未提交 diff（前一個 session 失敗或逾時）；driver 未執行 CI，也不可視為工作佚失。請退回 Doing 後續作。\n';
   writeFileSync(tscPath, message);
@@ -1540,12 +1551,20 @@ function printStats(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const jitter = (minS: number, maxS: number) => (minS + Math.random() * (maxS - minS)) * 1000;
 
+function memberWorktreeDirty(dir: string): boolean {
+  return hasNonDependencyWorktreeChanges(git(['status', '--porcelain'], dir));
+}
+
 // 所有 member 都只改 worktree；driver 僅在 session 成功後統一提交，避免 runner 權限與完成語意分裂。
 function commitMemberWork(m: Member, round: number, model: string): boolean {
   validateMemberWorktree(m);
-  const dirty = git(['status', '--porcelain'], wt(m));
-  if (!dirty) return false;
-  git(['add', '-A'], wt(m));
+  if (!memberWorktreeDirty(wt(m))) return false;
+  git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m));
+  const staged = git(['diff', '--cached', '--name-only'], wt(m));
+  if (staged.split('\n').some((path) => path.split(/[\\/]/).includes('node_modules'))) {
+    throw new Error('driver 拒絕提交 node_modules 或其他依賴路徑');
+  }
+  if (!staged) return false;
   git(['diff', '--cached', '--check'], wt(m));
   git(['commit', '-m', `feat(${m.name}/${model}): r${round} 產出（driver 代 commit）`], wt(m));
   const hash = git(['log', '-1', '--format=%h'], wt(m));
@@ -1658,7 +1677,7 @@ async function verifyBranches(runDir: string, scenario: Scenario): Promise<Branc
     if (!existsSync(wt(m))) return base(0);
     validateMemberWorktree(m);
     const ahead = Number(git(['rev-list', '--count', `master..${branch(m)}`]));
-    const dirty = !!git(['status', '--porcelain'], wt(m));
+    const dirty = memberWorktreeDirty(wt(m));
     const packet = base(ahead, dirty);
     if (!hasReviewChanges(ahead, dirty)) return packet;
     if (ahead) packet.commits = git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean);
@@ -1715,7 +1734,7 @@ function cleanupUnstartedRun(tag: string): void {
   let safeToDeleteTag = true;
   for (const m of RUN.members) {
     if (existsSync(wt(m))) {
-      if (git(['status', '--porcelain'], wt(m))) {
+      if (memberWorktreeDirty(wt(m))) {
         safeToDeleteTag = false;
         console.log(`[cleanup] ${wt(m)} 有未提交內容，保留供人工檢查`);
         continue;
@@ -1905,7 +1924,7 @@ function memberHasReviewChanges(m: Member): boolean {
   if (branchAhead(m) > 0) return true;
   if (!existsSync(wt(m))) return false;
   validateMemberWorktree(m);
-  return hasReviewChanges(0, !!git(['status', '--porcelain'], wt(m)));
+  return hasReviewChanges(0, memberWorktreeDirty(wt(m)));
 }
 
 function validateMemberWorktree(m: Member): void {
@@ -1937,7 +1956,7 @@ function ensureWorktree(m: Member, scenario: Scenario): void {
 // dirty 不動（在製品；memory: dirty FAIL 死鎖）；衝突則 abort 留給成員依 merge conflict 流程處理。
 export function syncWorktreeWithMaster(dir: string): 'merged' | 'up-to-date' | 'skipped-dirty' | 'conflict-aborted' {
   const g = (args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
-  if (g(['status', '--porcelain']) !== '') return 'skipped-dirty';
+  if (hasNonDependencyWorktreeChanges(g(['status', '--porcelain']))) return 'skipped-dirty';
   const behind = Number(g(['rev-list', '--count', 'HEAD..master']));
   if (behind === 0) return 'up-to-date';
   try {
