@@ -132,9 +132,11 @@ sqlite3 data/dev.db "SELECT task_id, opened_at, wait_half_days, due_at FROM main
 
 ## Sim harness
 
-### Notification preflight
+### Notification preflight（目前停用）
 
-Every automated Owner and configured member session (`user01`, `user02`–`user06`) first snapshots its own unread `GET /api/notifications` rows. The driver reads the source task/comment and runs a dedicated API-only notification session before ordinary board work.
+SIM notification preflight 目前預設停用：Owner／member 不會為通知額外登入、讀取、留言或標記已讀，且 notification 失敗不再阻斷一般工作 session。這只影響 `sim/run.ts` 的自動巡檢；網站的 notification API 與前端不受影響。要明確恢復舊行為，才在執行命令前設定 `SIM_NOTIFICATION_GATE=1`；已安裝的 timer wrapper 未設定此值，因此維持停用。
+
+啟用時，每個自動 Owner 與已設定 member session（`user01`、`user02`–`user06`）會先 snapshot 自己未讀的 `GET /api/notifications` rows。driver 會讀取來源 task/comment，並在一般看板工作前執行專用 API-only notification session。
 
 Main-workspace sources require a new post-snapshot comment by that actor; when there is no addition the required text is `已閱讀，目前無補充。`. The driver, not the AI session, marks a notification read after this verification. Normal-workspace sources may be read without a compulsory reply. A `403`/`404` or deleted source is logged and marked read; malformed data, network/5xx failures, a failed preflight, or missing/invalid main reply stay unread and skip that actor's ordinary session for this run.
 
@@ -142,9 +144,9 @@ The snapshot is bounded to login time. Notifications received later wait for the
 
 每筆未讀 notification 都是獨立處理單位：同一 task 的三筆通知會各自建立 bounded prompt、各自呼叫 AI、各自驗證留言並 read back。內容重複時，後續通知仍須由 AI 閱讀判斷，但可只留下固定的 `已閱讀，目前無補充。`（或等價的無補充訊息）；不得把多筆通知合成一筆。每個 prompt 上限 16,000 字元，超長留言會保留來源留言並明確省略其餘 context，固定規則與來源仍超限時 fail closed 並保留未讀。
 
-#### 全成員通知巡檢
+#### 全成員通知巡檢（啟用時）
 
-`--sweep team` 與 `--sweep both` 每個 tick 會依序巡檢目前設定的 user02–user06，與成員是否有 Todo/Doing 任務無關。每位成員都會登入並 snapshot 自己的未讀通知；零未讀只寫入 `notification-sweep` 結束紀錄，不啟動 AI。若有未讀，才啟動 dedicated API-only notification session，沿用上方來源讀取、主工作區回覆驗證、不得 @自己與 driver 標已讀規則。
+設定 `SIM_NOTIFICATION_GATE=1` 時，`--sweep team` 與 `--sweep both` 每個 tick 會依序巡檢目前設定的 user02–user06，與成員是否有 Todo/Doing 任務無關。每位成員都會登入並 snapshot 自己的未讀通知；零未讀只寫入 `notification-sweep` 結束紀錄，不啟動 AI。若有未讀，才啟動 dedicated API-only notification session，沿用上方來源讀取、主工作區回覆驗證、不得 @自己與 driver 標已讀規則。
 
 通知巡檢不建立 worktree、不 commit，也不占用一般 member task budget。登入、API、preflight 或主工作區留言驗證失敗時，該成員的未讀保留，且本 tick 跳過該成員的一般工作；其他成員照常繼續。`--sweep owner` 不啟動 user02–user06 通知巡檢；user01 仍由 owner session 的既有 gate 處理，user09 目前不在 sim runner 範圍。
 

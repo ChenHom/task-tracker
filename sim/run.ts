@@ -586,6 +586,12 @@ export interface NotificationGateResult {
   preflightStarted: boolean;
 }
 
+// notification preflight 會額外登入、讀取並標記通知；目前先預設停用，避免它阻斷
+// Owner／member 的正常工作 session。需要恢復時才在執行環境明確設為 1。
+export function notificationGateEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.SIM_NOTIFICATION_GATE === '1';
+}
+
 export type NotificationSweepMember = Pick<Member, 'email' | 'name' | 'user' | 'runner' | 'model' | 'fallback' | 'notificationRoute'>;
 
 export interface NotificationSweepResult {
@@ -1004,6 +1010,14 @@ export async function runNotificationGatedSession(
   return result.ready ? runNormal() : null;
 }
 
+export async function runNotificationGateOrNormal(
+  enabled: boolean,
+  gate: () => Promise<NotificationGateResult>,
+  runNormal: () => Promise<SessionResult>,
+): Promise<SessionResult | null> {
+  return enabled ? runNotificationGatedSession(gate, runNormal) : runNormal();
+}
+
 async function runActorSessionWithNotificationGate(input: {
   label: string;
   actor: Pick<NotificationGateActor, 'email' | 'name'>;
@@ -1014,31 +1028,36 @@ async function runActorSessionWithNotificationGate(input: {
   preflightOptions: SessionOptions;
   normal: () => Promise<SessionResult>;
 }): Promise<SessionResult | null> {
+  const enabled = notificationGateEnabled();
+  if (!enabled) console.log(`[${input.label}] notification gate 已停用，直接啟動一般 session`);
   const notificationRoute = input.notificationRoute ?? { runner: input.runner, model: input.model };
-  let cookie: string;
-  try {
-    cookie = await login(input.actor.email);
-  } catch (error) {
-    console.log(`[${input.label}] notification gate login 失敗，略過一般 session：${String(error)}`);
-    return null;
-  }
-  return runNotificationGatedSession(
-    () => processNotificationGate({
-      actor: input.actor,
-      cookie,
-      request: api,
-      jar: input.jar,
-      runPreflight: (prompt, notificationId) => runSession(
-        `${input.label}-通知-${notificationId ?? 'unknown'}`, notificationRoute.runner, notificationRoute.model, prompt,
-        {
-          ...input.preflightOptions,
-          fallback: input.notificationRoute ? undefined : input.preflightOptions.fallback,
-          promptLabel: `${input.label}-notification-${notificationId ?? 'unknown'}`,
-        },
-      ),
-      log: (line) => console.log(`[${input.label}] ${line}`),
-      snapshotAt: new Date().toISOString(),
-    }),
+  return runNotificationGateOrNormal(
+    enabled,
+    async () => {
+      let cookie: string;
+      try {
+        cookie = await login(input.actor.email);
+      } catch (error) {
+        console.log(`[${input.label}] notification gate login 失敗，略過一般 session：${String(error)}`);
+        return { ready: false, snapshotIds: [], preflightStarted: false };
+      }
+      return processNotificationGate({
+        actor: input.actor,
+        cookie,
+        request: api,
+        jar: input.jar,
+        runPreflight: (prompt, notificationId) => runSession(
+          `${input.label}-通知-${notificationId ?? 'unknown'}`, notificationRoute.runner, notificationRoute.model, prompt,
+          {
+            ...input.preflightOptions,
+            fallback: input.notificationRoute ? undefined : input.preflightOptions.fallback,
+            promptLabel: `${input.label}-notification-${notificationId ?? 'unknown'}`,
+          },
+        ),
+        log: (line) => console.log(`[${input.label}] ${line}`),
+        snapshotAt: new Date().toISOString(),
+      });
+    },
     input.normal,
   );
 }
@@ -2021,7 +2040,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${role}`);
   const promptArtifacts: PromptArtifact[] = [];
   let notificationResults = new Map<string, NotificationSweepResult>();
-  if (role !== 'owner') {
+  if (role !== 'owner' && notificationGateEnabled()) {
     const results = await runNotificationSweep(
       members,
       (member) => runNotificationSweepForMember({
@@ -2046,6 +2065,8 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       (line) => console.log(line),
     );
     notificationResults = new Map(results.map((result) => [result.actor, result]));
+  } else if (role !== 'owner') {
+    console.log('[notification-sweep] 已停用；略過 user02–user06 的 notification preflight');
   }
 
   interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; ownerNeeded: boolean; startedAt: string }
