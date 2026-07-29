@@ -1103,7 +1103,10 @@ export interface RunnerInvocation {
 export function buildRunnerInvocation(
   route: ModelRoute,
   prompt: string,
-  opts: { cwd: string; logFile: string; tools?: string },
+  // sandbox 只對 codex 有效（claude 走 --allowedTools，agy 沒有對應開關）。省略時是
+  // 'workspace-write'，legacy 呼叫端因此行為不變；需要真唯讀的呼叫端要自己傳 'read-only'
+  // ——工具白名單擋不住 codex，它根本不看 opts.tools。
+  opts: { cwd: string; logFile: string; tools?: string; sandbox?: 'read-only' | 'workspace-write' },
 ): RunnerInvocation {
   if (route.runner === 'claude') {
     return {
@@ -1112,10 +1115,13 @@ export function buildRunnerInvocation(
     };
   }
   if (route.runner === 'codex') {
+    const sandbox = opts.sandbox ?? 'workspace-write';
     return {
       command: 'codex',
       args: ['exec', '--ephemeral', '--skip-git-repo-check', '-C', opts.cwd,
-        '-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true',
+        '-s', sandbox,
+        // network_access 是 workspace-write 專屬設定；read-only 下沒有意義，不要附加。
+        ...(sandbox === 'workspace-write' ? ['-c', 'sandbox_workspace_write.network_access=true'] : []),
         '-m', route.model, '--output-last-message', `${opts.logFile}.last`, prompt],
     };
   }

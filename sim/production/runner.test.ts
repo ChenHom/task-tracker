@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { buildRunnerInvocation } from '../run';
 import {
   extractJsonBlock,
   memberPrompt,
@@ -148,5 +149,34 @@ assert.ok(oPrompt.includes('deadbeefcafe'), 'owner prompt 必須帶入 reviewedH
 assert.ok(/唯讀/u.test(oPrompt), 'owner prompt 必須聲明唯讀契約');
 // agent.ts 會在 accept 時要求 rationale 引用 head SHA，prompt 必須先講清楚
 assert.ok(oPrompt.includes(`引用 head SHA deadbeefcafe`), 'owner prompt 必須要求 accept 引用 head SHA');
+
+// ── codex sandbox 契約 ──────────────────────────────────────────────
+// 2026-07-29：第一版用工具白名單當 owner session 的唯讀防護，但 buildRunnerInvocation
+// 的 codex 分支根本不看 opts.tools，實際跑出來是可寫、可連網的 session。真正的約束是
+// sandbox 模式，這裡把它鎖住。
+const codexRoute = { runner: 'codex', model: 'gpt-5.6-sol' } as const;
+const readOnlyArgs = buildRunnerInvocation(codexRoute, 'p', { cwd: '/tmp/x', logFile: '/tmp/l', sandbox: 'read-only' }).args;
+assert.ok(readOnlyArgs.includes('read-only'), 'read-only sandbox 必須傳給 codex');
+assert.ok(!readOnlyArgs.includes('workspace-write'), 'read-only 時不得同時出現 workspace-write');
+assert.ok(
+  !readOnlyArgs.some((a) => a.includes('network_access')),
+  'read-only 是唯讀判斷用的，不得附加 network_access（那是 workspace-write 專屬設定）',
+);
+
+// 省略 sandbox 時必須逐字元維持 legacy 行為——sim/run.ts 的所有既有呼叫端都靠這個。
+const defaultArgs = buildRunnerInvocation(codexRoute, 'p', { cwd: '/tmp/x', logFile: '/tmp/l' }).args;
+assert.ok(defaultArgs.includes('workspace-write'), '省略 sandbox 時預設仍是 workspace-write');
+assert.ok(
+  defaultArgs.includes('sandbox_workspace_write.network_access=true'),
+  '省略 sandbox 時必須保留 legacy 的 network_access 設定',
+);
+
+// tools 只有 claude 分支會用；這條斷言存在是為了讓「哪個 runner 吃哪種防護」有據可查。
+const claudeArgs = buildRunnerInvocation({ runner: 'claude', model: 'm' }, 'p', { cwd: '/tmp/x', logFile: '/tmp/l', tools: 'Read' }).args;
+assert.ok(claudeArgs.includes('--allowedTools') && claudeArgs.includes('Read'), 'claude 分支才吃工具白名單');
+assert.ok(
+  !buildRunnerInvocation(codexRoute, 'p', { cwd: '/tmp/x', logFile: '/tmp/l', tools: 'Read' }).args.includes('Read'),
+  'codex 分支不吃工具白名單——別再拿它當防護',
+);
 
 console.log('sim/production/runner.test.ts OK');

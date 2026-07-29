@@ -9,6 +9,11 @@
  * 結構化回傳（MemberSessionOutput / OwnerDecision）。兩者對不上，所以這裡的工作
  * 不是轉接，而是：在 prompt 裡要求 AI 輸出一段 JSON，跑完把它解析出來。
  *
+ * Owner session 的唯讀保證來自 codex 的 `-s read-only` sandbox，不是工具白名單：
+ * buildRunnerInvocation 的 codex 分支不看 opts.tools。這一點在 2026-07-29 差點出事
+ * ——第一版用工具白名單當防護，而 production 的 dispatch 路徑又傳空的 worktreePath，
+ * 使得那個號稱唯讀的 session 實際上是可寫、可連網、cwd 落在 repo root 的 codex。
+ *
  * 已知契約落差：OwnerDecision.evidenceCommentIds 型別叫 "CommentIds"，但
  * OwnerSessionRunnerContext.comments 只是 string[]，沒有帶任何 id 進來，AI 不可能
  * 產出真的 comment id。這裡因此把它定義成「留言的位置標籤」（"#0"、"#1"），並在
@@ -23,7 +28,8 @@
  * 不會先檢查 exitCode。
  */
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRunnerInvocation, isQuotaExhaustion, type ModelRoute } from '../run';
 import type {
@@ -49,10 +55,12 @@ const MEMBER_ROUTE: ModelRoute = {
   model: process.env.SIM_PROD_MEMBER_MODEL ?? 'gpt-5.6-terra',
 };
 
-// Owner session 契約是唯讀（agent.ts 會獨立檢查 worktree 有沒有被改）；member 可以
-// 改檔但不碰 git，commit 一律由 driver 代勞。
-const OWNER_TOOLS = 'Read,Glob,Grep,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)';
-const MEMBER_TOOLS = 'Read,Write,Edit,Glob,Grep,Bash(npm:*),Bash(npx:*),Bash(git status:*),Bash(git diff:*)';
+// 約束來自 codex 的 sandbox 模式，不是工具白名單：buildRunnerInvocation 的 codex 分支
+// 根本不看 opts.tools（只有 claude 分支會用），而本模組的 route 硬寫 runner: 'codex'。
+// 先前這裡有 OWNER_TOOLS/MEMBER_TOOLS 兩個常數，對 codex 完全不生效，只會讓讀者
+// 誤以為 owner session 有防護——已刪除，改用底下的 sandbox 模式。
+const OWNER_SANDBOX = 'read-only' as const;   // owner 只做判斷，不得寫任何檔案
+const MEMBER_SANDBOX = 'workspace-write' as const; // member 要改檔，寫入被侷限在 -C 指定的 worktree
 
 const SESSION_TIMEOUT_MS = Number(process.env.SIM_PROD_SESSION_TIMEOUT_MS ?? 20 * 60 * 1000);
 
@@ -74,11 +82,11 @@ function runAiSession(
   route: ModelRoute,
   prompt: string,
   cwd: string,
-  tools: string,
+  sandbox: 'read-only' | 'workspace-write',
 ): Promise<AiSessionResult> {
   mkdirSync(LOG_DIR, { recursive: true });
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/gu, '-')}-${label}.log`);
-  const invocation = buildRunnerInvocation(route, prompt, { cwd, logFile, tools });
+  const invocation = buildRunnerInvocation(route, prompt, { cwd, logFile, sandbox });
   return new Promise((resolve) => {
     const child = execFile(
       invocation.command,
@@ -255,6 +263,18 @@ ${OUTPUT_CONTRACT}
 \`\`\``;
 }
 
+/**
+ * production 的 dispatch 路徑會傳空的 worktreePath（sim/production.ts:1026——那個階段
+ * 還沒有 worktree）。execFile 的 `cwd: ''` 會 fallback 到父 process 的 cwd，也就是這個
+ * repo 的 checkout，正是 sim-autodeploy.path 監看的那一個。給它一個拋棄式空目錄：
+ * dispatch 階段的 AI 本來就只拿得到 task 標題，不需要任何檔案系統存取。
+ */
+function resolveSessionCwd(worktreePath: string): { cwd: string; cleanup: () => void } {
+  if (worktreePath) return { cwd: worktreePath, cleanup: () => {} };
+  const scratch = mkdtempSync(join(tmpdir(), 'prod-session-'));
+  return { cwd: scratch, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
+}
+
 function assertSessionUsable(label: string, session: AiSessionResult): void {
   if (session.timedOut) {
     throw new Error(`${label}: AI session 逾時（${Math.round(SESSION_TIMEOUT_MS / 60000)} 分）；log=${session.logFile}`);
@@ -267,25 +287,35 @@ function assertSessionUsable(label: string, session: AiSessionResult): void {
 export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE): MemberSessionRunner {
   return async (context) => {
     const label = `member-${context.taskId.slice(0, 8)}`;
-    const session = await runAiSession(label, route, memberPrompt(context), context.worktreePath, MEMBER_TOOLS);
-    assertSessionUsable(label, session);
-    const raw = extractJsonBlock(session.text);
-    if (raw === null) {
-      throw new Error(`${label}: AI 沒有產生可解析的 JSON 區塊；log=${session.logFile}`);
+    const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
+    try {
+      const session = await runAiSession(label, route, memberPrompt(context), cwd, MEMBER_SANDBOX);
+      assertSessionUsable(label, session);
+      const raw = extractJsonBlock(session.text);
+      if (raw === null) {
+        throw new Error(`${label}: AI 沒有產生可解析的 JSON 區塊；log=${session.logFile}`);
+      }
+      return { exitCode: session.errored ? 1 : 0, output: parseMemberOutput(raw, `${label} (log=${session.logFile})`) };
+    } finally {
+      cleanup();
     }
-    return { exitCode: session.errored ? 1 : 0, output: parseMemberOutput(raw, `${label} (log=${session.logFile})`) };
   };
 }
 
 export function createOwnerSessionRunner(route: ModelRoute = OWNER_ROUTE): OwnerSessionRunner {
   return async (context) => {
     const label = `owner-${context.taskId.slice(0, 8)}`;
-    const session = await runAiSession(label, route, ownerPrompt(context), context.worktreePath, OWNER_TOOLS);
-    assertSessionUsable(label, session);
-    const raw = extractJsonBlock(session.text);
-    if (raw === null) {
-      throw new Error(`${label}: AI 沒有產生可解析的 JSON 區塊；log=${session.logFile}`);
+    const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
+    try {
+      const session = await runAiSession(label, route, ownerPrompt(context), cwd, OWNER_SANDBOX);
+      assertSessionUsable(label, session);
+      const raw = extractJsonBlock(session.text);
+      if (raw === null) {
+        throw new Error(`${label}: AI 沒有產生可解析的 JSON 區塊；log=${session.logFile}`);
+      }
+      return { exitCode: session.errored ? 1 : 0, decision: parseOwnerDecision(raw, `${label} (log=${session.logFile})`) };
+    } finally {
+      cleanup();
     }
-    return { exitCode: session.errored ? 1 : 0, decision: parseOwnerDecision(raw, `${label} (log=${session.logFile})`) };
   };
 }

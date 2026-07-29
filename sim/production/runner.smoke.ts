@@ -12,10 +12,14 @@
  * 不碰這個 repo。
  */
 import assert from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createMemberSessionRunner, createOwnerSessionRunner } from './runner';
+
+const REPO_ROOT = join(__dirname, '../..');
+const repoStatus = (): string => execFileSync('git', ['status', '--porcelain'], { cwd: REPO_ROOT, encoding: 'utf8' });
 
 async function smokeOwner(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'smoke-owner-'));
@@ -73,9 +77,41 @@ async function smokeMember(): Promise<void> {
   assert.ok(/\bname\b/u.test(content), `變數不見了：\n${content}`);
 }
 
+/**
+ * production 的 owner_dispatch 路徑（sim/production.ts:1021-1027）傳的是空的
+ * worktreePath、空 comments、空 reviewedHeadSha，acceptanceCriteria 只有 task 標題。
+ * 上面兩個 case 都傳真的 tmpdir，所以完全沒有涵蓋到這個形狀——2026-07-29 的沙箱缺陷
+ * 就是這樣漏掉的：cwd:'' 會 fallback 到 repo root。這個 case 專門鎖住它。
+ */
+async function smokeDispatchShape(): Promise<void> {
+  const before = repoStatus();
+
+  const started = Date.now();
+  const result = await createOwnerSessionRunner()({
+    taskId: 'smoke-dispatch-000',
+    acceptanceCriteria: '[討論] 通知列表要有分頁',
+    comments: [],
+    reviewedHeadSha: '',
+    worktreePath: '',
+  });
+
+  console.log(`[dispatch] ${Math.round((Date.now() - started) / 1000)}s exit=${result.exitCode} action=${result.decision.action}`);
+  console.log(`[dispatch] rationale: ${result.decision.rationale}`);
+
+  assert.strictEqual(result.exitCode, 0, '沒有 worktree 的 owner session 也要能正常結束');
+  assert.ok(result.decision.rationale.length > 0, 'dispatch 路徑唯一會被使用的輸出就是 rationale');
+  // 「沒有汙染 repo」唯一可獨立驗證的信號。
+  assert.strictEqual(
+    repoStatus(),
+    before,
+    'owner session 不得改動 repo working tree——cwd 必須落在拋棄式目錄，不是 repo root',
+  );
+}
+
 (async () => {
   await smokeOwner();
   await smokeMember();
+  await smokeDispatchShape();
   console.log('sim/production/runner.smoke.ts OK');
 })().catch((error) => {
   console.error(error);
