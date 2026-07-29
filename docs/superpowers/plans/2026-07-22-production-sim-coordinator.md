@@ -850,6 +850,37 @@ merge 會觸發**唯一一次** path invocation。依任務 6 步驟 5 的同一
 
 ## 任務 11：最終驗證與具前置檢查、復原能力的 Runtime Cutover
 
+> ### ⛔ 2026-07-29 實測：任務 11 目前無法完成，阻塞點不是 live 授權
+>
+> 在取得明確 live 授權後實際跑完步驟 1–4，結果是 `sim-coordinator.service` 以
+> `ExecMainStatus=1` 失敗，錯誤來自 `sim/production.ts:762`：
+>
+> ```
+> runOnce: --live 模式需要真正的 AI runner（runOwnerSession/runMemberSession）；
+> 目前尚未接上真實 AI 呼叫，這是刻意保留給未來任務的整合點，
+> 不得假造一個會靜默通過的假 runner。
+> ```
+>
+> **CLI 進入點從未提供 `deps.runOwnerSession` / `deps.runMemberSession`**，只有
+> `production.integration.test.ts` 會注入假的。因此 production coordinator 在
+> `--live` 下必定失敗，與授權、fingerprint、timer 狀態都無關。
+>
+> 這也解釋了為什麼 328KB 測試全綠卻擋不住：測試涵蓋了排程、lease、reconciliation
+> 與 readback，唯獨沒有涵蓋「真的呼叫 AI」這一段。
+>
+> **本次實測結果（全部零 mutation）：**
+> - 步驟 1 gate、步驟 2 安裝（disabled）、步驟 3 preflight、步驟 4 `--apply`：全部 exit 0。
+>   apply 回報 `aiCalls: 0`、`mainDiscussionClosed: false`（`10e65231...` 早在 07-22 已結案，
+>   readback 確認結案事件恰好 1 筆），五筆 disposition 與 `prerequisite.satisfied` 皆符合預期。
+> - 步驟 4 啟動 coordinator：失敗如上。看板零變動、零留言、零 AI call。
+> - 步驟 6 復原已執行：`sim-coordinator.timer` 保持 disabled，legacy
+>   `sim-sweep-owner/team.timer` 已重新 enable 並 active。
+>
+> **真正的前置任務**：先把 `runOwnerSession`/`runMemberSession` 接進 `sim/production.ts`
+> 的 CLI 組裝層（legacy 的實作在 `sim/run.ts`），並補一個會呼叫真 runner 的測試。
+> 在那之前，任務 11 步驟 3 之後的所有步驟都不用再試。
+
+
 **檔案：**
 - 預期不修改 source；本任務只驗證與操作已核准 build。
 

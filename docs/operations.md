@@ -305,6 +305,12 @@ State 存在 `sim-logs/production-coordinator.db`（gitignored）。主要表格
 
 每位 assignee 在同一次 tick 最多只取得一個非 blocked action（`selectCoordinatorActions` 用 `reservedAssignees` 集合去重）。`queued` 與尚未可恢復的 `human_blocked` task 完全不參與這個計算——它們既不佔用、也不釋放任何 assignee 的 WIP1 名額。同一次 live tick 的迭代內，`owner_dispatch`／`assign_member` 另外用 `claimedAssigneesThisIteration` 防止同一輪指派兩個 unassigned Todo 給同一個人。
 
+> **⛔ 2026-07-29：production coordinator 目前無法上線。** `sim/production.ts:762` 在 `--live`
+> 模式會直接 throw —— CLI 組裝層從未提供 `runOwnerSession`/`runMemberSession`，AI 呼叫仍是
+> 刻意保留的整合點。實測步驟 1–4 全部 exit 0（零 mutation），但 `sim-coordinator.service`
+> 以 `ExecMainStatus=1` 失敗。legacy sweep 路徑仍是唯一可用的正式路徑，`sim-coordinator.timer`
+> 維持 disabled。詳見 `docs/superpowers/plans/2026-07-22-production-sim-coordinator.md` 任務 11。
+
 ### Discussion policy（主討論 `10e65231...`）
 
 討論收尾條件由 `src/mainDiscussion.ts` 管理，**已無等待窗口**（`【全員回覆：N天】` 與 `main_discussion_windows` 於 2026-07-29 移除）；production coordinator 這一層只在 evidence fingerprint（留言／狀態）自上次 checkpoint 後已變化時才產生 Owner action。狀態沒變化的巡檢不會重複觸發 AI。
