@@ -25,10 +25,10 @@ const OWNER_THOUGHT = `【OWNER想法】
 現行可替代方案：人工提醒
 初步判斷：先採固定窗口
 希望成員確認的問題：兩天是否足夠`;
-const ONE_DAY_REQUEST = `【全員回覆：24小時】
+const TWO_DAY_REQUEST = `【全員回覆：2天】
 @user02 @user03 @user04 @user05 @user06 @user09
 請在固定期限內提出意見。`;
-const LEGACY_REQUEST = `【全員回覆：2天】
+const LEGACY_FIXED_REQUEST = `【全員回覆：24小時】
 @user02 @user03 @user04 @user05 @user06 @user09
 請在期限內提出意見。`;
 
@@ -88,20 +88,19 @@ function openForConclusion(taskId: string, creatorId: string): { thoughtId: stri
   const thoughtId = `${taskId}-thought`;
   const requestId = `${taskId}-request`;
   addThought(taskId, thoughtId);
-  addRequest(taskId, ONE_DAY_REQUEST, 'owner', requestId);
+  addRequest(taskId, TWO_DAY_REQUEST, 'owner', requestId);
   recordMainDiscussionWindowForComment({
     taskId,
     userId: 'owner',
     commentId: requestId,
-    content: ONE_DAY_REQUEST,
+    content: TWO_DAY_REQUEST,
     createdAt: OPENED_AT,
   }, db);
   assert.ok(getMainDiscussionWindow(taskId, db));
   return { thoughtId, requestId };
 }
 
-// 模擬「舊 code 建立、還沒被 24 小時固定窗口取代」的既有 window：直接寫 DB，不經過
-// recordMainDiscussionWindowForComment（該函式現在只接受固定 24 小時 marker）。
+// 模擬既有窗口：直接寫 DB，不經過 recordMainDiscussionWindowForComment。
 // due_at 固定設為已過期的 OPENED_AT，因為收尾時的內容再驗證發生在期限檢查之後，
 // 不需要以 wait_half_days 反推真實到期時間。
 function seedLegacyWindow(
@@ -125,16 +124,16 @@ function seedLegacyWindow(
 
 const CLOSE_NOW = '2026-07-17T08:00:00.000Z';
 
-// ── 固定 24 小時窗口：開啟 ─────────────────────────────────────────
+// ── 2 天窗口：開啟 ─────────────────────────────────────────────────
 seedTask('task-1');
 addThought('task-1');
-const requestId = addRequest('task-1', ONE_DAY_REQUEST);
+const requestId = addRequest('task-1', TWO_DAY_REQUEST);
 const opened = recordMainDiscussionWindowForComment(
   {
     taskId: 'task-1',
     userId: 'owner',
     commentId: requestId,
-    content: ONE_DAY_REQUEST,
+    content: TWO_DAY_REQUEST,
     createdAt: OPENED_AT,
   },
   db,
@@ -144,30 +143,30 @@ assert.deepStrictEqual(opened, {
   ownerThoughtCommentId: 'task-1-thought',
   requestCommentId: 'task-1-request',
   openedAt: OPENED_AT,
-  waitHalfDays: 2,
-  dueAt: '2026-07-15T08:00:00.000Z',
+  waitHalfDays: 4,
+  dueAt: '2026-07-16T08:00:00.000Z',
 });
 assert.deepStrictEqual(getMainDiscussionWindow('task-1', db), opened);
 
-// ── 舊格式 marker 不得再開啟或重開可變期限窗口 ──────────────────────
+// ── 已存在的 24 小時 marker 不得再開啟新窗口 ────────────────────────
 seedTask('task-2');
 addThought('task-2');
-const legacyNewAttemptId = addRequest('task-2', LEGACY_REQUEST);
+const legacyNewAttemptId = addRequest('task-2', LEGACY_FIXED_REQUEST);
 assert.throws(
   () => recordMainDiscussionWindowForComment({
     taskId: 'task-2',
     userId: 'owner',
     commentId: legacyNewAttemptId,
-    content: LEGACY_REQUEST,
+    content: LEGACY_FIXED_REQUEST,
     createdAt: OPENED_AT,
   }, db),
-  { name: 'CommandError', message: '全員回覆期限固定為 24 小時' },
-  '舊格式 N 天 marker 不得用來開啟新窗口',
+  { name: 'CommandError', message: '全員回覆期限必須是 2 到 7 天，並以 0.5 天遞增' },
+  '舊 24 小時 marker 不得用來開啟新窗口',
 );
 assert.strictEqual(getMainDiscussionWindow('task-2', db), null, '被拒絕的嘗試不可留下窗口');
 
-// ── 唯讀 legacy parser：既有窗口收尾時仍可解析舊格式（10e65231 回歸測試）──
-const legacyRegression = seedLegacyWindow('task-legacy-regression', 'user02', LEGACY_REQUEST, 4);
+// ── 唯讀 legacy parser：既有 24 小時窗口仍可收尾 ────────────────────
+const legacyRegression = seedLegacyWindow('task-legacy-regression', 'user02', LEGACY_FIXED_REQUEST, 2);
 addComment('task-legacy-regression', 'task-legacy-regression-decision', 'owner', '【結論】\n採用此方向。');
 addComment('task-legacy-regression', 'task-legacy-regression-handoff', 'owner', '【實作任務】工作區：Task Tracker｜TASK：既有 legacy 窗口收尾回歸');
 assert.deepStrictEqual(
@@ -186,34 +185,41 @@ assert.deepStrictEqual(
     implementationTaskName: '既有 legacy 窗口收尾回歸',
     implementationTasks: [{ workspaceName: 'Task Tracker', taskName: '既有 legacy 窗口收尾回歸' }],
   },
-  '既有 wait_half_days:4 且 request 為舊 N 天 marker 的窗口，到期後仍可機械式收尾',
+  '既有 wait_half_days:2 且 request 為舊 24 小時 marker 的窗口，到期後仍可機械式收尾',
 );
 
-// ── 唯讀 legacy parser：半天遞增仍被接受 ────────────────────────────
-const legacyHalfDay = seedLegacyWindow(
-  'task-legacy-half-day',
-  'user02',
+// ── 新窗口接受半天遞增與較長期限理由 ────────────────────────────────
+seedTask('task-2.5');
+addThought('task-2.5');
+const twoAndHalfRequest = addRequest(
+  'task-2.5',
   `【全員回覆：2.5天】
 較長期限理由：近期成員已有大量事務需要處理。`,
-  5,
 );
-addComment('task-legacy-half-day', 'task-legacy-half-day-decision', 'owner', '【結論：不實作】\n沿用現行替代方案。');
-assert.strictEqual(
-  resolveMainDiscussionConclusion('task-legacy-half-day', 'owner', new Date(CLOSE_NOW), db).outcome,
-  'no_implementation',
-  '2.5 天等半天遞增的舊格式仍應可通過收尾驗證',
+assert.deepStrictEqual(
+  recordMainDiscussionWindowForComment({
+    taskId: 'task-2.5', userId: 'owner', commentId: twoAndHalfRequest,
+    content: `【全員回覆：2.5天】\n較長期限理由：近期成員已有大量事務需要處理。`, createdAt: OPENED_AT,
+  }, db),
+  {
+    taskId: 'task-2.5', ownerThoughtCommentId: 'task-2.5-thought', requestCommentId: 'task-2.5-request',
+    openedAt: OPENED_AT, waitHalfDays: 5, dueAt: '2026-07-16T20:00:00.000Z',
+  },
+  '2.5 天應可開啟新窗口，且期限須依半天遞增計算',
 );
-assert.ok(legacyHalfDay);
 
-// ── 唯讀 legacy parser：內容驗證獨立於 DB 值，仍會擋下不合法的舊內容 ──
-const legacyMissingReason = seedLegacyWindow('task-legacy-missing-reason', 'user02', '【全員回覆：3天】', 6);
-addComment('task-legacy-missing-reason', 'task-legacy-missing-reason-decision', 'owner', '【未達共識】\n尚未解決的分歧：x\n缺少的確認或資訊：x\n下次重新思考前的建議：x');
+// ── 新窗口會擋下缺少較長期限理由的 N 天 marker ──────────────────────
+seedTask('task-missing-reason');
+addThought('task-missing-reason');
+const missingReasonRequest = addRequest('task-missing-reason', '【全員回覆：3天】');
 assert.throws(
-  () => resolveMainDiscussionConclusion('task-legacy-missing-reason', 'owner', new Date(CLOSE_NOW), db),
+  () => recordMainDiscussionWindowForComment({
+    taskId: 'task-missing-reason', userId: 'owner', commentId: missingReasonRequest,
+    content: '【全員回覆：3天】', createdAt: OPENED_AT,
+  }, db),
   { name: 'CommandError', message: '超過 2 天必須填寫較長期限理由' },
-  '缺少較長期限理由的舊內容，收尾時仍應被擋下',
+  '缺少較長期限理由的通知不得開啟新窗口',
 );
-assert.ok(legacyMissingReason);
 
 const legacyBelowMinimum = seedLegacyWindow('task-legacy-below-minimum', 'user02', '【全員回覆：1.5天】', 4);
 assert.throws(
@@ -250,13 +256,13 @@ assert.strictEqual(
 
 seedTask('task-8');
 addThought('task-8');
-const nonOwnerRequest = addRequest('task-8', ONE_DAY_REQUEST, 'user02');
+const nonOwnerRequest = addRequest('task-8', TWO_DAY_REQUEST, 'user02');
 assert.throws(
   () => recordMainDiscussionWindowForComment({
     taskId: 'task-8',
     userId: 'user02',
     commentId: nonOwnerRequest,
-    content: ONE_DAY_REQUEST,
+    content: TWO_DAY_REQUEST,
     createdAt: OPENED_AT,
   }, db),
   { name: 'CommandError', message: '只有 user01 可以開啟主工作區回覆窗口' },
@@ -264,13 +270,13 @@ assert.throws(
 
 seedTask('task-9', 'Todo', MAIN_POLICY_TITLE);
 addThought('task-9');
-const policyRequest = addRequest('task-9', ONE_DAY_REQUEST);
+const policyRequest = addRequest('task-9', TWO_DAY_REQUEST);
 assert.throws(
   () => recordMainDiscussionWindowForComment({
     taskId: 'task-9',
     userId: 'owner',
     commentId: policyRequest,
-    content: ONE_DAY_REQUEST,
+    content: TWO_DAY_REQUEST,
     createdAt: OPENED_AT,
   }, db),
   { name: 'CommandError', message: '只有主工作區 Todo 討論可以開啟回覆窗口' },
@@ -278,26 +284,26 @@ assert.throws(
 
 seedTask('task-10', 'Doing');
 addThought('task-10');
-const doingRequest = addRequest('task-10', ONE_DAY_REQUEST);
+const doingRequest = addRequest('task-10', TWO_DAY_REQUEST);
 assert.throws(
   () => recordMainDiscussionWindowForComment({
     taskId: 'task-10',
     userId: 'owner',
     commentId: doingRequest,
-    content: ONE_DAY_REQUEST,
+    content: TWO_DAY_REQUEST,
     createdAt: OPENED_AT,
   }, db),
   CommandError,
 );
 
 seedTask('task-11');
-const noThoughtRequest = addRequest('task-11', ONE_DAY_REQUEST);
+const noThoughtRequest = addRequest('task-11', TWO_DAY_REQUEST);
 assert.throws(
   () => recordMainDiscussionWindowForComment({
     taskId: 'task-11',
     userId: 'owner',
     commentId: noThoughtRequest,
-    content: ONE_DAY_REQUEST,
+    content: TWO_DAY_REQUEST,
     createdAt: OPENED_AT,
   }, db),
   { name: 'CommandError', message: '全員通知前必須先留下完整的 OWNER想法' },
@@ -305,13 +311,13 @@ assert.throws(
 
 seedTask('task-12');
 addThought('task-12', 'task-12-user-thought', 'user02');
-const wrongAuthorRequest = addRequest('task-12', ONE_DAY_REQUEST);
+const wrongAuthorRequest = addRequest('task-12', TWO_DAY_REQUEST);
 assert.throws(
   () => recordMainDiscussionWindowForComment({
     taskId: 'task-12',
     userId: 'owner',
     commentId: wrongAuthorRequest,
-    content: ONE_DAY_REQUEST,
+    content: TWO_DAY_REQUEST,
     createdAt: OPENED_AT,
   }, db),
   CommandError,
@@ -321,13 +327,13 @@ seedTask('task-13');
 addThought('task-13', 'task-13-thought', 'owner', `【OWNER想法】
 現況／問題：有問題
 預期價值：有價值`);
-const incompleteThoughtRequest = addRequest('task-13', ONE_DAY_REQUEST);
+const incompleteThoughtRequest = addRequest('task-13', TWO_DAY_REQUEST);
 assert.throws(
   () => recordMainDiscussionWindowForComment({
     taskId: 'task-13',
     userId: 'owner',
     commentId: incompleteThoughtRequest,
-    content: ONE_DAY_REQUEST,
+    content: TWO_DAY_REQUEST,
     createdAt: OPENED_AT,
   }, db),
   {
@@ -336,13 +342,13 @@ assert.throws(
   },
 );
 
-const duplicateRequest = addRequest('task-1', ONE_DAY_REQUEST, 'owner', 'task-1-request-2');
+const duplicateRequest = addRequest('task-1', TWO_DAY_REQUEST, 'owner', 'task-1-request-2');
 assert.throws(
   () => recordMainDiscussionWindowForComment({
     taskId: 'task-1',
     userId: 'owner',
     commentId: duplicateRequest,
-    content: ONE_DAY_REQUEST,
+    content: TWO_DAY_REQUEST,
     createdAt: '2026-07-15T08:00:00.000Z',
   }, db),
   { name: 'CommandError', message: '主工作區回覆窗口已開啟，期限不可變更' },
@@ -351,23 +357,23 @@ assert.deepStrictEqual(getMainDiscussionWindow('task-1', db), opened);
 
 seedTask('task-14');
 addThought('task-14');
-const noMentionRequest = addRequest('task-14', '【全員回覆：24小時】\n請留言表示已閱讀。');
+const noMentionRequest = addRequest('task-14', '【全員回覆：2天】\n請留言表示已閱讀。');
 assert.ok(recordMainDiscussionWindowForComment({
   taskId: 'task-14',
   userId: 'owner',
   commentId: noMentionRequest,
-  content: '【全員回覆：24小時】\n請留言表示已閱讀。',
+  content: '【全員回覆：2天】\n請留言表示已閱讀。',
   createdAt: OPENED_AT,
 }, db));
 
 seedTask('task-15');
 createComment('task-15', 'owner', OWNER_THOUGHT, db, new Date(OPENED_AT));
-createComment('task-15', 'owner', ONE_DAY_REQUEST, db, new Date(OPENED_AT));
+createComment('task-15', 'owner', TWO_DAY_REQUEST, db, new Date(OPENED_AT));
 assert.ok(getMainDiscussionWindow('task-15', db), '合法通知應由 createComment 建立窗口');
 
 seedTask('task-16');
 assert.throws(
-  () => createComment('task-16', 'owner', ONE_DAY_REQUEST, db, new Date(OPENED_AT)),
+  () => createComment('task-16', 'owner', TWO_DAY_REQUEST, db, new Date(OPENED_AT)),
   { name: 'CommandError', message: '全員通知前必須先留下完整的 OWNER想法' },
   '缺少 thought 的通知應整體失敗',
 );
@@ -387,7 +393,7 @@ assert.deepStrictEqual(
     status: 'Done',
     outcome: 'implement',
     windowOpenedAt: OPENED_AT,
-    windowDueAt: '2026-07-15T08:00:00.000Z',
+    windowDueAt: '2026-07-16T08:00:00.000Z',
     ownerThoughtCommentId: implementEvidence.thoughtId,
     requestCommentId: implementEvidence.requestId,
     decisionCommentId: implementConclusionId,
@@ -426,7 +432,7 @@ assert.deepStrictEqual(
     status: 'Done',
     outcome: 'no_implementation',
     windowOpenedAt: OPENED_AT,
-    windowDueAt: '2026-07-15T08:00:00.000Z',
+    windowDueAt: '2026-07-16T08:00:00.000Z',
     ownerThoughtCommentId: noImplementationEvidence.thoughtId,
     requestCommentId: noImplementationEvidence.requestId,
     decisionCommentId: noImplementationConclusionId,
@@ -452,7 +458,7 @@ assert.deepStrictEqual(
     status: 'Done',
     outcome: 'no_consensus',
     windowOpenedAt: OPENED_AT,
-    windowDueAt: '2026-07-15T08:00:00.000Z',
+    windowDueAt: '2026-07-16T08:00:00.000Z',
     ownerThoughtCommentId: noConsensusEvidence.thoughtId,
     requestCommentId: noConsensusEvidence.requestId,
     decisionCommentId: noConsensusId,
@@ -474,7 +480,7 @@ const beforeDeadlineEvidence = openForConclusion('task-before-deadline', 'user02
 addComment('task-before-deadline', 'task-before-deadline-decision', 'owner', '【未達共識】\n尚未解決的分歧：x\n缺少的確認或資訊：x\n下次重新思考前的建議：x');
 assert.throws(
   () => resolveMainDiscussionConclusion('task-before-deadline', 'owner', new Date('2026-07-14T20:00:00.000Z'), db),
-  { name: 'CommandError', message: '討論期限尚未到達：2026-07-15T08:00:00.000Z' },
+  { name: 'CommandError', message: '討論期限尚未到達：2026-07-16T08:00:00.000Z' },
   '截止前不可完成',
 );
 assert.ok(beforeDeadlineEvidence);
@@ -510,7 +516,7 @@ assert.deepStrictEqual(
     status: 'Done',
     outcome: 'implement',
     windowOpenedAt: OPENED_AT,
-    windowDueAt: '2026-07-15T08:00:00.000Z',
+    windowDueAt: '2026-07-16T08:00:00.000Z',
     ownerThoughtCommentId: naturalLanguageMemberCommentEvidence.thoughtId,
     requestCommentId: naturalLanguageMemberCommentEvidence.requestId,
     decisionCommentId: 'task-natural-language-member-comment-decision',

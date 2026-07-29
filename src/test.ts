@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+
 // 測試聚合入口：新增測試就多一行 import。任何 assert 失敗會讓 process 非零退出。
 import './staticPath.test';
 import './schema.test';
@@ -18,7 +21,9 @@ import './audit.test';
 import './rateLimit.test';
 import './quota.test';
 import './quotaFrontend.test';
-import './server.test';
 import './frontend.test';
 import './frontendCore.test';
 import './frontendViews.test';
+
+// server.test 需要獨立的暫存資料庫，避免與前面已載入的 in-process db 共用。
+execFileSync(process.execPath, ['--import', 'tsx', join(__dirname, 'server.test.ts')], { stdio: 'inherit' });

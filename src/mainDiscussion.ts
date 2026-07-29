@@ -4,8 +4,6 @@ import { CommandError } from './eventStore';
 import { MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 
 const HALF_DAY_MS = 12 * 60 * 60 * 1000;
-const FIXED_WAIT_HALF_DAYS = 2;
-const FIXED_WAIT_MS = 24 * 60 * 60 * 1000;
 const REQUIRED_THOUGHT_FIELDS = [
   '現況／問題',
   '預期價值',
@@ -47,24 +45,18 @@ function missingOwnerThoughtFields(content: string): readonly string[] {
   return REQUIRED_THOUGHT_FIELDS.filter((label) => lineValue(content, label) === null);
 }
 
-const FIXED_REQUEST_MARKER = /^【全員回覆：24小時】(?:\r?\n|$)/u;
-const LEGACY_REQUEST_MARKER = /^【全員回覆：(\d+(?:\.5)?)天】(?:\r?\n|$)/u;
+const LEGACY_FIXED_REQUEST_MARKER = /^【全員回覆：24小時】(?:\r?\n|$)/u;
+const REQUEST_MARKER = /^【全員回覆：(\d+(?:\.5)?)天】(?:\r?\n|$)/u;
 
-// 新窗口只接受固定 24 小時 marker；遇到舊 N 天格式直接拒絕，不重新開放可變期限。
 function parseNewWaitHalfDays(content: string): number | null {
-  if (FIXED_REQUEST_MARKER.test(content)) return FIXED_WAIT_HALF_DAYS;
-  if (LEGACY_REQUEST_MARKER.test(content)) {
-    throw new CommandError('全員回覆期限固定為 24 小時');
+  if (LEGACY_FIXED_REQUEST_MARKER.test(content)) {
+    throw new CommandError('全員回覆期限必須是 2 到 7 天，並以 0.5 天遞增');
   }
-  return null;
+  return parseWaitHalfDays(content);
 }
 
-// 既有窗口收尾時的唯讀相容：固定 marker 直接視為 2；舊 N 天 marker 仍套用原本
-// 2～7 天、0.5 天遞增與較長期限理由驗證，讓歷史 request comment 能被機械式驗證，
-// 而不必改寫留言或忽略既有證據。
-function parseStoredWaitHalfDays(content: string): number | null {
-  if (FIXED_REQUEST_MARKER.test(content)) return FIXED_WAIT_HALF_DAYS;
-  const match = content.match(LEGACY_REQUEST_MARKER);
+function parseWaitHalfDays(content: string): number | null {
+  const match = content.match(REQUEST_MARKER);
   if (!match) return null;
 
   const waitHalfDays = Number(match[1]) * 2;
@@ -75,6 +67,12 @@ function parseStoredWaitHalfDays(content: string): number | null {
     throw new CommandError('超過 2 天必須填寫較長期限理由');
   }
   return waitHalfDays;
+}
+
+// 既有 24 小時窗口收尾時仍可驗證，避免改寫歷史留言；新窗口一律使用 N 天 marker。
+function parseStoredWaitHalfDays(content: string): number | null {
+  if (LEGACY_FIXED_REQUEST_MARKER.test(content)) return 2;
+  return parseWaitHalfDays(content);
 }
 
 export function recordMainDiscussionWindowForComment(
@@ -131,7 +129,7 @@ export function recordMainDiscussionWindowForComment(
   const openedAtMs = Date.parse(input.createdAt);
   if (Number.isNaN(openedAtMs)) throw new CommandError('留言建立時間不合法');
   const openedAt = new Date(openedAtMs).toISOString();
-  const dueAt = new Date(openedAtMs + FIXED_WAIT_MS).toISOString();
+  const dueAt = new Date(openedAtMs + waitHalfDays * HALF_DAY_MS).toISOString();
   database.prepare(
     `INSERT INTO main_discussion_windows
        (task_id, owner_thought_comment_id, request_comment_id, opened_at, wait_half_days, due_at)
