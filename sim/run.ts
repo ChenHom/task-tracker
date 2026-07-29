@@ -1032,6 +1032,7 @@ export async function runNotificationGateOrNormal(
 async function runActorSessionWithNotificationGate(input: {
   label: string;
   actor: Pick<NotificationGateActor, 'email' | 'name'>;
+  getNotificationCookie: () => Promise<string>;
   jar: string;
   runner: Runner;
   model: string;
@@ -1047,7 +1048,7 @@ async function runActorSessionWithNotificationGate(input: {
     async () => {
       let cookie: string;
       try {
-        cookie = await login(input.actor.email);
+        cookie = await input.getNotificationCookie();
       } catch (error) {
         console.log(`[${input.label}] notification gate login 失敗，略過一般 session：${String(error)}`);
         return { ready: false, snapshotIds: [], preflightStarted: false };
@@ -1767,6 +1768,7 @@ async function main(): Promise<void> {
     const gated = await runActorSessionWithNotificationGate({
       label: `${m.name}-r${round}`,
       actor: m,
+      getNotificationCookie: () => login(m.email),
       jar: join(wt(m), `.jar-notification-${m.user}.txt`),
       runner: workSession.route.runner,
       model: workSession.route.model,
@@ -1789,6 +1791,7 @@ async function main(): Promise<void> {
   const material = exploreMaterial(scenario);
   const ownerOpen = await runActorSessionWithNotificationGate({
     label: 'owner-開場', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+    getNotificationCookie: () => login(OWNER.email),
     runner: 'claude', model: OWNER_OPEN_MODEL, preflightOptions: ownerOpts,
     normal: () => runSession('owner-開場', 'claude', OWNER_OPEN_MODEL, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' }),
   });
@@ -1818,6 +1821,7 @@ async function main(): Promise<void> {
     // 深度模式：中場審查（GPT-5.6 Sol）＋條件式 r2-3
     await runActorSessionWithNotificationGate({
       label: 'owner-中場審查', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+      getNotificationCookie: () => login(OWNER.email),
       runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
       normal: () => runSession('owner-中場審查', 'codex', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' }),
     });
@@ -1832,6 +1836,7 @@ async function main(): Promise<void> {
   let verified = await verifyBranches(runDir, scenario);
   await runActorSessionWithNotificationGate({
     label: 'owner-收尾合併', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+    getNotificationCookie: () => login(OWNER.email),
     runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
     normal: () => runSession('owner-收尾合併', 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' }),
   });
@@ -1845,6 +1850,7 @@ async function main(): Promise<void> {
     verified = await verifyBranches(runDir, scenario);
     await runActorSessionWithNotificationGate({
       label: `owner-repair${repair}`, actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+      getNotificationCookie: () => login(OWNER.email),
       runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
       normal: () => runSession(`owner-repair${repair}`, 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` }),
     });
@@ -2210,6 +2216,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       const r = await runActorSessionWithNotificationGate({
         label: ownerLabel,
         actor: OWNER,
+        getNotificationCookie: () => Promise.resolve(ownerCookie),
         jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
         runner: 'codex',
         model: OWNER_REVIEW_MODEL,
@@ -2257,6 +2264,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
           const gated = await runActorSessionWithNotificationGate({
             label: `${m.name}-巡檢`,
             actor: m,
+            getNotificationCookie: () => login(m.email),
             jar: join(wt(m), `.jar-notification-${m.user}.txt`),
             runner: workSession.route.runner,
             model: workSession.route.model,

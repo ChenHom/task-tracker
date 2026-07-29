@@ -178,6 +178,26 @@ assert.ok(
   (source.match(/runActorSessionWithNotificationGate\(/g)?.length ?? 0) >= 8,
   '一般 run 與 owner/team sweep 的每條自動 session 路徑都必須經 notification gate wrapper',
 );
+const notificationGateWrapper = source.slice(
+  source.indexOf('async function runActorSessionWithNotificationGate'),
+  source.indexOf('export async function settleAllOrThrow'),
+);
+assert.ok(
+  notificationGateWrapper.includes('getNotificationCookie: () => Promise<string>;'),
+  'notification gate wrapper 必須由 caller 注入 cookie source',
+);
+assert.ok(
+  notificationGateWrapper.includes('cookie = await input.getNotificationCookie();'),
+  'notification gate wrapper 必須在 lazy gate closure 內取得注入的 cookie',
+);
+assert.ok(
+  !notificationGateWrapper.includes('login(input.actor.email)'),
+  'notification gate wrapper 不得自行重複登入 actor',
+);
+assert.ok(
+  source.includes('getNotificationCookie: () => Promise.resolve(ownerCookie),'),
+  'owner sweep 必須重用 workspace member read 已取得的 owner cookie',
+);
 assert.ok(source.includes("if (role !== 'owner')"), 'team/both sweep 必須啟動全成員通知巡檢');
 assert.ok(
   /runNotificationSweep\(\s*members/.test(source),
