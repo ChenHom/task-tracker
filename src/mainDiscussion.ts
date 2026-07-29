@@ -1,17 +1,26 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
 import { CommandError } from './eventStore';
-import { MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
+import {
+  CONCLUSION_MARKER,
+  handoffLine,
+  LEGACY_FIXED_REPLY_WINDOW_MARKER,
+  LONGER_WINDOW_REASON_FIELD,
+  MAIN_OWNER_EMAIL,
+  MAIN_POLICY_TITLE,
+  MAIN_WORKSPACE_ID,
+  NO_CONSENSUS_FIELDS,
+  NO_CONSENSUS_MARKER,
+  NO_IMPLEMENTATION_MARKER,
+  REPLY_WINDOW_MAX_DAYS,
+  REPLY_WINDOW_MIN_DAYS,
+  REQUIRED_THOUGHT_FIELDS,
+  replyWindowMarker,
+  THOUGHT_MARKER,
+} from './mainWorkspacePolicy';
 
 const HALF_DAY_MS = 12 * 60 * 60 * 1000;
-const REQUIRED_THOUGHT_FIELDS = [
-  '現況／問題',
-  '預期價值',
-  '風險與反對理由',
-  '現行可替代方案',
-  '初步判斷',
-  '希望成員確認的問題',
-] as const;
+const WINDOW_RANGE_ERROR = `全員回覆期限必須是 ${REPLY_WINDOW_MIN_DAYS} 到 ${REPLY_WINDOW_MAX_DAYS} 天，並以 0.5 天遞增`;
 
 export interface MainDiscussionWindow {
   taskId: string;
@@ -35,23 +44,23 @@ function lineValue(content: string, label: string): string | null {
   return match?.[1]?.trim() || null;
 }
 
+const THOUGHT_MARKER_RE = new RegExp(`^${THOUGHT_MARKER}(?:\\r?\\n|$)`, 'u');
+
 function isStructuredOwnerThought(content: string): boolean {
-  if (!/^【OWNER想法】(?:\r?\n|$)/u.test(content)) return false;
+  if (!THOUGHT_MARKER_RE.test(content)) return false;
   return missingOwnerThoughtFields(content).length === 0;
 }
 
-function missingOwnerThoughtFields(content: string): readonly string[] {
-  if (!/^【OWNER想法】(?:\r?\n|$)/u.test(content)) return REQUIRED_THOUGHT_FIELDS;
+export function missingOwnerThoughtFields(content: string): readonly string[] {
+  if (!THOUGHT_MARKER_RE.test(content)) return REQUIRED_THOUGHT_FIELDS;
   return REQUIRED_THOUGHT_FIELDS.filter((label) => lineValue(content, label) === null);
 }
 
-const LEGACY_FIXED_REQUEST_MARKER = /^【全員回覆：24小時】(?:\r?\n|$)/u;
-const REQUEST_MARKER = /^【全員回覆：(\d+(?:\.5)?)天】(?:\r?\n|$)/u;
+const LEGACY_FIXED_REQUEST_MARKER = new RegExp(`^${LEGACY_FIXED_REPLY_WINDOW_MARKER}(?:\\r?\\n|$)`, 'u');
+const REQUEST_MARKER = new RegExp(`^${replyWindowMarker('(\\d+(?:\\.5)?)')}(?:\\r?\\n|$)`, 'u');
 
-function parseNewWaitHalfDays(content: string): number | null {
-  if (LEGACY_FIXED_REQUEST_MARKER.test(content)) {
-    throw new CommandError('全員回覆期限必須是 2 到 7 天，並以 0.5 天遞增');
-  }
+export function parseNewWaitHalfDays(content: string): number | null {
+  if (LEGACY_FIXED_REQUEST_MARKER.test(content)) throw new CommandError(WINDOW_RANGE_ERROR);
   return parseWaitHalfDays(content);
 }
 
@@ -60,11 +69,13 @@ function parseWaitHalfDays(content: string): number | null {
   if (!match) return null;
 
   const waitHalfDays = Number(match[1]) * 2;
-  if (!Number.isInteger(waitHalfDays) || waitHalfDays < 4 || waitHalfDays > 14) {
-    throw new CommandError('全員回覆期限必須是 2 到 7 天，並以 0.5 天遞增');
+  const minHalfDays = REPLY_WINDOW_MIN_DAYS * 2;
+  const maxHalfDays = REPLY_WINDOW_MAX_DAYS * 2;
+  if (!Number.isInteger(waitHalfDays) || waitHalfDays < minHalfDays || waitHalfDays > maxHalfDays) {
+    throw new CommandError(WINDOW_RANGE_ERROR);
   }
-  if (waitHalfDays > 4 && lineValue(content, '較長期限理由') === null) {
-    throw new CommandError('超過 2 天必須填寫較長期限理由');
+  if (waitHalfDays > minHalfDays && lineValue(content, LONGER_WINDOW_REASON_FIELD) === null) {
+    throw new CommandError(`超過 ${REPLY_WINDOW_MIN_DAYS} 天必須填寫${LONGER_WINDOW_REASON_FIELD}`);
   }
   return waitHalfDays;
 }
@@ -119,7 +130,7 @@ export function recordMainDiscussionWindowForComment(
   }>;
   const thought = prior.find((row) => row.user_id === owner.id && isStructuredOwnerThought(row.content));
   if (!thought) {
-    const incompleteThought = prior.find((row) => row.user_id === owner.id && /^【OWNER想法】(?:\r?\n|$)/u.test(row.content));
+    const incompleteThought = prior.find((row) => row.user_id === owner.id && THOUGHT_MARKER_RE.test(row.content));
     if (incompleteThought) {
       throw new CommandError(`全員通知前必須先留下完整的 OWNER想法，缺少：${missingOwnerThoughtFields(incompleteThought.content).join('、')}`);
     }
@@ -217,26 +228,23 @@ function isMarker(content: string, marker: string): boolean {
   return content.startsWith(marker);
 }
 
-function parseDecision(content: string): MainDiscussionOutcome | null {
-  if (isMarker(content, '【未達共識】')) {
-    const fields = [
-      '尚未解決的分歧',
-      '缺少的確認或資訊',
-      '下次重新思考前的建議',
-    ];
-    if (fields.every((field) => lineValue(content, field) !== null)) return 'no_consensus';
+export function parseDecision(content: string): MainDiscussionOutcome | null {
+  if (isMarker(content, NO_CONSENSUS_MARKER)) {
+    if (NO_CONSENSUS_FIELDS.every((field) => lineValue(content, field) !== null)) return 'no_consensus';
     return null;
   }
-  if (isMarker(content, '【結論：不實作】')) return 'no_implementation';
-  if (isMarker(content, '【結論】')) return 'implement';
+  if (isMarker(content, NO_IMPLEMENTATION_MARKER)) return 'no_implementation';
+  if (isMarker(content, CONCLUSION_MARKER)) return 'implement';
   return null;
 }
 
-function parseImplementationHandoff(content: string): {
+const HANDOFF_RE = new RegExp(`^${handoffLine('(.+?)', '(.+?)')}\\s*$`, 'u');
+
+export function parseImplementationHandoff(content: string): {
   workspaceName: string;
   taskName: string;
 } | null {
-  const match = content.match(/^【實作任務】工作區：(.+?)｜TASK：(.+?)\s*$/u);
+  const match = content.match(HANDOFF_RE);
   if (!match) return null;
   const workspaceName = match[1].trim();
   const taskName = match[2].trim();
@@ -294,7 +302,7 @@ export function resolveMainDiscussionConclusion(
     .filter((entry): entry is { comment: OrderedComment; outcome: MainDiscussionOutcome } => entry.outcome !== null);
   const latestDecision = decisions.at(-1);
   if (!latestDecision) {
-    throw new CommandError('尚未留下合法的主工作區結論；實作請依序留下「【結論】」→「【實作任務】工作區：...｜TASK：...」');
+    throw new CommandError(`尚未留下合法的主工作區結論；實作請依序留下「${CONCLUSION_MARKER}」→「${handoffLine('...', '...')}」`);
   }
 
   if (latestDecision.outcome === 'no_consensus') {

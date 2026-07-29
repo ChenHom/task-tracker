@@ -10,7 +10,24 @@ import { execFile, execFileSync } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync, symlinkSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { MAIN_DISCUSSION_PREFIX, MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from '../src/mainWorkspacePolicy';
+import {
+  CONCLUSION_MARKER,
+  handoffLine,
+  LONGER_WINDOW_REASON_FIELD,
+  MAIN_DISCUSSION_PREFIX,
+  MAIN_OWNER_EMAIL,
+  MAIN_POLICY_TITLE,
+  MAIN_WORKSPACE_ID,
+  NO_CONSENSUS_FIELDS,
+  NO_CONSENSUS_MARKER,
+  NO_IMPLEMENTATION_MARKER,
+  REPLY_WINDOW_DEFAULT_DAYS,
+  REPLY_WINDOW_MAX_DAYS,
+  REQUIRED_THOUGHT_FIELDS,
+  replyWindowMarker,
+  THOUGHT_FIELD_HINTS,
+  THOUGHT_MARKER,
+} from '../src/mainWorkspacePolicy';
 
 const BASE = 'http://localhost:3000';
 export const ROOT = join(__dirname, '..');
@@ -1976,7 +1993,7 @@ export function syncWorktreeWithMaster(dir: string): 'merged' | 'up-to-date' | '
 
 interface SweepTask extends SweepAssignedTask { task_id: string; title: string }
 
-function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string {
+export function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string {
   const jar = join(RUN.repoRoot, '.jar-owner-sweep.txt');
   if (wsId === MAIN_WORKSPACE_ID) {
     return `你是「${OWNER.name}」（${OWNER.email}），主協作工作區的唯一 Owner。這個 session 只用 curl/API 操作，不得編輯、提交或合併任何程式碼。
@@ -1984,27 +2001,22 @@ workspace：${wsId}。
 ${API_RULES(jar)}
 主協作討論巡檢：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks，忽略「${MAIN_POLICY_TITLE}」，它不是工作項目；逐一讀取 status=Todo 的「${MAIN_DISCUSSION_PREFIX}」討論及留言。
-2. TASK 建立後盡量在 24 小時內，先獨立 POST 完整的「【OWNER想法】」留言；必須逐行照以下六欄填寫，欄名不可省略：
-【OWNER想法】
-現況／問題：<目前情況與待解問題>
-預期價值：<要解決的價值>
-風險與反對理由：<風險、反對理由與代價>
-現行可替代方案：<不實作時的替代作法>
-初步判斷：<OWNER 的暫定判斷>
-希望成員確認的問題：<希望 Commenter 回覆的問題>
-3. 再獨立 POST「【全員回覆：2天】」，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。只有近期成員已有大量事務才使用 2.5 至 7 天，並在同一留言填寫較長期限理由。
+2. TASK 建立後盡量在 24 小時內，先獨立 POST 完整的「${THOUGHT_MARKER}」留言；必須逐行照以下 ${REQUIRED_THOUGHT_FIELDS.length} 欄填寫，欄名不可省略：
+${THOUGHT_MARKER}
+${REQUIRED_THOUGHT_FIELDS.map((field) => `${field}：<${THOUGHT_FIELD_HINTS[field]}>`).join('\n')}
+3. 再獨立 POST「${replyWindowMarker(REPLY_WINDOW_DEFAULT_DAYS)}」，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。只有近期成員已有大量事務才使用 ${REPLY_WINDOW_DEFAULT_DAYS + 0.5} 至 ${REPLY_WINDOW_MAX_DAYS} 天，並在同一留言填寫${LONGER_WINDOW_REASON_FIELD}。
 4. 從通知 comment.created_at 加上 N * 24 小時計算截止時間；一天 24 小時、半天 12 小時。期限固定，不延長、不縮短；全員提前回覆也保持 Todo。
 5. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、截止尚未到、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或全員通知、阻塞／範圍／決策變化，或到期收斂時才留言。
-6. 等待期間讀取留言並收集意見；一般 TASK 的建立者、OWNER 自建 TASK 的任一 Commenter，應在期限內留下明確確認，優先用「【確認結論】」，也可明確表示同意或交接。期限內的建立者／共同確認者確認可作為收尾證據，到期後不得再因等待確認而延長窗口；到期前不得 PATCH status。
+6. 等待期間讀取留言並收集意見。系統不追蹤回覆或缺席，也不因未回覆阻擋收尾，不需要任何確認留言；到期前不得 PATCH status。
 7. 到期後依下列精確 marker 與順序收尾；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
-   - 實作：OWNER「【結論】」→OWNER「【實作任務】工作區：<工作區名稱>｜TASK：<TASK 名稱>」；建立者／共同確認者的有效確認可在期限內、OWNER 結論前或後留下。不得使用「【結論：實作】」或「【結論：implement】」。
-   - 不實作：OWNER「【結論：不實作】」→建立者／共同確認者「【確認結論】」。
-   - 未達共識：OWNER「【未達共識】」並逐行填寫尚未解決的分歧、缺少的確認或資訊、下次重新思考前的建議。
+   - 實作：OWNER「${CONCLUSION_MARKER}」→OWNER「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」。不得使用「【結論：實作】」或「【結論：implement】」。
+   - 不實作：OWNER「${NO_IMPLEMENTATION_MARKER}」。
+   - 未達共識：OWNER「${NO_CONSENSUS_MARKER}」並逐行填寫${NO_CONSENSUS_FIELDS.join('、')}。
 8. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
 ${canonicalWorkspaceDirectory()}
 9. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
 10. 建立前先檢查原討論留言與目標 workspace 是否已有同名實作 task，避免 crash retry 重複建立；需要時才使用既有 task API 在目標 workspace 建立實作 task，不得在主協作工作區建立實作 task。
-11. 建立後，在原討論留下純文字「【實作任務】工作區：<工作區名稱>｜TASK：<TASK 名稱>」，不提供 URL；再 PATCH 原討論 status=Done。
+11. 建立後，在原討論留下純文字「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」，不提供 URL；再 PATCH 原討論 status=Done。
 12. 結束輸出 3 行內總結。`;
   }
   const packetByBranch = new Map(verified.map((p) => [p.branch, p]));

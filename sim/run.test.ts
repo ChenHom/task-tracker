@@ -5,7 +5,25 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
-import { MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from '../src/mainWorkspacePolicy';
+import {
+  CONCLUSION_MARKER,
+  handoffLine,
+  MAIN_POLICY_TITLE,
+  MAIN_WORKSPACE_ID,
+  NO_CONSENSUS_FIELDS,
+  NO_CONSENSUS_MARKER,
+  NO_IMPLEMENTATION_MARKER,
+  REPLY_WINDOW_DEFAULT_DAYS,
+  REQUIRED_THOUGHT_FIELDS,
+  replyWindowMarker,
+  THOUGHT_MARKER,
+} from '../src/mainWorkspacePolicy';
+import {
+  missingOwnerThoughtFields,
+  parseDecision,
+  parseImplementationHandoff,
+  parseNewWaitHalfDays,
+} from '../src/mainDiscussion';
 import {
   acquireRunLock,
   allChecksPass,
@@ -35,6 +53,7 @@ import {
   MEMBER_TOOLS,
   notificationRouteForMember,
   notificationGateEnabled,
+  ownerSweepPrompt,
   parseScenario,
   ROOT,
   runMemberSession,
@@ -114,18 +133,8 @@ assert.ok(
   '所有 agent prompt 都必須知道主工作區邊界',
 );
 assert.ok(source.includes('未登記，人工介入選定'), '主工作區 prompt 必須標示未登記 repo 需要人工介入');
-assert.ok(source.includes('【OWNER想法】'), '主工作區 prompt 必須先提出 OWNER 想法');
-for (const field of [
-  '現況／問題：',
-  '預期價值：',
-  '風險與反對理由：',
-  '現行可替代方案：',
-  '初步判斷：',
-  '希望成員確認的問題：',
-]) {
-  assert.ok(source.includes(field), `主工作區 OWNER prompt 必須提供六欄模板：${field}`);
-}
-assert.ok(source.includes('【全員回覆：2天】'), '主工作區 prompt 必須使用固定回覆窗口');
+// 協議 marker 已改由 src/mainWorkspacePolicy 提供，run.ts 原始碼不再有字面值可比對。
+// 改由檔案結尾的 round-trip 守門直接驗證「渲染後的 prompt 能否通過真 validator」。
 assert.ok(source.includes('@user02 @user03 @user04 @user05 @user06 @user09'), '主工作區 prompt 必須通知六位 Commenter');
 assert.ok(source.includes('Todo→Done'), '主工作區 prompt 必須只完成 Todo → Done');
 assert.ok(source.includes('不追逐、不列缺席者'), '主工作區 prompt 不得追蹤缺席者');
@@ -166,10 +175,8 @@ const mainPromptSource = source.slice(
 );
 assert.ok(!mainPromptSource.includes('${BASE}/#/task/<id>'), '主工作區 prompt 不得回寫 URL');
 assert.ok(!mainPromptSource.includes('HANDOFF-PENDING'), '主工作區 prompt 不得使用 handoff marker');
-assert.ok(
-  mainPromptSource.includes('期限內的建立者／共同確認者確認可作為收尾證據'),
-  '主工作區 owner prompt 必須說明期限內確認可供到期收尾使用',
-);
+// 舊斷言要求 prompt 說明「期限內確認可作為收尾證據」已移除：validator 自 2026-07-23 起
+// 一律回 confirmationCommentId: null，看板政策也明寫不需要確認留言，prompt 再要求就是空等。
 assert.ok(
   mainPromptSource.includes('「【結論：實作】」或「【結論：implement】」'),
   '主工作區 owner prompt 必須排除不被 validator 接受的實作結論 marker',
@@ -1211,6 +1218,62 @@ assert.ok(
   source.includes('等待自動部署完成（health rev 與 master 一致）再做 live 驗收'),
   'owner sweep 必須在自動部署完成後才做 live 驗收',
 );
+
+// ── prompt ↔ validator round-trip 守門 ────────────────────────────────────────
+// owner prompt 教 owner 貼的每個協議字串，都必須被 src/mainDiscussion 的 validator 接受。
+// 兩邊各自硬寫副本時，2026-07-23（改 validator 沒改 prompt）與 2026-07-29（改 prompt 沒改
+// validator）各斷過一次全員回覆流程，主討論因此連續兩週開不出窗口，而當時沒有任何測試會紅燈。
+{
+  const mainPrompt = ownerSweepPrompt(MAIN_WORKSPACE_ID, parseScenario(['node', 'run.ts']), [], '老闆', 20);
+  const lines = mainPrompt.split('\n');
+
+  const templateStart = lines.indexOf(THOUGHT_MARKER);
+  assert.ok(templateStart >= 0, 'owner prompt 必須有獨立一行的想法 marker 當模板開頭');
+  const filledThought = lines
+    .slice(templateStart, templateStart + 1 + REQUIRED_THOUGHT_FIELDS.length)
+    .join('\n')
+    .replace(/<[^>]*>/gu, '實際內容');
+  assert.deepStrictEqual(
+    [...missingOwnerThoughtFields(filledThought)],
+    [],
+    'owner prompt 的想法模板填值後必須通過 validator 的必填欄檢查',
+  );
+
+  const windowMarker = replyWindowMarker(REPLY_WINDOW_DEFAULT_DAYS);
+  assert.ok(mainPrompt.includes(windowMarker), 'owner prompt 必須教 owner 貼預設的全員回覆 marker');
+  assert.strictEqual(
+    parseNewWaitHalfDays(`${windowMarker}\n@user02`),
+    REPLY_WINDOW_DEFAULT_DAYS * 2,
+    'owner prompt 的全員回覆 marker 必須被 validator 接受',
+  );
+
+  for (const marker of [CONCLUSION_MARKER, NO_IMPLEMENTATION_MARKER, NO_CONSENSUS_MARKER]) {
+    assert.ok(mainPrompt.includes(marker), `owner prompt 必須列出收尾 marker ${marker}`);
+  }
+  assert.strictEqual(parseDecision(`${CONCLUSION_MARKER}\n就這樣`), 'implement');
+  assert.strictEqual(parseDecision(`${NO_IMPLEMENTATION_MARKER}\n先不做`), 'no_implementation');
+  assert.strictEqual(
+    parseDecision([NO_CONSENSUS_MARKER, ...NO_CONSENSUS_FIELDS.map((field) => `${field}：待補`)].join('\n')),
+    'no_consensus',
+    'owner prompt 要求逐行填的未達共識欄名必須與 validator 一致',
+  );
+
+  assert.ok(
+    mainPrompt.includes(handoffLine('<工作區名稱>', '<TASK 名稱>')),
+    'owner prompt 必須教 owner 貼實作任務交接格式',
+  );
+  assert.deepStrictEqual(
+    parseImplementationHandoff(handoffLine('健壯性強化', '[BUG] 範例')),
+    { workspaceName: '健壯性強化', taskName: '[BUG] 範例' },
+    'owner prompt 的交接格式必須被 validator 解析出工作區與 TASK 名稱',
+  );
+
+  // 【確認結論】自 2026-07-23 起已無 validator 認得，看板政策也明寫不需要確認留言。
+  assert.ok(
+    !mainPrompt.includes('【確認結論】'),
+    'owner prompt 不得要求 validator 不認得的確認留言（owner 會空等到收尾逾時）',
+  );
+}
 
 runAsyncPolicyTests()
   .then(() => console.log('sim/run.test.ts OK'))
