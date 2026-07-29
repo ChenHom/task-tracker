@@ -218,7 +218,9 @@
 
 > 2026-07-13 正式驗收：commit `71eb56d` 合入 master，`task-tracker.service` 重啟後 `/api/health` 200；登入 `/api/quota` 回三 provider，agy `remaining=100%`、source 帶 `#model=gemini-3-flash-agent` 註記；Playwright 驗證 footer 顯示 `AGY 5h 100%`、hover tooltip 兩行與台北重置時間正確。緊急停用走 ai-quota unit 檔的 `AI_QUOTA_AGY_DISABLED=1` kill switch。
 
-## Phase 18 — 主工作區固定期限共識收斂 ✅
+## Phase 18 — 主工作區固定期限共識收斂 ✅（等待窗口已於 2026-07-29 移除）
+
+> **後續變更**：本 Phase 的「固定 2–7 天回覆窗口」已整套移除 —— `【全員回覆：N天】` marker、`main_discussion_windows` 資料表、期限守門與 payload 的窗口欄位皆不再存在。原因：21 天內只成功開出 2 個窗口，卻因 prompt／validator 對該 marker 的雙向漂移，讓主討論連續兩週開不出來（2026-07-23 `75e2033` 與 2026-07-29 `3157213` 各斷一次）。目前討論沒有等待期限，OWNER 判斷討論充分即可收尾；`【OWNER想法】` 六欄與三種結論 marker 保留。
 
 - [x] 主工作區維持 user01-06 與 user09 的固定成員政策；所有成員都可建立 Todo 討論，新增 task 描述預填 OWNER 評估方向範本
 - [x] OWNER 先留下結構化 `【OWNER想法】`，再以 `【全員回覆：N天】` 開啟固定 2–7 天窗口；半天為 12 小時、一天為連續 24 小時，期限不可延長或重開，超過 2 天需說明理由

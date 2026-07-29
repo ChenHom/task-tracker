@@ -460,10 +460,9 @@ target 必須是該 workspace 的 active member，否則回 `404`。Owner 任命
 
 - `title`、`description`、`priority`、`assignee`、`dueAt` 都會做型別/長度/日期驗證。
 - 一般 workspace 的 status 只允許相鄰流程：`Todo → Doing → Review → Done`，以及一步回退 `Doing → Todo`、`Review → Doing`、`Done → Review`。
-- 主協作 workspace 的非規則 task 不走一般流程，只能由 OWNER 在固定討論窗口截止後，依完整收尾證據一次從 `Todo` 變為 `Done`；不可使用 `Doing`、`Review`，也不可從 `Done` 回退。
-- 主工作區窗口由留言 `【OWNER想法】` 後的 `【全員回覆：N天】` 開啟；`N` 為 2–7 天、以 0.5 天遞增，預設 2 天。超過 2 天時同一留言必須有 `較長期限理由：...`。期限從通知留言建立時間起算，開啟後不可延長、重開或提前結案；既有 `【全員回覆：24小時】` 僅供歷史窗口收尾驗證，不能開啟新窗口。
-- 主工作區在截止前 PATCH `Done` 會回 `400`。截止後不需要任何確認留言，必須具備三條收尾路徑之一：`【結論】` + 至少一則 `【實作任務】工作區：...｜TASK：...`；`【結論：不實作】`；或 OWNER 的 `【未達共識】`（含三個必要說明欄位）。成員在期限內的回覆或缺席都不影響收尾。
-- 系統不提供窗口、回覆進度、缺席名單或延長期限 API；成員是否回覆由留言紀錄呈現。
+- 主協作 workspace 的非規則 task 不走一般流程，只能由 OWNER 依完整收尾證據一次從 `Todo` 變為 `Done`；不可使用 `Doing`、`Review`，也不可從 `Done` 回退。
+- 討論沒有等待期限。收尾前必須有 OWNER 留下的完整六欄 `【OWNER想法】`；其後必須具備三條收尾路徑之一：`【結論】` + 至少一則 `【實作任務】工作區：...｜TASK：...`；`【結論：不實作】`；或 `【未達共識】`（含三個必要說明欄位）。三者都不需要任何確認留言，成員回覆或缺席都不影響收尾。
+- 系統不提供回覆進度、缺席名單或期限 API；成員是否回覆由留言紀錄呈現。
 - Commenter 只有在 task creator 是自己時，才能只 PATCH `description`；其他欄位需要 Member。
 - 主協作 workspace 的 task status 只有 user01 能改。
 - archived task、deleted task 或 inactive workspace 的修改會被拒絕。
@@ -546,9 +545,9 @@ target 必須存在且為 active，不能與 source 相同；archived/deleted ta
 
 content trim 後必須非空、最多 5000 字。成功回 `201`、`{ "id": "comment-uuid" }`；同時可能建立 mention notification。
 
-在主協作 workspace，留言仍使用同一個 endpoint。OWNER 先以六欄格式留下 `【OWNER想法】`，再以 `【全員回覆：N天】` 通知 user02-06 與 user09；合法通知會在同一交易內與 `main_discussion_windows` 保存 `opened_at`、`wait_half_days`（`N × 2`）與 `due_at`（開啟時間 + `N` 天）。留言失敗時窗口與 mention notification 都不會留下。其他討論與一般 workspace 留言維持原本 CRUD 行為。
+在主協作 workspace，留言仍使用同一個 endpoint，且**沒有任何格式閘門** —— OWNER 以六欄格式留下 `【OWNER想法】`、再 mention user02-06 與 user09 徵詢意見，兩者都只是一般留言。其他討論與一般 workspace 留言維持原本 CRUD 行為。
 
-主工作區不另外提供窗口查詢或回覆 API，也不由前端新增期限選擇器；截止時間只作為後端 `PATCH /api/tasks/:id` 的收尾守門資料。原討論若要實作，`【實作任務】` 只記錄目標工作區與 TASK 名稱，不產生或儲存 URL。
+收尾證據直接從 comment 串推導，不另外保存 metadata，也不由前端新增期限選擇器。原討論若要實作，`【實作任務】` 只記錄目標工作區與 TASK 名稱，不產生或儲存 URL。
 
 ### `PATCH /api/comments/:id`
 

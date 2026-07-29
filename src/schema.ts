@@ -95,15 +95,6 @@ export function runMigrations(db: DatabaseSync): void {
       created_at TEXT NOT NULL DEFAULT ''
     );
 
-    CREATE TABLE IF NOT EXISTS main_discussion_windows (
-      task_id                  TEXT PRIMARY KEY,
-      owner_thought_comment_id TEXT NOT NULL,
-      request_comment_id       TEXT NOT NULL UNIQUE,
-      opened_at                TEXT NOT NULL,
-      wait_half_days           INTEGER NOT NULL CHECK (wait_half_days BETWEEN 2 AND 14),
-      due_at                   TEXT NOT NULL
-    );
-
     -- Notification：comment mention 的收信夾。由 notification.* 事件投影而來。
     CREATE TABLE IF NOT EXISTS notifications_read_model (
       notification_id  TEXT PRIMARY KEY,
@@ -168,26 +159,6 @@ export function runMigrations(db: DatabaseSync): void {
     // 忽略如果欄位已存在
   }
 
-  // wait_half_days 的下限維持 2，以保留既有固定 24 小時窗口；新窗口仍由 mainDiscussion
-  // 驗證為 4～14，既有資料庫不改寫歷史 due date。CREATE TABLE IF NOT EXISTS
-  // 對既有資料庫不會重建表格，因此只在 sqlite_master 仍是舊 CHECK 時才重建，原樣複製既有列，
-  // 不改變任何歷史 due date。
-  const mainDiscussionWindowsSql = (db.prepare(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'main_discussion_windows'",
-  ).get() as { sql: string } | undefined)?.sql;
-  if (mainDiscussionWindowsSql?.includes('BETWEEN 4 AND 14')) {
-    db.exec(`
-      CREATE TABLE main_discussion_windows_new (
-        task_id                  TEXT PRIMARY KEY,
-        owner_thought_comment_id TEXT NOT NULL,
-        request_comment_id       TEXT NOT NULL UNIQUE,
-        opened_at                TEXT NOT NULL,
-        wait_half_days           INTEGER NOT NULL CHECK (wait_half_days BETWEEN 2 AND 14),
-        due_at                   TEXT NOT NULL
-      );
-      INSERT INTO main_discussion_windows_new SELECT * FROM main_discussion_windows;
-      DROP TABLE main_discussion_windows;
-      ALTER TABLE main_discussion_windows_new RENAME TO main_discussion_windows;
-    `);
-  }
+  // 主討論等待窗口已移除（討論不再有期限閘門），既有資料庫留著的舊表直接丟棄。
+  db.exec('DROP TABLE IF EXISTS main_discussion_windows');
 }

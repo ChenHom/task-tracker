@@ -21,42 +21,24 @@ assert.throws(() => insert.run('u2', 'a@b.com', '小華', 'hash2'), /UNIQUE/);
 const row = db.prepare("SELECT created_at FROM users WHERE id = 'u1'").get() as { created_at: string };
 assert.ok(row.created_at, 'created_at should be auto-filled');
 
-const insertWindow = db.prepare(`
-  INSERT INTO main_discussion_windows
-    (task_id, owner_thought_comment_id, request_comment_id, opened_at, wait_half_days, due_at)
-  VALUES (?, ?, ?, ?, ?, ?)
+// 主討論等待窗口已移除：migration 必須把既有資料庫殘留的舊表一併丟掉。
+db.exec(`
+  CREATE TABLE main_discussion_windows (
+    task_id                  TEXT PRIMARY KEY,
+    owner_thought_comment_id TEXT NOT NULL,
+    request_comment_id       TEXT NOT NULL UNIQUE,
+    opened_at                TEXT NOT NULL,
+    wait_half_days           INTEGER NOT NULL,
+    due_at                   TEXT NOT NULL
+  )
 `);
-
-insertWindow.run(
-  'task-1',
-  'thought-1',
-  'request-1',
-  '2026-07-14T00:00:00.000Z',
-  4,
-  '2026-07-16T00:00:00.000Z',
-);
-
-assert.throws(
-  () => insertWindow.run('task-1', 'thought-2', 'request-2', '2026-07-14T00:00:00.000Z', 4, '2026-07-16T00:00:00.000Z'),
-  /UNIQUE/,
-  '同一 task 不可重開窗口',
-);
-assert.throws(
-  () => insertWindow.run('task-2', 'thought-2', 'request-1', '2026-07-14T00:00:00.000Z', 4, '2026-07-16T00:00:00.000Z'),
-  /UNIQUE/,
-  '同一通知留言不可對應多個窗口',
-);
-// 舊固定 24 小時窗口對應 wait_half_days=2；schema 保留以讀取歷史資料，新增窗口由 domain 擋下。
-insertWindow.run('task-fixed-24h', 'thought-fixed', 'request-fixed', '2026-07-14T00:00:00.000Z', 2, '2026-07-15T00:00:00.000Z');
-assert.throws(
-  () => insertWindow.run('task-3', 'thought-3', 'request-3', '2026-07-14T00:00:00.000Z', 1, '2026-07-16T00:00:00.000Z'),
-  /CHECK/,
-  '最短只能是 2 個 half-days',
-);
-assert.throws(
-  () => insertWindow.run('task-4', 'thought-4', 'request-4', '2026-07-14T00:00:00.000Z', 15, '2026-07-16T00:00:00.000Z'),
-  /CHECK/,
-  '最長只能是 14 個 half-days',
+runMigrations(db);
+assert.strictEqual(
+  (db.prepare(
+    "SELECT COUNT(*) c FROM sqlite_master WHERE type = 'table' AND name = 'main_discussion_windows'",
+  ).get() as { c: number }).c,
+  0,
+  'migration 必須丟棄既有資料庫殘留的 main_discussion_windows',
 );
 
 console.log('schema.test.ts OK');

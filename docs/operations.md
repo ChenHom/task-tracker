@@ -109,16 +109,16 @@ Owner 每次啟動或巡檢時的看板治理、驗收、阻塞、想法與封�
 - 留言只能由原作者透過 PATCH 編輯，`DELETE /api/comments/:id` 固定回 405；不提供留言刪除或由刪除觸發的 notification 清理流程。
 - 只有主協作工作區會同步 user02-06 與 user09 為 Commenter；其他 workspace 的新成員預設仍為 Member，Owner 可另行調整角色。
 - 主協作工作區所有人都可建立 Todo 討論與留言；user01 先留下 `【OWNER想法】`，再通知 user02-06 與 user09。
-- 合法 `【全員回覆：N天】` 會從通知留言時間開啟固定窗口，`N` 為 2–7 天、以半天（12 小時）遞增；預設盡量使用 2 天，超過 2 天需在同一留言說明較長期限理由。窗口到期前不移動 task，開啟後不延長、不重開。
-- 到期後只有 user01 能以 `【結論】`/`【結論：不實作】`/`【未達共識】` 的完整證據將主工作區 task 由 Todo 直接移到 Done；未達共識需留下分歧、缺少資訊與下次建議，不要求建立者再確認。
+- 討論沒有等待期限，成員隨時可以回覆；主工作區留言沒有任何格式閘門。
+- 只有 user01 能以 `【結論】`/`【結論：不實作】`/`【未達共識】` 的完整證據將主工作區 task 由 Todo 直接移到 Done；收尾前必須有 user01 留下的完整六欄 `【OWNER想法】`。未達共識需留下分歧、缺少資訊與下次建議，三種收尾都不要求任何確認留言。
 - 有共識且要實作時，在目標工作區另建 TASK；原討論只記 `【實作任務】工作區：...｜TASK：...`，不產生或儲存 URL。主工作區不使用 Doing、Review，也不追蹤缺席名單或提供期限/回覆 UI。
 - `[規則] 主工作區協作與交接` 是政策提示，不是 sweep work。
 - Server startup 會修復固定名稱、成員角色、規則 task 與 legacy 討論；成功登入時也會同步該使用者。既有 legacy `task.discussion_started` 事件只供歷史 replay，新的主工作區收尾使用 `task.main_discussion_concluded`。
 
-窗口 readback（UTC）可用：
+討論收尾 readback（UTC）可用：
 
 ```bash
-sqlite3 data/dev.db "SELECT task_id, opened_at, wait_half_days, due_at FROM main_discussion_windows ORDER BY opened_at DESC LIMIT 20;"
+sqlite3 data/dev.db "SELECT aggregate_id, occurred_at, json_extract(payload_json, '\$.outcome') AS outcome FROM event_store WHERE event_type = 'task.main_discussion_concluded' ORDER BY occurred_at DESC LIMIT 20;"
 ```
 
 ### 2026-07-12 rollout 驗收
@@ -307,7 +307,7 @@ State 存在 `sim-logs/production-coordinator.db`（gitignored）。主要表格
 
 ### Discussion policy（主討論 `10e65231...`）
 
-固定 2–7 天窗口本身由 `src/mainDiscussion.ts` 的既有 policy 管理（`【全員回覆：N天】`，以半天遞增，預設 2 天）；production coordinator 這一層只在兩種情況才產生 Owner action：evidence fingerprint（留言／狀態／期限）自上次 checkpoint 後已變化，或已超過固定期限（`dueAt <= now`）。狀態沒變化的巡檢不會重複觸發 AI。
+討論收尾條件由 `src/mainDiscussion.ts` 管理，**已無等待窗口**（`【全員回覆：N天】` 與 `main_discussion_windows` 於 2026-07-29 移除）；production coordinator 這一層只在 evidence fingerprint（留言／狀態）自上次 checkpoint 後已變化時才產生 Owner action。狀態沒變化的巡檢不會重複觸發 AI。
 
 ### Human-blocked 行為
 

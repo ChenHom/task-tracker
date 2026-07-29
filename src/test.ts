@@ -21,6 +21,7 @@ import './audit.test';
 import './rateLimit.test';
 import './quota.test';
 import './quotaFrontend.test';
+import './notificationsFrontend.test';
 import './frontend.test';
 import './frontendCore.test';
 import './frontendViews.test';

@@ -73,17 +73,20 @@ void (async () => {
     await handle(request as never, response as never);
     return status;
   };
+  // 2026-07-23 至 07-29 期間，owner 照 prompt 貼的徵詢留言會被窗口 validator 回 400，
+  // 主討論連續兩週開不出來。窗口移除後，主工作區留言不該再有任何格式閘門。
   const ownerThought = [
-    '【OWNER想法】', '現況／問題：HTTP 回歸', '預期價值：確認通知可開窗',
-    '風險與反對理由：測試不足', '現行可替代方案：人工確認', '初步判斷：採兩天窗口',
+    '【OWNER想法】', '現況／問題：HTTP 回歸', '預期價值：確認留言不再被擋',
+    '風險與反對理由：測試不足', '現行可替代方案：人工確認', '初步判斷：先驗證 HTTP 路徑',
     '希望成員確認的問題：是否可行',
   ].join('\n');
   assert.strictEqual(await postComment(ownerThought), 201, '完整 OWNER想法應能經 HTTP 建立');
-  assert.strictEqual(await postComment('【全員回覆：2天】\n@user02 @user03 @user04 @user05 @user06 @user09'), 201, '2 天通知應能經 HTTP 建立');
-  const window = db.prepare('SELECT wait_half_days, opened_at, due_at FROM main_discussion_windows WHERE task_id = ?')
-    .get('main-discussion') as { wait_half_days: number; opened_at: string; due_at: string };
-  assert.strictEqual(window.wait_half_days, 4, 'HTTP 建立的 2 天通知應保存四個 half-days');
-  assert.strictEqual(Date.parse(window.due_at) - Date.parse(window.opened_at), 48 * 60 * 60 * 1000, 'HTTP 建立的期限應為 48 小時');
+  assert.strictEqual(
+    await postComment('@user02 @user03 @user04 @user05 @user06 @user09\n請提供意見。'),
+    201,
+    '徵詢留言不得再被任何期限 validator 擋下',
+  );
+  assert.strictEqual(await postComment('【全員回覆：2天】\n殘留的舊 marker'), 201, '舊 marker 只是普通文字，不得回 400');
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
   console.log('server.test.ts OK');

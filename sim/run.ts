@@ -13,7 +13,6 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   CONCLUSION_MARKER,
   handoffLine,
-  LONGER_WINDOW_REASON_FIELD,
   MAIN_DISCUSSION_PREFIX,
   MAIN_OWNER_EMAIL,
   MAIN_POLICY_TITLE,
@@ -21,10 +20,7 @@ import {
   NO_CONSENSUS_FIELDS,
   NO_CONSENSUS_MARKER,
   NO_IMPLEMENTATION_MARKER,
-  REPLY_WINDOW_DEFAULT_DAYS,
-  REPLY_WINDOW_MAX_DAYS,
   REQUIRED_THOUGHT_FIELDS,
-  replyWindowMarker,
   THOUGHT_FIELD_HINTS,
   THOUGHT_MARKER,
 } from '../src/mainWorkspacePolicy';
@@ -2004,20 +2000,19 @@ ${API_RULES(jar)}
 2. TASK 建立後盡量在 24 小時內，先獨立 POST 完整的「${THOUGHT_MARKER}」留言；必須逐行照以下 ${REQUIRED_THOUGHT_FIELDS.length} 欄填寫，欄名不可省略：
 ${THOUGHT_MARKER}
 ${REQUIRED_THOUGHT_FIELDS.map((field) => `${field}：<${THOUGHT_FIELD_HINTS[field]}>`).join('\n')}
-3. 再獨立 POST「${replyWindowMarker(REPLY_WINDOW_DEFAULT_DAYS)}」，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。只有近期成員已有大量事務才使用 ${REPLY_WINDOW_DEFAULT_DAYS + 0.5} 至 ${REPLY_WINDOW_MAX_DAYS} 天，並在同一留言填寫${LONGER_WINDOW_REASON_FIELD}。
-4. 從通知 comment.created_at 加上 N * 24 小時計算截止時間；一天 24 小時、半天 12 小時。期限固定，不延長、不縮短；全員提前回覆也保持 Todo。
-5. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、截止尚未到、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或全員通知、阻塞／範圍／決策變化，或到期收斂時才留言。
-6. 等待期間讀取留言並收集意見。系統不追蹤回覆或缺席，也不因未回覆阻擋收尾，不需要任何確認留言；到期前不得 PATCH status。
-7. 到期後依下列精確 marker 與順序收尾；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
+3. 再獨立 POST 一則徵詢留言，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。沒有等待期限，成員隨時可以回覆。
+4. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或徵詢留言、阻塞／範圍／決策變化，或收斂時才留言。
+5. 讀取留言並收集意見。系統不追蹤回覆或缺席，也不因未回覆阻擋收尾，不需要任何確認留言。
+6. 你判斷討論已充分時，依下列精確 marker 與順序收尾；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
    - 實作：OWNER「${CONCLUSION_MARKER}」→OWNER「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」。不得使用「【結論：實作】」或「【結論：implement】」。
    - 不實作：OWNER「${NO_IMPLEMENTATION_MARKER}」。
    - 未達共識：OWNER「${NO_CONSENSUS_MARKER}」並逐行填寫${NO_CONSENSUS_FIELDS.join('、')}。
-8. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
+7. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
 ${canonicalWorkspaceDirectory()}
-9. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
-10. 建立前先檢查原討論留言與目標 workspace 是否已有同名實作 task，避免 crash retry 重複建立；需要時才使用既有 task API 在目標 workspace 建立實作 task，不得在主協作工作區建立實作 task。
-11. 建立後，在原討論留下純文字「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」，不提供 URL；再 PATCH 原討論 status=Done。
-12. 結束輸出 3 行內總結。`;
+8. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
+9. 建立前先檢查原討論留言與目標 workspace 是否已有同名實作 task，避免 crash retry 重複建立；需要時才使用既有 task API 在目標 workspace 建立實作 task，不得在主協作工作區建立實作 task。
+10. 建立後，在原討論留下純文字「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」，不提供 URL；再 PATCH 原討論 status=Done。
+11. 結束輸出 3 行內總結。`;
   }
   const packetByBranch = new Map(verified.map((p) => [p.branch, p]));
   const ci = RUN.members.map((m) => {

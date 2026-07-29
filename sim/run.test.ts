@@ -13,16 +13,13 @@ import {
   NO_CONSENSUS_FIELDS,
   NO_CONSENSUS_MARKER,
   NO_IMPLEMENTATION_MARKER,
-  REPLY_WINDOW_DEFAULT_DAYS,
   REQUIRED_THOUGHT_FIELDS,
-  replyWindowMarker,
   THOUGHT_MARKER,
 } from '../src/mainWorkspacePolicy';
 import {
   missingOwnerThoughtFields,
   parseDecision,
   parseImplementationHandoff,
-  parseNewWaitHalfDays,
 } from '../src/mainDiscussion';
 import {
   acquireRunLock,
@@ -1237,14 +1234,6 @@ assert.ok(
     [...missingOwnerThoughtFields(filledThought)],
     [],
     'owner prompt 的想法模板填值後必須通過 validator 的必填欄檢查',
-  );
-
-  const windowMarker = replyWindowMarker(REPLY_WINDOW_DEFAULT_DAYS);
-  assert.ok(mainPrompt.includes(windowMarker), 'owner prompt 必須教 owner 貼預設的全員回覆 marker');
-  assert.strictEqual(
-    parseNewWaitHalfDays(`${windowMarker}\n@user02`),
-    REPLY_WINDOW_DEFAULT_DAYS * 2,
-    'owner prompt 的全員回覆 marker 必須被 validator 接受',
   );
 
   for (const marker of [CONCLUSION_MARKER, NO_IMPLEMENTATION_MARKER, NO_CONSENSUS_MARKER]) {

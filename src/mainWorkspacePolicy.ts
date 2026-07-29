@@ -38,25 +38,16 @@ export const NO_CONSENSUS_FIELDS = [
   '下次重新思考前的建議',
 ] as const;
 
-export const LONGER_WINDOW_REASON_FIELD = '較長期限理由';
-
-export const REPLY_WINDOW_MIN_DAYS = 2;
-export const REPLY_WINDOW_MAX_DAYS = 7;
-export const REPLY_WINDOW_DEFAULT_DAYS = REPLY_WINDOW_MIN_DAYS;
-export const LEGACY_FIXED_REPLY_WINDOW_MARKER = '【全員回覆：24小時】';
-
-// 這兩個 builder 同時供 prompt 產生字串與 validator 組正則使用：validator 傳入 capture
-// group 當「值」，就得到與 builder 保證同構的樣式。字面部分（【】｜：）都不是正則
+// builder 同時供 prompt 產生字串與 validator 組正則使用：validator 傳入 capture group
+// 當「值」，就得到與 builder 保證同構的樣式。字面部分（【】｜：）都不是正則
 // metacharacter，可以直接內嵌。
-export const replyWindowMarker = (days: number | string): string => `【全員回覆：${days}天】`;
 export const handoffLine = (workspaceName: string, taskName: string): string =>
   `${HANDOFF_MARKER}工作區：${workspaceName}｜TASK：${taskName}`;
 
 export const MAIN_POLICY_DESCRIPTION = [
   '此處供目前七位成員提出工作問題、改善方向與優化想法；只討論，不直接實作。',
-  '所有成員都可建立 Todo 討論與留言；user01 先留下 OWNER想法，再通知 user02-06 與 user09。',
-  `回覆期限由${replyWindowMarker('N')}指定為 ${REPLY_WINDOW_MIN_DAYS} 至 ${REPLY_WINDOW_MAX_DAYS} 天、以半天遞增；預設 ${REPLY_WINDOW_DEFAULT_DAYS} 天，通知送出後開始且不可調整、不可提前結案。`,
-  '所有 Commenter 都應留言；系統不追蹤回覆或缺席，也不因未回覆阻擋收尾。',
-  `截止後由 user01 依「${CONCLUSION_MARKER}」「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」將 Todo 直接完成為 Done，不需要任何確認留言。`,
+  '所有成員都可建立 Todo 討論與留言；user01 先留下 OWNER想法，成員隨時可以回覆。',
+  '不設等待期限；系統不追蹤回覆或缺席，也不因未回覆阻擋收尾。',
+  `user01 認為討論已充分時，依「${CONCLUSION_MARKER}」「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」將 Todo 直接完成為 Done，不需要任何確認留言。`,
   '需要實作時在對應工作區另建 TASK，原討論只記錄工作區與 TASK 名稱，不提供連結。',
 ].join('\n');

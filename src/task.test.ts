@@ -456,7 +456,7 @@ assert.deepStrictEqual(
   { priority: 'Medium', assigneeId: null, projectId: null, dueAt: null },
 );
 
-// ── 主討論只允許 OWNER 在期限與雙方證據完成後 Todo → Done ──
+// ── 主討論只允許 OWNER 在想法與結論齊備後 Todo → Done（沒有等待期限）──
 assert.throws(
   () => changeTaskStatus('main-user', discussionId, 'Doing', db),
   { name: 'CommandError', message: '只有 user01 可以改變主工作區 task 狀態' },
@@ -472,16 +472,16 @@ assert.throws(
 const beforeDiscussionEvidence = loadEvents(discussionId, db).length;
 assert.throws(
   () => changeTaskStatus('main-owner', discussionId, 'Done', db, new Date('2026-07-15T08:00:00.000Z')),
-  { name: 'CommandError', message: /主工作區討論尚未開啟回覆窗口/ },
+  { name: 'CommandError', message: /收尾前必須留下完整的 OWNER想法/ },
 );
-assert.strictEqual(loadEvents(discussionId, db).length, beforeDiscussionEvidence, '缺少窗口時不可追加 event');
+assert.strictEqual(loadEvents(discussionId, db).length, beforeDiscussionEvidence, '缺少想法時不可追加 event');
 
 createComment(discussionId, 'main-owner', OWNER_THOUGHT, db, new Date('2026-07-14T08:00:00.000Z'));
-createComment(discussionId, 'main-owner', TWO_DAY_REQUEST, db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-user', '請交由前端成員接手。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【結論】\n採用。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【實作任務】工作區：目標工作區｜TASK：實作討論方向', db, new Date('2026-07-14T08:00:00.000Z'));
-changeTaskStatus('main-owner', discussionId, 'Done', db, new Date('2026-07-17T08:00:00.000Z'));
+// 想法與結論在同一時刻留下即可收尾，不必等待任何期限。
+changeTaskStatus('main-owner', discussionId, 'Done', db, new Date('2026-07-14T08:00:01.000Z'));
 const concludedDiscussion = getTask(discussionId, db)!;
 assert.strictEqual(concludedDiscussion.status, 'Done');
 assert.strictEqual(concludedDiscussion.assignee_id, null, '收尾不可指派 OWNER');

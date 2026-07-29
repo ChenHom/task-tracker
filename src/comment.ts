@@ -3,7 +3,6 @@ import { db } from './db';
 import { CommandError } from './eventStore';
 import { getTaskWorkspaceId } from './task';
 import { emitMentionNotifications } from './notification';
-import { recordMainDiscussionWindowForComment } from './mainDiscussion';
 
 // Comment 不走 Event Sourcing（DESIGN 指定）：傳統 CRUD 直接讀寫 comments。
 // 權限分兩層，都在 server 層做：workspace 角色（requirePermission）+ ownership（只能改/刪自己的留言）。
@@ -44,10 +43,6 @@ export function createComment(
       userId,
       clean,
       createdAt,
-    );
-    recordMainDiscussionWindowForComment(
-      { taskId, userId, commentId: id, content: clean, createdAt },
-      database,
     );
     emitMentionNotifications(userId, taskId, id, clean, database);
     database.exec('COMMIT');

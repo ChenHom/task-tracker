@@ -235,7 +235,7 @@ export function changeTaskStatus(
     if (state.status !== 'Todo' || target !== 'Done') {
       throw new CommandError(`主工作區討論只允許 Todo → Done：${state.status} → ${target}`);
     }
-    const payload = resolveMainDiscussionConclusion(taskId, actorId, now, database);
+    const payload = resolveMainDiscussionConclusion(taskId, actorId, database);
     appendEvent('Task', taskId, version, 'task.main_discussion_concluded', payload, meta(actorId), database);
     return;
   }
@@ -456,7 +456,6 @@ export function registerTaskProjections(): void {
   registerProjection('task.deleted', (e, database) => {
     database.prepare('DELETE FROM tasks_read_model WHERE task_id = ?').run(e.aggregate_id);
     database.prepare('DELETE FROM notifications_read_model WHERE source_task_id = ?').run(e.aggregate_id);
-    database.prepare('DELETE FROM main_discussion_windows WHERE task_id = ?').run(e.aggregate_id);
   });
 }
 
