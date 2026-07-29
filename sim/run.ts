@@ -562,6 +562,16 @@ async function api(path: string, init: RequestInit = {}, cookie?: string): Promi
   return { status: res.status, body };
 }
 
+// `String(error)` 對 fetch 失敗只會印出 `TypeError: fetch failed`，真正的 errno 藏在 cause 裡。
+// 2026-07-16～07-29 的 540 次 notification gate 失敗全部只留下那七個字，事後無法診斷。
+export function describeError(error: unknown): string {
+  const cause = (error as { cause?: unknown } | null)?.cause as
+    { name?: string; code?: string; message?: string } | undefined;
+  if (!cause) return String(error);
+  const detail = [cause.name, cause.code, cause.message].filter(Boolean).join(' ');
+  return detail ? `${String(error)}（cause: ${detail}）` : String(error);
+}
+
 async function login(email: string): Promise<string> {
   const res = await fetch(`${BASE}/api/auth/login`, {
     method: 'POST',
@@ -1063,7 +1073,7 @@ async function runActorSessionWithNotificationGate(input: {
       try {
         cookie = await input.getNotificationCookie();
       } catch (error) {
-        console.log(`[${input.label}] notification gate login 失敗，略過一般 session：${String(error)}`);
+        console.log(`[${input.label}] notification gate login 失敗，略過一般 session：${describeError(error)}`);
         return { ready: false, snapshotIds: [], preflightStarted: false };
       }
       return processNotificationGate({

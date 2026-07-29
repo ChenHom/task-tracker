@@ -50,6 +50,7 @@ import {
   MEMBER_TOOLS,
   notificationRouteForMember,
   notificationGateEnabled,
+  describeError,
   ownerSweepPrompt,
   parseScenario,
   ROOT,
@@ -1262,6 +1263,18 @@ assert.ok(
     !mainPrompt.includes('【確認結論】'),
     'owner prompt 不得要求 validator 不認得的確認留言（owner 會空等到收尾逾時）',
   );
+}
+
+// describeError：fetch 失敗的 errno 只存在於 cause，不印出來就等於沒有診斷資料。
+{
+  const bare = new TypeError('fetch failed');
+  assert.strictEqual(describeError(bare), 'TypeError: fetch failed', '沒有 cause 時維持原樣');
+  const withCause = new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED ::1:3000'), { code: 'ECONNREFUSED' }) });
+  const described = describeError(withCause);
+  assert.ok(described.includes('ECONNREFUSED'), `cause 的 errno 必須出現在訊息裡，實際：${described}`);
+  assert.ok(described.includes('fetch failed'), '原本的訊息不得被蓋掉');
+  assert.strictEqual(describeError('不是 Error'), '不是 Error', '非 Error 值不得爆炸');
+  assert.strictEqual(describeError(null), 'null', 'null 不得爆炸');
 }
 
 runAsyncPolicyTests()

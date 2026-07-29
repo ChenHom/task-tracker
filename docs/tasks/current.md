@@ -19,9 +19,40 @@
 
 已知原因之一：`75e2033`（07-23）讓主協作討論的每則徵詢留言都回 HTTP 400，而主討論是新工作的唯一源頭。已於 07-29 修復（`c145e96` 消除 `src/` ↔ `sim/` 的協議字串漂移、`7cd4fa9` 移除等待窗口守門）。
 
-**未解釋**：斷流從 07-19 就開始，早於 400 bug 四天。那四天的成因尚未查明。
+### 主因（07-29 查明）：notification gate 吃掉了 94% 的工作區 owner session
 
-**下一步是量測，不是實作**：看新建 task 是否回到每天 2 個以上、commit 是否回來。若仍空轉，該查的是 07-19 那段的未知成因，不是把 production coordinator 上線 —— 後者解的是 branch 衝突，那類 escalate 在 07-17 之後就幾乎不再發生（判準見 [production-sim-coordinator plan](../superpowers/plans/2026-07-22-production-sim-coordinator.md) 任務 11 開頭）。
+先前寫「斷流從 07-19 開始、成因不明」是錯的。實際起點是 **07-16 12:30**，機制是 notification gate：
+
+```
+[12:32:22] [owner-巡檢-d9da9945] notification gate login 失敗，略過一般 session：TypeError: fetch failed
+```
+
+gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直接不跑。sim-logs 統計（07-16 12:30 ～ 07-29 00:44 gate 停用為止）：
+
+| | 次數 |
+|---|---|
+| 排到 `owner-巡檢-d9da9945`（工作區）的 tick | 577 |
+| gate 失敗被略過 | **540** |
+| 真的跑到 owner session | **37**（13 天，約每天 2.8 次，設計值 48） |
+| 主工作區 `owner-巡檢-11a82028` 失敗 | **0** |
+
+只有工作區會壞：`sweepCandidateUsesRepoSlot()` 讓主工作區跳過 `verifyBranches`，所以它的 gate login 緊接在 `sim/run.ts:2173` 的 login 之後；工作區的 gate login 則在 CI 預跑之後、隔了約 10 秒才發出。
+
+**`TypeError: fetch failed` 的底層原因仍未查明。** 那行只印 `String(error)`，540 次失敗沒有一次留下 errno。已排除（皆為本機實測，非推論）：
+
+| 假說 | 結果 |
+|---|---|
+| CI 負載打爆 server | **推翻**：5 路平行 `npm test` 351 秒、1166 次取樣，連線層失敗 0，最慢 36ms |
+| server 重啟 | **推翻**：journald 顯示 07-28 全天 0 次重啟，同期 gate 仍每天失敗 48 次 |
+| keep-alive socket 在靜默後失效 | **推翻**：0/3/5/6/8/10/15/20 秒靜默各測 5 次，全通 |
+| fd / process 上限 | 排除：`LimitNOFILE=1048576` |
+| login rate limit | 排除：回 HTTP 429，`login()` 會丟 `失敗: 429`，不是 `TypeError` |
+
+**修正與驗證**：`cd92ec7`（07-29 10:23）讓 owner 路徑改用 `:2173` 已取得的 `ownerCookie`（`() => Promise.resolve(ownerCookie)`）——**那次會失敗的 login 呼叫不存在了**，與底層成因無關。07-29 22:49 以 `SIM_NOTIFICATION_GATE=1` 實跑驗證：在 5 路平行 `npm test` 負載結束的同一秒取 cookie 成功、兩筆未讀通知都解析出 prompt、gate 放行。
+
+**仍未處理**：member 路徑（`sim/run.ts:1800`、`:2290`）與非 sweep 的完整 sim run（`:1823`、`:1853`、`:1868`、`:1882`）還是直接 `login()`，同一個坑沒補；且 gate 自 `15e2641`（07-29 00:44）起仍停用，要恢復必須在 timer wrapper 設 `SIM_NOTIFICATION_GATE=1`。診斷缺口已補：`describeError()` 會把 `error.cause` 的 errno 印出來，下次再犯就有資料。
+
+**下一步是量測，不是實作**：恢復 gate 後看新建 task 是否回到每天 2 個以上、commit 是否回來。不是把 production coordinator 上線 —— 後者解的是 branch 衝突，那類 escalate 在 07-17 之後就幾乎不再發生（判準見 [production-sim-coordinator plan](../superpowers/plans/2026-07-22-production-sim-coordinator.md) 任務 11 開頭）。
 
 ---
 

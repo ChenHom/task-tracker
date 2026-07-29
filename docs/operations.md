@@ -136,6 +136,8 @@ sqlite3 data/dev.db "SELECT aggregate_id, occurred_at, json_extract(payload_json
 
 SIM notification preflight 目前預設停用：Owner／member 不會為通知額外登入、讀取、留言或標記已讀，且 notification 失敗不再阻斷一般工作 session。這只影響 `sim/run.ts` 的自動巡檢；網站的 notification API 與前端不受影響。要明確恢復舊行為，才在執行命令前設定 `SIM_NOTIFICATION_GATE=1`；已安裝的 timer wrapper 未設定此值，因此維持停用。
 
+**為什麼停用**（07-29 00:44，`15e2641`）：gate 的 login 從 07-16 12:30 起持續丟 `TypeError: fetch failed`，而 gate 失敗會 `略過一般 session`，導致工作區的 owner 巡檢 577 次裡有 540 次完全沒跑（13 天只跑到 37 次）。`cd92ec7` 已讓 owner 路徑改用 sweep 開頭取得的 cookie，07-29 22:49 實跑驗證通過；member 路徑尚未比照修正。恢復前請先讀 [current.md 的主因分析](tasks/current.md)。
+
 啟用時，每個自動 Owner 與已設定 member session（`user01`、`user02`–`user06`）會先 snapshot 自己未讀的 `GET /api/notifications` rows。driver 會讀取來源 task/comment，並在一般看板工作前執行專用 API-only notification session。
 
 Main-workspace sources require a new post-snapshot comment by that actor; when there is no addition the required text is `已閱讀，目前無補充。`. The driver, not the AI session, marks a notification read after this verification. Normal-workspace sources may be read without a compulsory reply. A `403`/`404` or deleted source is logged and marked read; malformed data, network/5xx failures, a failed preflight, or missing/invalid main reply stay unread and skip that actor's ordinary session for this run.
