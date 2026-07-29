@@ -6,6 +6,25 @@
 
 ---
 
+## ⚠️ 2026-07-29 量測：sim 車隊全速空轉，這是當前最該追的問題
+
+| 指標 | 07-12～07-17 | 07-18～07-28 |
+|---|---|---|
+| sweep tick | 每天 ~72 | **每天 ~72（一天沒少）** |
+| driver commit / owner merge | 每天 2–7 | **11 天總共 3** |
+| 新建 task（工作源頭） | 每天 2–16 | **07-19～07-27 連續九天掛零** |
+| `[ESCALATE]` | 六天內 110 則 | 12 天內 2 則 |
+
+11 天、約 790 次 AI sweep，產出 3 個 commit。**escalate 減少不是因為阻塞解除，是因為沒有工作在流動。**
+
+已知原因之一：`75e2033`（07-23）讓主協作討論的每則徵詢留言都回 HTTP 400，而主討論是新工作的唯一源頭。已於 07-29 修復（`c145e96` 消除 `src/` ↔ `sim/` 的協議字串漂移、`7cd4fa9` 移除等待窗口守門）。
+
+**未解釋**：斷流從 07-19 就開始，早於 400 bug 四天。那四天的成因尚未查明。
+
+**下一步是量測，不是實作**：看新建 task 是否回到每天 2 個以上、commit 是否回來。若仍空轉，該查的是 07-19 那段的未知成因，不是把 production coordinator 上線 —— 後者解的是 branch 衝突，那類 escalate 在 07-17 之後就幾乎不再發生（判準見 [production-sim-coordinator plan](../superpowers/plans/2026-07-22-production-sim-coordinator.md) 任務 11 開頭）。
+
+---
+
 ## Phase 8 — 建立使用者 + Seeder ✅
 
 - [x] `createUser(email, password)` 內部函式（複用 `hashPassword`，寫入 `users` table）

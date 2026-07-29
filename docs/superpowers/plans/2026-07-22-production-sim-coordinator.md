@@ -850,7 +850,35 @@ merge 會觸發**唯一一次** path invocation。依任務 6 步驟 5 的同一
 
 ## 任務 11：最終驗證與具前置檢查、復原能力的 Runtime Cutover
 
-> ### ⛔ 2026-07-29 實測：任務 11 目前無法完成，阻塞點不是 live 授權
+> ### 🛑 2026-07-29 結論：技術阻塞已排除，但任務 11 刻意不執行
+>
+> 底下記錄的阻塞（CLI 從未注入 AI runner）**已經修好**：`ca822d3` 新增
+> `sim/production/runner.ts` 並在 CLI 的 `--live` 分支注入，`ffaa8e4` 再把 owner
+> session 改成 codex `-s read-only` sandbox 並修掉 `cwd` 落在 repo root 的缺陷。
+> 真 AI smoke（`sim/production/runner.smoke.ts`）三個 case 全綠。
+>
+> **即使如此，cutover 仍然不做**，理由是同日的量測推翻了它的前提：
+>
+> | 指標 | 07-12～07-17 | 07-18～07-28 |
+> |---|---|---|
+> | sweep tick | 每天 ~72 | 每天 ~72（一天沒少）|
+> | commit / merge | 每天 2–7 | 11 天總共 3 |
+> | 新建 task | 每天 2–16 | 07-19～07-27 連續九天掛零 |
+> | `[ESCALATE]` | 六天內 110 則 | 12 天內 2 則 |
+>
+> 本 plan 要解的是長命 branch 造成的 merge 衝突／dirty worktree／branch 落後
+> （134 則 escalate 裡的前三名，合計 188 次）。但那些**在 07-17 之後就幾乎不再發生**。
+> 系統真正的問題換成了「每天 72 個 tick 全速空轉、產出接近 0」——工作源頭斷流，
+> 而 per-task branch 完全解不了這個。
+>
+> 把 coordinator 上線，只會換一套從沒在真看板跑過的程式來做同樣的空轉。
+>
+> **要重啟這個 plan 之前，先回答：現在的瓶頸真的是 branch 衝突嗎？** 用上表那四個
+> 指標量一次。若 escalate 沒有回到每天兩位數，這個 plan 就不是當下該投資的東西。
+>
+> ---
+>
+> ### ⛔ 2026-07-29 實測（已修復，保留為記錄）：阻塞點不是 live 授權
 >
 > 在取得明確 live 授權後實際跑完步驟 1–4，結果是 `sim-coordinator.service` 以
 > `ExecMainStatus=1` 失敗，錯誤來自 `sim/production.ts:762`：

@@ -305,11 +305,13 @@ State 存在 `sim-logs/production-coordinator.db`（gitignored）。主要表格
 
 每位 assignee 在同一次 tick 最多只取得一個非 blocked action（`selectCoordinatorActions` 用 `reservedAssignees` 集合去重）。`queued` 與尚未可恢復的 `human_blocked` task 完全不參與這個計算——它們既不佔用、也不釋放任何 assignee 的 WIP1 名額。同一次 live tick 的迭代內，`owner_dispatch`／`assign_member` 另外用 `claimedAssigneesThisIteration` 防止同一輪指派兩個 unassigned Todo 給同一個人。
 
-> **⛔ 2026-07-29：production coordinator 目前無法上線。** `sim/production.ts:762` 在 `--live`
-> 模式會直接 throw —— CLI 組裝層從未提供 `runOwnerSession`/`runMemberSession`，AI 呼叫仍是
-> 刻意保留的整合點。實測步驟 1–4 全部 exit 0（零 mutation），但 `sim-coordinator.service`
-> 以 `ExecMainStatus=1` 失敗。legacy sweep 路徑仍是唯一可用的正式路徑，`sim-coordinator.timer`
-> 維持 disabled。詳見 `docs/superpowers/plans/2026-07-22-production-sim-coordinator.md` 任務 11。
+> **🛑 2026-07-29：production coordinator 技術上可跑了，但刻意不上線。** AI runner 已接上
+> （`ca822d3`）並修好 sandbox 缺陷（`ffaa8e4`），真 AI smoke 全綠。不上線的理由是量測推翻了
+> 它的前提：它要解的 branch 衝突類 escalate 在 07-17 之後就幾乎不再發生（近 12 天只有 2 則），
+> 而系統當下的問題是「每天 ~72 個 tick 全速空轉、產出接近 0、工作源頭連續九天斷流」——
+> per-task branch 解不了這個。**legacy sweep 仍是唯一正式路徑，`sim-coordinator.timer` 維持
+> disabled 且未安裝。** 重啟 cutover 前請先重新量測，判準見
+> `docs/superpowers/plans/2026-07-22-production-sim-coordinator.md` 任務 11 開頭。
 
 ### Discussion policy（主討論 `10e65231...`）
 
