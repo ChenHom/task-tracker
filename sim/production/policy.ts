@@ -77,7 +77,7 @@ export type WorkClass = 'bug' | 'maintenance' | 'approved' | 'new-feature';
 /**
  * Owner 對一筆 task 的分類主張與可佐證的證據旗標。validateOwnerClassification
  * 只信證據旗標，不信 `claim` 本身——避免 Owner 隨口宣稱 bug／maintenance 就繞過
- * 新功能必須走 24 小時主討論的政策。
+ * 新功能必須走主討論固定回覆窗口的政策。
  */
 export interface OwnerClassification {
   claim: WorkClass;
@@ -189,7 +189,7 @@ export function isExcludedTask(task: TaskSnapshot): boolean {
 /**
  * 重新推導 task 的 WorkClass，不信任 Owner 自稱的 `claim`。若無法明確證明
  * 是在恢復既有文件行為、進行不影響使用者的維護，或引用已核准 discussion／
- * user09 決策，一律預設 `new-feature`（必須走 24 小時主討論）。
+ * user09 決策，一律預設 `new-feature`（必須走主討論固定回覆窗口）。
  */
 export function validateOwnerClassification(input: OwnerClassification): WorkClass {
   if (input.restoresDocumentedBehavior) return 'bug';
@@ -383,7 +383,7 @@ function buildMainDiscussionAction(
     workspaceId: task.workspaceId,
     reason: fingerprintChanged
       ? '主討論證據自上次 checkpoint 後已變化（期限事件或新留言）'
-      : '主討論已超過固定 24 小時期限',
+      : '主討論已超過固定回覆期限',
   };
 }
 

@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { runMigrations } from './schema';
 
-const DATA_DIR = join(__dirname, '../data');
+const DATA_DIR = process.env.TASK_TRACKER_DATA_DIR ?? join(__dirname, '../data');
 mkdirSync(DATA_DIR, { recursive: true });
 
 export const db = new DatabaseSync(join(DATA_DIR, 'dev.db'));

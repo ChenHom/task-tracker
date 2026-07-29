@@ -168,7 +168,8 @@ export function runMigrations(db: DatabaseSync): void {
     // 忽略如果欄位已存在
   }
 
-  // wait_half_days 的下限從 4 放寬為 2（配合固定 24 小時窗口）。CREATE TABLE IF NOT EXISTS
+  // wait_half_days 的下限維持 2，以保留既有固定 24 小時窗口；新窗口仍由 mainDiscussion
+  // 驗證為 4～14，既有資料庫不改寫歷史 due date。CREATE TABLE IF NOT EXISTS
   // 對既有資料庫不會重建表格，因此只在 sqlite_master 仍是舊 CHECK 時才重建，原樣複製既有列，
   // 不改變任何歷史 due date。
   const mainDiscussionWindowsSql = (db.prepare(

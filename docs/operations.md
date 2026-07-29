@@ -307,7 +307,7 @@ State 存在 `sim-logs/production-coordinator.db`（gitignored）。主要表格
 
 ### Discussion policy（主討論 `10e65231...`）
 
-固定 24 小時窗口本身由 `src/mainDiscussion.ts` 的既有 policy 管理（`【全員回覆：N天】`，2-7 天、以半天遞增）；production coordinator 這一層只在兩種情況才產生 Owner action：evidence fingerprint（留言／狀態／期限）自上次 checkpoint 後已變化，或已超過固定期限（`dueAt <= now`）。狀態沒變化的巡檢不會重複觸發 AI。
+固定 2–7 天窗口本身由 `src/mainDiscussion.ts` 的既有 policy 管理（`【全員回覆：N天】`，以半天遞增，預設 2 天）；production coordinator 這一層只在兩種情況才產生 Owner action：evidence fingerprint（留言／狀態／期限）自上次 checkpoint 後已變化，或已超過固定期限（`dueAt <= now`）。狀態沒變化的巡檢不會重複觸發 AI。
 
 ### Human-blocked 行為
 
