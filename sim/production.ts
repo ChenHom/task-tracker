@@ -72,6 +72,7 @@ import {
   type MemberSessionDriverActions,
   type MemberSessionResult,
 } from './production/agent';
+import { createOwnerSessionRunner, createMemberSessionRunner } from './production/runner';
 import {
   recordMemberSessionAttempt,
   runDeployAcceptance,
@@ -1555,7 +1556,12 @@ async function main(): Promise<void> {
   }
 
   if (once) {
-    const result = await runOnce({ live });
+    // 只有 CLI 的 --live 才注入真實 AI runner。刻意不在 runOnce() 裡給預設值：
+    // 那會讓任何忘了注入的 programmatic caller（包括測試）意外叫出真 AI 並花錢。
+    // runOnce() 裡缺 runner 就 throw 的那道防線因此保留。
+    const result = await runOnce(live
+      ? { live, runOwnerSession: createOwnerSessionRunner(), runMemberSession: createMemberSessionRunner() }
+      : { live });
     for (const line of result.lines) console.log(line);
     process.exitCode = result.exitCode;
     return;
