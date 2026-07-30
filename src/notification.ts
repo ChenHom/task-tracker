@@ -125,6 +125,62 @@ export function listNotifications(userId: string, database = db): NotificationRo
     .all(userId) as unknown as NotificationRow[];
 }
 
+export interface NotificationPage {
+  items: NotificationRow[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+  unreadTotal: number;
+}
+
+const DEFAULT_PAGE_SIZE = 15;
+const MAX_PAGE_SIZE = 100;
+const MAX_PAGE = 1_000_000;
+
+function parsePositiveInt(raw: string, max: number, label: string): number {
+  if (!/^[1-9]\d*$/.test(raw) || Number(raw) > max) {
+    throw new CommandError(`${label} 參數不合法`);
+  }
+  return Number(raw);
+}
+
+// opt-in 分頁：page 必填、pageSize 選填（預設 15）。排序固定 created_at DESC、
+// notification_id DESC 作穩定次排序，與 listNotifications() 的「未讀優先」排序刻意不同，
+// 避免標記已讀把項目移到清單後段導致分頁跳動。
+export function listNotificationsPage(
+  userId: string,
+  pageRaw: string,
+  pageSizeRaw: string | null,
+  database = db,
+): NotificationPage {
+  const pageSize = pageSizeRaw === null ? DEFAULT_PAGE_SIZE : parsePositiveInt(pageSizeRaw, MAX_PAGE_SIZE, 'pageSize');
+  const page = parsePositiveInt(pageRaw, MAX_PAGE, 'page');
+
+  const totalCount = (
+    database.prepare('SELECT COUNT(*) AS c FROM notifications_read_model WHERE recipient_id = ?').get(userId) as { c: number }
+  ).c;
+  const unreadTotal = (
+    database
+      .prepare('SELECT COUNT(*) AS c FROM notifications_read_model WHERE recipient_id = ? AND read_at IS NULL')
+      .get(userId) as { c: number }
+  ).c;
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  if (page > totalPages) throw new CommandError('page 超出範圍');
+
+  const items = database
+    .prepare(
+      `SELECT notification_id, recipient_id, source_task_id, source_comment_id, snippet, created_at, read_at
+         FROM notifications_read_model
+        WHERE recipient_id = ?
+        ORDER BY created_at DESC, notification_id DESC
+        LIMIT ? OFFSET ?`,
+    )
+    .all(userId, pageSize, (page - 1) * pageSize) as unknown as NotificationRow[];
+
+  return { items, page, pageSize, totalCount, totalPages, unreadTotal };
+}
+
 export function getNotification(notificationId: string, userId: string, database = db): NotificationRow | null {
   const row = database
     .prepare(

@@ -82,6 +82,35 @@
 - 點擊通知後，先導向 `source_task_id` 對應的 task，再呼叫標記已讀。
 - 若要做 comment 深連結，可再用 `source_comment_id` 定位留言錨點。
 
+### 2.1a GET `/api/notifications?page=N&pageSize=M`（opt-in 分頁）
+
+用途：通知頁（收件夾 UI）用傳統頁碼瀏覽通知，避免一次拉全部。
+
+請求條件：
+
+- 需要登入，其餘同 2.1。
+- 分頁是 opt-in：只要帶 `page` 參數就會回傳分頁格式；不帶 `page` 時走 2.1 既有的 array 回應與排序，不受影響。
+- `page` 必填（在有帶分頁參數的前提下）；`pageSize` 選填，預設 15，上限 100。
+- `page`／`pageSize` 必須是正整數；不合法格式（非數字、0、負數、小數）回 `400 {"error":"page 參數不合法"}` 或 `400 {"error":"pageSize 參數不合法"}`。
+- `page` 超過目前總頁數回 `400 {"error":"page 超出範圍"}`；前端應以 UI（disable 超界的頁碼按鈕）避免發出這種請求，遇到仍可退回第 1 頁重試。
+
+回傳資料：
+
+```json
+{
+  "items": [ /* 同 2.1 的 NotificationRow 陣列 */ ],
+  "page": 1,
+  "pageSize": 15,
+  "totalCount": 37,
+  "totalPages": 3,
+  "unreadTotal": 5
+}
+```
+
+- `items` 排序固定為 `created_at DESC`、`notification_id DESC` 作穩定次排序（分頁情境下不採 2.1 的「未讀優先」排序，避免標記已讀把項目移到清單後段、造成分頁跳動）。
+- `unreadTotal` 是這個使用者「全體」未讀數（不受目前頁面限制），前端 badge 應以此欄位為準，不要用 `items` 內未讀筆數估算。
+- 目前的通知頁（`public/js/views/notifications.js`）固定用 `pageSize=15`。
+
 ### 2.2 POST `/api/notifications/:id/read`
 
 用途：把單一通知標記為已讀。
