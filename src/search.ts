@@ -12,7 +12,7 @@ export interface SearchResult {
   comments: { comment_id: string; task_id: string; content: string }[];
 }
 
-export function searchWorkspace(workspaceId: string, query: unknown, database = db): SearchResult {
+export function searchWorkspace(workspaceId: string, query: unknown, database = db, includeArchived = false): SearchResult {
   const q = (typeof query === 'string' ? query : '').trim().slice(0, 200);
   if (!q) return { tasks: [], projects: [], comments: [] }; // 空查詢不掃全表
 
@@ -20,10 +20,11 @@ export function searchWorkspace(workspaceId: string, query: unknown, database = 
   const tasks = database
     .prepare(
       `SELECT task_id, title, status FROM tasks_read_model
-        WHERE workspace_id = ? AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
+        WHERE workspace_id = ? AND (? OR status <> 'Archived')
+          AND (title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')
         ORDER BY rowid`,
     )
-    .all(workspaceId, like, like) as unknown as SearchResult['tasks'];
+    .all(workspaceId, includeArchived ? 1 : 0, like, like) as unknown as SearchResult['tasks'];
 
   const projects = database
     .prepare(
@@ -36,9 +37,10 @@ export function searchWorkspace(workspaceId: string, query: unknown, database = 
     .prepare(
       `SELECT c.comment_id, c.task_id, c.content FROM comments c
          JOIN tasks_read_model t ON t.task_id = c.task_id
-        WHERE t.workspace_id = ? AND c.content LIKE ? ESCAPE '\\' ORDER BY c.rowid`,
+        WHERE t.workspace_id = ? AND (? OR t.status <> 'Archived')
+          AND c.content LIKE ? ESCAPE '\\' ORDER BY c.rowid`,
     )
-    .all(workspaceId, like) as unknown as SearchResult['comments'];
+    .all(workspaceId, includeArchived ? 1 : 0, like) as unknown as SearchResult['comments'];
 
   return { tasks, projects, comments };
 }

@@ -140,8 +140,7 @@ export interface MoveTaskResult {
   invitedAssignee: boolean;
 }
 // 只在「建立」時 gate workspace 生命週期：不讓新 task 落進 archived/deleted/不存在的 workspace（防孤兒資料）。
-// ponytail: 已存在 task 的 patch/archive/delete 不再回查 workspace，故 archived workspace 內既有 task 仍可微調。
-//   要完全凍結需每個 command 跨 aggregate 查 workspace 狀態，或用 process manager 級聯 archive/delete task；等有需求再上。
+// 已存在 task 的修改／封存／刪除同樣會回查 workspace 狀態，避免 archived workspace 內資料繼續變動。
 function requireActiveWorkspace(workspaceId: string, database: DatabaseSync): void {
   const status = getWorkspaceStatus(workspaceId, database);
   if (status === null) throw new CommandError('workspace 不存在');
@@ -400,8 +399,8 @@ export function registerTaskProjections(): void {
     database
       .prepare(
         `INSERT INTO tasks_read_model
-           (task_id, workspace_id, project_id, title, description, status, priority, assignee_id, due_at, version, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (task_id, workspace_id, project_id, title, description, status, priority, assignee_id, due_at, done_at, version, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       )
       .run(e.aggregate_id, p.workspaceId, p.projectId, p.title, p.description, p.status, p.priority, p.assigneeId, p.dueAt, e.aggregate_version, e.occurred_at);
   });
@@ -413,7 +412,12 @@ export function registerTaskProjections(): void {
   };
   registerProjection('task.title_changed', (e, database) => setCol('title')(e, database, (e.payload as { title: string }).title));
   registerProjection('task.description_changed', (e, database) => setCol('description')(e, database, (e.payload as { description: string }).description));
-  registerProjection('task.status_changed', (e, database) => setCol('status')(e, database, (e.payload as { status: string }).status));
+  registerProjection('task.status_changed', (e, database) => {
+    const status = (e.payload as { status: string }).status;
+    database
+      .prepare('UPDATE tasks_read_model SET status = ?, done_at = ?, version = ?, updated_at = ? WHERE task_id = ?')
+      .run(status, status === 'Done' ? e.occurred_at : null, e.aggregate_version, e.occurred_at, e.aggregate_id);
+  });
   registerProjection('task.discussion_started', (e, database) => {
     const p = e.payload as { status: string; assigneeId: string };
     database
@@ -423,8 +427,8 @@ export function registerTaskProjections(): void {
   registerProjection('task.main_discussion_concluded', (e, database) => {
     const p = e.payload as MainDiscussionConcludedPayload;
     database
-      .prepare('UPDATE tasks_read_model SET status = ?, assignee_id = NULL, version = ?, updated_at = ? WHERE task_id = ?')
-      .run(p.status, e.aggregate_version, e.occurred_at, e.aggregate_id);
+      .prepare('UPDATE tasks_read_model SET status = ?, done_at = ?, assignee_id = NULL, version = ?, updated_at = ? WHERE task_id = ?')
+      .run(p.status, p.status === 'Done' ? e.occurred_at : null, e.aggregate_version, e.occurred_at, e.aggregate_id);
   });
   registerProjection('task.priority_changed', (e, database) => setCol('priority')(e, database, (e.payload as { priority: string }).priority));
   registerProjection('task.assignee_changed', (e, database) => setCol('assignee_id')(e, database, (e.payload as { assigneeId: string | null }).assigneeId));
@@ -471,6 +475,7 @@ export interface TaskRow {
   priority: Priority;
   assignee_id: string | null;
   due_at: string | null;
+  done_at: string | null;
   version: number;
   updated_at: string | null;
 }

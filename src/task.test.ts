@@ -22,6 +22,7 @@ import {
   normalizeMainDiscussion,
   registerTaskProjections,
 } from './task';
+import { archiveDoneTasks } from './archiveDoneTasks';
 import { getMemberRole, getMembershipStatus, inviteMember, joinWorkspace, registerMemberProjections } from './member';
 
 const OWNER_THOUGHT = `【OWNER想法】
@@ -130,6 +131,33 @@ changeTaskStatus('u1', id, 'Review', db);
 changeTaskStatus('u1', id, 'Done', db);
 assert.strictEqual(one(id).status, 'Done');
 assert.strictEqual(one(id).version, 5, 'created + assignee + 3 status_changed → version 5');
+
+// ── Done 滿七天才自動封存；非狀態更新不重置 Done 起算點，重跑安全 ──
+const dueArchiveId = createTask('u1', WS, { title: 'archive after seven days' }, db);
+changeTaskAssignee('u1', dueArchiveId, 'u1', db);
+changeTaskStatus('u1', dueArchiveId, 'Doing', db);
+changeTaskStatus('u1', dueArchiveId, 'Review', db);
+changeTaskStatus('u1', dueArchiveId, 'Done', db);
+const recordedDoneAt = getTask(dueArchiveId, db)?.done_at;
+changeTaskTitle('u1', dueArchiveId, 'title changed after Done', db);
+assert.strictEqual(getTask(dueArchiveId, db)?.done_at, recordedDoneAt, 'Done 起算點不可被一般欄位更新覆蓋');
+
+db.prepare('UPDATE tasks_read_model SET done_at = ? WHERE task_id = ?').run('2026-07-01T00:00:00.000Z', dueArchiveId);
+
+assert.strictEqual(archiveDoneTasks(db, new Date('2026-07-07T00:00:00.000Z')), 0, '未滿七天不可封存');
+assert.strictEqual(archiveDoneTasks(db, new Date('2026-07-08T00:00:00.000Z')), 1, '滿七天應封存');
+assert.strictEqual(getTask(dueArchiveId, db)?.status, 'Archived');
+assert.strictEqual(archiveDoneTasks(db, new Date('2026-07-09T00:00:00.000Z')), 0, '掃描重跑不得重複封存');
+
+const rolledBackDoneId = createTask('u1', WS, { title: 'done then review' }, db);
+changeTaskAssignee('u1', rolledBackDoneId, 'u1', db);
+changeTaskStatus('u1', rolledBackDoneId, 'Doing', db);
+changeTaskStatus('u1', rolledBackDoneId, 'Review', db);
+changeTaskStatus('u1', rolledBackDoneId, 'Done', db);
+changeTaskStatus('u1', rolledBackDoneId, 'Review', db);
+assert.strictEqual(getTask(rolledBackDoneId, db)?.done_at, null, '離開 Done 時必須清除封存起算點');
+archiveDoneTasks(db, new Date('2026-07-09T00:00:00.000Z'));
+assert.strictEqual(getTask(rolledBackDoneId, db)?.status, 'Review', '掃描前狀態已改變的 task 不可被封存');
 
 // ── 狀態機：合法回退 Done → Review → Doing → Todo ──
 changeTaskStatus('u1', id, 'Review', db);

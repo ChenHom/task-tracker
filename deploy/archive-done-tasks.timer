@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Task Tracker Done-task archival daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=archive-done-tasks.service
+
+[Install]
+WantedBy=timers.target

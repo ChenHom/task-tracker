@@ -22,6 +22,7 @@ export const SearchView = {
         <h2 class="red-pen-underline" style="margin-top:0; margin-bottom:1rem;">搜尋</h2>
         <form id="search-form" style="display: flex; gap: 0.5rem;">
           <input type="text" id="search-input" placeholder="輸入關鍵字搜尋任務、專案或留言..." required style="flex-grow: 1;">
+          <label><input type="checkbox" id="search-include-archived"> 顯示已歸檔</label>
           <button type="submit">搜尋</button>
         </form>
         <p id="search-error" class="error" style="display: none; margin-top: 1rem;"></p>
@@ -37,6 +38,7 @@ export const SearchView = {
       searchForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const q = document.getElementById('search-input').value;
+        const includeArchived = document.getElementById('search-include-archived').checked;
         const results = document.getElementById('search-results');
         if (!results) return;
         results.textContent = '搜尋中...';
@@ -47,7 +49,7 @@ export const SearchView = {
         abortController = new AbortController();
 
         try {
-          const data = await api(`/api/search?workspace=${encodeURIComponent(state.workspaceId)}&q=${encodeURIComponent(q)}`, {
+          const data = await api(`/api/search?workspace=${encodeURIComponent(state.workspaceId)}&q=${encodeURIComponent(q)}&includeArchived=${includeArchived}`, {
             signal: abortController.signal
           });
           results.textContent = '';

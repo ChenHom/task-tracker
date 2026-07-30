@@ -1,0 +1,9 @@
+[Unit]
+Description=Archive Task Tracker tasks that have been Done for seven days
+After=task-tracker.service
+Requires=task-tracker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hom/code/task-tracker
+ExecStart=/home/hom/.nvm/versions/node/v24.3.0/bin/node dist/archiveDoneTasks.js

@@ -40,6 +40,11 @@ task('t4', 'ws-1', '100% done', '');
 assert.deepStrictEqual(searchWorkspace('ws-1', '100%', db).tasks.map((t) => t.task_id), ['t4'], "'100%' 應字面命中 '100% done'");
 assert.strictEqual(searchWorkspace('ws-1', '%', db).tasks.length, 1, "'%' 應只字面命中含 % 的那筆，而非全部");
 
+// ── Archived 預設不出現，明確選擇才可查回 ──
+db.prepare("UPDATE tasks_read_model SET status = 'Archived' WHERE task_id = ?").run('t1');
+assert.deepStrictEqual(searchWorkspace('ws-1', 'deploy', db).tasks.map((t) => t.task_id), [], '預設搜尋不應回傳 Archived task');
+assert.deepStrictEqual(searchWorkspace('ws-1', 'deploy', db, true).tasks.map((t) => t.task_id), ['t1'], '選擇顯示已歸檔後應可查回 Archived task');
+
 // ── 空查詢不掃全表 ──
 assert.deepStrictEqual(searchWorkspace('ws-1', '   ', db), { tasks: [], projects: [], comments: [] }, '空查詢回空');
 
