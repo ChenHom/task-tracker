@@ -561,8 +561,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     try {
+      // 先算完再送 header：writeHead 若排在前面，非法頁碼會變成「已送出 200 才想改 400」
+      const body = JSON.stringify(listNotificationsPage(userId, page, params.get('pageSize')));
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(listNotificationsPage(userId, page, params.get('pageSize'))));
+      res.end(body);
     } catch (e) {
       sendCommandError(res, e);
     }

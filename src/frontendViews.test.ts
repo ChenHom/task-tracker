@@ -54,10 +54,12 @@ class MockElement {
     }
     if (val.includes('id="search-form"')) {
       const q = new MockElement('input', { id: 'search-input', type: 'text' });
+      const includeArchived = new MockElement('input', { id: 'search-include-archived', type: 'checkbox' });
       const error = new MockElement('p', { id: 'search-error', class: 'error' });
       const results = new MockElement('div', { id: 'search-results' });
       const form = new MockElement('form', { id: 'search-form' });
       form.appendChild(q);
+      form.appendChild(includeArchived);
       this.appendChild(form);
       this.appendChild(error);
       this.appendChild(results);
@@ -522,8 +524,12 @@ async function runTests() {
     const submitHandlers = form.eventListeners['submit'];
     await submitHandlers[0]({ preventDefault: () => {} });
 
-    assert.strictEqual(requestedUrl, '/api/search?workspace=ws-search-1&q=query-val');
-    
+    assert.strictEqual(
+      requestedUrl,
+      '/api/search?workspace=ws-search-1&q=query-val&includeArchived=false',
+      '「顯示已歸檔」預設關閉，查詢必須帶 includeArchived=false',
+    );
+
     // Result render assertions
     const resultsHTML = resultsContainer.childNodes;
     assert.strictEqual(resultsHTML.length, 3, 'should render 3 result groups');
@@ -540,6 +546,17 @@ async function runTests() {
     // Comments Group
     const commGroup = resultsHTML[2];
     assert.ok(commGroup.childNodes.some(n => n.textContent.includes('留言搜尋結果 (1)')));
+
+    // 勾選「顯示已歸檔」後才把 Archived 撈回來（放在渲染斷言之後，避免多送一次把結果疊上去）
+    const includeArchivedBox = findElementInContainer('search-include-archived');
+    assert.ok(includeArchivedBox, '搜尋頁必須有「顯示已歸檔」勾選框');
+    includeArchivedBox.checked = true;
+    await submitHandlers[0]({ preventDefault: () => {} });
+    assert.strictEqual(
+      requestedUrl,
+      '/api/search?workspace=ws-search-1&q=query-val&includeArchived=true',
+      '勾選「顯示已歸檔」後查詢必須帶 includeArchived=true',
+    );
   }
 
   // Search abort controller integration (concurrency)

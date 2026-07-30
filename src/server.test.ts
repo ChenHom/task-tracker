@@ -87,6 +87,50 @@ void (async () => {
     '徵詢留言不得再被任何期限 validator 擋下',
   );
   assert.strictEqual(await postComment('【全員回覆：2天】\n殘留的舊 marker'), 201, '舊 marker 只是普通文字，不得回 400');
+
+  // 通知分頁的錯誤路徑必須在 HTTP 層驗：unit test 直接呼叫 listNotificationsPage() 看不出
+  // 「header 已送出才想改狀態碼」——writeHead 排在計算之前時，非法頁碼會回 200 並在第二次
+  // writeHead 炸掉（ERR_HTTP_HEADERS_SENT），而 unit test 照樣全綠。
+  const getNotifications = async (query: string): Promise<{ status: number; body: string }> => {
+    let status = 0;
+    let body = '';
+    let headersSent = false;
+    const request = { url: `/api/notifications${query}`, method: 'GET', headers: { cookie }, socket: { remoteAddress: '127.0.0.1' } };
+    const response = {
+      writeHead: (code: number) => {
+        if (headersSent) throw new Error('writeHead 被呼叫第二次：header 已送出（真實 Node 會丟 ERR_HTTP_HEADERS_SENT）');
+        headersSent = true;
+        status = code;
+      },
+      end: (chunk?: unknown) => { body = String(chunk ?? ''); },
+    };
+    await handle(request as never, response as never);
+    return { status, body };
+  };
+  const noParam = await getNotifications('');
+  assert.strictEqual(noParam.status, 200, '不帶 page 應維持既有行為');
+  assert.ok(Array.isArray(JSON.parse(noParam.body)), '不帶 page 應維持 array 回應，不可變成分頁物件');
+  const firstPage = await getNotifications('?page=1');
+  assert.strictEqual(firstPage.status, 200);
+  assert.deepStrictEqual(
+    JSON.parse(firstPage.body),
+    { items: [], page: 1, pageSize: 15, totalCount: 0, totalPages: 1, unreadTotal: 0 },
+    '0 筆時 page=1 應回空清單且 totalPages 至少為 1',
+  );
+  for (const [query, label] of [
+    ['?page=0', 'page=0'],
+    ['?page=-1', 'page=-1'],
+    ['?page=abc', 'page 非數字'],
+    ['?page=1.5', 'page 小數'],
+    ['?page=1&pageSize=0', 'pageSize=0'],
+    ['?page=1&pageSize=999', 'pageSize 越界'],
+    ['?page=2', 'page 超出總頁數'],
+  ] as const) {
+    const res400 = await getNotifications(query);
+    assert.strictEqual(res400.status, 400, `${label} 應回 400，實際 ${res400.status}`);
+    assert.ok(JSON.parse(res400.body).error, `${label} 應帶 error 訊息`);
+  }
+
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
   console.log('server.test.ts OK');
