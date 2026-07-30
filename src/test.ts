@@ -19,6 +19,7 @@ import './attachment.test';
 import './search.test';
 import './audit.test';
 import './rateLimit.test';
+import './archiveDoneTasks.test';
 import './quota.test';
 import './quotaFrontend.test';
 import './notificationsFrontend.test';
