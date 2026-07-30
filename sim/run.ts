@@ -741,7 +741,7 @@ export async function processNotificationGate(input: {
       .filter((row) => row.read_at === null)
       .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.notification_id.localeCompare(b.notification_id));
   } catch (error) {
-    input.log(`[notification] gate failed: ${String(error)}`);
+    input.log(`[notification] gate failed: ${describeError(error)}`);
     return { ready: false, snapshotIds: [], preflightStarted };
   }
 
@@ -804,14 +804,14 @@ export async function processNotificationGate(input: {
       await markNotificationRead({ notificationId: notification.notification_id, request: input.request, cookie: input.cookie });
     } catch (error) {
       allProcessed = false;
-      input.log(`[notification] notification=${notification.notification_id} failed: ${String(error)}`);
+      input.log(`[notification] notification=${notification.notification_id} failed: ${describeError(error)}`);
     }
   }
   try {
     await finalNotificationReadback(snapshotSet, input.request, input.cookie);
     return { ready: allProcessed, snapshotIds, preflightStarted };
   } catch (error) {
-    input.log(`[notification] gate failed: ${String(error)}`);
+    input.log(`[notification] gate failed: ${describeError(error)}`);
     return { ready: false, snapshotIds, preflightStarted };
   }
 }
@@ -876,7 +876,7 @@ export async function runNotificationSweep(
     } catch (error) {
       const result = { actor: member.email, ready: false, unreadCount: 0, preflightStarted: false };
       results.push(result);
-      log(`[notification-sweep:${member.user}] 失敗：${String(error)}`);
+      log(`[notification-sweep:${member.user}] 失敗：${describeError(error)}`);
     }
   }
   return results;
