@@ -6,6 +6,9 @@ import vm from 'node:vm';
 // 針對 public/js/views/notifications.js 的獨立 vm 沙盒（刻意不與 frontendViews.test.ts
 // 共用同一個 vm context：該檔用同名 top-level function 當 stub，混在一起載入會被
 // notifications.js 的同名 real function 蓋掉，反而讓既有測試的 mock 失效）。
+// document.activeElement 的替身：renderPaginationNav() 用它判斷焦點原本在不在 nav 內
+let mockActiveElement: MockElement | null = null;
+
 class MockElement {
   [key: string]: any;
   tag: string;
@@ -28,6 +31,20 @@ class MockElement {
 
   appendChild(child: MockElement) {
     this.childNodes.push(child);
+  }
+
+  // renderPaginationNav() 重繪後要把焦點補回 nav，需要 contains()／focus()／children
+  get children(): MockElement[] {
+    return this.childNodes;
+  }
+
+  contains(node: unknown): boolean {
+    if (node === this) return true;
+    return this.childNodes.some((child) => child.contains(node));
+  }
+
+  focus(): void {
+    mockActiveElement = this;
   }
 
   // 真實 DOM 的 .textContent = '' 會清空所有子節點；renderList() 依賴這個語意
@@ -91,6 +108,7 @@ async function main(): Promise<void> {
   root.appendChild(container);
 
   const mockDocument = {
+    get activeElement() { return mockActiveElement; },
     getElementById: (id: string) => findById(root, id),
     querySelectorAll: (selector: string) => findAllByClass(root, selector.replace(/^\./, '')),
     querySelector: (selector: string) => {
@@ -329,6 +347,22 @@ globalThis.stopNotificationPolling = typeof stopNotificationPolling !== "undefin
     const navButtons2 = navBox2!.childNodes;
     assert.strictEqual(navButtons2[3].disabled, true, '最後一頁時下一頁應禁用');
     assert.strictEqual(navButtons2[0].disabled, undefined, '非第 1 頁時上一頁不應禁用');
+
+    // 換頁會整個重繪 nav，目前頁按鈕又是 disabled 的；焦點若不補回，鍵盤使用者每翻一頁
+    // 都得從頭 tab 回來。重繪後焦點必須仍留在 nav 內。
+    mockActiveElement = navButtons2[0]; // 焦點停在「上一頁」
+    navButtons2[0].onclick!();
+    await flushPromises();
+    const navBox3 = findById(root, 'notif-pagination');
+    assert.ok(navBox3!.contains(mockActiveElement), '換頁重繪後焦點必須留在分頁 nav 內');
+    assert.strictEqual(mockActiveElement!.disabled, undefined, '補回的焦點不可落在 disabled 按鈕上');
+
+    // 焦點本來不在 nav（例如剛用滑鼠點卡片）就不該被搶走
+    mockActiveElement = null;
+    const navButtons3 = navBox3!.childNodes;
+    navButtons3[3].onclick!();
+    await flushPromises();
+    assert.strictEqual(mockActiveElement, null, '焦點原本不在 nav 內時，重繪不得主動搶焦點');
 
     console.log('notificationsFrontend.test.ts OK');
   } finally {

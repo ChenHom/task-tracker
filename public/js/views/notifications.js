@@ -149,6 +149,9 @@ async function openNotification(n) {
 function renderPaginationNav() {
   const navEl = document.getElementById('notif-pagination');
   if (!navEl) return;
+  // 重繪會丟掉焦點：目前頁的按鈕是 disabled 的，鍵盤操作者按完 Enter 焦點會掉回 body，
+  // 每翻一頁都得重 tab。記住焦點原本在不在 nav 內，重繪後補回去。
+  const hadFocus = navEl.contains(document.activeElement);
   navEl.textContent = '';
   if (pageState.totalPages <= 1) return;
 
@@ -176,6 +179,12 @@ function renderPaginationNav() {
   }, '下一頁');
   if (pageState.page >= pageState.totalPages) nextBtn.disabled = true;
   navEl.appendChild(nextBtn);
+
+  // 焦點補回：目前頁按鈕已 disabled 不能收焦點，退而求其次找第一個可用的按鈕
+  if (hadFocus) {
+    const focusable = [...navEl.children].find(btn => !btn.disabled);
+    if (focusable) focusable.focus();
+  }
 }
 
 function renderList() {
