@@ -8,7 +8,8 @@
 
 import { state } from './js/state.js';
 import { api, logout } from './js/api.js';
-import { initRouter, setOnRouteCallback } from './js/router.js';
+import { initRouter, setOnRouteCallback, navigate } from './js/router.js';
+import { shouldEscBack, isEditableTarget, OVERLAY_SELECTOR } from './js/escBack.js';
 import { syncGlobalWorkspaces, updateSidebar } from './js/sidebar.js';
 import { updateQuotaFooter } from './js/quota.js';
 import { refreshNotificationBadge, stopNotificationPolling } from './js/views/notifications.js';
@@ -37,6 +38,23 @@ document.addEventListener('visibilitychange', () => {
     refreshNotificationBadge();
   }
 });
+
+// 全域 #/tasks 的階層式 Escape：有 modal / drawer / menu / dropdown 就讓它自己關，
+// 都沒有、也不在編輯或 IME 組字時才退回工作區列表。
+// 用 window capture 且在模組載入時就註冊（早於 task-detail modal 的 listener），
+// 讀到的是「按鍵開始時」的介面狀態，不會被同一次事件關掉的 modal 影響。
+window.addEventListener('keydown', (e) => {
+  const decision = shouldEscBack({
+    key: e.key,
+    isComposing: e.isComposing,
+    hash: location.hash,
+    overlayOpen: !!document.querySelector(OVERLAY_SELECTOR),
+    editable: isEditableTarget(document.activeElement)
+  });
+  if (!decision) return;
+  e.preventDefault();
+  navigate('#/workspaces');
+}, true);
 
 window.addEventListener('DOMContentLoaded', async () => {
   // Bind logout action

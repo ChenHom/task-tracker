@@ -36,4 +36,19 @@ for (let i = 0; i < 50; i++) {
 }
 assert.ok(rl2.getSize?.() <= 50, '過期後 Map 應清理舊 entry，size 不應無限增長');
 
+// ── maxKeys 硬上限：大量不同 key 也不會讓 Map 無限成長 ──
+const rl3 = createRateLimiter(1000, 5, 10);
+for (let i = 0; i < 100; i++) {
+  rl3.fail(`flood-${i}`, 0); // 100 個不同 key、全在同一個窗口內（cleanup 清不掉）
+}
+assert.strictEqual(rl3.getSize?.(), 10, '達 maxKeys 後 Map size 應停在上限');
+// 上限行為不影響既有限流：新 key 仍照 max 計數
+rl3.fail('flood-new', 0);
+rl3.fail('flood-new', 0);
+rl3.fail('flood-new', 0);
+rl3.fail('flood-new', 0);
+rl3.fail('flood-new', 0);
+assert.ok(!rl3.check('flood-new', 0), '達上限的 key 仍應被擋');
+assert.ok((rl3.getSize?.() ?? 0) <= 10, '限流過程 Map size 不得超過 maxKeys');
+
 console.log('rateLimit.test.ts OK');

@@ -22,6 +22,7 @@ import './rateLimit.test';
 import './quota.test';
 import './quotaFrontend.test';
 import './notificationsFrontend.test';
+import './escBack.test';
 import './frontend.test';
 import './frontendCore.test';
 import './frontendViews.test';

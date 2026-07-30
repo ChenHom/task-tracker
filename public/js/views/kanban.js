@@ -612,8 +612,17 @@ export const KanbanView = {
             if (!popup.contains(clickEv.target)) {
               popup.remove();
               document.removeEventListener('click', closeHandler);
+              document.removeEventListener('keydown', escHandler, true);
             }
           };
+          // Esc 先關這層 menu；全域 #/tasks 的返回 handler 看到 popup 還在就不會導頁
+          const escHandler = (keyEv) => {
+            if (keyEv.key !== 'Escape') return;
+            popup.remove();
+            document.removeEventListener('click', closeHandler);
+            document.removeEventListener('keydown', escHandler, true);
+          };
+          document.addEventListener('keydown', escHandler, true);
           setTimeout(() => {
             document.addEventListener('click', closeHandler);
           }, 0);
