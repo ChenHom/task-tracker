@@ -169,7 +169,8 @@ export interface SprintReport {
 
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
 const MEMBER_RUNNERS: MemberRunnerConfig[] = [
-  { email: 'user02@test.local', runner: 'codex', model: 'gpt-5.4-mini',
+  { email: 'user02@test.local', runner: 'claude', model: 'claude-sonnet-5',
+    fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' },
     profile: '細心，擅長小範圍 auth/安全類修補與補測試，適合範圍明確的小題' },
   { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.6-terra',
     profile: '主力工程師，可承接跨檔案/架構性大題（曾獨力完成 sim harness 四階段強化）' },
@@ -614,6 +615,9 @@ export interface ResolvedNotification {
   comments: NotificationComment[];
 }
 export const MAX_NOTIFICATION_PROMPT_CHARS = 16_000;
+// notification prompt 是寫入端、owner prompt 是清點端，兩邊共用同一組表態 marker。
+export const AGREE_MARKER = '【同意】';
+export const CONCERN_MARKER = '【疑慮】';
 export interface NotificationGateResult {
   ready: boolean;
   snapshotIds: string[];
@@ -636,6 +640,13 @@ export interface NotificationSweepResult {
 }
 
 export type NotificationSweepRunner = (member: NotificationSweepMember) => Promise<NotificationSweepResult>;
+
+// user06 依主工作區發想決策不參與通知表態；它仍可能被 owner @mention，未讀會保留。
+const NOTIFICATION_SWEEP_SKIP = new Set(['user06']);
+
+export function notificationSweepMembers<T extends { user: string }>(members: readonly T[]): T[] {
+  return members.filter((member) => !NOTIFICATION_SWEEP_SKIP.has(member.user));
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -811,6 +822,7 @@ export interface NotificationSweepForMemberInput {
   loginActor: (email: string) => Promise<string>;
   runPreflight: (prompt: string) => Promise<SessionResult>;
   log: (line: string) => void;
+  sleep?: (milliseconds: number) => Promise<void>;
   snapshotAt?: string;
   jar?: string;
 }
@@ -819,11 +831,17 @@ export async function runNotificationSweepForMember(
   input: NotificationSweepForMemberInput,
 ): Promise<NotificationSweepResult> {
   let cookie: string;
-  try {
-    cookie = await input.loginActor(input.member.email);
-  } catch (error) {
-    input.log(`[notification-sweep:${input.member.user}] login 失敗：${String(error)}`);
-    return { actor: input.member.email, ready: false, unreadCount: 0, preflightStarted: false };
+  const sleep = input.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      cookie = await input.loginActor(input.member.email);
+      break;
+    } catch (error) {
+      const retryable = error instanceof TypeError && attempt < 2;
+      input.log(`[notification-sweep:${input.member.user}] login 失敗：${describeError(error)}${retryable ? `；${attempt + 1}/2 秒後重試` : ''}`);
+      if (!retryable) return { actor: input.member.email, ready: false, unreadCount: 0, preflightStarted: false };
+      await sleep(attempt === 0 ? 2_000 : 5_000);
+    }
   }
 
   const gate = await processNotificationGate({
@@ -1278,7 +1296,7 @@ description: ${description}
 來源留言（完整保留）: ${source.sourceComment.content}
 
 規則：
-- 主協作工作區來源：這一筆通知必須 POST 一則新的留言；沒有補充時，內容必須完全是「已閱讀，目前無補充。」；有補充時寫具體問題、風險或建議。
+- 主協作工作區來源：這一筆通知必須 POST 一則新的留言，三選一：贊成就以「${AGREE_MARKER}」開頭；有具體風險或反對理由就以「${CONCERN_MARKER}」開頭並寫明風險；沒有補充時，內容必須完全是「已閱讀，目前無補充。」
 - 一般工作區來源：先讀內容，再依內容決定是否留下必要回覆；不要求留言，但仍要獨立閱讀與判斷。
 - 不得呼叫 POST /api/notifications/:id/read；runner 會在驗證後處理。
 - 不得在留言中 @ 自己，也不得為了確認身份加入任何指向自己的 @ 提及。
@@ -2008,27 +2026,29 @@ interface SweepTask extends SweepAssignedTask { task_id: string; title: string }
 export function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string {
   const jar = join(RUN.repoRoot, '.jar-owner-sweep.txt');
   if (wsId === MAIN_WORKSPACE_ID) {
-    return `你是「${OWNER.name}」（${OWNER.email}），主協作工作區的唯一 Owner。這個 session 只用 curl/API 操作，不得編輯、提交或合併任何程式碼。
+    return `你是「${OWNER.name}」（${OWNER.email}），主協作工作區的唯一 Owner。你可以連外網查資料（這個 session 有網路），但不得編輯、提交或合併任何程式碼。
 workspace：${wsId}。
 ${API_RULES(jar)}
 主協作討論巡檢：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks，忽略「${MAIN_POLICY_TITLE}」，它不是工作項目；逐一讀取 status=Todo 的「${MAIN_DISCUSSION_PREFIX}」討論及留言。
-2. TASK 建立後盡量在 24 小時內，先獨立 POST 完整的「${THOUGHT_MARKER}」留言；必須逐行照以下 ${REQUIRED_THOUGHT_FIELDS.length} 欄填寫，欄名不可省略：
+2. 當「${MAIN_DISCUSSION_PREFIX}」的 Todo 少於 3 則時，先連外網查證，再建立一則新的討論；主題必須指向 repo 以外的具體領域（別人怎麼做、什麼在變、我們沒看到什麼），不得只是本 repo 看板的 UI 微調。標題不要自行加「${MAIN_DISCUSSION_PREFIX}」，伺服器會自動加。
+3. TASK 建立後盡量在 24 小時內，先獨立 POST 完整的「${THOUGHT_MARKER}」留言；必須逐行照以下 ${REQUIRED_THOUGHT_FIELDS.length} 欄填寫，欄名不可省略：
 ${THOUGHT_MARKER}
 ${REQUIRED_THOUGHT_FIELDS.map((field) => `${field}：<${THOUGHT_FIELD_HINTS[field]}>`).join('\n')}
-3. 再獨立 POST 一則徵詢留言，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。沒有等待期限，成員隨時可以回覆。
-4. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或徵詢留言、阻塞／範圍／決策變化，或收斂時才留言。
-5. 讀取留言並收集意見。系統不追蹤回覆或缺席，也不因未回覆阻擋收尾，不需要任何確認留言。
-6. 你判斷討論已充分時，依下列精確 marker 與順序收尾；不追逐、不列缺席者，無人回覆也可走未達共識。只允許 Todo→Done。
+4. 在上述六欄之外另起「來源」區塊，列出至少三條 repo 以外、可追溯的出處；「現況／問題」與「預期價值」必須呼應這些來源。六欄欄位值必須各自單行，來源清單不可當作欄位續行。
+5. 再獨立 POST 一則徵詢留言，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。沒有等待期限，成員隨時可以回覆。
+6. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或徵詢留言、阻塞／範圍／決策變化，或收斂時才留言。
+7. 讀取留言並收集意見。系統不追蹤回覆或缺席，也不因未回覆阻擋收尾，不需要任何確認留言。
+8. 你判斷討論已充分時，先清點同意票：同意池是 user01、user02、user03、user04、user05、user09 六位，需至少 4 位；OWNER 的「${CONCLUSION_MARKER}」算 1 票，所以必須在 user02、user03、user04、user05、user09 中找到至少 3 位以「${AGREE_MARKER}」表態，才可走「${CONCLUSION_MARKER}」並開實作 task；否則使用「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」。不追逐、不列缺席者，只允許 Todo→Done。
    - 實作：OWNER「${CONCLUSION_MARKER}」→OWNER「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」。不得使用「【結論：實作】」或「【結論：implement】」。
    - 不實作：OWNER「${NO_IMPLEMENTATION_MARKER}」。
    - 未達共識：OWNER「${NO_CONSENSUS_MARKER}」並逐行填寫${NO_CONSENSUS_FIELDS.join('、')}。
-7. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
+9. implement 前先從討論內容辨識 target repo。canonical repo/workspace 精確對照如下，有精確 mapping 就使用該 workspace：
 ${canonicalWorkspaceDirectory()}
-8. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
-9. 建立前先檢查原討論留言與目標 workspace 是否已有同名實作 task，避免 crash retry 重複建立；需要時才使用既有 task API 在目標 workspace 建立實作 task，不得在主協作工作區建立實作 task。
-10. 建立後，在原討論留下純文字「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」，不提供 URL；再 PATCH 原討論 status=Done。
-11. 結束輸出 3 行內總結。`;
+10. 不得把所有討論預設導向 ${ROOT}；主協作工作區可以討論任何 repo。target repo 未登記時，先尋找匹配的既有 workspace，仍沒有才用既有 workspace API 建立一個，並在原討論留言寫明「未登記，人工介入選定」。
+11. 建立前先檢查原討論留言與目標 workspace 是否已有同名實作 task，避免 crash retry 重複建立；需要時才使用既有 task API 在目標 workspace 建立實作 task，不得在主協作工作區建立實作 task。
+12. 建立後，在原討論留下純文字「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」，不提供 URL；再 PATCH 原討論 status=Done。
+13. 結束輸出 3 行內總結。`;
   }
   const packetByBranch = new Map(verified.map((p) => [p.branch, p]));
   const ci = RUN.members.map((m) => {
@@ -2090,7 +2110,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   let notificationResults = new Map<string, NotificationSweepResult>();
   if (role !== 'owner' && notificationGateEnabled()) {
     const results = await runNotificationSweep(
-      members,
+      notificationSweepMembers(members),
       (member) => runNotificationSweepForMember({
         member,
         request: api,

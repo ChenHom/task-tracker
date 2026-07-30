@@ -69,6 +69,9 @@ import {
   workSessionForMember,
   isQuotaExhaustion,
   notificationGatePrompt,
+  AGREE_MARKER,
+  CONCERN_MARKER,
+  notificationSweepMembers,
   processNotificationGate,
   reconcileManagedRoster,
   runNotificationSweep,
@@ -140,7 +143,8 @@ assert.ok(
   source.includes('沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言'),
   '主工作區 owner 無變化時必須保持靜默，不能重複張貼期限或 Todo 摘要',
 );
-assert.ok(source.includes('只用 curl/API 操作，不得編輯、提交或合併任何程式碼'), '主工作區 owner session 必須是 API-only');
+assert.ok(!source.includes('只用 curl/API 操作'), '主工作區 owner 不得錯誤宣稱只能使用 curl/API');
+assert.ok(source.includes('你可以連外網查資料（這個 session 有網路）'), '主工作區 owner 必須知道可做外部查證');
 assert.ok(source.includes('${canonicalWorkspaceDirectory()}'), '主工作區 prompt 必須嵌入 canonical repo/workspace 對照');
 assert.ok(source.includes('先從討論內容辨識 target repo'), '主工作區 prompt 必須先辨識目標 repo');
 assert.ok(source.includes('先檢查原討論留言與目標 workspace'), '重試 handoff 前必須先檢查既有 task 避免重複建立');
@@ -604,6 +608,8 @@ async function runNotificationGateTests(): Promise<void> {
   });
   assert.ok(prompt.includes('通知前置處理'));
   assert.ok(prompt.includes('已閱讀，目前無補充。'));
+  assert.ok(prompt.includes(AGREE_MARKER));
+  assert.ok(prompt.includes(CONCERN_MARKER));
   assert.ok(prompt.includes('不得呼叫 POST /api/notifications'));
   assert.ok(prompt.includes('不得在留言中 @ 自己'));
   assert.ok(!prompt.includes('@小美'), 'prompt 指令不得組出 actor 自己的 handle');
@@ -662,7 +668,7 @@ const members = loadMembersFromUsers(dbPath);
 assert.deepStrictEqual(
   members.map((member) => ({ email: member.email, name: member.name, user: member.user, runner: member.runner })),
   [
-    { email: 'user02@test.local', name: '小美', user: 'user02', runner: 'codex' },
+    { email: 'user02@test.local', name: '小美', user: 'user02', runner: 'claude' },
     { email: 'user03@test.local', name: '阿凱', user: 'user03', runner: 'codex' },
     { email: 'user04@test.local', name: '婷婷', user: 'user04', runner: 'codex' },
     { email: 'user05@test.local', name: '大熊', user: 'user05', runner: 'codex' },
@@ -673,8 +679,8 @@ assert.deepStrictEqual(
 assert.ok(members.every((member) => member.profile.trim().length > 0), '每個 member 都應有 profile 供認領/難度組合參考');
 assert.strictEqual(
   members.find((member) => member.email === 'user02@test.local')?.model,
-  'gpt-5.4-mini',
-  '小美必須使用可供 ChatGPT Codex 執行的 gpt-5.4-mini',
+  'claude-sonnet-5',
+  '小美的工作與表態必須使用 Claude Sonnet 5',
 );
 
 async function runRosterTests(): Promise<void> {
@@ -776,8 +782,8 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   notificationRouteForMember(user02),
-  { runner: 'codex', model: 'gpt-5.4-mini' },
-  'user02 應沿用 Codex 預設 notification route',
+  { runner: 'claude', model: 'claude-sonnet-5' },
+  'user02 表態必須由 Claude 產生',
 );
 assert.deepStrictEqual(
   workSessionForMember(user06),
@@ -786,8 +792,13 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   workSessionForMember(user02),
-  { route: { runner: 'codex', model: 'gpt-5.4-mini' }, fallback: undefined },
-  '未設 override 的 user02 必須維持既有一般工作路由',
+  { route: { runner: 'claude', model: 'claude-sonnet-5' }, fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' } },
+  'user02 一般工作必須由 Claude 產生並保留 fallback',
+);
+assert.deepStrictEqual(
+  notificationSweepMembers(['user02', 'user03', 'user04', 'user05', 'user06'].map((user) => ({ user }))).map((member) => member.user),
+  ['user02', 'user03', 'user04', 'user05'],
+  '通知巡檢必須跳過 user06',
 );
 const normalWorkSessions = source.match(
   /normal: \(\) => runSession\([\s\S]{0,160}?workSession\.route\.runner[\s\S]{0,160}?workSession\.route\.model[\s\S]{0,800}?fallback: workSession\.fallback/g,
@@ -1130,6 +1141,37 @@ releaseAfterStale();
 assert.ok(!existsSync(lockPath));
 
 async function runAsyncPolicyTests(): Promise<void> {
+  const retryMember: NotificationSweepMember = {
+    email: 'user03@test.local', name: '阿凱', user: 'user03', runner: 'codex', model: 'test-model',
+  };
+  let retryCalls = 0;
+  const retryLogs: string[] = [];
+  const retryResult = await runNotificationSweepForMember({
+    member: retryMember,
+    request: async () => ({ status: 200, body: [] }),
+    loginActor: async () => {
+      retryCalls++;
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+    },
+    runPreflight: async () => ({ errored: false, timedOut: false }),
+    log: (line) => retryLogs.push(line),
+    sleep: async () => undefined,
+  });
+  assert.strictEqual(retryCalls, 3, '連線層 login 失敗必須重試兩次');
+  assert.strictEqual(retryResult.ready, false);
+  assert.ok(retryLogs.some((line) => line.includes('ECONNREFUSED')), 'retry log 必須保留 errno');
+
+  let httpCalls = 0;
+  await runNotificationSweepForMember({
+    member: retryMember,
+    request: async () => ({ status: 200, body: [] }),
+    loginActor: async () => { httpCalls++; throw new Error('login user03@test.local 失敗: 429'); },
+    runPreflight: async () => ({ errored: false, timedOut: false }),
+    log: () => undefined,
+    sleep: async () => undefined,
+  });
+  assert.strictEqual(httpCalls, 1, 'HTTP login 失敗不得重試');
+
   await runRosterTests();
   await runNotificationGateTests();
   let calls = 0;
