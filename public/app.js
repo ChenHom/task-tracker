@@ -9,7 +9,7 @@
 import { state } from './js/state.js';
 import { api, logout } from './js/api.js';
 import { initRouter, setOnRouteCallback, navigate } from './js/router.js';
-import { shouldEscBack, isEditableTarget, OVERLAY_SELECTOR } from './js/escBack.js';
+import { escAction, isEditableTarget, OVERLAY_SELECTOR, DRAWER_SELECTOR } from './js/escBack.js';
 import { syncGlobalWorkspaces, updateSidebar } from './js/sidebar.js';
 import { updateQuotaFooter } from './js/quota.js';
 import { refreshNotificationBadge, stopNotificationPolling } from './js/views/notifications.js';
@@ -39,21 +39,38 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// 全域 #/tasks 的階層式 Escape：有 modal / drawer / menu / dropdown 就讓它自己關，
-// 都沒有、也不在編輯或 IME 組字時才退回工作區列表。
+/**
+ * Collapses the sidebar viewport on mobile resolutions.
+ * 模組層級：Escape handler 與 DOMContentLoaded 內的 toggle／backdrop／導覽連結共用同一份。
+ * @returns {void}
+ */
+function closeSidebar() {
+  const sidebarEl = document.getElementById('sidebar');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  const toggleBtn = document.getElementById('sidebar-toggle');
+  if (sidebarEl) sidebarEl.classList.remove('open');
+  if (backdrop) backdrop.classList.remove('visible');
+  if (toggleBtn) toggleBtn.textContent = '☰';
+}
+
+// 全域 #/tasks 的階層式 Escape：modal / menu / dropdown 自己會關，讓給它們；側欄抽屜沒有
+// 自己的 Escape 邏輯，由這裡關掉（只當遮罩擋住導頁會讓 Escape 變成按了沒反應的死鍵）；
+// 都沒有、也不在編輯或 IME 組字時，才退回工作區列表。
 // 用 window capture 且在模組載入時就註冊（早於 task-detail modal 的 listener），
 // 讀到的是「按鍵開始時」的介面狀態，不會被同一次事件關掉的 modal 影響。
 window.addEventListener('keydown', (e) => {
-  const decision = shouldEscBack({
+  const action = escAction({
     key: e.key,
     isComposing: e.isComposing,
     hash: location.hash,
     overlayOpen: !!document.querySelector(OVERLAY_SELECTOR),
+    drawerOpen: !!document.querySelector(DRAWER_SELECTOR),
     editable: isEditableTarget(document.activeElement)
   });
-  if (!decision) return;
+  if (action === 'none') return;
   e.preventDefault();
-  navigate('#/workspaces');
+  if (action === 'close-drawer') closeSidebar();
+  else navigate('#/workspaces');
 }, true);
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -96,16 +113,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (sidebarEl) sidebarEl.classList.add('open');
     if (backdrop) backdrop.classList.add('visible');
     if (toggleBtn) toggleBtn.textContent = '✕';
-  }
-  
-  /**
-   * Collapses the sidebar viewport on mobile resolutions.
-   * @returns {void}
-   */
-  function closeSidebar() {
-    if (sidebarEl) sidebarEl.classList.remove('open');
-    if (backdrop) backdrop.classList.remove('visible');
-    if (toggleBtn) toggleBtn.textContent = '☰';
   }
 
   if (toggleBtn) {
