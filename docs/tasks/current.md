@@ -2,7 +2,7 @@
 
 > 對應 [design.md](../../design.md)，接續 [history.md](history.md) 已完成的 Phase 0-7。
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
-> 最後巡檢：2026-07-15；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 20-21 為目前最新交付。
+> 最後巡檢：2026-07-30；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 20-21 為目前最新交付。
 
 ---
 
@@ -44,13 +44,52 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 |---|---|
 | CI 負載打爆 server | **推翻**：5 路平行 `npm test` 351 秒、1166 次取樣，連線層失敗 0，最慢 36ms |
 | server 重啟 | **推翻**：journald 顯示 07-28 全天 0 次重啟，同期 gate 仍每天失敗 48 次 |
-| keep-alive socket 在靜默後失效 | **推翻**：0/3/5/6/8/10/15/20 秒靜默各測 5 次，全通 |
+| keep-alive socket 在靜默後失效 | ~~推翻~~ → **這一列判錯了，它就是成因**，見下方 07-30 段 |
 | fd / process 上限 | 排除：`LimitNOFILE=1048576` |
 | login rate limit | 排除：回 HTTP 429，`login()` 會丟 `失敗: 429`，不是 `TypeError` |
 
 **修正與驗證**：`cd92ec7`（07-29 10:23）讓 owner 路徑改用 `:2173` 已取得的 `ownerCookie`（`() => Promise.resolve(ownerCookie)`）——**那次會失敗的 login 呼叫不存在了**，與底層成因無關。07-29 22:49 以 `SIM_NOTIFICATION_GATE=1` 實跑驗證：在 5 路平行 `npm test` 負載結束的同一秒取 cookie 成功、兩筆未讀通知都解析出 prompt、gate 放行。
 
 **仍未處理**：member 路徑（`sim/run.ts:1800`、`:2290`）與非 sweep 的完整 sim run（`:1823`、`:1853`、`:1868`、`:1882`）還是直接 `login()`，同一個坑沒補；且 gate 自 `15e2641`（07-29 00:44）起仍停用，要恢復必須在 timer wrapper 設 `SIM_NOTIFICATION_GATE=1`。診斷缺口已補：`describeError()` 會把 `error.cause` 的 errno 印出來，下次再犯就有資料。
+
+### 2026-07-30 結案：成因是閒置 keep-alive socket，07-29 的排除表判錯了一列
+
+07-30 手動跑 owner tick 收殘留看板時當場重現，連跑三次拿到完整因果鏈：
+
+| tick | 結果 |
+|---|---|
+| 1（16:43） | `[owner-巡檢-d9da9945] [notification] gate failed: TypeError: fetch failed` —— 還是那七個字 |
+| 2（16:51） | `gate failed: TypeError: fetch failed（cause: SocketError UND_ERR_SOCKET other side closed）` |
+| 3（16:53） | gate 放行，owner session 正常跑完並收掉 Review 中的 task |
+
+**為什麼 07-29 的 `describeError()` 沒生效**：`cd92ec7` 只把它套在兩個 login 失敗處（`sim/run.ts:841`、`:1094`），`processNotificationGate()` 自己的 snapshot／readback／單筆 notification 失敗，以及 notification-sweep，四處全是 `String(error)`。而 07-16 起真正在爆的就是 gate 內部的 `GET /api/notifications`，不是 login。→ `a5d6f8a` 四處補齊。
+
+**真正的成因**：sweep 先跑數十秒的 CI 預跑（`verifyBranches`），期間 server 關掉閒置的 keep-alive 連線，undici 仍從 pool 拿同一條 socket 送 gate 的第一個 GET，於是 `UND_ERR_SOCKET other side closed`。這正是 07-29 表格裡被判成「推翻」的那一列——當時的靜默實測沒重現，是因為它量的是「乾淨的靜默」，而實際情境是 CI 預跑期間 socket 被 pool 保留、server 側先關。也解釋了為什麼**只有工作區會壞、主工作區 0 失敗**：`sweepCandidateUsesRepoSlot()` 讓主工作區跳過 `verifyBranches`，它的 gate 請求緊接在 login 之後發出，socket 還沒閒置到被關。這一條在 07-29 已經寫在文件裡，只差沒把它跟 keep-alive 連起來。
+
+**修正**：`afb583f` 讓 `sim/run.ts` 的 `api()` 對這類「請求送達 server 前就斷線」的 **GET** 重試一次（重開連線）。非 GET 不重試——錯誤本身無法分辨 server 是否已套用，重送會變成兩則留言或兩次狀態轉移，那類失敗留給下個 tick 自癒。判定函式 `isStaleSocketError()` 只認 `UND_ERR_SOCKET` / `ECONNRESET`；`ECONNREFUSED`（server 沒起來）重試也沒用，測試明確擋掉這個誤判。
+
+**驗證**：`npm run typecheck` rc=0、`node --import tsx sim/run.test.ts` OK、第三次 owner tick 實跑 gate 放行。
+
+**仍未處理**（沿用上面那條，範圍不變）：member 路徑與非 sweep 完整 sim run 的直接 `login()` 沒補；timer wrapper 已有 `SIM_NOTIFICATION_GATE=1`，但 timer 目前是停的。
+
+---
+
+## 2026-07-30 殘留看板清空（Doing 4 + Review 8 → 0）
+
+清掉累積的 12 個 Doing/Review task。盤點後發現**六項安全修補裡有五項的程式碼與測試早就在 master**，只是 task 狀態卡住沒人收：`search` LIKE escape（`escapeLike` + `ESCAPE` 子句）、`attachment` symlink 硬化（`resolveInside` + `realpathSync`）、`clientIp` X-Forwarded-For（`src/clientIp.ts` + `TRUST_PROXY`）、cookie `Secure`（`COOKIE_SECURE`）、`cleanupExpiredSessions()`。真正缺的只有兩項，已補（`4664de9`）：
+
+- **`src/rateLimit.ts` 加 `maxKeys`**（預設 10000）：新 key 且已達上限時，`cleanup()` 先清過期，仍滿則淘汰 Map 最舊一筆（Map 保插入序）。對外介面與既有限流行為不變。淘汰的是最早「第一次出現」的 key、不是最久沒用的，要真 LRU 再說（已留 ponytail 註記）。
+- **全域 `#/tasks` 的階層式 Esc 返回**：新增 `public/js/escBack.js`（`shouldEscBack()` 純函式 + `OVERLAY_SELECTOR`），`app.js` 在**模組載入時**以 window capture 註冊 keydown——早於 task-detail modal 的 listener，所以讀到的是「按鍵開始時」的介面狀態，同一次事件不會關完 modal 又接續導頁。`kanban.js` 的 task-action popup 補上 Esc 關閉，讓第一次 Escape 只關最上層 menu。導向 `#/workspaces`（task 描述寫的 `#/workspace` 在本 repo 沒有對應路由）。
+
+驗證：`npm test` rc=0、`npm run lint` rc=0，加上 Playwright 桌面 Chrome 實跑六項 smoke（`#/tasks`→`#/workspaces`；modal 開啟時 Esc 只關 modal 回 `#/tasks`；menu 開啟時首按只關 menu、次按才導頁；焦點在 select／contenteditable 不導頁；`isComposing` 不導頁；`#/search` 等其他頁面行為不變）。
+
+### 其中 11 個 task 是由 workspace Owner 直接收的，不是 owner sweep 收的
+
+它們散在「真實 Sprint 2026-07-06 09:37／10:17／14:09」與「模擬場」四個 workspace，而 **owner sweep 永遠掃不到那裡**：`sweep()` 的候選名單來自掃描 `sim-logs/*/report.json` 的 `workspaceId`，外加固定補上的 main（`11a82028`）與 canonical（`d9da9945`）；那四個 workspace 沒有 report.json。手動 tick 的輸出實測只列出 `d9da9945` 與 `11a82028`，佐證這點。
+
+要讓 sweep 掃到就得補造 report.json，等於復活死掉的 AI sprint 還會觸發 member session，比直接結案糟——所以改由 workspace Owner（`user01@test.local`）逐一 PATCH `Done`，每個 task 都留了實作位置、測試位置、本次實跑證據與結案理由。canonical workspace 的那一個（`027c0052` 全域 tasks Esc）留給 owner，第三次 tick 由它自己審完收 `Done`。
+
+**這是重複交付的根源**：同一份安全修補在 09:37／10:17／14:09 三個 sprint 各開了一次 task（`rate limiter maxKeys`、`clientIp XFF`、`cookie Secure` 各兩份），做完進了 master 卻沒人收，下一個 sprint 又開一次。
 
 **下一步是量測，不是實作**：恢復 gate 後看新建 task 是否回到每天 2 個以上、commit 是否回來。不是把 production coordinator 上線 —— 後者解的是 branch 衝突，那類 escalate 在 07-17 之後就幾乎不再發生（判準見 [production-sim-coordinator plan](../superpowers/plans/2026-07-22-production-sim-coordinator.md) 任務 11 開頭）。
 

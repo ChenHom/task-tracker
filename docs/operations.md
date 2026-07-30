@@ -241,6 +241,14 @@ systemctl --user disable --now sim-sweep-owner.timer sim-sweep-team.timer
 
 Timer output is written to `sim-logs/sweep-owner-cron-*.log` and `sim-logs/sweep-team-cron-*.log`. Session prompts, review packets, command output, and sprint reports are also stored under `sim-logs/`.
 
+#### Sweep 掃得到哪些 workspace（會漏，不是 bug）
+
+候選名單由 `sweep()` 掃描 `sim-logs/*/report.json` 的 `workspaceId` 組成，外加固定補上的 main（`11a82028`）與 canonical（`d9da9945`）。**沒有 report.json 的 workspace 不會進候選**，裡面卡著再多 Doing/Review 也不會被 owner 收——2026-07-30 清看板時，四個舊 sprint workspace 共 11 個 Review task 全在名單外，手動 tick 只列出 `d9da9945` 與 `11a82028`。
+
+這類殘留只能由該 workspace 的 Owner（sim 場景一律是 `user01@test.local`）直接 PATCH 收掉。**不要為了讓 sweep 掃到而補造 report.json**：等於復活已停止的 AI sprint，還會連帶觸發 member session。
+
+另外 owner 每個 tick 只收 2 個 workspace（`sweepBudgets()`，逾時 streak 會再往下砍），workspace 一多本來就要跑好幾輪才收得完。
+
 ### Concurrency and recovery
 
 The driver holds `sim-logs/.run.lock` for the complete run. Manual runs and owner/team timers therefore cannot mutate the shared board or Git worktrees concurrently. A sweep that sees a live PID exits and lets the next timer retry; a lock whose PID no longer exists is recovered automatically. Do not delete a lock owned by a live process.
