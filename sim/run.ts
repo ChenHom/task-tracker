@@ -553,10 +553,27 @@ function activateMainSweepContext(members: Member[]): void {
 export interface ApiResult { status: number; body: any }
 export type NotificationGateRequest = (path: string, init?: RequestInit, cookie?: string) => Promise<ApiResult>;
 
+// keep-alive 連線閒置久了（例如 sweep 先跑完幾十秒的 CI 預跑）會被 server 關掉，undici 卻
+// 還從 pool 拿同一條 socket 送下一個請求，於是拿到 UND_ERR_SOCKET／ECONNRESET。這種失敗發生
+// 在請求送達 server 之前，重開一條連線再送就會過。
+export function isStaleSocketError(error: unknown): boolean {
+  const code = ((error as { cause?: { code?: string } } | null)?.cause)?.code;
+  return code === 'UND_ERR_SOCKET' || code === 'ECONNRESET';
+}
+
 async function api(path: string, init: RequestInit = {}, cookie?: string): Promise<ApiResult> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(init.headers as any) };
   if (cookie) headers['Cookie'] = cookie;
-  const res = await fetch(BASE + path, { ...init, headers });
+  // ponytail: 只重試 GET。非 GET 就算 socket 在送達前斷掉，也無法從錯誤分辨 server 是否已套用，
+  //   重送可能變成兩則留言／兩次狀態轉移；那類失敗留給下個 tick 自癒。
+  const retryable = (init.method ?? 'GET').toUpperCase() === 'GET';
+  let res: Response;
+  try {
+    res = await fetch(BASE + path, { ...init, headers });
+  } catch (error) {
+    if (!retryable || !isStaleSocketError(error)) throw error;
+    res = await fetch(BASE + path, { ...init, headers });
+  }
   const text = await res.text();
   let body: any = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }

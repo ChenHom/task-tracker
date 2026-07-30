@@ -51,6 +51,7 @@ import {
   notificationRouteForMember,
   notificationGateEnabled,
   describeError,
+  isStaleSocketError,
   ownerSweepPrompt,
   parseScenario,
   ROOT,
@@ -1317,6 +1318,20 @@ assert.ok(
   assert.ok(described.includes('fetch failed'), '原本的訊息不得被蓋掉');
   assert.strictEqual(describeError('不是 Error'), '不是 Error', '非 Error 值不得爆炸');
   assert.strictEqual(describeError(null), 'null', 'null 不得爆炸');
+}
+
+// isStaleSocketError：閒置太久的 keep-alive socket 被 server 關掉，是 api() 唯一該重試的失敗。
+{
+  const socketClosed = new TypeError('fetch failed', {
+    cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+  });
+  assert.ok(isStaleSocketError(socketClosed), 'UND_ERR_SOCKET 應判定為可重試的斷線');
+  const reset = new TypeError('fetch failed', { cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }) });
+  assert.ok(isStaleSocketError(reset), 'ECONNRESET 應判定為可重試的斷線');
+  const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+  assert.ok(!isStaleSocketError(refused), 'server 沒起來（ECONNREFUSED）重試也沒用，不得誤判');
+  assert.ok(!isStaleSocketError(new TypeError('fetch failed')), '沒有 cause 不得爆炸也不得誤判');
+  assert.ok(!isStaleSocketError(null), 'null 不得爆炸');
 }
 
 runAsyncPolicyTests()
