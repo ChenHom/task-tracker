@@ -789,7 +789,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const userId = requirePermission(req, res, workspaceId, 'Viewer');
     if (!userId) return;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(searchWorkspace(workspaceId, u.searchParams.get('q'))));
+    res.end(JSON.stringify(searchWorkspace(workspaceId, u.searchParams.get('q'), undefined, u.searchParams.get('includeArchived') === 'true')));
     return;
   }
 

@@ -116,7 +116,7 @@
 - `workspaces_read_model`: `workspace_id`, `name`, `status`, `created_at`
 - `workspace_members_read_model`: `workspace_id`, `user_id`, `role`, `joined_at`
 - `projects_read_model`: `project_id`, `workspace_id`, `name`
-- `tasks_read_model`: `task_id`, `workspace_id`, `project_id`, `title`, `description`, `status`, `priority`, `assignee_id`, `due_at`, `version`
+- `tasks_read_model`: `task_id`, `workspace_id`, `project_id`, `title`, `description`, `status`, `priority`, `assignee_id`, `due_at`, `done_at`, `version`；`done_at` 只在進入 `Done` 時設定，供七天後自動封存
 - `comments`: `comment_id`, `task_id`, `user_id`, `content`
 - `attachments`: `attachment_id`, `task_id`, `original_name`, `stored_name`, `mime_type`, `size`
 

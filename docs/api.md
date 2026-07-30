@@ -603,6 +603,8 @@ attachment 不存在回 `404`。
 
 需要該 workspace 的 `Viewer`。`workspace` 必填；`q` trim 後最多取 200 字，會搜尋 task title/description、project name、comment content。空 q 不掃表，直接回：
 
+預設不回傳 `Archived` task，也不回傳其留言命中。加入 opt-in `includeArchived=true` 可查回封存歷史；未帶此參數維持預設行為。
+
 ```json
 { "tasks": [], "projects": [], "comments": [] }
 ```

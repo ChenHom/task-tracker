@@ -38,6 +38,23 @@ systemctl --user status task-tracker.service
 
 The unit uses `Restart=always` so unexpected exits and external `SIGTERM` restarts are handled by systemd. A manual `systemctl --user stop task-tracker.service` still leaves the service stopped.
 
+## Done task archival
+
+`archive-done-tasks.timer` runs once daily and archives tasks that have remained `Done` for at least seven days. The start time is the status transition into `Done`; later title, description, comment, or other field changes do not reset it. The scan only handles tasks in active workspaces and is safe to run repeatedly.
+
+Install after a build, then enable this timer independently of the AI sweep timers:
+
+```bash
+install -D -m 644 deploy/archive-done-tasks.service /home/hom/.config/systemd/user/archive-done-tasks.service
+install -D -m 644 deploy/archive-done-tasks.timer /home/hom/.config/systemd/user/archive-done-tasks.timer
+systemctl --user daemon-reload
+systemctl --user enable --now archive-done-tasks.timer
+systemctl --user start archive-done-tasks.service
+systemctl --user status archive-done-tasks.timer archive-done-tasks.service
+```
+
+The Kanban board and search both hide archived tasks by default. Users can explicitly enable the existing board toggle or the search checkbox to retrieve archived history.
+
 ## Verify
 
 ```bash

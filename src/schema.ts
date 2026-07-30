@@ -75,6 +75,7 @@ export function runMigrations(db: DatabaseSync): void {
       priority    TEXT NOT NULL,
       assignee_id TEXT,
       due_at      TEXT,
+      done_at     TEXT,
       version     INTEGER NOT NULL,
       updated_at  TEXT
     );
@@ -134,6 +135,27 @@ export function runMigrations(db: DatabaseSync): void {
   } catch {
     // 忽略如果欄位已存在
   }
+
+  try {
+    db.prepare('ALTER TABLE tasks_read_model ADD COLUMN done_at TEXT').run();
+  } catch {
+    // 忽略如果欄位已存在
+  }
+
+  // 舊資料從 event store 回填真正進入 Done 的時間，不用 updated_at（後續欄位修改會改它）。
+  db.prepare(
+    `UPDATE tasks_read_model
+       SET done_at = (
+         SELECT occurred_at FROM event_store
+          WHERE aggregate_id = tasks_read_model.task_id
+            AND (
+              (event_type = 'task.status_changed' AND json_extract(payload_json, '$.status') = 'Done')
+              OR event_type = 'task.main_discussion_concluded'
+            )
+          ORDER BY aggregate_version DESC LIMIT 1
+       )
+     WHERE status = 'Done' AND done_at IS NULL`,
+  ).run();
 
   try {
     db.prepare("ALTER TABLE comments ADD COLUMN created_at TEXT NOT NULL DEFAULT ''").run();
