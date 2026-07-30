@@ -326,3 +326,29 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 - [x] ESCALATE 留言去重：member 與 owner sweep prompt 加「同 task 狀況未變不重複留言」規則 + 契約測試（`sim/run.ts`、`sim/run.test.ts`）
 - [x] 派工前置同步：`syncWorktreeWithMaster` 於 sweep 派工前自動 merge master（dirty 跳過、衝突 abort 並在該成員 prompt 注入 merge 指示）+ 真 git 暫存 repo 測試
 - [x] 驗收分層：member 完成定義排除 live 驗收；owner sweep 於自動部署完成（health rev 與 master 一致）後才做 live 驗收 + 契約測試
+
+## Phase 23 — 主工作區發想與四人共識（2026-07-30）
+
+> 動機：跑了三週，創意產出是 0——9 則`【OWNER想法】`全是自家看板的 UI 微整形，沒有一個概念來自 repo 以外。
+> 計畫：`docs/superpowers/plans/2026-07-30-main-workspace-ideation-consensus.md`。
+>
+> **原設計（指派成員去外部查證）已放棄**，因為三個前提實測是錯的：① `src/task.ts:178` 對主工作區每一則非規則
+> task 強制前置 `[討論]`，所以 `[發想] X` 會被存成 `[討論] [發想] X`，而 `isSweepWorkTask`（`sim/run.ts:383`）
+> 排除所有 `[討論]` 開頭 → 永遠不進成員排程；② `src/task.ts:181-183` 把主工作區 task 的 assignee 強制設為
+> null（實測 12 則主工作區 task 的 `assignee_id` 全為 null），根本不能指派；③ `sim/run.ts:2091` 的通知巡檢由
+> `SIM_NOTIFICATION_GATE` 控制，而它自 07-29 `15e2641` 起沒有設，@mention 叫不醒任何人。
+> 改由 owner 自己查證與開題，成員只負責跨模型表態。
+
+- [ ] `【同意】`／`【疑慮】` marker 常數 + `notificationGatePrompt` 主工作區規則改三選一（`sim/run.ts:1253`、`:1280`）
+- [ ] `ownerSweepPrompt` 主工作區分支：拿掉「只用 curl/API」自陳、加開題步驟、`【OWNER想法】`補來源、收尾補四人清點（`sim/run.ts:2010-2032`）
+- [ ] user02 改走 claude `claude-sonnet-5` 並補 agy fallback，讓表態階段有非 codex 票源（`sim/run.ts:172-173`）
+- [ ] 通知巡檢跳過 user06（`sim/run.ts:2092`）
+- [ ] 成員通知 login 改用 `describeError` 並對連線層失敗重試（`sim/run.ts:821-826`）——開 gate 前的前置
+- [ ] 開啟 `SIM_NOTIFICATION_GATE=1`、重啟兩個 sweep timer、數「略過一般 session」次數確認 gate 沒再吃掉 session
+- [ ] 端到端驗收：主工作區是否出現 repo 外主題、`【同意】`是否出現、是否有一則走完四人共識 → 目標工作區開 task → 原 task Done
+
+**驗收標準**：① 至少三個 repo 以外的可追溯出處；② 同意池 user01–user05 + user09 六位中有 4 位同意（owner 走
+`【結論】`即算 1 票，所以要在 user02–05 與 user09 這 5 個票源裡數到 ≥3 位）。門檻不寫進 validator，由 owner 清點
+——`176b576`（07-14）建共識守門、`75e2033`（07-23）又拆掉，同一道閘門一個月內建了又拆。
+
+**刻意延後、不是遺漏**：無腦按讚（不要求`【同意】`附理由）與來源灌水（不驗證來源品質）這一輪都不處理，先把流程建出來。後續 session 不要順手補回來。
