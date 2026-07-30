@@ -3,6 +3,8 @@
 /**
  * @fileoverview @mention 通知中心視圖，以及桌機 sidebar／手機漢堡共用的未讀 badge 邏輯。
  * 依 docs/frontend/mentions-and-notifications.md 的 API 契約實作。
+ * 通知列表走 GET /api/notifications?page=N&pageSize=15 的 opt-in 分頁回應
+ * （{ items, page, pageSize, totalCount, totalPages, unreadTotal }）。
  */
 
 import { api } from '../api.js';
@@ -17,20 +19,18 @@ const FRIENDLY_SOURCE_ERROR = {
   'task 不存在': '來源已不存在'
 };
 
-let cached = [];
+const PAGE_SIZE = 15;
+
+function emptyPage() {
+  return { items: [], page: 1, pageSize: PAGE_SIZE, totalCount: 0, totalPages: 1, unreadTotal: 0 };
+}
+
+let pageState = emptyPage();
 let pollTimer = null;
 let mounted = false;
 
-function unreadCount() {
-  return cached.filter(n => n.read_at === null).length;
-}
-
-/**
- * 更新頁面上所有 .notif-badge 節點（桌機 sidebar + 手機漢堡鈕共用同一份資料）。
- * @returns {void}
- */
 function renderBadges() {
-  const count = unreadCount();
+  const count = pageState.unreadTotal;
   document.querySelectorAll('.notif-badge').forEach(badgeEl => {
     if (count > 0) {
       badgeEl.textContent = count > 99 ? '99+' : String(count);
@@ -42,18 +42,18 @@ function renderBadges() {
 }
 
 /**
- * 重抓通知清單並同步 badge／（若通知頁在前景）清單畫面。
+ * 重抓通知（目前頁，未掛載時固定第 1 頁）並同步 badge／（若通知頁在前景）清單畫面。
  * 供登入、頁籤切回前景、標記已讀後、以及通知頁輪詢共用呼叫。
  * @returns {Promise<void>}
  */
 export async function refreshNotificationBadge() {
   if (!state.userEmail) {
-    cached = [];
+    pageState = emptyPage();
     renderBadges();
     return;
   }
   try {
-    cached = await api('/api/notifications');
+    pageState = await api(`/api/notifications?page=${mounted ? pageState.page : 1}&pageSize=${PAGE_SIZE}`);
   } catch {
     // 拉取失敗不影響其他頁面，維持既有快取數字
   }
@@ -73,11 +73,33 @@ export function stopNotificationPolling() {
   mounted = false;
 }
 
+async function loadPage(page) {
+  try {
+    pageState = await api(`/api/notifications?page=${page}&pageSize=${PAGE_SIZE}`);
+  } catch {
+    // 頁碼可能因資料變動而越界；退回第 1 頁重試一次
+    if (page !== 1) {
+      try {
+        pageState = await api(`/api/notifications?page=1&pageSize=${PAGE_SIZE}`);
+      } catch {
+        // 忽略，維持既有畫面
+      }
+    }
+  }
+  renderBadges();
+  renderList();
+}
+
 async function markRead(notificationId) {
   // 先做本地樂觀更新，讓 badge／清單立即反應
-  cached = cached.map(n => (n.notification_id === notificationId && n.read_at === null)
-    ? { ...n, read_at: new Date().toISOString() }
-    : n);
+  const wasUnread = pageState.items.some(n => n.notification_id === notificationId && n.read_at === null);
+  pageState = {
+    ...pageState,
+    items: pageState.items.map(n => (n.notification_id === notificationId && n.read_at === null)
+      ? { ...n, read_at: new Date().toISOString() }
+      : n),
+    unreadTotal: wasUnread ? Math.max(0, pageState.unreadTotal - 1) : pageState.unreadTotal
+  };
   renderBadges();
   if (mounted) renderList();
   try {
@@ -124,17 +146,50 @@ async function openNotification(n) {
   navigate(`#/task/${n.source_task_id}${commentPart}`);
 }
 
+function renderPaginationNav() {
+  const navEl = document.getElementById('notif-pagination');
+  if (!navEl) return;
+  navEl.textContent = '';
+  if (pageState.totalPages <= 1) return;
+
+  const prevBtn = el('button', {
+    class: 'pagination-btn',
+    type: 'button',
+    onclick: () => loadPage(pageState.page - 1)
+  }, '上一頁');
+  if (pageState.page <= 1) prevBtn.disabled = true;
+  navEl.appendChild(prevBtn);
+
+  for (let p = 1; p <= pageState.totalPages; p++) {
+    const isCurrent = p === pageState.page;
+    const attrs = { class: `pagination-btn${isCurrent ? ' active' : ''}`, type: 'button', onclick: () => loadPage(p) };
+    if (isCurrent) attrs['aria-current'] = 'page';
+    const pageBtn = el('button', attrs, String(p));
+    if (isCurrent) pageBtn.disabled = true;
+    navEl.appendChild(pageBtn);
+  }
+
+  const nextBtn = el('button', {
+    class: 'pagination-btn',
+    type: 'button',
+    onclick: () => loadPage(pageState.page + 1)
+  }, '下一頁');
+  if (pageState.page >= pageState.totalPages) nextBtn.disabled = true;
+  navEl.appendChild(nextBtn);
+}
+
 function renderList() {
   const listEl = document.getElementById('notif-list');
   if (!listEl) return;
   listEl.textContent = '';
 
-  if (cached.length === 0) {
+  if (pageState.items.length === 0) {
     listEl.appendChild(el('li', { class: 'muted' }, '目前沒有通知'));
+    renderPaginationNav();
     return;
   }
 
-  for (const n of cached) {
+  for (const n of pageState.items) {
     const isUnread = n.read_at === null;
     const li = el('li', {
       id: `notif-card-${n.notification_id}`,
@@ -160,6 +215,8 @@ function renderList() {
 
     listEl.appendChild(li);
   }
+
+  renderPaginationNav();
 }
 
 /**
@@ -173,10 +230,11 @@ export const NotificationsView = {
         <h2 class="red-pen-underline" style="margin-top:0; margin-bottom:0;">通知</h2>
       </div>
       <ul id="notif-list" class="notif-list"><li class="muted">載入中...</li></ul>
+      <nav id="notif-pagination" class="pagination-container" aria-label="通知列表分頁"></nav>
     `;
 
     mounted = true;
-    await refreshNotificationBadge();
+    await loadPage(1);
 
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(refreshNotificationBadge, 60000);
