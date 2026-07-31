@@ -448,6 +448,10 @@
   }
 }
 
+.kanban-title-wrapper {
+  min-width: 0;
+}
+
 .kanban-workspace-name {
   display: none;
   white-space: nowrap;
@@ -457,6 +461,10 @@
 }
 
 @media (max-width: 768px) {
+  .kanban-title-wrapper {
+    width: 100%;
+    overflow: hidden;
+  }
   .kanban-workspace-name {
     display: block;
   }

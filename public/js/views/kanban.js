@@ -91,7 +91,7 @@ export const KanbanView = {
     container.innerHTML = `
       <!-- Kanban Top Header -->
       <div class="kanban-header-bar">
-        <div>
+        <div class="kanban-title-wrapper">
           <h2 class="red-pen-underline" style="margin-bottom: 0.8rem;">
             <span class="desktop-text">Kanban Board</span>
             <span class="mobile-text">Kanban</span>
