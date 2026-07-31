@@ -343,6 +343,31 @@
   margin-bottom: 1rem;
 }
 
+/* Horizontal attribute row styling */
+.attribute-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.attribute-row label.attr-label {
+  width: 100px;
+  flex-shrink: 0;
+  margin: 0 !important;
+  font-size: 1.15rem;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.attribute-row select,
+.attribute-row input[type="date"],
+.attribute-row .task-readonly-attribute {
+  flex-grow: 1;
+  width: auto;
+  margin-bottom: 0 !important;
+}
+
 .detail-save-btn-group {
   display: flex;
   justify-content: flex-end;

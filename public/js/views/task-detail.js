@@ -766,12 +766,11 @@ export async function openTaskDetailModal(taskId, {
   statusLine.appendChild(badgeSlot);
   statusLine.appendChild(rightSlot);
   attrSec.appendChild(statusLine);
-  if (!canManageTask && isMainWorkspace && state.userEmail !== MAIN_OWNER_EMAIL) {
-    attrSec.appendChild(el('p', { class: 'muted main-task-status-note' }, '狀態由 user01 協調'));
-  }
+
 
   // Priority
-  attrSec.appendChild(el('label', { class: 'attr-label' }, '優先度'));
+  const priorityLabel = el('label', { class: 'attr-label' }, '優先度');
+  let priorityValEl;
   if (canManageTask) {
     const prioritySelect = el('select');
     ['Low', 'Medium', 'High'].forEach(p => {
@@ -787,13 +786,18 @@ export async function openTaskDetailModal(taskId, {
         alert(err.message);
       }
     };
-    attrSec.appendChild(prioritySelect);
+    priorityValEl = prioritySelect;
   } else {
-    attrSec.appendChild(el('div', { class: 'task-readonly-attribute' }, currentTask.priority || 'Medium'));
+    priorityValEl = el('div', { class: 'task-readonly-attribute' }, currentTask.priority || 'Medium');
   }
+  const priorityRow = el('div', { class: 'attribute-row' });
+  priorityRow.appendChild(priorityLabel);
+  priorityRow.appendChild(priorityValEl);
+  attrSec.appendChild(priorityRow);
 
   // Assignee
-  attrSec.appendChild(el('label', { class: 'attr-label' }, '指派'));
+  const assigneeLabel = el('label', { class: 'attr-label' }, '指派');
+  let assigneeValEl;
   if (canManageTask) {
     const assigneeSelect = el('select');
     assigneeSelect.appendChild(el('option', { value: '' }, '-- 無負責人 --'));
@@ -811,14 +815,19 @@ export async function openTaskDetailModal(taskId, {
         alert(err.message);
       }
     };
-    attrSec.appendChild(assigneeSelect);
+    assigneeValEl = assigneeSelect;
   } else {
     const assignee = currentTask.assignee_id ? memberMap.get(currentTask.assignee_id) : null;
-    attrSec.appendChild(el('div', { class: 'task-readonly-attribute' }, assignee || '-- 無負責人 --'));
+    assigneeValEl = el('div', { class: 'task-readonly-attribute' }, assignee || '-- 無負責人 --');
   }
+  const assigneeRow = el('div', { class: 'attribute-row' });
+  assigneeRow.appendChild(assigneeLabel);
+  assigneeRow.appendChild(assigneeValEl);
+  attrSec.appendChild(assigneeRow);
 
   // Due date
-  attrSec.appendChild(el('label', { class: 'attr-label' }, '截止日期'));
+  const dueDateLabel = el('label', { class: 'attr-label' }, '截止日期');
+  let dueDateValEl;
   if (canManageTask) {
     const dueDateInput = el('input', { type: 'date' });
     if (currentTask.due_at) {
@@ -833,11 +842,15 @@ export async function openTaskDetailModal(taskId, {
         alert(err.message);
       }
     };
-    attrSec.appendChild(dueDateInput);
+    dueDateValEl = dueDateInput;
   } else {
     const dueDate = currentTask.due_at ? new Date(currentTask.due_at).toISOString().split('T')[0] : '-- 無截止日期 --';
-    attrSec.appendChild(el('div', { class: 'task-readonly-attribute' }, dueDate));
+    dueDateValEl = el('div', { class: 'task-readonly-attribute' }, dueDate);
   }
+  const dueDateRow = el('div', { class: 'attribute-row' });
+  dueDateRow.appendChild(dueDateLabel);
+  dueDateRow.appendChild(dueDateValEl);
+  attrSec.appendChild(dueDateRow);
   rightEl.appendChild(attrSec);
 
   // Attachments
