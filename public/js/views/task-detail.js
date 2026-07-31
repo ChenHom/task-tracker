@@ -825,6 +825,15 @@ export async function openTaskDetailModal(taskId, {
   assigneeRow.appendChild(assigneeValEl);
   attrSec.appendChild(assigneeRow);
 
+  // Creator
+  const creatorLabel = el('label', { class: 'attr-label' }, '建立者');
+  const creatorName = currentTask.creator_id ? (memberMap.get(currentTask.creator_id) || `成員 (${currentTask.creator_id.slice(0, 8)})`) : '-- 無建立者 --';
+  const creatorValEl = el('div', { class: 'task-readonly-attribute' }, creatorName);
+  const creatorRow = el('div', { class: 'attribute-row' });
+  creatorRow.appendChild(creatorLabel);
+  creatorRow.appendChild(creatorValEl);
+  attrSec.appendChild(creatorRow);
+
   // Due date
   const dueDateLabel = el('label', { class: 'attr-label' }, '截止日期');
   let dueDateValEl;
