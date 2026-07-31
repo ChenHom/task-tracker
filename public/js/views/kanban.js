@@ -97,7 +97,7 @@ export const KanbanView = {
             <span class="mobile-text">Kanban</span>
           </h2>
           <div class="kanban-workspace-name" id="kanban-workspace-name-el" style="font-size: 1.1rem; font-weight: bold; margin-top: 0.4rem; color: var(--pencil-color);">
-            目前看板：${state.workspaceName || ''}
+            看板：${state.workspaceName || ''}
           </div>
         </div>
         
