@@ -96,8 +96,8 @@ export const KanbanView = {
             <span class="desktop-text">Kanban Board</span>
             <span class="mobile-text">Kanban</span>
           </h2>
-          <div class="kanban-columns-display" id="kanban-columns-display-el" style="font-size: 0.95rem; font-weight: bold; margin-top: 0.6rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;">
-            <span>目前欄位:</span>
+          <div class="kanban-workspace-name" id="kanban-workspace-name-el" style="font-size: 1.1rem; font-weight: bold; margin-top: 0.4rem; color: var(--pencil-color);">
+            目前看板：${state.workspaceName || ''}
           </div>
         </div>
         
@@ -386,26 +386,6 @@ export const KanbanView = {
         }
       }
 
-      // 更新目前顯示看板欄位
-      const columnsDisplayEl = document.getElementById('kanban-columns-display-el');
-      if (columnsDisplayEl) {
-        columnsDisplayEl.textContent = '';
-        const labelSpan = el('span', {}, '目前欄位:');
-        columnsDisplayEl.appendChild(labelSpan);
-        const activeColumns = ['Todo', 'Doing', 'Review', 'Done'];
-        if (showArchived) {
-          activeColumns.push('Archived');
-        }
-        activeColumns.forEach(col => {
-          const badge = el('span', { class: 'badge' }, col);
-          if (col === 'Todo') badge.style.backgroundColor = 'var(--highlight-todo)';
-          else if (col === 'Doing') badge.style.backgroundColor = 'var(--highlight-doing)';
-          else if (col === 'Review') badge.style.backgroundColor = 'var(--highlight-review)';
-          else if (col === 'Done') badge.style.backgroundColor = 'var(--highlight-done)';
-          else if (col === 'Archived') badge.style.backgroundColor = 'var(--highlight-archived)';
-          columnsDisplayEl.appendChild(badge);
-        });
-      }
 
       // 過濾任務
       const filtered = tasks.filter(t => {
