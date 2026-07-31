@@ -448,7 +448,14 @@
   }
 }
 
+.kanban-workspace-name {
+  display: none;
+}
+
 @media (max-width: 768px) {
+  .kanban-workspace-name {
+    display: block;
+  }
   .kanban-header-bar {
     flex-direction: column;
     align-items: flex-start;
