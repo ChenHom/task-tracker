@@ -109,7 +109,7 @@
 
 - `items` 排序固定為 `created_at DESC`、`notification_id DESC` 作穩定次排序（分頁情境下不採 2.1 的「未讀優先」排序，避免標記已讀把項目移到清單後段、造成分頁跳動）。
 - `unreadTotal` 是這個使用者「全體」未讀數（不受目前頁面限制），前端 badge 應以此欄位為準，不要用 `items` 內未讀筆數估算。
-- 目前的通知頁（`public/js/views/notifications.js`）固定用 `pageSize=15`。
+- 目前的通知頁（`public/js/views/notifications.js`）提供 10／15 筆原生選單切換：無已保存偏好時手機預設 10、桌面預設 15，切換後存入 `localStorage`（key `notif-page-size`）並優先套用。
 
 ### 2.2 POST `/api/notifications/:id/read`
 
