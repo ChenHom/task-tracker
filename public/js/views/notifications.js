@@ -3,8 +3,9 @@
 /**
  * @fileoverview @mention 通知中心視圖，以及桌機 sidebar／手機漢堡共用的未讀 badge 邏輯。
  * 依 docs/frontend/mentions-and-notifications.md 的 API 契約實作。
- * 通知列表走 GET /api/notifications?page=N&pageSize=15 的 opt-in 分頁回應
+ * 通知列表走 GET /api/notifications?page=N&pageSize=10|15 的 opt-in 分頁回應
  * （{ items, page, pageSize, totalCount, totalPages, unreadTotal }）。
+ * 每頁筆數 10／15 可由使用者切換並存入 localStorage；無偏好時手機預設 10、桌面預設 15。
  */
 
 import { api } from '../api.js';
@@ -19,15 +20,47 @@ const FRIENDLY_SOURCE_ERROR = {
   'task 不存在': '來源已不存在'
 };
 
-const PAGE_SIZE = 15;
+const PAGE_SIZE_OPTIONS = [10, 15];
+const PAGE_SIZE_STORAGE_KEY = 'notif-page-size';
+const MOBILE_BREAKPOINT = 768;
+
+// 首次載入且無已保存偏好時，依目前螢幕寬度決定預設每頁筆數（手機 10／桌面 15）。
+function loadPageSize() {
+  try {
+    const saved = Number(localStorage.getItem(PAGE_SIZE_STORAGE_KEY));
+    if (PAGE_SIZE_OPTIONS.includes(saved)) return saved;
+  } catch {
+    // 私密瀏覽等 localStorage 不可用時，退回依螢幕寬度的預設值
+  }
+  return window.innerWidth <= MOBILE_BREAKPOINT ? 10 : 15;
+}
+
+let pageSize = loadPageSize();
 
 function emptyPage() {
-  return { items: [], page: 1, pageSize: PAGE_SIZE, totalCount: 0, totalPages: 1, unreadTotal: 0 };
+  return { items: [], page: 1, pageSize, totalCount: 0, totalPages: 1, unreadTotal: 0 };
 }
 
 let pageState = emptyPage();
 let pollTimer = null;
 let mounted = false;
+
+/**
+ * 切換每頁筆數：保存使用者偏好，並以目前頁碼重新查詢（若頁碼因筆數改變而越界，
+ * 沿用 loadPage() 既有的「退回第 1 頁重試」邏輯校正，不需另外處理）。
+ * @param {number} newSize
+ * @returns {void}
+ */
+function changePageSize(newSize) {
+  if (!PAGE_SIZE_OPTIONS.includes(newSize) || newSize === pageSize) return;
+  pageSize = newSize;
+  try {
+    localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(newSize));
+  } catch {
+    // 忽略：無法持久化偏好時，本次 session 仍套用新筆數
+  }
+  loadPage(pageState.page);
+}
 
 function renderBadges() {
   const count = pageState.unreadTotal;
@@ -53,7 +86,7 @@ export async function refreshNotificationBadge() {
     return;
   }
   try {
-    pageState = await api(`/api/notifications?page=${mounted ? pageState.page : 1}&pageSize=${PAGE_SIZE}`);
+    pageState = await api(`/api/notifications?page=${mounted ? pageState.page : 1}&pageSize=${pageSize}`);
   } catch {
     // 拉取失敗不影響其他頁面，維持既有快取數字
   }
@@ -75,12 +108,12 @@ export function stopNotificationPolling() {
 
 async function loadPage(page) {
   try {
-    pageState = await api(`/api/notifications?page=${page}&pageSize=${PAGE_SIZE}`);
+    pageState = await api(`/api/notifications?page=${page}&pageSize=${pageSize}`);
   } catch {
-    // 頁碼可能因資料變動而越界；退回第 1 頁重試一次
+    // 頁碼可能因資料變動或切換每頁筆數而越界；退回第 1 頁重試一次
     if (page !== 1) {
       try {
-        pageState = await api(`/api/notifications?page=1&pageSize=${PAGE_SIZE}`);
+        pageState = await api(`/api/notifications?page=1&pageSize=${pageSize}`);
       } catch {
         // 忽略，維持既有畫面
       }
@@ -238,9 +271,22 @@ export const NotificationsView = {
       <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 1rem;">
         <h2 class="red-pen-underline" style="margin-top:0; margin-bottom:0;">通知</h2>
       </div>
+      <div class="notif-controls">
+        <label class="notif-page-size-label" for="notif-page-size">
+          每頁筆數
+          <select id="notif-page-size">
+            <option value="10">10</option>
+            <option value="15">15</option>
+          </select>
+        </label>
+      </div>
       <ul id="notif-list" class="notif-list"><li class="muted">載入中...</li></ul>
       <nav id="notif-pagination" class="pagination-container" aria-label="通知列表分頁"></nav>
     `;
+
+    const sizeSelect = document.getElementById('notif-page-size');
+    sizeSelect.value = String(pageSize);
+    sizeSelect.onchange = () => changePageSize(Number(sizeSelect.value));
 
     mounted = true;
     await loadPage(1);

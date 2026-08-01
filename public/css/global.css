@@ -189,6 +189,23 @@ body {
   box-sizing: border-box;
 }
 
+.notif-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.6rem;
+}
+.notif-page-size-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: bold;
+  font-size: 0.9rem;
+}
+.notif-page-size-label select {
+  font-size: 0.9rem;
+  padding: 0.2rem 0.4rem;
+  font-family: inherit;
+}
 .notif-list {
   list-style: none;
   padding: 0;

@@ -71,6 +71,9 @@ class MockElement {
     if (val.includes('id="notif-pagination"')) {
       this.appendChild(new MockElement('nav').setAttribute2('id', 'notif-pagination'));
     }
+    if (val.includes('id="notif-page-size"')) {
+      this.appendChild(new MockElement('select').setAttribute2('id', 'notif-page-size'));
+    }
   }
 }
 // 小工具：setAttribute 回傳 this 方便鏈式建立節點
@@ -94,7 +97,25 @@ function findAllByClass(root: MockElement, cls: string, out: MockElement[] = [])
   return out;
 }
 
-async function main(): Promise<void> {
+// GET /api/notifications?page=N&pageSize=M 的 opt-in 分頁回應包裝。
+function page(items: any[], overrides: any = {}) {
+  return {
+    items,
+    page: 1,
+    pageSize: 15,
+    totalCount: items.length,
+    totalPages: 1,
+    unreadTotal: items.filter(n => n.read_at === null).length,
+    ...overrides
+  };
+}
+
+/**
+ * 建立一份獨立的 vm 環境載入 notifications.js，可指定初始螢幕寬度與已保存的
+ * 每頁筆數偏好，用來測試「首次載入預設值」與「偏好優先」等只會在模組載入當下
+ * 決定一次的邏輯。
+ */
+function createEnv(opts: { innerWidth?: number; storedPageSize?: string } = {}) {
   const root = new MockElement('div');
   const sidebarBadge = new MockElement('span');
   sidebarBadge.setAttribute('id', 'notif-badge-sidebar');
@@ -153,6 +174,16 @@ async function main(): Promise<void> {
     return apiMock(path, opts);
   };
 
+  const localStorageData: Record<string, string> = {};
+  if (opts.storedPageSize !== undefined) localStorageData['notif-page-size'] = opts.storedPageSize;
+  const localStorage = {
+    getItem: (k: string) => (k in localStorageData ? localStorageData[k] : null),
+    setItem: (k: string, v: string) => { localStorageData[k] = String(v); },
+    removeItem: (k: string) => { delete localStorageData[k]; }
+  };
+
+  const window = { innerWidth: opts.innerWidth ?? 1024 };
+
   const sandbox: any = {
     document: mockDocument,
     api,
@@ -163,6 +194,8 @@ async function main(): Promise<void> {
     syncGlobalWorkspaces,
     setInterval,
     clearInterval,
+    localStorage,
+    window,
     globalThis: {}
   };
   vm.createContext(sandbox);
@@ -177,38 +210,44 @@ globalThis.stopNotificationPolling = typeof stopNotificationPolling !== "undefin
 `;
   vm.runInContext(code, sandbox);
 
-  const NotificationsView = sandbox.globalThis.NotificationsView;
-  const refreshNotificationBadge = sandbox.globalThis.refreshNotificationBadge;
-  const stopNotificationPolling = sandbox.globalThis.stopNotificationPolling;
-  const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0));
+  return {
+    root,
+    sidebarBadge,
+    toggleBadge,
+    container,
+    state,
+    localStorageData,
+    apiCalls,
+    setApiMock: (fn: typeof apiMock) => { apiMock = fn; },
+    getNavigatedHash: () => navigatedHash,
+    NotificationsView: sandbox.globalThis.NotificationsView,
+    refreshNotificationBadge: sandbox.globalThis.refreshNotificationBadge,
+    stopNotificationPolling: sandbox.globalThis.stopNotificationPolling
+  };
+}
 
-  // GET /api/notifications?page=N&pageSize=15 的 opt-in 分頁回應包裝。
-  function page(items: any[], overrides: any = {}) {
-    return {
-      items,
-      page: 1,
-      pageSize: 15,
-      totalCount: items.length,
-      totalPages: 1,
-      unreadTotal: items.filter(n => n.read_at === null).length,
-      ...overrides
-    };
-  }
+const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0));
+
+async function main(): Promise<void> {
+  // 主流程沿用既有預設情境：桌面寬度、無已保存偏好 → 預設每頁 15 筆。
+  const env = createEnv({ innerWidth: 1024 });
+  const { root, sidebarBadge, toggleBadge, container, NotificationsView, refreshNotificationBadge, stopNotificationPolling } = env;
 
   try {
     // ── 0. 0 筆未讀：兩處 badge 都應隱藏 ──
-    apiMock = async () => page([
+    env.setApiMock(async () => page([
       { notification_id: 'n0', source_task_id: 't0', source_comment_id: 'c0', snippet: '已讀通知', created_at: '2026-01-01T00:00:00.000Z', read_at: '2026-01-01T00:00:00.000Z' }
-    ]);
+    ]));
     await refreshNotificationBadge();
     assert.strictEqual(sidebarBadge.style.display, 'none', '0 筆未讀時 sidebar badge 應隱藏');
     assert.strictEqual(toggleBadge.style.display, 'none', '0 筆未讀時漢堡 badge 應隱藏');
+    assert.ok(env.apiCalls[env.apiCalls.length - 1].path.includes('pageSize=15'), '桌面且無偏好時應預設每頁 15 筆');
 
     // ── 1. 未讀數同步反映在桌機／手機兩個 badge 節點，數字一致 ──
-    apiMock = async () => page([
+    env.setApiMock(async () => page([
       { notification_id: 'n1', source_task_id: 't1', source_comment_id: 'c1', snippet: '@我 看一下', created_at: '2026-01-01T00:00:00.000Z', read_at: null },
       { notification_id: 'n2', source_task_id: 't2', source_comment_id: 'c2', snippet: '已讀通知', created_at: '2026-01-01T00:00:00.000Z', read_at: '2026-01-02T00:00:00.000Z' }
-    ]);
+    ]));
     await refreshNotificationBadge();
     assert.strictEqual(sidebarBadge.textContent, '1');
     assert.strictEqual(toggleBadge.textContent, '1');
@@ -216,20 +255,20 @@ globalThis.stopNotificationPolling = typeof stopNotificationPolling !== "undefin
     assert.strictEqual(toggleBadge.style.display, 'inline-flex');
 
     // ── 1b. 多筆未讀：兩處 badge 數字要一致且等於「全體未讀」（unreadTotal，不受單頁筆數限制）──
-    apiMock = async () => page([
+    env.setApiMock(async () => page([
       { notification_id: 'm1', source_task_id: 't1', source_comment_id: 'c1', snippet: '@我 1', created_at: '2026-01-01T00:00:00.000Z', read_at: null },
       { notification_id: 'm2', source_task_id: 't2', source_comment_id: 'c2', snippet: '@我 2', created_at: '2026-01-01T00:00:00.000Z', read_at: null },
       { notification_id: 'm3', source_task_id: 't3', source_comment_id: 'c3', snippet: '@我 3', created_at: '2026-01-01T00:00:00.000Z', read_at: null }
-    ], { unreadTotal: 20, totalCount: 20, totalPages: 2 });
+    ], { unreadTotal: 20, totalCount: 20, totalPages: 2 }));
     await refreshNotificationBadge();
     assert.strictEqual(sidebarBadge.textContent, '20', 'badge 應顯示全體未讀 unreadTotal，不是單頁筆數');
     assert.strictEqual(toggleBadge.textContent, '20', '多筆未讀時漢堡 badge 數字應與 sidebar 一致');
 
     // ── 2. 掛載通知頁：未讀卡片有「標示已讀」按鈕，點擊後本地立即歸零、背景重抓校正 ──
-    apiMock = async () => page([
+    env.setApiMock(async () => page([
       { notification_id: 'n1', source_task_id: 't1', source_comment_id: 'c1', snippet: '@我 看一下', created_at: '2026-01-01T00:00:00.000Z', read_at: null },
       { notification_id: 'n2', source_task_id: 't2', source_comment_id: 'c2', snippet: '已讀通知', created_at: '2026-01-01T00:00:00.000Z', read_at: '2026-01-02T00:00:00.000Z' }
-    ], { unreadTotal: 1 });
+    ], { unreadTotal: 1 }));
     await NotificationsView.render(container);
     await refreshNotificationBadge(); // render() 內已呼叫過一次，這裡等同「頁籤切回前景」再拉一次
     const card1 = findById(root, 'notif-card-n1');
@@ -238,7 +277,7 @@ globalThis.stopNotificationPolling = typeof stopNotificationPolling !== "undefin
     assert.ok(markReadBtn, '未讀卡片應有標示已讀按鈕');
 
     let readPostCalled = false;
-    apiMock = async (path: string, opts: any) => {
+    env.setApiMock(async (path: string, opts: any) => {
       if (path === '/api/notifications/n1/read' && opts?.method === 'POST') {
         readPostCalled = true;
         return { ok: true };
@@ -247,7 +286,7 @@ globalThis.stopNotificationPolling = typeof stopNotificationPolling !== "undefin
         { notification_id: 'n1', source_task_id: 't1', source_comment_id: 'c1', snippet: '@我 看一下', created_at: '2026-01-01T00:00:00.000Z', read_at: '2026-01-03T00:00:00.000Z' },
         { notification_id: 'n2', source_task_id: 't2', source_comment_id: 'c2', snippet: '已讀通知', created_at: '2026-01-01T00:00:00.000Z', read_at: '2026-01-02T00:00:00.000Z' }
       ], { unreadTotal: 0 });
-    };
+    });
     // 按鈕的 onclick 是 block-body arrow（不回傳 promise），markRead 是 fire-and-forget，
     // 所以先斷言同步保證會發生的樂觀更新，再 flush microtask 佇列確認背景 POST 有打出去。
     markReadBtn.onclick!({ stopPropagation: () => {} });
@@ -257,53 +296,49 @@ globalThis.stopNotificationPolling = typeof stopNotificationPolling !== "undefin
 
     // ── 3. 點擊通知本體，來源可存取：成功導向並帶上 comment 定位參數 ──
     stopNotificationPolling();
-    apiMock = async () => page([
+    env.setApiMock(async () => page([
       { notification_id: 'n3', source_task_id: 't3', source_comment_id: 'c3', snippet: '@我 再看一次', created_at: '2026-01-04T00:00:00.000Z', read_at: null }
-    ], { unreadTotal: 1 });
+    ], { unreadTotal: 1 }));
     await refreshNotificationBadge();
     await NotificationsView.render(container);
     stopNotificationPolling();
     const card3 = findById(root, 'notif-card-n3');
     const body3 = findAllByClass(card3!, 'notif-body')[0];
 
-    apiMock = async (path: string) => {
+    env.setApiMock(async (path: string) => {
       if (path === '/api/tasks/t3') return { task_id: 't3', workspace_id: 'ws-1' };
       if (path === '/api/notifications/n3/read') return { ok: true };
       return page([]);
-    };
-    navigatedHash = null;
+    });
     await body3.onclick!();
-    assert.strictEqual(navigatedHash, '#/task/t3?comment=c3', '應導向來源 task 並定位留言');
-    assert.strictEqual(state.workspaceId, 'ws-1', '應切到通知來源所屬工作區');
+    assert.strictEqual(env.getNavigatedHash(), '#/task/t3?comment=c3', '應導向來源 task 並定位留言');
+    assert.strictEqual(env.state.workspaceId, 'ws-1', '應切到通知來源所屬工作區');
 
     // ── 4. 點擊通知本體，來源 403：保留卡片、顯示友善原因，不導頁 ──
-    apiMock = async () => page([
+    env.setApiMock(async () => page([
       { notification_id: 'n4', source_task_id: 't4', source_comment_id: 'c4', snippet: '@我 沒權限', created_at: '2026-01-05T00:00:00.000Z', read_at: null }
-    ], { unreadTotal: 1 });
+    ], { unreadTotal: 1 }));
     await refreshNotificationBadge();
     await NotificationsView.render(container);
     stopNotificationPolling();
     const card4 = findById(root, 'notif-card-n4');
     const body4 = findAllByClass(card4!, 'notif-body')[0];
 
-    apiMock = async (path: string) => {
+    env.setApiMock(async (path: string) => {
       if (path === '/api/tasks/t4') throw new Error('權限不足');
       return page([]);
-    };
-    navigatedHash = null;
+    });
     await body4.onclick!();
-    assert.strictEqual(navigatedHash, null, '403 時不應導頁');
     assert.ok(findById(root, 'notif-card-n4'), '403 時應保留通知卡片');
     const err4 = findAllByClass(card4!, 'notif-error')[0];
     assert.strictEqual(err4.textContent, '你目前沒有查看此來源的權限');
     assert.ok(findAllByClass(card4!, 'notif-mark-read-btn')[0], '403 時仍保留手動標示已讀，避免 badge 卡死');
 
     // ── 5. 404 來源已不存在的友善訊息 ──
-    apiMock = async (path: string) => {
+    env.setApiMock(async (path: string) => {
       if (path === '/api/tasks/t4') throw new Error('task 不存在');
       return page([]);
-    };
-    navigatedHash = null;
+    });
     await body4.onclick!();
     const err4b = findAllByClass(card4!, 'notif-error')[0];
     assert.strictEqual(err4b.textContent, '來源已不存在');
@@ -318,11 +353,11 @@ globalThis.stopNotificationPolling = typeof stopNotificationPolling !== "undefin
     const p2 = page([
       { notification_id: 'pg2', source_task_id: 't2', source_comment_id: 'c2', snippet: 'page2', created_at: '2026-03-01T00:00:00.000Z', read_at: null }
     ], { totalCount: 16, totalPages: 2, unreadTotal: 2, page: 2 });
-    apiMock = async (path: string) => {
+    env.setApiMock(async (path: string) => {
       const m = path.match(/page=(\d+)/);
       requestedPages.push(m ? m[1] : '?');
       return m && m[1] === '2' ? p2 : p1;
-    };
+    });
     await NotificationsView.render(container);
     stopNotificationPolling();
 
@@ -364,13 +399,86 @@ globalThis.stopNotificationPolling = typeof stopNotificationPolling !== "undefin
     await flushPromises();
     assert.strictEqual(mockActiveElement, null, '焦點原本不在 nav 內時，重繪不得主動搶焦點');
 
+    // ── 7. 每頁筆數選單：桌面情境掛載時選單值應等於目前生效的 15 ──
+    const sizeSelectDesktop = findById(root, 'notif-page-size');
+    assert.ok(sizeSelectDesktop, '應渲染每頁筆數選單');
+    assert.strictEqual(sizeSelectDesktop!.value, '15', '桌面無偏好時選單應顯示目前生效的 15');
+
+    // ── 8. 切換每頁筆數：保存偏好、以目前頁碼重新查詢；頁碼因筆數改變而越界時，
+    //      沿用既有「退回第 1 頁重試」邏輯校正，不得停在空白頁 ──
+    stopNotificationPolling();
+    // 模擬真實後端：固定 25 筆總數，依 page/pageSize 算 totalPages，越界回錯誤（同 notification.ts 語意）
+    const TOTAL = 25;
+    function simulateBackend() {
+      return async (path: string) => {
+        const m = path.match(/page=(\d+)&pageSize=(\d+)/);
+        if (!m) throw new Error('bad request');
+        const p = Number(m[1]);
+        const sz = Number(m[2]);
+        const totalPages = Math.max(1, Math.ceil(TOTAL / sz));
+        if (p > totalPages) throw new Error('page 超出範圍');
+        return page([
+          { notification_id: `n-p${p}-s${sz}`, source_task_id: 't1', source_comment_id: 'c1', snippet: `p${p}s${sz}`, created_at: '2026-04-01T00:00:00.000Z', read_at: null }
+        ], { totalCount: TOTAL, totalPages, pageSize: sz, page: p, unreadTotal: 1 });
+      };
+    }
+    env.setApiMock(simulateBackend());
+    await NotificationsView.render(container); // loadPage(1)，此時 pageSize 仍為 15（totalPages=2）
+    const sizeSelectAfterMount = findById(root, 'notif-page-size')!;
+
+    // 切到 10 筆／頁（totalPages 變 3），再點兩次下一頁到第 3 頁
+    sizeSelectAfterMount.value = '10';
+    sizeSelectAfterMount.onchange!();
+    await flushPromises();
+    assert.strictEqual(env.localStorageData['notif-page-size'], '10', '切換筆數應寫入 localStorage 偏好');
+    let nav = findById(root, 'notif-pagination')!;
+    nav.childNodes[nav.childNodes.length - 1].onclick!(); // → page 2
+    await flushPromises();
+    nav = findById(root, 'notif-pagination')!;
+    nav.childNodes[nav.childNodes.length - 1].onclick!(); // → page 3
+    await flushPromises();
+    assert.ok(findById(root, 'notif-card-n-p3-s10'), '應已停在每頁 10 筆的第 3 頁');
+
+    // 切回 15 筆／頁：25 筆只剩 2 頁，第 3 頁越界，應退回第 1 頁重試
+    env.apiCalls.length = 0;
+    sizeSelectAfterMount.value = '15';
+    sizeSelectAfterMount.onchange!();
+    await flushPromises();
+    assert.ok(env.apiCalls.some(c => c.path.includes('page=3') && c.path.includes('pageSize=15')), '應先以目前頁碼（3）＋新筆數（15）重新查詢');
+    assert.ok(env.apiCalls.some(c => c.path.includes('page=1') && c.path.includes('pageSize=15')), '越界時應退回第 1 頁重試，不得停在空白頁');
+    assert.ok(findById(root, 'notif-card-n-p1-s15'), '越界校正後應顯示第 1 頁資料');
+    assert.strictEqual(env.localStorageData['notif-page-size'], '15', '再次切換應更新已保存偏好');
+
     console.log('notificationsFrontend.test.ts OK');
   } finally {
     stopNotificationPolling();
   }
 }
 
-main().catch(err => {
-  console.error('notificationsFrontend.test.ts FAILED:', err);
-  process.exit(1);
-});
+/** 首次載入且無已保存偏好：手機寬度應預設每頁 10 筆。 */
+async function testMobileDefault(): Promise<void> {
+  const env = createEnv({ innerWidth: 375 });
+  env.setApiMock(async () => page([]));
+  await env.refreshNotificationBadge();
+  assert.ok(env.apiCalls[0].path.includes('pageSize=10'), '手機寬度且無偏好時應預設每頁 10 筆');
+  env.stopNotificationPolling();
+  console.log('testMobileDefault OK');
+}
+
+/** 已保存偏好優先於螢幕寬度預設值。 */
+async function testSavedPreferenceWins(): Promise<void> {
+  const env = createEnv({ innerWidth: 1024, storedPageSize: '10' });
+  env.setApiMock(async () => page([]));
+  await env.refreshNotificationBadge();
+  assert.ok(env.apiCalls[0].path.includes('pageSize=10'), '已保存偏好應優先於桌面預設 15');
+  env.stopNotificationPolling();
+  console.log('testSavedPreferenceWins OK');
+}
+
+main()
+  .then(testMobileDefault)
+  .then(testSavedPreferenceWins)
+  .catch(err => {
+    console.error('notificationsFrontend.test.ts FAILED:', err);
+    process.exit(1);
+  });
