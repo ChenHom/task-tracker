@@ -1,8 +1,8 @@
 import assert from 'node:assert';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
 import {
@@ -32,6 +32,7 @@ import {
   canonicalWorkspaceForRepoRoot,
   compareSweepCandidates,
   commitIfSessionSucceeded,
+  commitMemberWork,
   createRunDir,
   dirtyReviewChecks,
   ensureCanonicalWorkspaceCandidates,
@@ -79,6 +80,7 @@ import {
   runNotificationSweepForMember,
   runNotificationGatedSession,
   runNotificationGateOrNormal,
+  type Member,
   type NotificationGateActor,
   type NotificationGateRequest,
   type NotificationSweepMember,
@@ -814,7 +816,7 @@ assert.strictEqual(
   2,
   'full sprint 與 team sweep 的 driver commit 都必須記錄實際一般工作模型',
 );
-const commitMemberWorkSource = source.match(/function commitMemberWork\(m: Member, round: number, model: string\): boolean \{[\s\S]*?\n\}/)?.[0] ?? '';
+const commitMemberWorkSource = source.match(/(?:export )?function commitMemberWork\(m: Member, round: number, model: string\): boolean \{[\s\S]*?\n\}/)?.[0] ?? '';
 assert.ok(
   commitMemberWorkSource.includes("git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m))"),
   'driver 代 commit 必須以排除 node_modules 的 pathspec stage，不能再無差別 git add -A',
@@ -826,6 +828,11 @@ assert.ok(
 assert.ok(
   commitMemberWorkSource.includes("git(['diff', '--cached', '--name-only'], wt(m))"),
   'driver commit 前必須確認還有可提交的非依賴檔案，僅有 node_modules 時不得建立空 commit',
+);
+assert.ok(
+  commitMemberWorkSource.indexOf("git(['diff', '--cached', '--name-only'], wt(m))")
+    < commitMemberWorkSource.indexOf("git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m))"),
+  'driver commit 必須先檢查 cached path，再進行 pathspec add',
 );
 assert.strictEqual(isQuotaExhaustion('HTTP 429: quota exhausted'), true, 'quota 錯誤應可辨識');
 assert.strictEqual(isQuotaExhaustion('agy binary not found'), false, 'agy 不存在不可誤判為 quota');
@@ -1126,6 +1133,76 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
     false,
     '只剩 node_modules symlink 時不可視為待提交的 member 工作成果',
   );
+}
+
+{
+  const repo = mkdtempSync(join(tmpdir(), 'member-commit-comment-payload-'));
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  g(['init', '-b', 'master']);
+  g(['config', 'user.email', 't@t']);
+  g(['config', 'user.name', 't']);
+  writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'base']);
+  writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+  writeFileSync(join(repo, '.comment-payload.json'), '{"content":"draft"}\n');
+  g(['add', '-A', '--', ...memberWorktreePathspecs()]);
+  assert.deepStrictEqual(
+    g(['diff', '--cached', '--name-only']).split('\n').filter(Boolean),
+    ['app.ts'],
+    'driver 代 commit 不得把 .comment-payload.json 一起 stage',
+  );
+  g(['reset', '--hard']);
+  assert.strictEqual(
+    hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
+    false,
+    '只剩 .comment-payload.json 時不可視為待提交的 member 工作成果',
+  );
+}
+
+{
+  const workRoot = join(ROOT, 'sim-work');
+  mkdirSync(workRoot, { recursive: true });
+  const repo = mkdtempSync(join(workRoot, 'member-commit-prestaged-'));
+  const user = basename(repo);
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const member: Member = {
+    email: `${user}@test.local`,
+    name: 't',
+    user,
+    runner: 'codex',
+    model: 'test-model',
+    profile: 'test',
+  };
+  try {
+    g(['init', '-b', `sim/${user}`]);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+    g(['add', '.']);
+    g(['commit', '-m', 'base']);
+
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+    writeFileSync(join(repo, '.comment-payload.json'), '{"content":"draft"}\n');
+    g(['add', '.comment-payload.json']);
+    assert.throws(
+      () => commitMemberWork(member, 1, 'test-model'),
+      /member worktree 噪音檔/,
+      '預先 stage 的 .comment-payload.json 必須在 commit 前直接拒絕',
+    );
+
+    g(['reset', '--hard']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.deepStrictEqual(
+      g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
+      ['app.ts'],
+      '正常 task 檔 commit 後不應帶入 .comment-payload.json',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(workRoot, { recursive: true, force: true });
+  }
 }
 
 const lockPath = join(dir, '.run.lock');
