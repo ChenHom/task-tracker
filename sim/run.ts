@@ -100,15 +100,27 @@ export function hasReviewChanges(ahead: number, dirty: boolean): boolean {
   return ahead > 0 || dirty;
 }
 
+const MEMBER_WORKTREE_NOISE_SEGMENTS = new Set(['node_modules', '.comment-payload.json']);
+
+function isMemberWorktreeNoise(path: string): boolean {
+  return path.split(/[\\/]/).some((segment) => MEMBER_WORKTREE_NOISE_SEGMENTS.has(segment));
+}
+
 export function hasNonDependencyWorktreeChanges(status: string): boolean {
   return status.split('\n').some((entry) => {
     const path = entry.slice(3);
-    return path !== '' && !path.split(/[\\/]/).includes('node_modules');
+    return path !== '' && !isMemberWorktreeNoise(path);
   });
 }
 
 export function memberWorktreePathspecs(): string[] {
-  return ['.', ':(exclude)node_modules', ':(exclude)**/node_modules'];
+  return [
+    '.',
+    ':(exclude)node_modules',
+    ':(exclude)**/node_modules',
+    ':(exclude).comment-payload.json',
+    ':(exclude)**/.comment-payload.json',
+  ];
 }
 
 export function dirtyReviewChecks(tscPath: string, testPath: string): { tsc: CommandCheck; test: CommandCheck } {

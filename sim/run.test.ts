@@ -1128,6 +1128,31 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
   );
 }
 
+{
+  const repo = mkdtempSync(join(tmpdir(), 'member-commit-comment-payload-'));
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  g(['init', '-b', 'master']);
+  g(['config', 'user.email', 't@t']);
+  g(['config', 'user.name', 't']);
+  writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'base']);
+  writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+  writeFileSync(join(repo, '.comment-payload.json'), '{"content":"draft"}\n');
+  g(['add', '-A', '--', ...memberWorktreePathspecs()]);
+  assert.deepStrictEqual(
+    g(['diff', '--cached', '--name-only']).split('\n').filter(Boolean),
+    ['app.ts'],
+    'driver 代 commit 不得把 .comment-payload.json 一起 stage',
+  );
+  g(['reset', '--hard']);
+  assert.strictEqual(
+    hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
+    false,
+    '只剩 .comment-payload.json 時不可視為待提交的 member 工作成果',
+  );
+}
+
 const lockPath = join(dir, '.run.lock');
 const release = acquireRunLock(lockPath);
 assert.ok(existsSync(lockPath));
