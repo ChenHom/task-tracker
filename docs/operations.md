@@ -69,6 +69,16 @@ Expected:
 - upstream health: `{"status":"ok","db":true}`
 - LAN health HTTP status: `200`
 
+## Delivery documentation and changelog
+
+既有 `docs/`、`README.md` 與 `design.md` 是目前行為、API、操作與架構的契約；`CHANGELOG.md` 只記錄跨版本仍值得查閱的 notable change。實作 task 從 `Review` 進 `Done` 前，先檢查：
+
+- 使用者、整合者或維運者必須知道的行為，更新受影響的既有文件。
+- 公開 API、權限、狀態機、部署／必要設定、需要使用者採取行動的安全修正，或 breaking change，除既有文件外，也在 `CHANGELOG.md` 相同版本區塊留下條目。
+- 每筆 CHANGELOG 條目都附 `Task: <task-uuid>` 與 `Commit: <short-sha>`；breaking change 以 `BREAKING` 明確標示遷移方式。GitHub Release 只取對應版本區塊。
+
+純重構、測試、typo／不改契約的文件補充，以及不影響外部行為的依賴升級可豁免；純內部安全加固若不需要使用者或維運者採取行動，也可不列入 CHANGELOG。若沒有受影響文件或 notable change，Review 留言應明確記錄「文件檢查：無需更新」及理由。
+
 ## Logs
 
 ```bash
