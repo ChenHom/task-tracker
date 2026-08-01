@@ -10,8 +10,9 @@ import {
 } from './notificationTelemetry';
 
 const root = mkdtempSync(join(tmpdir(), 'notification-telemetry-'));
-const base: NotificationTelemetryEvent = {
+const base = {
   run_id: 'sweep-2026-08-01-team',
+  deployment_revision: 'deployed-abc123',
   workflow_version: 'legacy-team-sweep-v1',
   configuration_version: 'notification-gate-v1',
   agent: 'codex',
@@ -26,15 +27,16 @@ const base: NotificationTelemetryEvent = {
   token_total: 24,
   latency_ms: 1_000,
   evaluation_code: 'preflight_ready',
-};
+} as unknown as NotificationTelemetryEvent;
 
 const expectedEventKeys = [
-  'agent', 'configuration_version', 'ended_at', 'error_category', 'evaluation_code', 'latency_ms', 'model',
+  'agent', 'configuration_version', 'deployment_revision', 'ended_at', 'error_category', 'evaluation_code', 'latency_ms', 'model',
   'outcome', 'retry', 'run_id', 'started_at', 'token_total', 'tool_sequence', 'tool_type', 'workflow_version',
 ].sort();
 
 const recorder = createNotificationTelemetryRecorder(root, 'sweep-2026-08-01-recorder');
 const recorderEvent = recorder.record({
+  deployment_revision: (base as unknown as { deployment_revision: string }).deployment_revision,
   workflow_version: base.workflow_version,
   configuration_version: base.configuration_version,
   agent: base.agent,
@@ -48,7 +50,7 @@ const recorderEvent = recorder.record({
   token_total: base.token_total,
   latency_ms: base.latency_ms,
   evaluation_code: base.evaluation_code,
-});
+} as never);
 assert.strictEqual(recorderEvent.run_id, 'sweep-2026-08-01-recorder');
 assert.strictEqual(recorderEvent.tool_sequence, 1, 'recorder 必須在每個 run 內自動產生連續 tool sequence');
 
@@ -107,18 +109,23 @@ mkdirSync(join(retentionRoot, 'runs'), { recursive: true });
 mkdirSync(join(retentionRoot, 'aggregates'), { recursive: true });
 const expiredRun = join(retentionRoot, 'runs', 'expired.jsonl');
 const keptRun = join(retentionRoot, 'runs', 'kept.jsonl');
+const fifteenDayRun = join(retentionRoot, 'runs', 'fifteen-day.jsonl');
 const expiredAggregate = join(retentionRoot, 'aggregates', 'expired.json');
 const keptAggregate = join(retentionRoot, 'aggregates', 'kept.json');
-for (const path of [expiredRun, keptRun, expiredAggregate, keptAggregate]) writeFileSync(path, '[]');
+const fifteenDayAggregate = join(retentionRoot, 'aggregates', 'fifteen-day.json');
+for (const path of [expiredRun, keptRun, fifteenDayRun, expiredAggregate, keptAggregate, fifteenDayAggregate]) writeFileSync(path, '[]');
 const old = new Date('2026-04-01T00:00:00.000Z');
 const recent = new Date('2026-07-31T00:00:00.000Z');
+const fifteenDaysAgo = new Date('2026-07-17T00:00:00.000Z');
 for (const path of [expiredRun, expiredAggregate]) utimesSync(path, old, old);
 for (const path of [keptRun, keptAggregate]) utimesSync(path, recent, recent);
+for (const path of [fifteenDayRun, fifteenDayAggregate]) utimesSync(path, fifteenDaysAgo, fifteenDaysAgo);
 assert.deepStrictEqual(
   pruneNotificationTelemetry(retentionRoot, new Date('2026-08-01T00:00:00.000Z')),
-  { runsDeleted: 1, aggregatesDeleted: 1 },
+  { runsDeleted: 2, aggregatesDeleted: 1 },
 );
 assert.ok(!existsSync(expiredRun) && !existsSync(expiredAggregate), 'run 細節 14 天、彙總 90 天後要刪除');
 assert.ok(existsSync(keptRun) && existsSync(keptAggregate), '保留期內資料不得提早刪除');
+assert.ok(!existsSync(fifteenDayRun) && existsSync(fifteenDayAggregate), '15 天時只刪 run 細節，aggregate 必須保留到 90 天');
 
 console.log('notification telemetry tests passed');

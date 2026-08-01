@@ -70,6 +70,7 @@ import {
   writePromptArtifact,
   workSessionForMember,
   isQuotaExhaustion,
+  parseReportedTokenTotal,
   notificationGatePrompt,
   AGREE_MARKER,
   CONCERN_MARKER,
@@ -612,7 +613,7 @@ async function runNotificationGateTests(): Promise<void> {
 
   const prompt = notificationGatePrompt({
     actor: gateActor,
-    jar: '/tmp/notification.jar',
+    cookie: 'session=test',
     source: {
       notification: unreadNotification('n-prompt', 'task-prompt', 'comment-prompt'),
       task: gateTask('task-prompt', MAIN_WORKSPACE_ID),
@@ -628,10 +629,26 @@ async function runNotificationGateTests(): Promise<void> {
   assert.ok(prompt.includes('不得在留言中 @ 自己'));
   assert.ok(!prompt.includes('@小美'), 'prompt 指令不得組出 actor 自己的 handle');
 
+  const credentialPath = join(mkdtempSync(join(tmpdir(), 'notification-credential-')), 'session.cookie');
+  const securePrompt = notificationGatePrompt({
+    actor: gateActor,
+    cookie: 'session=memory-only',
+    source: {
+      notification: unreadNotification('n-secure', 'task-secure', 'comment-secure'),
+      task: gateTask('task-secure', 'workspace-general'),
+      sourceComment: gateComment('task-secure', 'comment-secure'),
+      comments: [gateComment('task-secure', 'comment-secure')],
+    },
+  });
+  assert.ok(securePrompt.includes('Cookie: session=memory-only'), '通知 agent 必須只拿到記憶體中的 session header');
+  assert.ok(!securePrompt.includes('curl -s -c'), '通知 agent 不得被要求以 curl -c 建立 credential 檔');
+  assert.ok(!securePrompt.includes('-b '), '通知 agent 不得使用 cookie jar');
+  assert.ok(!existsSync(credentialPath), '通知 preflight 不得建立 credential 檔');
+
   const longSource = 'S'.repeat(5000);
   const boundedPrompt = notificationGatePrompt({
     actor: gateActor,
-    jar: '/tmp/notification.jar',
+    cookie: 'session=test',
     source: {
       notification: unreadNotification('n-bounded', 'task-bounded', 'comment-bounded'),
       task: { ...gateTask('task-bounded', 'workspace-general'), description: 'D'.repeat(5000) },
@@ -642,6 +659,58 @@ async function runNotificationGateTests(): Promise<void> {
   assert.ok(Buffer.byteLength(boundedPrompt, 'utf8') <= 16_000, 'bounded prompt 不得超過 16,000 bytes');
   assert.ok(boundedPrompt.includes(longSource), 'source comment 必須完整保留');
   assert.ok(boundedPrompt.includes('已省略'), 'context 截減必須明確標記');
+
+  const postconditionFailure = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-attempt', 'task-attempt', 'comment-attempt')] },
+      { status: 200, body: [unreadNotification('n-attempt', 'task-attempt', 'comment-attempt')] },
+    ],
+    'GET /api/tasks/task-attempt': [{ status: 200, body: gateTask('task-attempt', 'workspace-general') }],
+    'GET /api/tasks/task-attempt/comments': [{ status: 200, body: [gateComment('task-attempt', 'comment-attempt')] }],
+    'POST /api/notifications/n-attempt/read': [{ status: 200, body: { ok: true } }],
+  });
+  const attemptTelemetry: Array<Record<string, unknown>> = [];
+  const postconditionResult = await runNotificationSweepForMember({
+    member: { ...sweepMember, model: 'gpt-primary', fallback: { runner: 'claude', model: 'claude-fallback' } },
+    request: postconditionFailure.request,
+    loginActor: async () => 'session=test',
+    runPreflight: async () => ({
+      errored: false,
+      timedOut: false,
+      attempts: [
+        {
+          route: { runner: 'codex', model: 'gpt-primary' }, retry: 0,
+          started_at: '2026-07-14T04:00:00.000Z', ended_at: '2026-07-14T04:00:01.000Z',
+          errored: true, timedOut: false, quotaExhausted: true, errorCategory: 'quota', tokenTotal: 17,
+        },
+        {
+          route: { runner: 'claude', model: 'claude-fallback' }, retry: 1,
+          started_at: '2026-07-14T04:00:01.000Z', ended_at: '2026-07-14T04:00:03.000Z',
+          errored: false, timedOut: false, errorCategory: 'none', tokenTotal: 29,
+        },
+      ],
+    } as never),
+    log: () => undefined,
+    telemetry: {
+      record: (event) => {
+        attemptTelemetry.push(event as unknown as Record<string, unknown>);
+        return { ...event, run_id: 'test-run', tool_sequence: attemptTelemetry.length };
+      },
+    },
+    deploymentRevision: 'deployed-abc123',
+    snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.strictEqual(postconditionResult.ready, false, 'readback 未完成時 team preflight 必須失敗');
+  assert.deepStrictEqual(
+    attemptTelemetry.filter((event) => event.tool_type === 'agent.preflight').map((event) => [
+      event.agent, event.model, event.retry, event.token_total, event.deployment_revision, event.evaluation_code,
+    ]),
+    [
+      ['codex', 'gpt-primary', 0, 17, 'deployed-abc123', 'preflight_failed'],
+      ['claude', 'claude-fallback', 1, 29, 'deployed-abc123', 'preflight_failed'],
+    ],
+    '每個實際 attempt 都要保留實際 route／retry／usage，且 readback 失敗前不能定為 ready',
+  );
 
   const sweepMembers: NotificationSweepMember[] = ['user02', 'user03', 'user04', 'user05', 'user06'].map((user) => ({
     email: `${user}@test.local`, name: user, user, runner: 'codex', model: 'test-model',
@@ -796,9 +865,14 @@ assert.ok(
   !privateCodexInvocation.args.includes('--output-last-message'),
   'notification preflight 禁止把模型回覆寫入 --output-last-message 檔案',
 );
+assert.strictEqual(parseReportedTokenTotal('{"usage":{"total_tokens":1,234}}'), 1234, '可用的 runner usage 必須保留總 token 數');
+assert.strictEqual(parseReportedTokenTotal('no usage reported'), null, '沒有可用 usage 時不得編造 token 總量');
 const teamSweepSource = source.slice(source.indexOf("if (role !== 'owner' && notificationGateEnabled())"), source.indexOf('interface PendingWs'));
 assert.ok(teamSweepSource.includes('captureContent: false'), 'team notification preflight 必須停用 prompt／模型回覆 artifact');
 assert.ok(teamSweepSource.includes('telemetry,'), 'team notification preflight 必須接入 allowlisted telemetry recorder');
+assert.ok(!teamSweepSource.includes('.jar-notification-'), 'team notification preflight 不得建立 cookie jar');
+assert.ok(teamSweepSource.includes('deploymentRevision'), 'team notification telemetry 必須帶部署版本 readback');
+assert.ok(!source.includes('.jar-owner-notification'), 'owner notification preflight 也不得建立 cookie jar');
 const user06 = members.find((member) => member.email === 'user06@test.local')!;
 const user02 = members.find((member) => member.email === 'user02@test.local')!;
 assert.deepStrictEqual(

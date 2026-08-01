@@ -7,6 +7,7 @@ export type NotificationTelemetryEvaluationCode = 'login_succeeded' | 'login_fai
 
 export interface NotificationTelemetryEvent {
   run_id: string;
+  deployment_revision: string;
   workflow_version: string;
   configuration_version: string;
   agent: 'claude' | 'codex' | 'agy';
@@ -39,7 +40,7 @@ interface NotificationTelemetryAggregate {
 }
 
 const EVENT_KEYS = new Set<keyof NotificationTelemetryEvent>([
-  'run_id', 'workflow_version', 'configuration_version', 'agent', 'model', 'tool_type', 'tool_sequence',
+  'run_id', 'deployment_revision', 'workflow_version', 'configuration_version', 'agent', 'model', 'tool_type', 'tool_sequence',
   'started_at', 'ended_at', 'outcome', 'error_category', 'retry', 'token_total', 'latency_ms', 'evaluation_code',
 ]);
 const AGGREGATE_KEYS = new Set<keyof NotificationTelemetryAggregate>([
@@ -83,6 +84,7 @@ function validateEvent(value: unknown): NotificationTelemetryEvent {
   assertOnlyKeys(value, EVENT_KEYS, 'event');
   if (Object.keys(value).length !== EVENT_KEYS.size) throw new Error('telemetry event 缺少必要欄位');
   assertString(value.run_id, 'run_id', /^[A-Za-z0-9_-]+$/);
+  assertString(value.deployment_revision, 'deployment_revision', /^[A-Za-z0-9._-]+$/);
   assertString(value.workflow_version, 'workflow_version');
   assertString(value.configuration_version, 'configuration_version');
   if (!AGENTS.has(value.agent as NotificationTelemetryEvent['agent'])) throw new Error('telemetry agent 不合法');
