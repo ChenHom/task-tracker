@@ -51,7 +51,7 @@ export interface ModelRoute {
   model: string;
 }
 
-interface Member {
+export interface Member {
   email: string;
   name: string;
   user: string; // email 前綴，branch/worktree 命名用
@@ -1633,13 +1633,17 @@ function memberWorktreeDirty(dir: string): boolean {
 }
 
 // 所有 member 都只改 worktree；driver 僅在 session 成功後統一提交，避免 runner 權限與完成語意分裂。
-function commitMemberWork(m: Member, round: number, model: string): boolean {
+export function commitMemberWork(m: Member, round: number, model: string): boolean {
   validateMemberWorktree(m);
+  const cached = git(['diff', '--cached', '--name-only'], wt(m));
+  if (cached.split('\n').some((path) => path !== '' && isMemberWorktreeNoise(path))) {
+    throw new Error('driver 拒絕提交 member worktree 噪音檔');
+  }
   if (!memberWorktreeDirty(wt(m))) return false;
   git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m));
   const staged = git(['diff', '--cached', '--name-only'], wt(m));
-  if (staged.split('\n').some((path) => path.split(/[\\/]/).includes('node_modules'))) {
-    throw new Error('driver 拒絕提交 node_modules 或其他依賴路徑');
+  if (staged.split('\n').some((path) => path !== '' && isMemberWorktreeNoise(path))) {
+    throw new Error('driver 拒絕提交 member worktree 噪音檔');
   }
   if (!staged) return false;
   git(['diff', '--cached', '--check'], wt(m));
