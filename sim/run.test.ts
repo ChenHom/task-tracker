@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import './notificationTelemetry.test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -542,18 +543,30 @@ async function runNotificationGateTests(): Promise<void> {
     'GET /api/notifications': [{ status: 200, body: [] }],
   });
   let emptyPreflightRuns = 0;
+  const emptyTelemetry: Array<Record<string, unknown>> = [];
   const sweepEmptyResult = await runNotificationSweepForMember({
     member: sweepMember,
     request: sweepEmpty.request,
     loginActor: async () => 'session=test',
     runPreflight: async () => { emptyPreflightRuns++; return { errored: false, timedOut: false }; },
     log: () => undefined,
+    telemetry: {
+      record: (event) => {
+        emptyTelemetry.push(event as unknown as Record<string, unknown>);
+        return { ...event, run_id: 'test-run', tool_sequence: 1 };
+      },
+    },
     snapshotAt: '2026-07-14T04:00:00.000Z',
   });
   assert.deepStrictEqual(sweepEmptyResult, {
     actor: gateActor.email, ready: true, unreadCount: 0, preflightStarted: false,
   });
   assert.strictEqual(emptyPreflightRuns, 0, '零未讀不得啟動通知 AI session');
+  assert.deepStrictEqual(
+    emptyTelemetry.map((event) => [event.tool_type, event.outcome, event.retry, event.evaluation_code]),
+    [['auth.login', 'succeeded', 0, 'login_succeeded']],
+    'team sweep 的 login 必須只留下 allowlisted 結果，不得記錄帳號、cookie 或 response',
+  );
 
   const sweepGeneral = fakeGateRequest({
     'GET /api/notifications': [
@@ -774,6 +787,18 @@ assert.deepStrictEqual(
   },
   'agy runner 應使用 headless print + accept-edits',
 );
+const privateCodexInvocation = buildRunnerInvocation(
+  { runner: 'codex', model: 'gpt-test' },
+  'sensitive notification prompt',
+  { cwd: '/tmp/notification', logFile: '/tmp/notification.log', captureLastMessage: false },
+);
+assert.ok(
+  !privateCodexInvocation.args.includes('--output-last-message'),
+  'notification preflight 禁止把模型回覆寫入 --output-last-message 檔案',
+);
+const teamSweepSource = source.slice(source.indexOf("if (role !== 'owner' && notificationGateEnabled())"), source.indexOf('interface PendingWs'));
+assert.ok(teamSweepSource.includes('captureContent: false'), 'team notification preflight 必須停用 prompt／模型回覆 artifact');
+assert.ok(teamSweepSource.includes('telemetry,'), 'team notification preflight 必須接入 allowlisted telemetry recorder');
 const user06 = members.find((member) => member.email === 'user06@test.local')!;
 const user02 = members.find((member) => member.email === 'user02@test.local')!;
 assert.deepStrictEqual(
