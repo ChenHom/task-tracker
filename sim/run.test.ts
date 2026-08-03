@@ -48,7 +48,7 @@ import {
   loadMembersFromUsers,
   mainDiscussionMissingOwnerThought,
   MAIN_DISCUSSION_TARGET,
-  MAIN_DISCUSSION_MIN_INTERVAL_MS,
+  ideationIntervalMs,
   shouldCreateMainDiscussion,
   memberWorktreePathspecs,
   MAIN_OWNER_TOOLS,
@@ -1040,12 +1040,12 @@ assert.strictEqual(shouldCreateMainDiscussion(MAIN_DISCUSSION_TARGET, daysAgo(30
 assert.strictEqual(shouldCreateMainDiscussion(2, daysAgo(30), NOW), true, '未達上限且間隔已過');
 assert.strictEqual(shouldCreateMainDiscussion(2, daysAgo(1), NOW), false, '間隔未到');
 assert.strictEqual(
-  shouldCreateMainDiscussion(2, new Date(NOW.getTime() - MAIN_DISCUSSION_MIN_INTERVAL_MS).toISOString(), NOW),
+  shouldCreateMainDiscussion(2, new Date(NOW.getTime() - ideationIntervalMs()).toISOString(), NOW),
   true,
   '剛好等於間隔要放行',
 );
 assert.strictEqual(
-  shouldCreateMainDiscussion(2, new Date(NOW.getTime() - MAIN_DISCUSSION_MIN_INTERVAL_MS + 1).toISOString(), NOW),
+  shouldCreateMainDiscussion(2, new Date(NOW.getTime() - ideationIntervalMs() + 1).toISOString(), NOW),
   false,
   '差 1 毫秒未到',
 );
@@ -1053,6 +1053,28 @@ assert.strictEqual(
 assert.strictEqual(shouldCreateMainDiscussion(0, null, NOW), true, '空看板冷啟動');
 assert.strictEqual(shouldCreateMainDiscussion(1, null, NOW), false, '有討論卻查無時間 → 不建');
 assert.strictEqual(shouldCreateMainDiscussion(2, 'not-a-date', NOW), false, '時間解析失敗 → 不建');
+
+// 間隔可用 SIM_IDEATION_INTERVAL_HOURS 外部調整；亂填要退回預設而不是變成 0（0 等於沒節流）。
+{
+  const saved = process.env.SIM_IDEATION_INTERVAL_HOURS;
+  const restore = () => {
+    if (saved === undefined) delete process.env.SIM_IDEATION_INTERVAL_HOURS;
+    else process.env.SIM_IDEATION_INTERVAL_HOURS = saved;
+  };
+  try {
+    delete process.env.SIM_IDEATION_INTERVAL_HOURS;
+    assert.strictEqual(ideationIntervalMs(), 72 * 60 * 60 * 1000, '未設定時預設 72 小時');
+    process.env.SIM_IDEATION_INTERVAL_HOURS = '6';
+    assert.strictEqual(ideationIntervalMs(), 6 * 60 * 60 * 1000, '設定值以小時換算');
+    assert.strictEqual(shouldCreateMainDiscussion(2, daysAgo(1), NOW), true, '縮短間隔後同一筆資料改為放行');
+    for (const bad of ['0', '-1', 'abc', '']) {
+      process.env.SIM_IDEATION_INTERVAL_HOURS = bad;
+      assert.strictEqual(ideationIntervalMs(), 72 * 60 * 60 * 1000, `非正數「${bad}」必須退回預設，不得變成無節流`);
+    }
+  } finally {
+    restore();
+  }
+}
 
 // 保險絲用產物齊備與否判斷，補完就永久為假，不會像時間式 backstop 那樣週期性空轉。
 const ownerId = 'owner-1';

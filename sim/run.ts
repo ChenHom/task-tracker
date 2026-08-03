@@ -404,7 +404,13 @@ export function isSweepWorkTask(task: { title: string }): boolean {
 // session 裡建立、寫想法、收尾成 Done、再開實作 task，Todo 數立刻掉回 0-1，下個 tick 又符合
 // 條件，於是 08-01 一天建了 37 則。計數門檻在「自己建自己收」的循環下形同虛設，只有間隔會生效。
 export const MAIN_DISCUSSION_TARGET = 3;
-export const MAIN_DISCUSSION_MIN_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
+// 間隔用 SIM_IDEATION_INTERVAL_HOURS 調（小時），預設 72。sweep 是每 tick 起一個新行程，
+// 所以載入時讀一次就夠；改完 wrapper 下一個 tick 就生效，不必重啟任何常駐服務。
+const DEFAULT_IDEATION_INTERVAL_HOURS = 72;
+export function ideationIntervalMs(): number {
+  const hours = Number(process.env.SIM_IDEATION_INTERVAL_HOURS);
+  return (Number.isFinite(hours) && hours > 0 ? hours : DEFAULT_IDEATION_INTERVAL_HOURS) * 60 * 60 * 1000;
+}
 
 export function shouldCreateMainDiscussion(
   openTodoCount: number,
@@ -417,7 +423,7 @@ export function shouldCreateMainDiscussion(
   // （count 0）才冷啟動。
   if (!lastCreatedAt) return openTodoCount === 0;
   const elapsed = now.getTime() - Date.parse(lastCreatedAt);
-  return Number.isFinite(elapsed) && elapsed >= MAIN_DISCUSSION_MIN_INTERVAL_MS;
+  return Number.isFinite(elapsed) && elapsed >= ideationIntervalMs();
 }
 
 // 保險絲：owner 貼完「想法」但還沒貼徵詢就逾時的話，最後發言者是它自己，變化驅動的
