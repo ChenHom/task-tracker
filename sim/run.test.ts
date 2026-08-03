@@ -8,6 +8,7 @@ import { runMigrations } from '../src/schema';
 import {
   CONCLUSION_MARKER,
   handoffLine,
+  MAIN_BOSS_EMAIL,
   MAIN_POLICY_TITLE,
   MAIN_WORKSPACE_ID,
   NO_CONSENSUS_FIELDS,
@@ -45,7 +46,10 @@ import {
   isSweepWorkTask,
   isManagedRosterWorkspace,
   loadMembersFromUsers,
-  mainDiscussionNeedsOwner,
+  mainDiscussionMissingOwnerThought,
+  MAIN_DISCUSSION_TARGET,
+  MAIN_DISCUSSION_MIN_INTERVAL_MS,
+  shouldCreateMainDiscussion,
   memberWorktreePathspecs,
   MAIN_OWNER_TOOLS,
   MEMBER_TOOLS,
@@ -98,13 +102,13 @@ assert.ok(
   'owner sweep 必須保留既有 30 分鐘 adaptive cap',
 );
 assert.ok(
-  source.includes('function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string'),
-  'owner sweep prompt 必須接受本輪 timeout 分鐘數',
+  source.includes('function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number, createDiscussion = false): string'),
+  'owner sweep prompt 必須接受本輪 timeout 分鐘數與發想額度',
 );
 assert.ok(source.includes('你有 ${timeoutMinutes} 分鐘硬時限'), 'owner sweep prompt 必須插入本輪 timeout 分鐘數');
 assert.ok(
-  source.includes("ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000))"),
-  'owner sweep 必須把計算後的 timeout 分鐘數傳進 prompt',
+  source.includes("ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000), p.createDiscussion)"),
+  'owner sweep 必須把計算後的 timeout 分鐘數與發想額度傳進 prompt',
 );
 assert.ok(!source.includes('const MEMBERS: Member[] = ['), 'MEMBERS 不應在 sim/run.ts 寫死 email/name');
 assert.ok(!source.includes('let REPO_ROOT'), 'scenario 狀態不應拆成多個可不同步的 global');
@@ -1029,10 +1033,40 @@ assert.strictEqual(isSweepWorkTask({ title: MAIN_POLICY_TITLE }), false);
 assert.strictEqual(isSweepWorkTask({ title: '[討論] 方向' }), false);
 assert.strictEqual(isSweepWorkTask({ title: '實作功能' }), true);
 
-assert.strictEqual(mainDiscussionNeedsOwner('Todo'), true);
-assert.strictEqual(mainDiscussionNeedsOwner('Done'), false);
-assert.strictEqual(mainDiscussionNeedsOwner('Doing'), false);
-assert.strictEqual(mainDiscussionNeedsOwner('Review'), false);
+// 發想節流：上限擋不住「自己建自己收」的循環（08-01 一天 37 則），所以真正生效的是間隔。
+const NOW = new Date('2026-08-03T12:00:00Z');
+const daysAgo = (n: number) => new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
+assert.strictEqual(shouldCreateMainDiscussion(MAIN_DISCUSSION_TARGET, daysAgo(30), NOW), false, '達到上限就不建');
+assert.strictEqual(shouldCreateMainDiscussion(2, daysAgo(30), NOW), true, '未達上限且間隔已過');
+assert.strictEqual(shouldCreateMainDiscussion(2, daysAgo(1), NOW), false, '間隔未到');
+assert.strictEqual(
+  shouldCreateMainDiscussion(2, new Date(NOW.getTime() - MAIN_DISCUSSION_MIN_INTERVAL_MS).toISOString(), NOW),
+  true,
+  '剛好等於間隔要放行',
+);
+assert.strictEqual(
+  shouldCreateMainDiscussion(2, new Date(NOW.getTime() - MAIN_DISCUSSION_MIN_INTERVAL_MS + 1).toISOString(), NOW),
+  false,
+  '差 1 毫秒未到',
+);
+// fail-closed：查不到建立時間時，只有真的空看板才冷啟動，否則寧可不建。
+assert.strictEqual(shouldCreateMainDiscussion(0, null, NOW), true, '空看板冷啟動');
+assert.strictEqual(shouldCreateMainDiscussion(1, null, NOW), false, '有討論卻查無時間 → 不建');
+assert.strictEqual(shouldCreateMainDiscussion(2, 'not-a-date', NOW), false, '時間解析失敗 → 不建');
+
+// 保險絲用產物齊備與否判斷，補完就永久為假，不會像時間式 backstop 那樣週期性空轉。
+const ownerId = 'owner-1';
+assert.strictEqual(mainDiscussionMissingOwnerThought([], ownerId), true, '沒有留言 → 缺想法');
+assert.strictEqual(
+  mainDiscussionMissingOwnerThought([{ user_id: 'member-1', content: `${THOUGHT_MARKER}\n假的` }], ownerId),
+  true,
+  '別人貼的想法不算',
+);
+assert.strictEqual(
+  mainDiscussionMissingOwnerThought([{ user_id: ownerId, content: `${THOUGHT_MARKER}\n現況／問題：x` }], ownerId),
+  false,
+  'owner 已貼想法 → 保險絲關閉',
+);
 
 const directory = canonicalWorkspaceDirectory();
 assert.match(directory, new RegExp(ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
@@ -1383,6 +1417,27 @@ assert.ok(
     !mainPrompt.includes('【確認結論】'),
     'owner prompt 不得要求 validator 不認得的確認留言（owner 會空等到收尾逾時）',
   );
+
+  // user09 那一票是 validator 硬擋的，prompt 必須用同一組常數講同一件事，否則 owner 會一直
+  // 撞 400 重試。四人門檻仍是純 prompt 規則，不在 validator 數票。
+  assert.ok(mainPrompt.includes(AGREE_MARKER), 'owner prompt 必須列出成員表態 marker');
+  assert.ok(
+    mainPrompt.includes(MAIN_BOSS_EMAIL),
+    'owner prompt 必須指名 validator 會擋的那位同意者，不能只寫 user09 字面',
+  );
+
+  // 發想額度由 sweep 端決定，prompt 只轉述結論；owner 不再自己數看板。
+  const noQuota = ownerSweepPrompt(MAIN_WORKSPACE_ID, parseScenario(['node', 'run.ts']), [], '老闆', 20, false);
+  const withQuota = ownerSweepPrompt(MAIN_WORKSPACE_ID, parseScenario(['node', 'run.ts']), [], '老闆', 20, true);
+  assert.ok(noQuota.includes('不要建立任何新討論'), '沒有額度時必須明講不要建立');
+  assert.ok(withQuota.includes('本輪要建立一則新討論'), '有額度時必須明講要建立');
+  assert.ok(!noQuota.includes('本輪要建立一則新討論'), '沒有額度時不得同時出現建立指令');
+  for (const prompt of [noQuota, withQuota]) {
+    assert.ok(prompt.includes(THOUGHT_MARKER), '兩種額度下都必須保留想法模板');
+    for (const marker of [CONCLUSION_MARKER, NO_IMPLEMENTATION_MARKER, NO_CONSENSUS_MARKER]) {
+      assert.ok(prompt.includes(marker), `兩種額度下都必須保留收尾 marker ${marker}`);
+    }
+  }
 }
 
 // describeError：fetch 失敗的 errno 只存在於 cause，不印出來就等於沒有診斷資料。

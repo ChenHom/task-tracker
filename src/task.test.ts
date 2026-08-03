@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
 import { appendEvent, resetProjections, loadEvents, CommandError } from './eventStore';
 import { createComment } from './comment';
-import { MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
+import { MAIN_BOSS_EMAIL, MAIN_OWNER_EMAIL, MAIN_POLICY_TITLE, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 import {
   createTask,
   changeTaskTitle,
@@ -58,6 +58,7 @@ seedWs(MOVE_ARCHIVED_WS, 'archived');
 seedWs(MAIN_WORKSPACE_ID);
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-owner', MAIN_OWNER_EMAIL, 'Main Owner', 'x');
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-user', 'user02@test.local', 'Main User', 'x');
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('main-boss', MAIN_BOSS_EMAIL, 'Main Boss', 'x');
 for (const [id, email, name] of [
   ['u1', 'u1@test.local', 'User One'],
   ['bob', 'bob@test.local', 'Bob'],
@@ -74,6 +75,7 @@ const insertMember = db.prepare(
 );
 insertMember.run(MAIN_WORKSPACE_ID, 'main-owner', 'Owner', 't');
 insertMember.run(MAIN_WORKSPACE_ID, 'main-user', 'Commenter', 't');
+insertMember.run(MAIN_WORKSPACE_ID, 'main-boss', 'Commenter', 't');
 for (const userId of ['u1', 'bob', 'carol']) insertMember.run(WS, userId, 'Member', 't');
 insertMember.run(COMMENTER_WS, 'main-user', 'Commenter', 't');
 insertMember.run(MOVE_SOURCE_WS, 'mover', 'Member', 't');
@@ -506,6 +508,8 @@ assert.strictEqual(loadEvents(discussionId, db).length, beforeDiscussionEvidence
 
 createComment(discussionId, 'main-owner', OWNER_THOUGHT, db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-user', '請交由前端成員接手。', db, new Date('2026-07-14T08:00:00.000Z'));
+// implement 需要老闆（user09）的同意票，validator 會擋；細節見 mainDiscussion.test.ts。
+createComment(discussionId, 'main-boss', '【同意】\n可以做。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【結論】\n採用。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【實作任務】工作區：目標工作區｜TASK：實作討論方向', db, new Date('2026-07-14T08:00:00.000Z'));
 // 想法與結論在同一時刻留下即可收尾，不必等待任何期限。

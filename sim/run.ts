@@ -11,8 +11,11 @@ import { closeSync, mkdirSync, openSync, writeFileSync, readFileSync, existsSync
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
+  AGREE_MARKER,
+  CONCERN_MARKER,
   CONCLUSION_MARKER,
   handoffLine,
+  MAIN_BOSS_EMAIL,
   MAIN_DISCUSSION_PREFIX,
   MAIN_OWNER_EMAIL,
   MAIN_POLICY_TITLE,
@@ -397,8 +400,31 @@ export function isSweepWorkTask(task: { title: string }): boolean {
   return task.title !== MAIN_POLICY_TITLE && !task.title.startsWith(MAIN_DISCUSSION_PREFIX);
 }
 
-export function mainDiscussionNeedsOwner(status: string): boolean {
-  return status === 'Todo';
+// 主工作區發想節流。2026-08-03 實測：光靠「Todo 少於 3 則」永遠擋不住——owner 在同一個
+// session 裡建立、寫想法、收尾成 Done、再開實作 task，Todo 數立刻掉回 0-1，下個 tick 又符合
+// 條件，於是 08-01 一天建了 37 則。計數門檻在「自己建自己收」的循環下形同虛設，只有間隔會生效。
+export const MAIN_DISCUSSION_TARGET = 3;
+export const MAIN_DISCUSSION_MIN_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
+
+export function shouldCreateMainDiscussion(
+  openTodoCount: number,
+  lastCreatedAt: string | null,
+  now: Date,
+): boolean {
+  if (openTodoCount >= MAIN_DISCUSSION_TARGET) return false;
+  // ponytail: 查不到建立時間就不建（fail-closed）。看板上還有討論卻查無時間，代表查詢或
+  // payload 漂移了，這時放行等於每 tick 狂建——正是這個節流要消滅的行為。只有真的空看板
+  // （count 0）才冷啟動。
+  if (!lastCreatedAt) return openTodoCount === 0;
+  const elapsed = now.getTime() - Date.parse(lastCreatedAt);
+  return Number.isFinite(elapsed) && elapsed >= MAIN_DISCUSSION_MIN_INTERVAL_MS;
+}
+
+// 保險絲：owner 貼完「想法」但還沒貼徵詢就逾時的話，最後發言者是它自己，變化驅動的
+// ownerNeeded 就再也不會開 session。用「產物是否齊備」判斷而不是時間——時間式 backstop
+// 會週期性開一個什麼都不寫的 session，永遠不自我終結。
+export function mainDiscussionMissingOwnerThought(comments: Array<{ user_id: string; content: string }>, ownerId: string): boolean {
+  return !comments.some((c) => c.user_id === ownerId && c.content.startsWith(THOUGHT_MARKER));
 }
 
 export function canonicalWorkspaceDirectory(): string {
@@ -644,9 +670,9 @@ export interface ResolvedNotification {
   comments: NotificationComment[];
 }
 export const MAX_NOTIFICATION_PROMPT_CHARS = 16_000;
-// notification prompt 是寫入端、owner prompt 是清點端，兩邊共用同一組表態 marker。
-export const AGREE_MARKER = '【同意】';
-export const CONCERN_MARKER = '【疑慮】';
+// notification prompt 是寫入端、owner prompt 是清點端、validator 是把關端，三邊共用同一組
+// 表態 marker。定義已移到 src/mainWorkspacePolicy.ts，這裡只轉出給既有 import 用。
+export { AGREE_MARKER, CONCERN_MARKER } from '../src/mainWorkspacePolicy';
 export interface NotificationGateResult {
   ready: boolean;
   snapshotIds: string[];
@@ -1945,7 +1971,7 @@ async function main(): Promise<void> {
 // ——timer 下個小時自己會再敲門，這就是「限額到了自動等下次」，零重試機制、零狀態。
 const SWEEP_OWNER_TIMEOUT = 20 * 60 * 1000;
 const SWEEP_MEMBER_TIMEOUT = 20 * 60 * 1000;
-const BOSS_EMAIL = 'user09@test.local';
+const BOSS_EMAIL = MAIN_BOSS_EMAIL;
 
 // owner 逾時自適應：跨 tick 狀態（sim-logs 下，gitignored）。上一輪 owner 逾時 → 這輪每逾時 +6 分（封頂 30）、
 // 少收一個 workspace（封底 1），並把逾時的 workspace 排到最前面優先收（否則減 budget 反而跳過問題 workspace）。
@@ -2056,7 +2082,7 @@ export function syncWorktreeWithMaster(dir: string): 'merged' | 'up-to-date' | '
 
 interface SweepTask extends SweepAssignedTask { task_id: string; title: string }
 
-export function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string {
+export function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number, createDiscussion = false): string {
   const jar = join(RUN.repoRoot, '.jar-owner-sweep.txt');
   if (wsId === MAIN_WORKSPACE_ID) {
     return `你是「${OWNER.name}」（${OWNER.email}），主協作工作區的唯一 Owner。你可以連外網查資料（這個 session 有網路），但不得編輯、提交或合併任何程式碼。
@@ -2064,7 +2090,9 @@ workspace：${wsId}。
 ${API_RULES(jar)}
 主協作討論巡檢：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks，忽略「${MAIN_POLICY_TITLE}」，它不是工作項目；逐一讀取 status=Todo 的「${MAIN_DISCUSSION_PREFIX}」討論及留言。
-2. 當「${MAIN_DISCUSSION_PREFIX}」的 Todo 少於 3 則時，先連外網查證，再建立一則新的討論；主題必須指向 repo 以外的具體領域（別人怎麼做、什麼在變、我們沒看到什麼），不得只是本 repo 看板的 UI 微調。標題不要自行加「${MAIN_DISCUSSION_PREFIX}」，伺服器會自動加。
+2. ${createDiscussion
+      ? `本輪要建立一則新討論：先連外網查證，再建立。主題必須指向 repo 以外的具體領域（別人怎麼做、什麼在變、我們沒看到什麼），不得只是本 repo 看板的 UI 微調。標題不要自行加「${MAIN_DISCUSSION_PREFIX}」，伺服器會自動加。`
+      : '本輪不要建立任何新討論（發想額度未到）。只處理既有討論的想法、徵詢與收尾。'}
 3. TASK 建立後盡量在 24 小時內，先獨立 POST 完整的「${THOUGHT_MARKER}」留言；必須逐行照以下 ${REQUIRED_THOUGHT_FIELDS.length} 欄填寫，欄名不可省略：
 ${THOUGHT_MARKER}
 ${REQUIRED_THOUGHT_FIELDS.map((field) => `${field}：<${THOUGHT_FIELD_HINTS[field]}>`).join('\n')}
@@ -2072,7 +2100,9 @@ ${REQUIRED_THOUGHT_FIELDS.map((field) => `${field}：<${THOUGHT_FIELD_HINTS[fiel
 5. 再獨立 POST 一則徵詢留言，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。沒有等待期限，成員隨時可以回覆。
 6. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或徵詢留言、阻塞／範圍／決策變化，或收斂時才留言。
 7. 讀取留言並收集意見。系統不追蹤回覆或缺席，也不因未回覆阻擋收尾，不需要任何確認留言。
-8. 你判斷討論已充分時，先清點同意票：同意池是 user01、user02、user03、user04、user05、user09 六位，需至少 4 位；OWNER 的「${CONCLUSION_MARKER}」算 1 票，所以必須在 user02、user03、user04、user05、user09 中找到至少 3 位以「${AGREE_MARKER}」表態，才可走「${CONCLUSION_MARKER}」並開實作 task；否則使用「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」。不追逐、不列缺席者，只允許 Todo→Done。
+8. 你判斷討論已充分時，先清點同意票：同意池是 user01、user02、user03、user04、user05、user09 六位，需至少 4 位，**且其中一位一定要是 ${MAIN_BOSS_EMAIL}（user09，老闆本人）**；OWNER 的「${CONCLUSION_MARKER}」算 1 票，所以必須在 user02、user03、user04、user05、user09 中找到至少 3 位以「${AGREE_MARKER}」表態、而且 user09 必須在其中，才可走「${CONCLUSION_MARKER}」並開實作 task；否則使用「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」。
+   ⚠️ user09 那一票是後端硬規則：沒有他在本輪「${THOUGHT_MARKER}」之後留下的「${AGREE_MARKER}」，收尾 API 會直接回 400，重試也不會過。不要嘗試、不要繞道，直接走不實作或未達共識。
+   不追逐、不列缺席者，只允許 Todo→Done。
    - 實作：OWNER「${CONCLUSION_MARKER}」→OWNER「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」。不得使用「【結論：實作】」或「【結論：implement】」。
    - 不實作：OWNER「${NO_IMPLEMENTATION_MARKER}」。
    - 未達共識：OWNER「${NO_CONSENSUS_MARKER}」並逐行填寫${NO_CONSENSUS_FIELDS.join('、')}。
@@ -2170,8 +2200,11 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     console.log('[notification-sweep] 已停用；略過 user02–user06 的 notification preflight');
   }
 
-  interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; ownerNeeded: boolean; startedAt: string }
+  interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; ownerNeeded: boolean; createDiscussion: boolean; startedAt: string }
   const pendings: PendingWs[] = [];
+  const lastCommenter = (taskId: string): string | undefined => (db
+    .prepare('SELECT user_id FROM comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get(taskId) as { user_id: string } | undefined)?.user_id;
   for (const [wsId, info] of wsScenario) {
     const scenario = scenarioFromStoredKey(info.key);
     if (!scenario) {
@@ -2184,14 +2217,31 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     const tasks = db.prepare(`SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND ${statusFilter}`).all(wsId) as unknown as SweepTask[];
     const discussions = tasks.filter((t) => t.title.startsWith(MAIN_DISCUSSION_PREFIX));
     const work = tasks.filter(isSweepWorkTask);
-    const ownerNeeded = wsId === MAIN_WORKSPACE_ID
-      ? !!mainOwner && discussions.some((d) => mainDiscussionNeedsOwner(d.status))
-      : !!boss && discussions.some((d) => {
-      const last = db.prepare('SELECT user_id FROM comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1').get(d.task_id) as { user_id: string } | undefined;
-      return last?.user_id === boss.id;
-    });
+    // 主工作區改成「有變化才開 session」。舊條件是「有討論處於 Todo」，但 statusFilter 本來就
+    // 只撈 Todo，所以它恆為真——只要看板上有討論，每個 tick 都會開一個完整 owner session，
+    // 而 prompt 又要求無實質變化時保持靜默，等於燒完 token 什麼都沒寫。
+    let createDiscussion = false;
+    let ownerNeeded: boolean;
+    if (wsId === MAIN_WORKSPACE_ID) {
+      const lastCreatedAt = (db.prepare(
+        `SELECT MAX(occurred_at) AS at FROM event_store
+          WHERE event_type = 'task.created'
+            AND json_extract(payload_json, '$.workspaceId') = ?
+            AND json_extract(payload_json, '$.title') LIKE ?`,
+      ).get(wsId, `${MAIN_DISCUSSION_PREFIX}%`) as { at: string | null } | undefined)?.at ?? null;
+      createDiscussion = shouldCreateMainDiscussion(discussions.length, lastCreatedAt, new Date());
+      const ownerId = mainOwner?.id;
+      const hasNewInput = !!ownerId && discussions.some((d) => lastCommenter(d.task_id) !== ownerId);
+      const missingThought = !!ownerId && discussions.some((d) => mainDiscussionMissingOwnerThought(
+        db.prepare('SELECT user_id, content FROM comments WHERE task_id = ?').all(d.task_id) as unknown as Array<{ user_id: string; content: string }>,
+        ownerId,
+      ));
+      ownerNeeded = !!mainOwner && (createDiscussion || hasNewInput || missingThought);
+    } else {
+      ownerNeeded = !!boss && discussions.some((d) => lastCommenter(d.task_id) === boss.id);
+    }
     if (!work.length && !ownerNeeded) continue;
-    pendings.push({ wsId, scenario, work, ownerNeeded, startedAt: info.startedAt });
+    pendings.push({ wsId, scenario, work, ownerNeeded, createDiscussion, startedAt: info.startedAt });
   }
   db.close();
 
@@ -2298,7 +2348,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         model: OWNER_REVIEW_MODEL,
         preflightOptions: ownerSessionOptions,
         normal: () => runSession(ownerLabel, 'codex', OWNER_REVIEW_MODEL,
-          ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000)),
+          ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000), p.createDiscussion),
           { ...ownerSessionOptions, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` }),
       });
       ownerSessionsRun++;
