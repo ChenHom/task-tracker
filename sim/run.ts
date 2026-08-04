@@ -702,13 +702,6 @@ export interface NotificationSweepResult {
 
 export type NotificationSweepRunner = (member: NotificationSweepMember) => Promise<NotificationSweepResult>;
 
-// user06 依主工作區發想決策不參與通知表態；它仍可能被 owner @mention，未讀會保留。
-const NOTIFICATION_SWEEP_SKIP = new Set(['user06']);
-
-export function notificationSweepMembers<T extends { user: string }>(members: readonly T[]): T[] {
-  return members.filter((member) => !NOTIFICATION_SWEEP_SKIP.has(member.user));
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -2179,7 +2172,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   let notificationResults = new Map<string, NotificationSweepResult>();
   if (role !== 'owner' && notificationGateEnabled()) {
     const results = await runNotificationSweep(
-      notificationSweepMembers(members),
+      members,
       (member) => runNotificationSweepForMember({
         member,
         request: api,

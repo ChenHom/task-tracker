@@ -77,7 +77,6 @@ import {
   notificationGatePrompt,
   AGREE_MARKER,
   CONCERN_MARKER,
-  notificationSweepMembers,
   processNotificationGate,
   reconcileManagedRoster,
   runNotificationSweep,
@@ -801,11 +800,6 @@ assert.deepStrictEqual(
   workSessionForMember(user02),
   { route: { runner: 'claude', model: 'claude-sonnet-5' }, fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' } },
   'user02 一般工作必須由 Claude 產生並保留 fallback',
-);
-assert.deepStrictEqual(
-  notificationSweepMembers(['user02', 'user03', 'user04', 'user05', 'user06'].map((user) => ({ user }))).map((member) => member.user),
-  ['user02', 'user03', 'user04', 'user05'],
-  '通知巡檢必須跳過 user06',
 );
 const normalWorkSessions = source.match(
   /normal: \(\) => runSession\([\s\S]{0,160}?workSession\.route\.runner[\s\S]{0,160}?workSession\.route\.model[\s\S]{0,800}?fallback: workSession\.fallback/g,
