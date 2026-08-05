@@ -3,7 +3,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
 import { resetProjections, CommandError } from './eventStore';
 import { createComment } from './comment';
-import { listNotifications, listNotificationsPage, markNotificationRead, registerNotificationProjections } from './notification';
+import {
+  deleteNotificationsByTask,
+  listNotifications,
+  listNotificationsPage,
+  markNotificationRead,
+  registerNotificationProjections,
+} from './notification';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
@@ -111,5 +117,40 @@ const afterPage1 = listNotificationsPage('dave', '1', null, db);
 const afterPage2 = listNotificationsPage('dave', String(afterPage1.totalPages), null, db);
 assert.strictEqual(afterPage1.unreadTotal, unreadBefore - 1, '標記已讀後，第一頁看到的未讀總數應減少');
 assert.strictEqual(afterPage2.unreadTotal, afterPage1.unreadTotal, '不論查哪一頁，未讀總數應一致');
+
+// ── 並行新增／刪除下的 offset 分頁漂移 ───────────────────────────
+// listNotificationsPage 用 created_at DESC + OFFSET，沒有 cursor／token 鎖定快照。
+// 這段驗證：page 1 抓完後若有新通知插入（created_at 更新，排在最前），
+// 原本 page 1 尾端的項目會被推到 page 2，造成同一筆在兩頁重複出現；
+// 反之刪除則會讓下一頁的第一筆被提前吃掉、造成漏讀。這是已知的 offset 分頁限制，
+// 不是 bug；consumer（notifications.js）目前用「單頁瀏覽＋輪詢重抓目前頁」規避，
+// 不做跨頁去重，所以不受影響，但任何未來要「跨頁彙總／全量巡覽」的 consumer 必須知道這點。
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('erin', 'erin@test.local', 'Erin', 'x');
+function insertErin(id: string, createdAt: string): void {
+  db.prepare(
+    `INSERT INTO notifications_read_model
+       (notification_id, recipient_id, source_task_id, source_comment_id, snippet, created_at, read_at)
+     VALUES (?, 'erin', 'task-1', 'c-x', 'snippet', ?, NULL)`,
+  ).run(id, createdAt);
+}
+for (let i = 1; i <= 6; i++) {
+  insertErin(`e${String(i).padStart(2, '0')}`, `2026-07-03T00:00:${String(i).padStart(2, '0')}.000Z`);
+}
+// pageSize=3：page1 = e06,e05,e04／page2 = e03,e02,e01
+const erinPage1Before = listNotificationsPage('erin', '1', '3', db).items.map(n => n.notification_id);
+assert.deepStrictEqual(erinPage1Before, ['e06', 'e05', 'e04']);
+
+// 併發新增 2 筆更新的通知（模擬使用者翻頁期間有新 @mention 進來）
+insertErin('e07', '2026-07-03T00:00:07.000Z');
+insertErin('e08', '2026-07-03T00:00:08.000Z');
+const erinPage2AfterInsert = listNotificationsPage('erin', '2', '3', db).items.map(n => n.notification_id);
+// e04 在新增前屬於 page1，新增後被推到 page2，與剛剛的 page1 結果重複 → 重複讀取
+assert.ok(erinPage2AfterInsert.includes('e04'), '併發新增會把原 page1 尾端項目推入 page2，造成跨頁重複');
+
+// 併發刪除：從目前最新的 page1 刪掉一筆，下一頁會少讀一筆（原本該出現在 page2 的項目被提前吃掉）
+const erinPage1AfterInsert = listNotificationsPage('erin', '1', '3', db).items.map(n => n.notification_id);
+assert.deepStrictEqual(erinPage1AfterInsert, ['e08', 'e07', 'e06']);
+deleteNotificationsByTask('task-1', db); // 清光 task-1 來源的全部通知，模擬來源 task 被刪除的極端漏讀情境
+assert.strictEqual(listNotificationsPage('erin', '1', null, db).totalCount, 0, '來源刪除後應歸零，不留孤兒通知');
 
 console.log('notification.test.ts OK');
