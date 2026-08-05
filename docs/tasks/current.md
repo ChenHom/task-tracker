@@ -267,13 +267,13 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 ## Phase 15 — Commenter 與主協作工作區 ✅
 
 - [x] 新增 `Commenter` 角色與 RBAC／API 權限矩陣；可建立 Todo 討論及留言，但不可修改 task、project 或附件
-- [x] 固定主協作工作區名稱、user01 Owner、user02-06 與 user09 Commenter；其他 user 不加入，並由 startup／login 同步修復
+- [x] 固定主協作工作區名稱、user01 Owner、user02-06 Commenter、user09 Admin；其他 user 不加入，並由 startup／login 同步修復
 - [x] 主工作區討論預設、legacy task 正規化與 `task.discussion_started` 單一事件已由 domain 測試覆蓋
 - [x] 前端依角色收斂控制，並安全自動連結完整 HTTP(S) URL、保留網址尾端中英文標點
 - [x] SIM sweep 固定發現主工作區、排除 policy task、依 target repo 路由，且 main 不占 canonical repo slot
 - [x] feature branch 已通過 `npm test`、`npm run build`、`git diff --check` 與 focused `sim/run.test.ts`
 - [x] 合併至 `master`、build、restart 與正式服務部署驗證
-- [x] 主工作區固定成員政策：1 Owner + 6 Commenter（user02-06、user09）；單一 policy task、legacy task title
+- [x] 主工作區固定成員政策：1 Owner + 5 Commenter（user02-06）+ 1 Admin（user09）；單一 policy task、legacy task title
 - [x] 完整 Commenter／Owner HTTP smoke 與交接流程驗證
 - [x] Commenter 可在任何 workspace 修改自己建立 task 的 description；標題、狀態、屬性、附件與他人 task 仍不可修改
 - [ ] 經明確人工授權執行 live `npm run sim -- --sweep owner`

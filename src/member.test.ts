@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from './schema';
 import { resetProjections, CommandError, loadEvents } from './eventStore';
+import { createWorkspace, registerWorkspaceProjections } from './workspace';
 import { createSession } from './auth';
 import {
   inviteMember,
@@ -18,13 +19,15 @@ import {
   countActiveMembers,
   listMembers,
   autoAddObserver,
+  syncObserverAdmin,
   ACCESS_ROLE,
 } from './member';
-import { MAIN_OWNER_EMAIL, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
+import { MAIN_BOSS_EMAIL, MAIN_OWNER_EMAIL, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
 resetProjections();
+registerWorkspaceProjections();
 registerMemberProjections();
 // requirePermission 會查 session → 需要 users/sessions 有資料
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('owner', 'o@x.com', 'Owner', 'x');
@@ -194,14 +197,26 @@ db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, 
 const WS_BOSS = 'ws-boss';
 seedOwner(WS_BOSS, 'main-owner', db); // user01 建立
 autoAddObserver('main-owner', WS_BOSS, db);
-assert.strictEqual(getMemberRole(WS_BOSS, 'u09', db), 'Member', 'user01 建立的 workspace 應自動含老闆 user09（Member）');
+assert.strictEqual(getMemberRole(WS_BOSS, 'u09', db), 'Admin', 'user01 建立的 workspace 應自動含老闆 user09（Admin）');
 assert.doesNotThrow(() => autoAddObserver('main-owner', WS_BOSS, db), '重複呼叫應 idempotent（吞已存在的 CommandError）');
-assert.strictEqual(getMemberRole(WS_BOSS, 'u09', db), 'Member', '重複呼叫後老闆仍是 Member');
+assert.strictEqual(getMemberRole(WS_BOSS, 'u09', db), 'Admin', '重複呼叫後老闆仍是 Admin');
 
 const WS_OTHER = 'ws-other';
 seedOwner(WS_OTHER, 'bob', db); // 非 user01 建立
 autoAddObserver('bob', WS_OTHER, db);
 assert.strictEqual(getMemberRole(WS_OTHER, 'u09', db), null, '非 user01 建立的 workspace 不應自動加老闆');
+
+const WS_LEGACY_BOSS = createWorkspace('main-owner', 'Legacy boss workspace', db);
+inviteMember('main-owner', WS_LEGACY_BOSS, 'u09', 'Member', db);
+joinWorkspace('u09', WS_LEGACY_BOSS, db);
+syncObserverAdmin(db);
+assert.strictEqual(getMemberRole(WS_LEGACY_BOSS, 'u09', db), 'Admin', '既有 user01 workspace 的 user09 應升級為 Admin');
+
+const WS_NON_OWNER_BOSS = createWorkspace('owner', 'Non-owner boss workspace', db);
+inviteMember('owner', WS_NON_OWNER_BOSS, 'u09', 'Member', db);
+joinWorkspace('u09', WS_NON_OWNER_BOSS, db);
+syncObserverAdmin(db);
+assert.strictEqual(getMemberRole(WS_NON_OWNER_BOSS, 'u09', db), 'Member', '非 user01 workspace 不應被升級 user09');
 
 // ── 主工作區角色由同步流程固定管理 ──
 db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)')
@@ -219,9 +234,16 @@ assert.strictEqual(loadEvents(`${MAIN_WORKSPACE_ID}:main-owner`, db).length, 0);
 seedOwner(MAIN_WORKSPACE_ID, 'main-owner', db);
 inviteMember('main-owner', MAIN_WORKSPACE_ID, 'main-user', 'Commenter', db);
 joinWorkspace('main-user', MAIN_WORKSPACE_ID, db);
+inviteMember('main-owner', MAIN_WORKSPACE_ID, 'u09', 'Admin', db);
+joinWorkspace('u09', MAIN_WORKSPACE_ID, db);
+assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u09', db), 'Admin', `${MAIN_BOSS_EMAIL} 在主工作區應固定為 Admin`);
 assert.throws(
   () => changeMemberRole('main-owner', MAIN_WORKSPACE_ID, 'main-user', 'Member', db),
   /主工作區成員固定為 Commenter/,
+);
+assert.throws(
+  () => changeMemberRole('main-owner', MAIN_WORKSPACE_ID, 'u09', 'Commenter', db),
+  /主工作區成員固定為 Admin/,
 );
 assert.throws(
   () => changeMemberRole('main-owner', MAIN_WORKSPACE_ID, 'main-owner', 'Admin', db),

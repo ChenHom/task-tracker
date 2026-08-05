@@ -153,10 +153,10 @@ Owner 每次啟動或巡檢時的看板治理、驗收、阻塞、想法與封�
 
 - 固定 UUID：`11a82028-fc50-466a-a723-e002032cd9a6`
 - 固定名稱：`主協作工作區`
-- `user01@test.local` 是唯一 Owner；只有 user02-06 與 user09 同步為 Commenter，其他 user 不會加入。
+- `user01@test.local` 是唯一 Owner；user02-06 同步為 Commenter、user09 同步為 Admin，其他 user 不會加入。
 - Commenter 在任何 workspace 都可修改自己建立 task 的 description，但不可修改標題、狀態、其他屬性、附件或他人 task。
 - 留言只能由原作者透過 PATCH 編輯，`DELETE /api/comments/:id` 固定回 405；不提供留言刪除或由刪除觸發的 notification 清理流程。
-- 只有主協作工作區會同步 user02-06 與 user09 為 Commenter；其他 workspace 的新成員預設仍為 Member，Owner 可另行調整角色。
+- 只有主協作工作區會同步 user02-06 為 Commenter、user09 為 Admin；其他 workspace 由 user01 建立時自動加入 user09 為 Admin，既有 user01-owned workspace 由啟動同步升級，其他 workspace 不受影響。
 - 主協作工作區所有人都可建立 Todo 討論與留言；user01 先留下 `【OWNER想法】`，再通知 user02-06 與 user09。
 - 討論沒有等待期限，成員隨時可以回覆；主工作區留言沒有任何格式閘門。
 - 只有 user01 能以 `【結論】`/`【結論：不實作】`/`【未達共識】` 的完整證據將主工作區 task 由 Todo 直接移到 Done；收尾前必須有 user01 留下的完整六欄 `【OWNER想法】`。未達共識需留下分歧、缺少資訊與下次建議，三種收尾都不要求任何確認留言。

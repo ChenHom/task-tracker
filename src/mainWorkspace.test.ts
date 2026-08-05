@@ -8,6 +8,7 @@ import { seedOwner, inviteMember, joinWorkspace, getMemberRole, registerMemberPr
 import { renameWorkspace, registerWorkspaceProjections } from './workspace';
 import { changeTaskDescription, getTask, listTasks, registerTaskProjections } from './task';
 import {
+  MAIN_BOSS_EMAIL,
   MAIN_OWNER_EMAIL,
   MAIN_POLICY_DESCRIPTION,
   MAIN_POLICY_TITLE,
@@ -42,7 +43,7 @@ appendEvent(
   db,
 );
 seedOwner(MAIN_WORKSPACE_ID, 'u01', db);
-inviteMember('u01', MAIN_WORKSPACE_ID, 'u09', 'Commenter', db);
+inviteMember('u01', MAIN_WORKSPACE_ID, 'u09', 'Admin', db);
 joinWorkspace('u09', MAIN_WORKSPACE_ID, db);
 appendEvent(
   'Member',
@@ -104,7 +105,7 @@ assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u02', db), 'Commenter');
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u03', db), 'Commenter');
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u05', db), 'Commenter');
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u06', db), 'Commenter');
-assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u09', db), 'Commenter');
+assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u09', db), 'Admin', `${MAIN_BOSS_EMAIL} 應由同步流程固定為 Admin`);
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u07', db), null, '主工作區只同步 user01-06 與 user09，其他使用者不得進入');
 syncMainWorkspaceUser('u07', db);
 assert.strictEqual(getMemberRole(MAIN_WORKSPACE_ID, 'u07', db), null, '非白名單使用者登入時也不得被加入主工作區');
