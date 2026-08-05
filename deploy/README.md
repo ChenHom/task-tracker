@@ -28,6 +28,14 @@ systemctl --user reload task-tracker.service
 `/api/health` `rev` matches `git rev-parse master`). Build failure or readback mismatch
 notifies Discord via `sim/notify-human.sh` and leaves the old version running.
 
+Pilot copy:
+
+`deploy/sim-autodeploy-pilot.service` is a dry-run sandbox copy. It keeps the same repo
+build path, but writes to `~/.local/state/sim-autodeploy-pilot` and sets
+`SIM_AUTODEPLOY_SKIP_RESTART=1`, so it can exercise the build, user-bus read-only check,
+and local health readback without restarting the live `task-tracker.service`.
+Treat it as manual-start only; do not enable it alongside the live autodeploy path.
+
 Install/update:
 
 ```bash

@@ -1,0 +1,18 @@
+[Unit]
+Description=Task Tracker autodeploy pilot (sandboxed dry-run copy)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hom/code/task-tracker
+ExecStart=/home/hom/code/task-tracker/deploy/sim-autodeploy.sh
+Environment=PATH=/home/hom/.nvm/versions/node/v24.3.0/bin:/usr/local/bin:/usr/bin:/bin
+Environment=SIM_AUTODEPLOY_REPO=/home/hom/code/task-tracker
+Environment=SIM_AUTODEPLOY_STATE_DIR=/home/hom/.local/state/sim-autodeploy-pilot
+Environment=SIM_AUTODEPLOY_SKIP_RESTART=1
+Environment=SIM_AUTODEPLOY_TARGET_SERVICE=task-tracker.service
+Environment=SIM_AUTODEPLOY_HEALTH_URL=http://localhost:3000/api/health
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/home/hom/code/task-tracker /home/hom/.local/state/sim-autodeploy-pilot
