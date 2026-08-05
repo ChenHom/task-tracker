@@ -7,6 +7,7 @@ This is the long-form companion to [AGENTS.md](../../AGENTS.md). `AGENTS.md` sta
 | Need | Read |
 | --- | --- |
 | Current shipped state, verified rollout notes, and remaining backlog | [docs/tasks/current.md](../tasks/current.md) |
+| AI sweep / agent usage inventory, transparency baseline, and legal-confirmation gaps | [docs/security/ai-usage-inventory.md](../security/ai-usage-inventory.md) |
 | Notable release history and changelog entry format | [CHANGELOG.md](../../CHANGELOG.md) |
 | HTTP API endpoint contracts | [docs/api.md](../api.md) |
 | Single design baseline and current architecture | [design.md](../../design.md) |
