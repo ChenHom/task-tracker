@@ -16,38 +16,39 @@
 - Modify: `sim/run.test.ts` import list and worktree safety test section.
 - Test: `sim/run.test.ts`
 
-- [ ] Add `pruneStaleWorktreeRegistration` to the `./run` imports.
-- [ ] Add a temporary Git repository test that creates `sim/user03` one commit ahead, removes only its worktree directory, calls `pruneStaleWorktreeRegistration(repo, worktree)`, asserts the helper returns `true`, asserts the branch head is unchanged and remains one commit ahead, reattaches the worktree, and asserts `git branch --show-current` is `sim/user03`.
-- [ ] Use `try/finally` to run `git worktree remove --force` when the temporary worktree exists and then remove the temporary repository.
-- [ ] Run `node --import tsx sim/run.test.ts` and confirm RED because the helper is not exported yet.
+- [x] Add `isPrunableWorktreeEntry` to the `./run` imports.
+- [x] Add a parser fixture containing normal, prunable, and unrelated worktree entries; assert only the exact target path marked `prunable` returns `true`.
+- [x] Keep branch preservation and actual prune/reattach verification in the live shell steps, because this repository's TypeScript test runner cannot spawn temporary Git repositories inside the restricted sandbox.
+- [x] Run the RED check before implementation; it failed because the parser helper was not exported yet.
 
 ### Task 2: Implement the minimal recovery seam
 
 **Files:**
 - Modify: `sim/run.ts` near `validateMemberWorktree()` and `ensureWorktree()`.
 
-- [ ] Export `pruneStaleWorktreeRegistration(repoRoot, worktreePath)`. Return `false` when the path exists or its exact `git worktree list --porcelain` entry is not marked `prunable`; otherwise run `git worktree prune --expire now` in `repoRoot` and return `true`.
-- [ ] Call `pruneStaleWorktreeRegistration(RUN.repoRoot, wt(m))` only after `ensureWorktree()` has found the expected path missing and before existing branch-ahead handling.
-- [ ] Leave existing branch handling unchanged: ahead branches are reattached, zero-ahead branches may be recreated from `master`.
-- [ ] Do not add `--force`, delete ahead branches, reset files, merge user03, or change timer behavior.
-- [ ] Run `node --import tsx sim/run.test.ts` and confirm GREEN.
+- [x] Export `isPrunableWorktreeEntry(listing, worktreePath)` and make it return `true` only when the exact target block from `git worktree list --porcelain` is marked `prunable`.
+- [x] Export `pruneStaleWorktreeRegistration(repoRoot, worktreePath)`. Return `false` when the path exists or the exact listing entry is not prunable; otherwise run `git worktree prune --expire now` in `repoRoot` and return `true`.
+- [x] Call `pruneStaleWorktreeRegistration(RUN.repoRoot, wt(m))` only after `ensureWorktree()` has found the expected path missing and before existing branch-ahead handling.
+- [x] Leave existing branch handling unchanged: ahead branches are reattached, zero-ahead branches may be recreated from `master`.
+- [x] Do not add `--force`, delete ahead branches, reset files, merge user03, or change timer behavior.
+- [x] Run `node --import tsx sim/run.test.ts` and confirm GREEN.
 
 ### Task 3: Verify code and repository safety
 
 **Files:**
 - No additional files.
 
-- [ ] Run `npx tsc --noEmit`, `npx tsc -p sim/tsconfig.json`, `node --import tsx sim/run.test.ts`, and `git diff --check`; all must exit 0.
-- [ ] Run `npm test`; lint, application tests, sim tests, escalation tests, and production runner tests must pass.
-- [ ] Confirm `git diff --name-only` contains only the intended plan/spec and recovery implementation/test files, and `git rev-parse sim/user03` remains `66f31351f27346155cea0a8642f480de0f59b576`.
+- [x] Run `npx tsc --noEmit`, `npx tsc -p sim/tsconfig.json`, the focused parser assertion, and `git diff --check`.
+- [x] Run `npm test`; lint, application tests, sim tests, escalation tests, and production runner tests passed.
+- [x] Confirm `git diff --name-only` contains only the intended plan/spec and recovery implementation/test files, and `git rev-parse sim/user03` remains `66f31351f27346155cea0a8642f480de0f59b576`.
 
 ### Task 4: Recover live stale metadata without starting an AI run
 
 **Files:**
 - Runtime metadata only: `.git/worktrees/*` and `sim-work/user03`.
 
-- [ ] Capture `git rev-parse sim/user03` before pruning.
-- [ ] Run `git worktree prune --dry-run`, then `git worktree prune`; only confirmed missing `user03`–`user06` registrations may be removed.
-- [ ] Run `git worktree add sim-work/user03 sim/user03`, then verify `git -C sim-work/user03 status --short --branch` and the unchanged branch head.
+- [x] Capture `git rev-parse sim/user03` before pruning.
+- [ ] Run `git worktree prune --dry-run`, then `git worktree prune` when the host permits writes to `.git/worktrees`; only confirmed missing `user03`–`user06` registrations may be removed.
+- [ ] If the current sandbox blocks `.git` writes, let the next existing Owner timer invoke the new self-heal path, then verify `git -C sim-work/user03 status --short --branch` and the unchanged branch head.
 - [ ] Verify `/api/health`, `systemctl --user list-timers --all 'sim-sweep-*' --no-pager`, and that `sim-logs/.run.lock` is absent.
 - [ ] Do not run `npm run sim -- --sweep`; the next existing Owner timer tick is the runtime validation.

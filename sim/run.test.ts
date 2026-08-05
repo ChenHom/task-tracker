@@ -78,6 +78,7 @@ import {
   AGREE_MARKER,
   CONCERN_MARKER,
   processNotificationGate,
+  isPrunableWorktreeEntry,
   reconcileManagedRoster,
   runNotificationSweep,
   runNotificationSweepForMember,
@@ -94,6 +95,10 @@ const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
 const ownerProbe = source.match(/function probeOwnerRunner\(\): Promise<boolean> \{[\s\S]*?\n\}/)?.[0];
 assert.ok(ownerProbe?.includes('const child = execFile('), 'owner probe 必須保留 child，才能管理 stdin lifecycle');
 assert.ok(ownerProbe?.includes('child.stdin?.end()'), 'owner probe 必須關閉 Codex stdin，避免等待 EOF 而逾時');
+assert.ok(
+  source.includes('pruneStaleWorktreeRegistration(RUN.repoRoot, wt(m));'),
+  'missing member worktree 必須先清理確認過的 stale registration',
+);
 assert.ok(source.includes('const SWEEP_OWNER_TIMEOUT = 20 * 60 * 1000;'), 'owner sweep 基準必須至少 20 分鐘');
 assert.ok(source.includes('const SWEEP_MEMBER_TIMEOUT = 20 * 60 * 1000;'), 'team member sweep 必須至少 20 分鐘');
 assert.ok(
@@ -1155,6 +1160,39 @@ assert.throws(() => assertPathWithin(symlinkRoot, join(symlinkRoot, 'sim-work/us
 assert.doesNotThrow(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'master'));
 assert.throws(() => validateGitRootFacts('/tmp/repo/nested', '/tmp/repo', 'master'), /Git top-level/);
 assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test'), /必須位於 master/);
+
+// ── stale worktree metadata：只接受目標路徑自己的 prunable entry ──
+{
+  const listing = [
+    'worktree /tmp/task-tracker',
+    'HEAD 1111111111111111111111111111111111111111',
+    'branch refs/heads/master',
+    '',
+    'worktree /tmp/task-tracker/sim-work/user03',
+    'HEAD 2222222222222222222222222222222222222222',
+    'branch refs/heads/sim/user03',
+    'prunable gitdir file points to non-existent location',
+    '',
+    'worktree /tmp/task-tracker/sim-work/user04',
+    'HEAD 3333333333333333333333333333333333333333',
+    'branch refs/heads/sim/user04',
+  ].join('\n');
+  assert.strictEqual(
+    isPrunableWorktreeEntry(listing, '/tmp/task-tracker/sim-work/user03'),
+    true,
+    '目標 worktree 缺失且 entry 是 prunable 時才可恢復',
+  );
+  assert.strictEqual(
+    isPrunableWorktreeEntry(listing, '/tmp/task-tracker/sim-work/user04'),
+    false,
+    '非 prunable entry 不可誤清理',
+  );
+  assert.strictEqual(
+    isPrunableWorktreeEntry(listing, '/tmp/task-tracker/sim-work/user05'),
+    false,
+    '其他 worktree 不可誤匹配',
+  );
+}
 
 // ── driver commit：node_modules symlink 不得進 index，正常 task 檔仍可提交 ──
 {

@@ -2047,12 +2047,31 @@ function validateMemberWorktree(m: Member): void {
   }
 }
 
+export function isPrunableWorktreeEntry(listing: string, worktreePath: string): boolean {
+  const target = resolve(worktreePath);
+  return listing.split(/\n(?=worktree )/).some((entry) => {
+    const pathLine = entry.split('\n').find((line) => line.startsWith('worktree '));
+    return pathLine !== undefined
+      && resolve(pathLine.slice('worktree '.length)) === target
+      && entry.split('\n').some((line) => line.startsWith('prunable'));
+  });
+}
+
+export function pruneStaleWorktreeRegistration(repoRoot: string, worktreePath: string): boolean {
+  if (existsSync(worktreePath)) return false;
+  const listing = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: repoRoot, encoding: 'utf8' });
+  if (!isPrunableWorktreeEntry(listing, worktreePath)) return false;
+  execFileSync('git', ['worktree', 'prune', '--expire', 'now'], { cwd: repoRoot, encoding: 'utf8' });
+  return true;
+}
+
 // 巡檢的 worktree 可能已被清掉：branch 還有未合併工作就掛回來；branch 已合併/不存在就從 master 重開
 function ensureWorktree(m: Member, scenario: Scenario): void {
   if (existsSync(wt(m))) {
     validateMemberWorktree(m);
     return;
   }
+  pruneStaleWorktreeRegistration(RUN.repoRoot, wt(m));
   const hasBranch = !!git(['branch', '--list', branch(m)]);
   if (hasBranch && branchAhead(m) === 0) git(['branch', '-D', branch(m)]);
   if (hasBranch && branchAhead(m) > 0) git(['worktree', 'add', wt(m), branch(m)]);
