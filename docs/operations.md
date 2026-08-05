@@ -182,15 +182,15 @@ SIM notification preflight 已由 timer wrapper 設定 `SIM_NOTIFICATION_GATE=1`
 
 啟用時，每個自動 Owner 與已設定 member session（`user01`、`user02`–`user05`）會先 snapshot 自己未讀的 `GET /api/notifications` rows。driver 會讀取來源 task/comment，並在一般看板工作前執行專用 API-only notification session；`user06` 依主工作區發想決策跳過通知巡檢。
 
-Main-workspace sources require a new post-snapshot comment by that actor; when there is no addition the required text is `已閱讀，目前無補充。`. The driver, not the AI session, marks a notification read after this verification. Normal-workspace sources may be read without a compulsory reply. A `403`/`404` or deleted source is logged and marked read; malformed data, network/5xx failures, a failed preflight, or missing/invalid main reply stay unread and skip that actor's ordinary session for this run.
+Main-workspace sources receive the driver's exact post-snapshot reply `已閱讀，目前無補充。`; the driver then verifies it and marks the notification read. Normal-workspace sources are read without a reply. Notification content never starts an AI session, receives a cookie, or gains shell, file, Git, state-change, or external-network authority. A `403`/`404` or deleted source is logged and marked read; malformed data, network/5xx failures, or a failed main reply stay unread and skip that actor's ordinary session for this run.
 
 The snapshot is bounded to login time. Notifications received later wait for the next actor session. The runner never creates a self-mention in notification handling. `user09` is not currently a sim runner, so this automation does not consume that account's notifications. This is not a frontend inbox and does not authorize running a live sweep.
 
-每筆未讀 notification 都是獨立處理單位：同一 task 的三筆通知會各自建立 bounded prompt、各自呼叫 AI、各自驗證留言並 read back。內容重複時，後續通知仍須由 AI 閱讀判斷，但可只留下固定的 `已閱讀，目前無補充。`（或等價的無補充訊息）；不得把多筆通知合成一筆。每個 prompt 上限 16,000 字元，超長留言會保留來源留言並明確省略其餘 context，固定規則與來源仍超限時 fail closed 並保留未讀。
+每筆未讀 notification 都是獨立處理單位；同一 task 的三筆通知仍各自讀取來源、套用固定回覆（僅主工作區）並 readback，不得合併。這是 driver 固定 allowlist，不以 prompt 或模型判斷授權。
 
 #### 全成員通知巡檢（啟用時）
 
-設定 `SIM_NOTIFICATION_GATE=1` 時，`--sweep team` 與 `--sweep both` 每個 tick 會依序巡檢 user02–user05，與成員是否有 Todo/Doing 任務無關。每位成員都會登入並 snapshot 自己的未讀通知；零未讀只寫入 `notification-sweep` 結束紀錄，不啟動 AI。若有未讀，才啟動 dedicated API-only notification session，沿用上方來源讀取、主工作區回覆驗證、不得 @自己與 driver 標已讀規則。
+設定 `SIM_NOTIFICATION_GATE=1` 時，`--sweep team` 與 `--sweep both` 每個 tick 會依序巡檢 user02–user05，與成員是否有 Todo/Doing 任務無關。每位成員都會登入並 snapshot 自己的未讀通知；零未讀只寫入 `notification-sweep` 結束紀錄。若有未讀，由 driver 執行上方的固定 API allowlist，不啟動 AI。
 
 恢復後的常規檢查：
 
@@ -215,7 +215,7 @@ Owner 依成員 profile 與目前 Todo/Doing 負載直接 PATCH `assignee_id`，
 - `task-tracker.service` must answer HTTP 200 at `http://localhost:3000/api/health`.
 - Run `npm run seed` once so `user01-06@test.local` and `user09@test.local` exist.
 - The `claude`, `codex`, and `agy` CLIs must be installed, authenticated, and available in `PATH`.
-- Claude's five-hour quota has recovered, so user06 ordinary work uses Claude `claude-sonnet-5` with no AGY fallback; its notification preflight remains Codex `gpt-5.4-mini`. No current route uses or authorizes `--dangerously-skip-permissions`.
+- Claude's five-hour quota has recovered, so user06 ordinary work uses Claude `claude-sonnet-5` with no AGY fallback. Notification preflight does not invoke a model. No current route uses or authorizes `--dangerously-skip-permissions`.
 - Historical evidence only: the following AGY curl capability probe was invoked once on 2026-07-16:
 
   ```bash
