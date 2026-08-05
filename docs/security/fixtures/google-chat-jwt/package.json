@@ -1,0 +1,9 @@
+{
+  "name": "google-chat-jwt-fixture",
+  "private": true,
+  "description": "Isolated, non-production fixture: reproduces openclaw-clone's Google Chat webhook JWT verification behavior using the exact google-auth-library version it depends on. No real tokens/JWKS/services are used.",
+  "type": "module",
+  "dependencies": {
+    "google-auth-library": "10.6.1"
+  }
+}
