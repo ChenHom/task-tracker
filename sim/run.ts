@@ -8,8 +8,14 @@
 // 回退：git reset --hard <本場 tag>；git worktree remove sim-work/<u> --force；git branch -D sim/<u>
 import { execFile, execFileSync } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync, symlinkSync, unlinkSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import {
+  createNotificationTelemetryRecorder,
+  type NotificationTelemetryErrorCategory,
+  type NotificationTelemetryRecord,
+  type NotificationTelemetryRecorder,
+} from './notificationTelemetry';
 import {
   AGREE_MARKER,
   CONCERN_MARKER,
@@ -31,6 +37,9 @@ import {
 const BASE = 'http://localhost:3000';
 export const ROOT = join(__dirname, '..');
 const LOG_DIR = join(ROOT, 'sim-logs'); // 產物一律留在 task-tracker 底下，方便統一查看
+const NOTIFICATION_TELEMETRY_DIR = join(LOG_DIR, 'notification-preflight');
+const NOTIFICATION_TELEMETRY_WORKFLOW_VERSION = 'legacy-team-sweep-v1';
+const NOTIFICATION_TELEMETRY_CONFIGURATION_VERSION = 'notification-gate-v1';
 const SMOKE = process.argv.includes('--smoke');
 const FAST = process.argv.includes('--fast');
 const SWEEP = process.argv.includes('--sweep');
@@ -784,7 +793,6 @@ export async function processNotificationGate(input: {
   runPreflight: (prompt: string, notificationId?: string) => Promise<SessionResult>;
   log: (line: string) => void;
   snapshotAt: string;
-  jar?: string;
 }): Promise<NotificationGateResult> {
   let preflightStarted = false;
   let snapshot: NotificationRow[];
@@ -840,7 +848,7 @@ export async function processNotificationGate(input: {
       const beforeCommentIds = new Set(comments.map((comment) => comment.comment_id));
       preflightStarted = true;
       const preflight = await input.runPreflight(
-        notificationGatePrompt({ actor, jar: input.jar ?? '', source: resolved }),
+        notificationGatePrompt({ actor, cookie: input.cookie, source: resolved }),
         notification.notification_id,
       );
       if (preflight.errored || preflight.timedOut) throw new Error('通知 preflight session 失敗');
@@ -876,9 +884,77 @@ export interface NotificationSweepForMemberInput {
   loginActor: (email: string) => Promise<string>;
   runPreflight: (prompt: string) => Promise<SessionResult>;
   log: (line: string) => void;
+  telemetry?: NotificationTelemetryRecorder;
   sleep?: (milliseconds: number) => Promise<void>;
   snapshotAt?: string;
-  jar?: string;
+  deploymentRevision?: string;
+}
+
+function telemetryFailure(error: unknown): { outcome: 'failed' | 'refused'; errorCategory: NotificationTelemetryErrorCategory; evaluationCode: 'login_failed' | 'preflight_failed' | 'permission_refused' } {
+  const message = describeError(error);
+  if (/permission|forbidden|access denied|not permitted|HTTP 40[13]/i.test(message)) {
+    return { outcome: 'refused', errorCategory: 'permission', evaluationCode: 'permission_refused' };
+  }
+  if (error instanceof TypeError || /ECONN|UND_ERR_SOCKET|fetch failed/i.test(message)) {
+    return { outcome: 'failed', errorCategory: 'network', evaluationCode: 'preflight_failed' };
+  }
+  if (/timeout|逾時/i.test(message)) return { outcome: 'failed', errorCategory: 'timeout', evaluationCode: 'preflight_failed' };
+  if (/429|quota|rate.?limit|resource exhausted/i.test(message)) return { outcome: 'failed', errorCategory: 'quota', evaluationCode: 'preflight_failed' };
+  return { outcome: 'failed', errorCategory: 'process', evaluationCode: 'preflight_failed' };
+}
+
+function recordNotificationTelemetry(
+  recorder: NotificationTelemetryRecorder | undefined,
+  log: (line: string) => void,
+  event: NotificationTelemetryRecord,
+): void {
+  if (!recorder) return;
+  try { recorder.record(event); }
+  catch { log('[notification-sweep] telemetry emit failed'); }
+}
+
+function telemetryAttemptsFor(result: SessionResult, route: ModelRoute, startedAt: Date, endedAt: Date): SessionAttempt[] {
+  if (result.attempts?.length) return result.attempts;
+  return [{
+    route: { ...route }, retry: 0, started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(),
+    timedOut: result.timedOut, errored: result.errored, quotaExhausted: result.quotaExhausted,
+    errorCategory: result.errorCategory, tokenTotal: result.tokenTotal ?? null,
+  }];
+}
+
+function recordFinalPreflightTelemetry(input: {
+  recorder: NotificationTelemetryRecorder | undefined;
+  log: (line: string) => void;
+  deploymentRevision: string;
+  attempts: readonly SessionAttempt[];
+  ready: boolean;
+}): void {
+  for (const attempt of input.attempts) {
+    const failed = attempt.errored || attempt.timedOut;
+    const errorCategory = failed
+      ? attempt.errorCategory ?? (attempt.timedOut ? 'timeout' : 'process')
+      : 'none';
+    recordNotificationTelemetry(input.recorder, input.log, {
+      deployment_revision: input.deploymentRevision,
+      workflow_version: NOTIFICATION_TELEMETRY_WORKFLOW_VERSION,
+      configuration_version: NOTIFICATION_TELEMETRY_CONFIGURATION_VERSION,
+      agent: attempt.route.runner,
+      model: attempt.route.model,
+      tool_type: 'agent.preflight',
+      started_at: attempt.started_at,
+      ended_at: attempt.ended_at,
+      outcome: !failed ? 'succeeded' : errorCategory === 'permission' ? 'refused' : 'failed',
+      error_category: errorCategory,
+      retry: attempt.retry,
+      token_total: attempt.tokenTotal,
+      latency_ms: Math.max(0, Date.parse(attempt.ended_at) - Date.parse(attempt.started_at)),
+      evaluation_code: !failed && input.ready
+        ? 'preflight_ready'
+        : errorCategory === 'permission'
+          ? 'permission_refused'
+          : 'preflight_failed',
+    });
+  }
 }
 
 export async function runNotificationSweepForMember(
@@ -886,11 +962,47 @@ export async function runNotificationSweepForMember(
 ): Promise<NotificationSweepResult> {
   let cookie: string;
   const sleep = input.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const route = notificationRouteForMember(input.member);
+  const deploymentRevision = input.deploymentRevision ?? 'unknown';
   for (let attempt = 0; ; attempt++) {
+    const startedAt = new Date();
     try {
       cookie = await input.loginActor(input.member.email);
+      recordNotificationTelemetry(input.telemetry, input.log, {
+        deployment_revision: deploymentRevision,
+        workflow_version: NOTIFICATION_TELEMETRY_WORKFLOW_VERSION,
+        configuration_version: NOTIFICATION_TELEMETRY_CONFIGURATION_VERSION,
+        agent: route.runner,
+        model: route.model,
+        tool_type: 'auth.login',
+        started_at: startedAt.toISOString(),
+        ended_at: new Date().toISOString(),
+        outcome: 'succeeded',
+        error_category: 'none',
+        retry: attempt,
+        token_total: null,
+        latency_ms: Date.now() - startedAt.getTime(),
+        evaluation_code: 'login_succeeded',
+      });
       break;
     } catch (error) {
+      const result = telemetryFailure(error);
+      recordNotificationTelemetry(input.telemetry, input.log, {
+        deployment_revision: deploymentRevision,
+        workflow_version: NOTIFICATION_TELEMETRY_WORKFLOW_VERSION,
+        configuration_version: NOTIFICATION_TELEMETRY_CONFIGURATION_VERSION,
+        agent: route.runner,
+        model: route.model,
+        tool_type: 'auth.login',
+        started_at: startedAt.toISOString(),
+        ended_at: new Date().toISOString(),
+        outcome: result.outcome,
+        error_category: result.errorCategory,
+        retry: attempt,
+        token_total: null,
+        latency_ms: Date.now() - startedAt.getTime(),
+        evaluation_code: result.evaluationCode === 'permission_refused' ? result.evaluationCode : 'login_failed',
+      });
       const retryable = error instanceof TypeError && attempt < 2;
       input.log(`[notification-sweep:${input.member.user}] login 失敗：${describeError(error)}${retryable ? `；${attempt + 1}/2 秒後重試` : ''}`);
       if (!retryable) return { actor: input.member.email, ready: false, unreadCount: 0, preflightStarted: false };
@@ -898,14 +1010,37 @@ export async function runNotificationSweepForMember(
     }
   }
 
+  const preflightAttempts: SessionAttempt[] = [];
   const gate = await processNotificationGate({
     actor: input.member,
     cookie,
     request: input.request,
-    runPreflight: input.runPreflight,
+    runPreflight: async (prompt) => {
+      const startedAt = new Date();
+      try {
+        const result = await input.runPreflight(prompt);
+        preflightAttempts.push(...telemetryAttemptsFor(result, route, startedAt, new Date()));
+        return result;
+      } catch (error) {
+        const result = telemetryFailure(error);
+        const endedAt = new Date();
+        preflightAttempts.push({
+          route: { ...route }, retry: 0, started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(),
+          timedOut: result.errorCategory === 'timeout', errored: true,
+          errorCategory: result.errorCategory, tokenTotal: null,
+        });
+        throw error;
+      }
+    },
     log: input.log,
     snapshotAt: input.snapshotAt ?? new Date().toISOString(),
-    jar: input.jar,
+  });
+  recordFinalPreflightTelemetry({
+    recorder: input.telemetry,
+    log: input.log,
+    deploymentRevision,
+    attempts: preflightAttempts,
+    ready: gate.ready,
   });
   const result = {
     actor: input.member.email,
@@ -934,6 +1069,18 @@ export async function runNotificationSweep(
     }
   }
   return results;
+}
+
+async function deployedRevisionForTelemetry(request: NotificationGateRequest, log: (line: string) => void): Promise<string> {
+  try {
+    const response = await request('/api/health');
+    const revision = isRecord(response.body) ? response.body.rev : undefined;
+    if (response.status === 200 && typeof revision === 'string' && /^[A-Za-z0-9._-]+$/.test(revision)) return revision;
+    log(`[notification-sweep] deployment revision unavailable: HTTP ${response.status}`);
+  } catch (error) {
+    log(`[notification-sweep] deployment revision unavailable: ${describeError(error)}`);
+  }
+  return 'unknown';
 }
 
 const git = (args: string[], cwd = RUN.repoRoot) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -1094,6 +1241,21 @@ export interface SessionResult {
   errored: boolean;
   quotaExhausted?: boolean;
   fallbackUsed?: boolean;
+  errorCategory?: NotificationTelemetryErrorCategory;
+  tokenTotal?: number | null;
+  attempts?: SessionAttempt[];
+}
+
+export interface SessionAttempt {
+  route: ModelRoute;
+  retry: number;
+  started_at: string;
+  ended_at: string;
+  timedOut: boolean;
+  errored: boolean;
+  quotaExhausted?: boolean;
+  errorCategory?: NotificationTelemetryErrorCategory;
+  tokenTotal: number | null;
 }
 
 export function commitIfSessionSucceeded(result: SessionResult, commit: () => boolean): boolean {
@@ -1128,7 +1290,6 @@ async function runActorSessionWithNotificationGate(input: {
   label: string;
   actor: Pick<NotificationGateActor, 'email' | 'name'>;
   getNotificationCookie: () => Promise<string>;
-  jar: string;
   runner: Runner;
   model: string;
   notificationRoute?: ModelRoute;
@@ -1152,7 +1313,6 @@ async function runActorSessionWithNotificationGate(input: {
         actor: input.actor,
         cookie,
         request: api,
-        jar: input.jar,
         runPreflight: (prompt, notificationId) => runSession(
           `${input.label}-通知-${notificationId ?? 'unknown'}`, notificationRoute.runner, notificationRoute.model, prompt,
           {
@@ -1188,7 +1348,7 @@ export function buildRunnerInvocation(
   // sandbox 只對 codex 有效（claude 走 --allowedTools，agy 沒有對應開關）。省略時是
   // 'workspace-write'，legacy 呼叫端因此行為不變；需要真唯讀的呼叫端要自己傳 'read-only'
   // ——工具白名單擋不住 codex，它根本不看 opts.tools。
-  opts: { cwd: string; logFile: string; tools?: string; sandbox?: 'read-only' | 'workspace-write' },
+  opts: { cwd: string; logFile: string; tools?: string; sandbox?: 'read-only' | 'workspace-write'; captureLastMessage?: boolean },
 ): RunnerInvocation {
   if (route.runner === 'claude') {
     return {
@@ -1204,7 +1364,9 @@ export function buildRunnerInvocation(
         '-s', sandbox,
         // network_access 是 workspace-write 專屬設定；read-only 下沒有意義，不要附加。
         ...(sandbox === 'workspace-write' ? ['-c', 'sandbox_workspace_write.network_access=true'] : []),
-        '-m', route.model, '--output-last-message', `${opts.logFile}.last`, prompt],
+        '-m', route.model,
+        ...(opts.captureLastMessage === false ? [] : ['--output-last-message', `${opts.logFile}.last`]),
+        prompt],
     };
   }
   return {
@@ -1229,15 +1391,34 @@ interface SessionOptions {
   promptArtifacts?: PromptArtifact[];
   promptLabel?: string;
   fallback?: ModelRoute;
+  captureContent?: boolean;
 }
 
-function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opts: SessionOptions): Promise<SessionResult> {
+function sessionErrorCategory(output: string, timedOut: boolean, quotaExhausted: boolean): NotificationTelemetryErrorCategory {
+  if (timedOut) return 'timeout';
+  if (quotaExhausted) return 'quota';
+  if (/permission|forbidden|access denied|not permitted|HTTP 40[13]/i.test(output)) return 'permission';
+  if (/ECONN|UND_ERR_SOCKET|fetch failed/i.test(output)) return 'network';
+  return 'process';
+}
+
+export function parseReportedTokenTotal(output: string): number | null {
+  const matches = [...output.matchAll(/(?:total_tokens|total tokens|tokens used)(?:["']\s*)?\s*[:=]\s*([0-9][0-9,]*)/gi)];
+  const token = matches.at(-1)?.[1]?.replaceAll(',', '');
+  if (!token) return null;
+  const total = Number(token);
+  return Number.isSafeInteger(total) && total >= 0 ? total : null;
+}
+
+function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opts: SessionOptions, retry: number): Promise<SessionResult> {
+  const startedAt = new Date();
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${label}.log`);
-  if (opts.runDir) {
+  const captureContent = opts.captureContent !== false;
+  if (opts.runDir && captureContent) {
     const artifact = writePromptArtifact(opts.runDir, opts.promptLabel ?? label, prompt);
     opts.promptArtifacts?.push(artifact);
   }
-  const invocation = buildRunnerInvocation(route, prompt, { cwd: opts.cwd, logFile, tools: opts.tools });
+  const invocation = buildRunnerInvocation(route, prompt, { cwd: opts.cwd, logFile, tools: opts.tools, captureLastMessage: captureContent });
   console.log(`[${label}] 開始（${route.runner}/${route.model}）`);
   mkdirSync(NPM_CACHE_DIR, { recursive: true });
   return new Promise((resolve) => {
@@ -1250,12 +1431,25 @@ function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opt
         const timedOut = !!e && (e.killed === true || e.signal === 'SIGKILL');
         const output = `${stdout}\n${stderr}\n${err ? String(err) : ''}`;
         const quotaExhausted = !!err && isQuotaExhaustion(output);
+        const errorCategory = err ? sessionErrorCategory(output, timedOut, quotaExhausted) : 'none';
+        const endedAt = new Date();
+        const tokenTotal = parseReportedTokenTotal(output);
         const errNote = err ? `${String(err)}${timedOut ? ` [KILLED signal=${e?.signal} → 逾時 timeout=${Math.round(opts.timeoutMs / 60000)}分]` : ''}` : 'none';
-        writeFileSync(logFile, `PROMPT:\n${prompt}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\nERR:${errNote}\n`);
-        const tail = (stdout || '').trim().split('\n').slice(-2).join(' / ');
-        const why = timedOut ? `（逾時 ${Math.round(opts.timeoutMs / 60000)} 分被中止）` : err ? `（異常: ${String(err).slice(0, 80)}）` : '';
+        if (captureContent) writeFileSync(logFile, `PROMPT:\n${prompt}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\nERR:${errNote}\n`);
+        const tail = captureContent ? (stdout || '').trim().split('\n').slice(-2).join(' / ') : '內容未記錄';
+        const why = timedOut ? `（逾時 ${Math.round(opts.timeoutMs / 60000)} 分被中止）` : err ? (captureContent ? `（異常: ${String(err).slice(0, 80)}）` : '（異常）') : '';
         console.log(`[${label}] 結束${why} — ${tail.slice(0, 200)}`);
-        resolve({ timedOut, errored: !!err, quotaExhausted }); // 單一 session 失敗不中斷整場
+        resolve({
+          timedOut,
+          errored: !!err,
+          quotaExhausted,
+          errorCategory,
+          tokenTotal,
+          attempts: [{
+            route: { ...route }, retry, started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(),
+            timedOut, errored: !!err, quotaExhausted, errorCategory, tokenTotal,
+          }],
+        }); // 單一 session 失敗不中斷整場
       });
     if (route.runner !== 'claude') child.stdin?.end(); // codex/agy headless 看到 piped stdin 會等 EOF
   });
@@ -1269,7 +1463,7 @@ function runSession(
   opts: SessionOptions,
 ): Promise<SessionResult> {
   const primary = { runner, model };
-  return runSessionAttempt(label, primary, prompt, opts).then(async (result) => {
+  return runSessionAttempt(label, primary, prompt, opts, 0).then(async (result) => {
     if (!shouldFallbackToModel(result, !!opts.fallback)) return result;
     const fallback = opts.fallback!;
     console.log(`[${label}] primary quota 已滿，改用 fallback（${fallback.runner}/${fallback.model}）`);
@@ -1278,8 +1472,9 @@ function runSession(
       fallback,
       prompt,
       { ...opts, fallback: undefined, promptLabel: `${opts.promptLabel ?? label}-fallback` },
+      1,
     );
-    return { ...fallbackResult, fallbackUsed: true };
+    return { ...fallbackResult, fallbackUsed: true, attempts: [...(result.attempts ?? []), ...(fallbackResult.attempts ?? [])] };
   });
 }
 
@@ -1324,7 +1519,7 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 
 export function notificationGatePrompt(input: {
   actor: NotificationGateActor;
-  jar: string;
+  cookie: string;
   source: ResolvedNotification;
 }): string {
   const source = input.source;
@@ -1339,7 +1534,9 @@ export function notificationGatePrompt(input: {
   ].filter((comment, index, all) => all.findIndex((candidate) => candidate.comment_id === comment.comment_id) === index
     && comment.comment_id !== source.sourceComment.comment_id);
   const fixed = `你是「${input.actor.name}」（${input.actor.email}）。這是單筆通知前置處理；只處理這一筆來源，不做一般巡檢、認領、狀態變更、程式碼修改或其他 task。
-${API_RULES(input.jar)}
+
+## 認證邊界
+本次已由 driver 取得短暫 session。所有 API 呼叫都必須帶 \`-H 'Cookie: ${input.cookie}'\`；不得登入、不得使用 curl \`-c\`／\`-b\`，也不得將 cookie、Authorization 或其他憑證寫入任何檔案、留言或輸出。
 
 ## 通知
 notification_id: ${source.notification.notification_id}
@@ -1874,7 +2071,6 @@ async function main(): Promise<void> {
       label: `${m.name}-r${round}`,
       actor: m,
       getNotificationCookie: () => login(m.email),
-      jar: join(wt(m), `.jar-notification-${m.user}.txt`),
       runner: workSession.route.runner,
       model: workSession.route.model,
       notificationRoute: notificationRouteForMember(m),
@@ -1895,7 +2091,7 @@ async function main(): Promise<void> {
   // owner 開場（sonnet + driver 預蒐材料）→ 發想主題、改名 workspace、依專長與負載派工
   const material = exploreMaterial(scenario);
   const ownerOpen = await runActorSessionWithNotificationGate({
-    label: 'owner-開場', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+    label: 'owner-開場', actor: OWNER,
     getNotificationCookie: () => login(OWNER.email),
     runner: 'claude', model: OWNER_OPEN_MODEL, preflightOptions: ownerOpts,
     normal: () => runSession('owner-開場', 'claude', OWNER_OPEN_MODEL, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' }),
@@ -1925,7 +2121,7 @@ async function main(): Promise<void> {
   if (!FAST) {
     // 深度模式：中場審查（GPT-5.6 Sol）＋條件式 r2-3
     await runActorSessionWithNotificationGate({
-      label: 'owner-中場審查', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+      label: 'owner-中場審查', actor: OWNER,
       getNotificationCookie: () => login(OWNER.email),
       runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
       normal: () => runSession('owner-中場審查', 'codex', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' }),
@@ -1940,7 +2136,7 @@ async function main(): Promise<void> {
   // 收尾 merge（GPT-5.6 Sol）＋ repair 迴圈（收尾退回的題重修至合格，上限 2 輪）
   let verified = await verifyBranches(runDir, scenario);
   await runActorSessionWithNotificationGate({
-    label: 'owner-收尾合併', actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+    label: 'owner-收尾合併', actor: OWNER,
     getNotificationCookie: () => login(OWNER.email),
     runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
     normal: () => runSession('owner-收尾合併', 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' }),
@@ -1954,7 +2150,7 @@ async function main(): Promise<void> {
     await runRound(toFix, 3 + repair, 1, 5);
     verified = await verifyBranches(runDir, scenario);
     await runActorSessionWithNotificationGate({
-      label: `owner-repair${repair}`, actor: OWNER, jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
+      label: `owner-repair${repair}`, actor: OWNER,
       getNotificationCookie: () => login(OWNER.email),
       runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
       normal: () => runSession(`owner-repair${repair}`, 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` }),
@@ -2190,26 +2386,28 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   const promptArtifacts: PromptArtifact[] = [];
   let notificationResults = new Map<string, NotificationSweepResult>();
   if (role !== 'owner' && notificationGateEnabled()) {
+    const telemetry = createNotificationTelemetryRecorder(NOTIFICATION_TELEMETRY_DIR, basename(runDir));
+    const deploymentRevision = await deployedRevisionForTelemetry(api, (line) => console.log(line));
     const results = await runNotificationSweep(
       members,
       (member) => runNotificationSweepForMember({
         member,
         request: api,
         loginActor: login,
-        jar: join(runDir, `.jar-notification-${member.user}.txt`),
         runPreflight: (prompt) => {
           const route = notificationRouteForMember(member);
           return runSession(`${member.user}-notification-sweep`, route.runner, route.model, prompt, {
             cwd: RUN.repoRoot,
             tools: NOTIFICATION_TOOLS,
             timeoutMs: SWEEP_MEMBER_TIMEOUT,
-            runDir,
-            promptArtifacts,
             promptLabel: `${member.user}-notification-sweep`,
             fallback: member.notificationRoute ? undefined : member.fallback,
+            captureContent: false,
           });
         },
         log: (line) => console.log(`[${member.user}] ${line}`),
+        telemetry,
+        deploymentRevision,
       }),
       (line) => console.log(line),
     );
@@ -2361,7 +2559,6 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         label: ownerLabel,
         actor: OWNER,
         getNotificationCookie: () => Promise.resolve(ownerCookie),
-        jar: join(RUN.repoRoot, '.jar-owner-notification.txt'),
         runner: 'codex',
         model: OWNER_REVIEW_MODEL,
         preflightOptions: ownerSessionOptions,
@@ -2409,7 +2606,6 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
             label: `${m.name}-巡檢`,
             actor: m,
             getNotificationCookie: () => login(m.email),
-            jar: join(wt(m), `.jar-notification-${m.user}.txt`),
             runner: workSession.route.runner,
             model: workSession.route.model,
             notificationRoute: notificationRouteForMember(m),
