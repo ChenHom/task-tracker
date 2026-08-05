@@ -21,11 +21,11 @@ export const SearchView = {
       <div class="sketch-box" style="padding: 0.75rem 1.5rem; background: #fff; margin-bottom: 1rem;">
         <h2 class="red-pen-underline" style="margin-top:0; margin-bottom:1rem;">搜尋</h2>
         <form id="search-form" style="display: flex; gap: 0.5rem;">
-          <input type="text" id="search-input" placeholder="輸入關鍵字搜尋任務、專案或留言..." required style="flex-grow: 1;">
+          <input type="text" id="search-input" aria-label="搜尋關鍵字" placeholder="輸入關鍵字搜尋任務、專案或留言..." required style="flex-grow: 1;">
           <label><input type="checkbox" id="search-include-archived"> 顯示已歸檔</label>
           <button type="submit">搜尋</button>
         </form>
-        <p id="search-error" class="error" style="display: none; margin-top: 1rem;"></p>
+        <p id="search-error" class="error" role="alert" style="display: none; margin-top: 1rem;"></p>
       </div>
 
       <div id="search-results" class="search-results-section"></div>

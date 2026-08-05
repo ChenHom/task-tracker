@@ -366,6 +366,11 @@ async function runTests() {
     const passwordInput = findElementInContainer('login-password');
     assert.ok(form && emailInput && passwordInput);
 
+    // Accessibility regression (WCAG 受限試點)：label 必須用 for/id 與輸入框關聯，錯誤訊息要能被輔具即時播報
+    assert.ok(container.innerHTML.includes('for="login-email"'), 'Email label should be associated via for/id');
+    assert.ok(container.innerHTML.includes('for="login-password"'), 'Password label should be associated via for/id');
+    assert.ok(container.innerHTML.includes('id="login-error" class="error" role="alert"'), 'Login error region should announce via role="alert"');
+
     emailInput.value = 'user@test.local';
     passwordInput.value = 'test1234';
 
@@ -508,6 +513,10 @@ async function runTests() {
     const qInput = findElementInContainer('search-input');
     const resultsContainer = findElementInContainer('search-results');
     assert.ok(form && qInput && resultsContainer);
+
+    // Accessibility regression (WCAG 受限試點)：搜尋框只有 placeholder 時輔具讀不到欄位用途
+    assert.ok(container.innerHTML.includes('id="search-input" aria-label="搜尋關鍵字"'), 'Search input needs an accessible label');
+    assert.ok(container.innerHTML.includes('id="search-error" class="error" role="alert"'), 'Search error region should announce via role="alert"');
 
     qInput.value = 'query-val';
 

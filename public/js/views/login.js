@@ -23,16 +23,16 @@ export const LoginView = {
         <h2 style="margin-top: 0; text-align: center; font-size: 2rem;">使用者登入</h2>
         <form id="login-form">
           <div>
-            <label>電子信箱 (Email)</label>
+            <label for="login-email">電子信箱 (Email)</label>
             <input type="email" id="login-email" placeholder="example@test.local" required style="width: 100%;">
           </div>
           <div>
-            <label>密碼 (Password)</label>
+            <label for="login-password">密碼 (Password)</label>
             <input type="password" id="login-password" required style="width: 100%;">
           </div>
           <button type="submit" style="width: 100%; margin-top: 1rem; font-size: 1.1rem; padding: 0.6rem;">登入</button>
         </form>
-        <p id="login-error" class="error" style="display: none; margin-top: 1rem;"></p>
+        <p id="login-error" class="error" role="alert" style="display: none; margin-top: 1rem;"></p>
         <div style="margin-top: 1.5rem; text-align: center; display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.95rem;">
           <span class="muted">預設帳號: user09@test.local / test1234</span>
           <a href="#/forgot-password" class="muted">忘記密碼？</a>
