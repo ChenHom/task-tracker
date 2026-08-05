@@ -92,6 +92,28 @@ If `/tracker/` returns `502`, first check whether `task-tracker.service` is acti
 
 `sim-autodeploy.path` 監看本地 `refs/heads/master`（含 `packed-refs`），變動即觸發 `deploy/sim-autodeploy.sh`：等待進行中的 sim sweep（最多 30 分）→ `npm run build` → 重啟 `task-tracker.service` → 以 `/api/health` 的 `rev` 欄位 readback 確認與 `git rev-parse master` 一致。build 失敗或 readback 不符時**不會**留下新版（服務續跑舊版），並經 `sim/notify-human.sh` 推 Discord。
 
+`sim-autodeploy` 的實際邊界清單如下：
+
+- 讀取：`/home/hom/code/task-tracker`、`.git/refs` / `.git/packed-refs`、`deploy/sim-autodeploy.sh`、`sim/notify-human.sh`，以及 `npm run build` / `git rev-parse master` 需要的原始碼與工作樹。
+- 寫入：`/home/hom/code/task-tracker` 的 build 產物，以及 `~/.local/state/sim-autodeploy/deploy.log` 和 `deployed_rev`。
+- IPC：`systemctl --user restart task-tracker.service` 需要 user session bus。
+- 網路：只需 loopback `http://localhost:3000/api/health`。
+- 子程序：`git`、`npm` / `node`、`curl`、`systemctl`、`pgrep`、`sleep`。
+- 失敗訊號：build 失敗、state 寫入失敗、user bus restart 失敗、health readback mismatch。
+
+`deploy/sim-autodeploy-pilot.service` 是上述流程的 dry-run 複本。它改寫到
+`~/.local/state/sim-autodeploy-pilot`、設定 `SIM_AUTODEPLOY_SKIP_RESTART=1`，
+只驗證 repo / build、user bus 可讀與 health 讀回，不會動正式
+`task-tracker.service`；適合拿來做 sandbox / `ReadWritePaths` /
+`NoNewPrivileges` 的觀察式驗證。
+
+### 2026-08-05 drift check
+
+- Live unit 仍指向 `/home/hom/.config/systemd/user/task-tracker.service`，`WorkingDirectory=/home/hom/code/task-tracker`，`ExecStart=/home/hom/.nvm/versions/node/v24.3.0/bin/node dist/server.js`，`ExecReload=/bin/kill -HUP $MAINPID`，`Environment=AI_QUOTA_STATE_PATH=/home/hom/.local/state/ai-quota/quota.json`，`Restart=always`，`RestartSec=3`。
+- Pilot unit 是 `deploy/sim-autodeploy-pilot.service`；它保留同一個 repo build path，但把 state 分流到 `~/.local/state/sim-autodeploy-pilot`，並明確設定 `SIM_AUTODEPLOY_SKIP_RESTART=1`，因此只做 build + user-bus / `/api/health` readback，不會碰 live restart。
+- Pilot sandbox 欄位目前是 `NoNewPrivileges=true`、`ProtectSystem=strict`、`PrivateTmp=true`、`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`，以及 `ReadWritePaths=/home/hom/code/task-tracker /home/hom/.local/state/sim-autodeploy-pilot`。
+- `systemd-analyze verify deploy/task-tracker.service deploy/sim-autodeploy.service deploy/sim-autodeploy-pilot.service` 已通過；`systemctl --user show task-tracker.service --property=ActiveState --property=SubState --property=InvocationID --property=ExecMainStartTimestampMonotonic --property=Result --property=ExecMainStatus --property=FragmentPath` 目前回讀到 live unit active、FragmentPath 仍是 installed unit。
+
 ```bash
 systemctl --user status sim-autodeploy.path        # 監看是否啟用
 journalctl --user -u sim-autodeploy.service -n 40  # 部署執行紀錄
