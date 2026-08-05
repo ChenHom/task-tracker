@@ -118,11 +118,27 @@ function isMemberWorktreeNoise(path: string): boolean {
   return path.split(/[\\/]/).some((segment) => MEMBER_WORKTREE_NOISE_SEGMENTS.has(segment));
 }
 
-export function hasNonDependencyWorktreeChanges(status: string): boolean {
-  return status.split('\n').some((entry) => {
+function isMemberWorktreeScratch(path: string): boolean {
+  return path.split(/[\\/]/).some((segment) => segment.startsWith('.'));
+}
+
+function isMemberWorktreeNoiseEntry(entry: string): boolean {
+  const path = entry.slice(3);
+  if (path === '') return true;
+  if (isMemberWorktreeNoise(path)) return true;
+  return entry.startsWith('?? ') && isMemberWorktreeScratch(path);
+}
+
+function memberWorktreeScratchPaths(status: string): string[] {
+  return status.split('\n').flatMap((entry) => {
+    if (entry === '' || !entry.startsWith('?? ')) return [];
     const path = entry.slice(3);
-    return path !== '' && !isMemberWorktreeNoise(path);
+    return path !== '' && isMemberWorktreeScratch(path) ? [path] : [];
   });
+}
+
+export function hasNonDependencyWorktreeChanges(status: string): boolean {
+  return status.split('\n').some((entry) => !isMemberWorktreeNoiseEntry(entry));
 }
 
 export function memberWorktreePathspecs(): string[] {
@@ -1802,12 +1818,15 @@ function memberWorktreeDirty(dir: string): boolean {
 // 所有 member 都只改 worktree；driver 僅在 session 成功後統一提交，避免 runner 權限與完成語意分裂。
 export function commitMemberWork(m: Member, round: number, model: string): boolean {
   validateMemberWorktree(m);
+  const status = git(['status', '--porcelain'], wt(m));
+  if (!hasNonDependencyWorktreeChanges(status)) return false;
   const cached = git(['diff', '--cached', '--name-only'], wt(m));
   if (cached.split('\n').some((path) => path !== '' && isMemberWorktreeNoise(path))) {
     throw new Error('driver 拒絕提交 member worktree 噪音檔');
   }
-  if (!memberWorktreeDirty(wt(m))) return false;
   git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m));
+  const scratchPaths = memberWorktreeScratchPaths(status);
+  if (scratchPaths.length) git(['reset', '--', ...scratchPaths], wt(m));
   const staged = git(['diff', '--cached', '--name-only'], wt(m));
   if (staged.split('\n').some((path) => path !== '' && isMemberWorktreeNoise(path))) {
     throw new Error('driver 拒絕提交 member worktree 噪音檔');

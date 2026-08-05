@@ -1311,6 +1311,56 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
   );
 }
 
+// driver 代 commit：只剩 scratch 查詢檔時不應產生 commit；正常 task 檔仍可提交。
+{
+  const workRoot = join(ROOT, 'sim-work');
+  mkdirSync(workRoot, { recursive: true });
+  const repo = mkdtempSync(join(workRoot, 'member-commit-scratch-'));
+  const user = basename(repo);
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const member: Member = {
+    email: `${user}@test.local`,
+    name: 't',
+    user,
+    runner: 'codex',
+    model: 'test-model',
+    profile: 'test',
+  };
+  try {
+    g(['init', '-b', `sim/${user}`]);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+    g(['add', '.']);
+    g(['commit', '-m', 'base']);
+
+    writeFileSync(join(repo, '.filter_tasks.py'), 'print("scratch")\n');
+    assert.strictEqual(
+      hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
+      false,
+      '只有 .filter_tasks.py 這類 scratch 查詢檔時不應被視為可提交成果',
+    );
+    assert.strictEqual(
+      commitMemberWork(member, 1, 'test-model'),
+      false,
+      '只有 .filter_tasks.py 這類 scratch 查詢檔時不應產生代 commit',
+    );
+
+    g(['reset', '--hard']);
+    writeFileSync(join(repo, '.filter_tasks.py'), 'print("scratch")\n');
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.deepStrictEqual(
+      g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
+      ['app.ts'],
+      '正常 task 檔 commit 後不應帶入 .filter_tasks.py',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(workRoot, { recursive: true, force: true });
+  }
+}
+
 {
   const workRoot = join(ROOT, 'sim-work');
   mkdirSync(workRoot, { recursive: true });
