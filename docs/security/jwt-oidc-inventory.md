@@ -15,6 +15,14 @@ task-tracker（本 repo）。另核對三個曾出現過的別名：line-stock-b
 （→ pinball-bounce-v1，無關）、tw-day-trading（→ tw-swing-trading-mvp，Python，無 HTTP
 認證層）。
 
+## 查找命令
+
+```bash
+rg -n "jsonwebtoken|jose|jwks|openid|oidc|jwt" plinko-game openclaw-clone tw-stock-research-platform RSSHub job-risk-radar file-exchange-station _ops 104-resume-automation ai-quota brain task-tracker
+rg -n "verifyGoogleChatRequest|monitor-webhook|systemIdToken" openclaw-clone/extensions/googlechat
+rg -n "LINE webhook|HMAC-SHA256|verifyLineSignature" file-exchange-station
+```
+
 ## 排除清單（已查證，非接收端）
 
 | Repo | 排除理由 |
@@ -106,4 +114,5 @@ repo（`docs/security/fixtures/google-chat-jwt/`），可重跑，不依賴任�
 
 - [`fixtures/google-chat-jwt/verify.mjs`](fixtures/google-chat-jwt/verify.mjs)
 - [`fixtures/google-chat-jwt/README.md`](fixtures/google-chat-jwt/README.md)
+- task 2c5e6f89-7d91-4c6c-9c68-c7288a0e8821 comments（目前這份 webhook receiver 盤點的 owner 派工與回查入口）
 - task cff77860-6627-4dea-8f63-44324b7366b3 comments（盤點過程與 owner 派工紀錄）
