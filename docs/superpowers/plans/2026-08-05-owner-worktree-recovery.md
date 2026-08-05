@@ -48,7 +48,7 @@
 - Runtime metadata only: `.git/worktrees/*` and `sim-work/user03`.
 
 - [x] Capture `git rev-parse sim/user03` before pruning.
-- [ ] Run `git worktree prune --dry-run`, then `git worktree prune` when the host permits writes to `.git/worktrees`; only confirmed missing `user03`–`user06` registrations may be removed.
-- [ ] If the current sandbox blocks `.git` writes, let the next existing Owner timer invoke the new self-heal path, then verify `git -C sim-work/user03 status --short --branch` and the unchanged branch head.
-- [ ] Verify `/api/health`, `systemctl --user list-timers --all 'sim-sweep-*' --no-pager`, and that `sim-logs/.run.lock` is absent.
-- [ ] Do not run `npm run sim -- --sweep`; the next existing Owner timer tick is the runtime validation.
+- [x] The direct sandbox prune was blocked by read-only `.git/worktrees`; the existing 14:00 Owner timer invoked the self-heal path and removed the four confirmed stale registrations.
+- [x] The timer reattached `sim-work/user03`; `git -C sim-work/user03 status --short --branch` reports `## sim/user03`, and the branch head remains unchanged.
+- [x] Verify `/api/health` (`status=ok`, `db=true`, `rev=961dfb8`), the `sim-sweep-*` timers, and that `sim-logs/.run.lock` is absent after the sweep.
+- [x] Do not run `npm run sim -- --sweep`; runtime validation came from the existing scheduled Owner tick.
