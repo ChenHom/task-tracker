@@ -678,13 +678,6 @@ interface NotificationComment {
   content: string;
   created_at: string;
 }
-export interface ResolvedNotification {
-  notification: NotificationRow;
-  task: NotificationTask;
-  sourceComment: NotificationComment;
-  comments: NotificationComment[];
-}
-export const MAX_NOTIFICATION_PROMPT_CHARS = 16_000;
 // notification prompt 是寫入端、owner prompt 是清點端、validator 是把關端，三邊共用同一組
 // 表態 marker。定義已移到 src/mainWorkspacePolicy.ts，這裡只轉出給既有 import 用。
 export { AGREE_MARKER, CONCERN_MARKER } from '../src/mainWorkspacePolicy';
@@ -774,6 +767,21 @@ async function markNotificationRead(
   if (response.status !== 200) throw new Error(`notification ${input.notificationId} read 失敗: HTTP ${response.status}`);
 }
 
+const NOTIFICATION_NOOP_REPLY = '已閱讀，目前無補充。';
+
+async function postNotificationNoopReply(input: {
+  taskId: string;
+  request: NotificationGateRequest;
+  cookie: string;
+}): Promise<void> {
+  const response = await input.request(
+    `/api/tasks/${encodeURIComponent(input.taskId)}/comments`,
+    { method: 'POST', body: JSON.stringify({ content: NOTIFICATION_NOOP_REPLY }) },
+    input.cookie,
+  );
+  if (response.status !== 201) throw new Error(`主工作區 task ${input.taskId} 固定回覆失敗: HTTP ${response.status}`);
+}
+
 async function finalNotificationReadback(
   snapshotIds: Set<string>,
   request: NotificationGateRequest,
@@ -790,7 +798,8 @@ export async function processNotificationGate(input: {
   actor: NotificationGateActor;
   cookie: string;
   request: NotificationGateRequest;
-  runPreflight: (prompt: string, notificationId?: string) => Promise<SessionResult>;
+  /** @deprecated Notification preflight no longer invokes an agent. */
+  runPreflight?: (prompt: string, notificationId?: string) => Promise<SessionResult>;
   log: (line: string) => void;
   snapshotAt: string;
 }): Promise<NotificationGateResult> {
@@ -844,16 +853,11 @@ export async function processNotificationGate(input: {
         await markNotificationRead({ notificationId: notification.notification_id, request: input.request, cookie: input.cookie });
         continue;
       }
-      const resolved = { notification, task, sourceComment, comments } satisfies ResolvedNotification;
       const beforeCommentIds = new Set(comments.map((comment) => comment.comment_id));
       preflightStarted = true;
-      const preflight = await input.runPreflight(
-        notificationGatePrompt({ actor, cookie: input.cookie, source: resolved }),
-        notification.notification_id,
-      );
-      if (preflight.errored || preflight.timedOut) throw new Error('通知 preflight session 失敗');
 
       if (task.workspace_id === MAIN_WORKSPACE_ID) {
+        await postNotificationNoopReply({ taskId: task.task_id, request: input.request, cookie: input.cookie });
         const commentsResponse = await input.request(`/api/tasks/${encodeURIComponent(task.task_id)}/comments`, {}, input.cookie);
         if (commentsResponse.status !== 200) throw new Error(`主工作區 task ${task.task_id} 留言驗證失敗: HTTP ${commentsResponse.status}`);
         const comments = parseNotificationComments(commentsResponse.body);
@@ -882,7 +886,8 @@ export interface NotificationSweepForMemberInput {
   member: NotificationSweepMember;
   request: NotificationGateRequest;
   loginActor: (email: string) => Promise<string>;
-  runPreflight: (prompt: string) => Promise<SessionResult>;
+  /** @deprecated Notification preflight no longer invokes an agent. */
+  runPreflight?: (prompt: string) => Promise<SessionResult>;
   log: (line: string) => void;
   telemetry?: NotificationTelemetryRecorder;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -1010,37 +1015,12 @@ export async function runNotificationSweepForMember(
     }
   }
 
-  const preflightAttempts: SessionAttempt[] = [];
   const gate = await processNotificationGate({
     actor: input.member,
     cookie,
     request: input.request,
-    runPreflight: async (prompt) => {
-      const startedAt = new Date();
-      try {
-        const result = await input.runPreflight(prompt);
-        preflightAttempts.push(...telemetryAttemptsFor(result, route, startedAt, new Date()));
-        return result;
-      } catch (error) {
-        const result = telemetryFailure(error);
-        const endedAt = new Date();
-        preflightAttempts.push({
-          route: { ...route }, retry: 0, started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(),
-          timedOut: result.errorCategory === 'timeout', errored: true,
-          errorCategory: result.errorCategory, tokenTotal: null,
-        });
-        throw error;
-      }
-    },
     log: input.log,
     snapshotAt: input.snapshotAt ?? new Date().toISOString(),
-  });
-  recordFinalPreflightTelemetry({
-    recorder: input.telemetry,
-    log: input.log,
-    deploymentRevision,
-    attempts: preflightAttempts,
-    ready: gate.ready,
   });
   const result = {
     actor: input.member.email,
@@ -1290,15 +1270,10 @@ async function runActorSessionWithNotificationGate(input: {
   label: string;
   actor: Pick<NotificationGateActor, 'email' | 'name'>;
   getNotificationCookie: () => Promise<string>;
-  runner: Runner;
-  model: string;
-  notificationRoute?: ModelRoute;
-  preflightOptions: SessionOptions;
   normal: () => Promise<SessionResult>;
 }): Promise<SessionResult | null> {
   const enabled = notificationGateEnabled();
   if (!enabled) console.log(`[${input.label}] notification gate 已停用，直接啟動一般 session`);
-  const notificationRoute = input.notificationRoute ?? { runner: input.runner, model: input.model };
   return runNotificationGateOrNormal(
     enabled,
     async () => {
@@ -1313,14 +1288,6 @@ async function runActorSessionWithNotificationGate(input: {
         actor: input.actor,
         cookie,
         request: api,
-        runPreflight: (prompt, notificationId) => runSession(
-          `${input.label}-通知-${notificationId ?? 'unknown'}`, notificationRoute.runner, notificationRoute.model, prompt,
-          {
-            ...input.preflightOptions,
-            fallback: input.notificationRoute ? undefined : input.preflightOptions.fallback,
-            promptLabel: `${input.label}-notification-${notificationId ?? 'unknown'}`,
-          },
-        ),
         log: (line) => console.log(`[${input.label}] ${line}`),
         snapshotAt: new Date().toISOString(),
       });
@@ -1516,56 +1483,6 @@ API 操作規則（task-tracker 是團隊的協作看板，所有溝通都要留
 - 卡在環境/權限/工具問題（不是 code 本身的問題）：在該 task 留言以 [ESCALATE] 開頭，寫清楚卡點與已試過的方法，然後繼續做還能做的部分——owner 會處理，owner 也解不了會上報到 harness 上層。同一 task 已有你留過且狀況未變的 [ESCALATE]，不要重複留言；維持靜默直到阻塞內容改變或解除
 - 主協作工作區（${MAIN_WORKSPACE_ID}）只放討論；非 user01 不改狀態，實作 task 必須建立在目標工作區。
 - 若這個 task 需要改的原始碼其實屬於別的 repo（不是你現在這個 repoRoot）：不要用 [ESCALATE]（那是給環境/權限問題，處理不了 repo 不合）。改用 [CROSS-REPO] 開頭留言說明是誰的 repo，並依下方跨 repo 判斷規則處理。`;
-
-export function notificationGatePrompt(input: {
-  actor: NotificationGateActor;
-  cookie: string;
-  source: ResolvedNotification;
-}): string {
-  const source = input.source;
-  const description = source.task.description.length > 2_000
-    ? `${source.task.description.slice(0, 2_000)}\n[description 已省略 ${source.task.description.length - 2_000} 字]`
-    : source.task.description;
-  const orderedComments = [...source.comments].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.comment_id.localeCompare(b.comment_id));
-  const sourceIndex = orderedComments.findIndex((comment) => comment.comment_id === source.sourceComment.comment_id);
-  const contextCandidates = [
-    ...orderedComments.slice(-6).reverse(),
-    ...(sourceIndex >= 0 ? orderedComments.slice(Math.max(0, sourceIndex - 2), sourceIndex + 3) : []),
-  ].filter((comment, index, all) => all.findIndex((candidate) => candidate.comment_id === comment.comment_id) === index
-    && comment.comment_id !== source.sourceComment.comment_id);
-  const fixed = `你是「${input.actor.name}」（${input.actor.email}）。這是單筆通知前置處理；只處理這一筆來源，不做一般巡檢、認領、狀態變更、程式碼修改或其他 task。
-
-## 認證邊界
-本次已由 driver 取得短暫 session。所有 API 呼叫都必須帶 \`-H 'Cookie: ${input.cookie}'\`；不得登入、不得使用 curl \`-c\`／\`-b\`，也不得將 cookie、Authorization 或其他憑證寫入任何檔案、留言或輸出。
-
-## 通知
-notification_id: ${source.notification.notification_id}
-task_id: ${source.task.task_id}
-workspace_id: ${source.task.workspace_id}
-title: ${source.task.title}
-description: ${description}
-來源留言（完整保留）: ${source.sourceComment.content}
-
-規則：
-- 主協作工作區來源：這一筆通知必須 POST 一則新的留言，三選一：贊成就以「${AGREE_MARKER}」開頭；有具體風險或反對理由就以「${CONCERN_MARKER}」開頭並寫明風險；沒有補充時，內容必須完全是「已閱讀，目前無補充。」
-- 一般工作區來源：先讀內容，再依內容決定是否留下必要回覆；不要求留言，但仍要獨立閱讀與判斷。
-- 不得呼叫 POST /api/notifications/:id/read；runner 會在驗證後處理。
-- 不得在留言中 @ 自己，也不得為了確認身份加入任何指向自己的 @ 提及。
-結束時只輸出一行處理摘要。`;
-  if (fixed.length > MAX_NOTIFICATION_PROMPT_CHARS) throw new Error('notification prompt 固定內容超過 16,000 字元');
-  let prompt = fixed;
-  let omitted = 0;
-  for (const comment of contextCandidates) {
-    const line = `\ncontext comment ${comment.comment_id}: ${comment.created_at} ${comment.content}`;
-    if ((prompt + line).length <= MAX_NOTIFICATION_PROMPT_CHARS) prompt += line;
-    else omitted++;
-  }
-  if (omitted) {
-    const omission = `\n[已省略 ${omitted} 則留言；需要時請用 API 重新讀取]`;
-    if ((prompt + omission).length <= MAX_NOTIFICATION_PROMPT_CHARS) prompt += omission;
-  }
-  return prompt;
-}
 
 function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario): string {
   // jar 必須落在成員自己的 worktree 內：LOG_DIR 固定在 task-tracker 底下，跨到別的 repo 或
@@ -2071,10 +1988,6 @@ async function main(): Promise<void> {
       label: `${m.name}-r${round}`,
       actor: m,
       getNotificationCookie: () => login(m.email),
-      runner: workSession.route.runner,
-      model: workSession.route.model,
-      notificationRoute: notificationRouteForMember(m),
-      preflightOptions: memberOpts(m),
       normal: () => runSession(`${m.name}-r${round}`, workSession.route.runner, workSession.route.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}`, fallback: workSession.fallback }),
     });
     if (!gated) {
@@ -2093,7 +2006,6 @@ async function main(): Promise<void> {
   const ownerOpen = await runActorSessionWithNotificationGate({
     label: 'owner-開場', actor: OWNER,
     getNotificationCookie: () => login(OWNER.email),
-    runner: 'claude', model: OWNER_OPEN_MODEL, preflightOptions: ownerOpts,
     normal: () => runSession('owner-開場', 'claude', OWNER_OPEN_MODEL, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' }),
   });
   if (!ownerOpen || ownerOpen.errored || ownerOpen.timedOut) {
@@ -2123,7 +2035,6 @@ async function main(): Promise<void> {
     await runActorSessionWithNotificationGate({
       label: 'owner-中場審查', actor: OWNER,
       getNotificationCookie: () => login(OWNER.email),
-      runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
       normal: () => runSession('owner-中場審查', 'codex', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' }),
     });
     for (let r = 2; r <= 3; r++) {
@@ -2138,7 +2049,6 @@ async function main(): Promise<void> {
   await runActorSessionWithNotificationGate({
     label: 'owner-收尾合併', actor: OWNER,
     getNotificationCookie: () => login(OWNER.email),
-    runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
     normal: () => runSession('owner-收尾合併', 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' }),
   });
   abortStaleMerge();
@@ -2152,7 +2062,6 @@ async function main(): Promise<void> {
     await runActorSessionWithNotificationGate({
       label: `owner-repair${repair}`, actor: OWNER,
       getNotificationCookie: () => login(OWNER.email),
-      runner: 'codex', model: OWNER_REVIEW_MODEL, preflightOptions: ownerOpts,
       normal: () => runSession(`owner-repair${repair}`, 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` }),
     });
     abortStaleMerge();
@@ -2394,17 +2303,6 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         member,
         request: api,
         loginActor: login,
-        runPreflight: (prompt) => {
-          const route = notificationRouteForMember(member);
-          return runSession(`${member.user}-notification-sweep`, route.runner, route.model, prompt, {
-            cwd: RUN.repoRoot,
-            tools: NOTIFICATION_TOOLS,
-            timeoutMs: SWEEP_MEMBER_TIMEOUT,
-            promptLabel: `${member.user}-notification-sweep`,
-            fallback: member.notificationRoute ? undefined : member.fallback,
-            captureContent: false,
-          });
-        },
         log: (line) => console.log(`[${member.user}] ${line}`),
         telemetry,
         deploymentRevision,
@@ -2559,9 +2457,6 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         label: ownerLabel,
         actor: OWNER,
         getNotificationCookie: () => Promise.resolve(ownerCookie),
-        runner: 'codex',
-        model: OWNER_REVIEW_MODEL,
-        preflightOptions: ownerSessionOptions,
         normal: () => runSession(ownerLabel, 'codex', OWNER_REVIEW_MODEL,
           ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000), p.createDiscussion),
           { ...ownerSessionOptions, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` }),
@@ -2606,10 +2501,6 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
             label: `${m.name}-巡檢`,
             actor: m,
             getNotificationCookie: () => login(m.email),
-            runner: workSession.route.runner,
-            model: workSession.route.model,
-            notificationRoute: notificationRouteForMember(m),
-            preflightOptions: { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: workSession.fallback },
             normal: () => runSession(`${m.name}-巡檢`, workSession.route.runner, workSession.route.model, (syncNotes.get(m.user) ?? '') + memberPrompt(m, p.wsId, hour, p.scenario),
               { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: workSession.fallback }),
           });
