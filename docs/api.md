@@ -44,6 +44,25 @@ HTTP `401`。
 
 前端隱藏控制項不是授權來源；server 會重新檢查 session、workspace membership、role 與資源歸屬。
 
+### Authorization matrix（代表性案例）
+
+以下矩陣補上「誰（subject/role）在哪個 workspace 對什麼物件的什麼屬性／動作」的檢查位置與輸入輸出 allowlist，供跨 endpoint 快速核對，不重複上表已列的最低角色。所有列都遵守同一底線：`requirePermission`（[`member.ts:243`](../src/member.ts)）先擋未登入（401）與角色不足或非成員（403），再由各 domain 函式做 ownership／欄位層級規則。
+
+| Subject role（最低） | Workspace 範圍 | Object | Property / Action | 檢查位置 | Input / Output allowlist |
+| --- | --- | --- | --- | --- | --- |
+| 未登入 | 任一 | 任何受保護 endpoint | 任何 | `requirePermission` / `requireAuth`（[`member.ts:243`](../src/member.ts)、[`auth.ts:191`](../src/auth.ts)） | 401，不揭露資源是否存在 |
+| 任一角色 | 非成員 workspace | task/comment/project/attachment/member/search/audit | 讀／寫 | `requirePermission` 查角色，查無回 403（[`member.ts:256`](../src/member.ts)） | 403，跨 workspace 一律視為無權限，不 fallback 404 |
+| Viewer | 自己 workspace | task/comment/project/attachment | 讀 (GET) | `ACCESS_ROLE.read`（[`member.ts:14`](../src/member.ts)） | 唯讀；POST/PATCH/DELETE 一律 403 |
+| Commenter | 自己 workspace | comment | create／編輯自己 | `ACCESS_ROLE.createComment` / `mutateOwnComment` + ownership（[`server.ts:687-693`](../src/server.ts)） | 非作者 PATCH 403；content 需 1–5000 字，trim 後非空 |
+| Commenter | 自己 workspace | task（建立） | create | [`task.ts:152-157`](../src/task.ts) | 只允許 `title`/`description`；priority 固定 Medium、assignee/dueAt/project 固定空 |
+| Commenter | 自己 workspace | task.description | 編輯（僅限自己建立的 task） | [`task.ts:213-214`](../src/task.ts) | 非 creator 編輯回 400；其餘欄位一律需 Member（[`task.ts:373-374`](../src/task.ts)） |
+| Member | 自己 workspace | task/project/attachment | mutate／create／delete | `ACCESS_ROLE.mutateTask` / `writeProject` / `writeAttachment`（[`member.ts:16-20`](../src/member.ts)） | attachment 上傳需 MIME 白名單 + magic bytes（[`attachment.ts:22-29`](../src/attachment.ts)）；輸出 metadata 只含 `attachment_id/task_id/original_name/mime_type/size`，不外洩 `stored_name` |
+| Admin | 自己 workspace | workspace/member/audit | rename/archive/delete/invite/role/remove/讀 audit | `requirePermission(..., 'Admin')`（[`server.ts`](../src/server.ts) member/workspace/audit routes） | member 輸出只含 `user_id/role/joined_at/email/name`，不含 `password_hash` |
+| Owner | 自己 workspace | member（Owner 任命／自我卸任） | 權限升級／卸任 | [`member.ts:113-131`](../src/member.ts) | 只有 Owner 能任命/變更 Owner；Owner 自我降級需為唯一 active 成員 |
+| 任一角色（含 Owner） | 任一 | comment | delete | [`server.ts:674-678`](../src/server.ts) | 一律 405，不檢查角色或 ownership，也不觸碰資料 |
+
+對應 HTTP 負向測試：[`src/server.test.ts`](../src/server.test.ts) 的授權矩陣區塊，涵蓋匿名 401、Viewer 403、Commenter 自建/自改成功、同 workspace 他人 PATCH 403、跨 workspace 讀寫 403、空白/過長 content 400、comment DELETE 405，以及 task/member/attachment 的角色不足、跨 workspace、禁止欄位與輸出 allowlist 代表案例。
+
 ### Request and error conventions
 
 - JSON request 使用 JSON object；server 的 JSON body 上限為 1 MB。
