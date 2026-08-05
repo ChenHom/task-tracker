@@ -4,7 +4,7 @@ import { db } from './db';
 import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 import { currentUserId } from './auth';
-import { MAIN_OWNER_EMAIL, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
+import { MAIN_BOSS_EMAIL, MAIN_OWNER_EMAIL, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 
 // ── 角色階層：Owner > Admin > Member > Commenter > Viewer ─────────
 export const ROLE_RANK = { Viewer: 0, Commenter: 1, Member: 2, Admin: 3, Owner: 4 } as const;
@@ -32,7 +32,8 @@ function userEmail(userId: string, database: DatabaseSync): string | null {
 
 function requireMainRole(workspaceId: string, userId: string, role: Role, database: DatabaseSync): void {
   if (workspaceId !== MAIN_WORKSPACE_ID) return;
-  const expected = userEmail(userId, database) === MAIN_OWNER_EMAIL ? 'Owner' : 'Commenter';
+  const email = userEmail(userId, database);
+  const expected = email === MAIN_OWNER_EMAIL ? 'Owner' : email === MAIN_BOSS_EMAIL ? 'Admin' : 'Commenter';
   if (role !== expected) throw new CommandError(`主工作區成員固定為 ${expected}`);
 }
 
@@ -94,19 +95,51 @@ export function joinWorkspace(actorId: string, workspaceId: string, database = d
   appendEvent('Member', mid(workspaceId, actorId), version, 'member.joined', { workspaceId, userId: actorId, role: state.role }, meta(actorId), database);
 }
 
-// demo/sim 政策：user01（sim owner）建立的每個 workspace，自動把老闆 user09 加成成員，
-// 讓老闆能總覽所有看板並在 [討論] task 回覆。由 POST /api/workspaces route 於建立後呼叫。
+// demo/sim 政策：user01（sim owner）建立的每個 workspace，自動把老闆 user09 加成 Admin，
+// 讓老闆能管理 workspace 與查詢審計鏈。由 POST /api/workspaces route 於建立後呼叫。
 // 只認這兩個固定 seed 帳號；查不到就靜默略過（非 sim 環境不受影響）。createWorkspace domain 保持純淨。
-const OBSERVER_SEED_EMAIL = 'user09@test.local';
+const OBSERVER_SEED_EMAIL = MAIN_BOSS_EMAIL;
 export function autoAddObserver(creatorId: string, workspaceId: string, database = db): void {
   const observer = database.prepare('SELECT id FROM users WHERE email = ?').get(OBSERVER_SEED_EMAIL) as { id: string } | undefined;
   const owner = database.prepare('SELECT id FROM users WHERE email = ?').get(MAIN_OWNER_EMAIL) as { id: string } | undefined;
   if (!observer || !owner || creatorId !== owner.id || observer.id === creatorId) return;
   try {
-    inviteMember(creatorId, workspaceId, observer.id, 'Member', database);
+    inviteMember(creatorId, workspaceId, observer.id, 'Admin', database);
     joinWorkspace(observer.id, workspaceId, database);
   } catch (e) {
     if (!(e instanceof CommandError)) throw e; // 全新 workspace 不會撞已存在；防禦性吞 CommandError
+  }
+}
+
+// 啟動時把既有的 user01-owned workspace 內 user09 成員升級到 Admin。
+// 只處理 active workspace 且 owner 確實是 user01 的資料，不改其他 workspace 的既有角色。
+export function syncObserverAdmin(database = db): void {
+  const observer = database
+    .prepare('SELECT id FROM users WHERE email = ?')
+    .get(MAIN_BOSS_EMAIL) as { id: string } | undefined;
+  const owner = database
+    .prepare('SELECT id FROM users WHERE email = ?')
+    .get(MAIN_OWNER_EMAIL) as { id: string } | undefined;
+  if (!observer || !owner) return;
+
+  const rows = database
+    .prepare(
+      `SELECT m.workspace_id
+         FROM workspace_members_read_model m
+         JOIN workspaces_read_model w ON w.workspace_id = m.workspace_id
+         JOIN workspace_members_read_model owner_member
+           ON owner_member.workspace_id = m.workspace_id
+          AND owner_member.user_id = ?
+          AND owner_member.role = 'Owner'
+        WHERE m.user_id = ?
+          AND m.role IN ('Viewer', 'Commenter', 'Member')
+          AND w.status = 'active'
+          AND m.workspace_id <> ?`,
+    )
+    .all(owner.id, observer.id, MAIN_WORKSPACE_ID) as unknown as Array<{ workspace_id: string }>;
+
+  for (const row of rows) {
+    changeMemberRole(owner.id, row.workspace_id, observer.id, 'Admin', database);
   }
 }
 

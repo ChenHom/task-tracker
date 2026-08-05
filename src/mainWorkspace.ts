@@ -8,9 +8,11 @@ import {
   inviteMember,
   joinWorkspace,
   removeMainWorkspaceMember,
+  syncObserverAdmin,
 } from './member';
 import {
   MAIN_OWNER_EMAIL,
+  MAIN_BOSS_EMAIL,
   MAIN_POLICY_DESCRIPTION,
   MAIN_POLICY_TITLE,
   MAIN_WORKSPACE_ID,
@@ -40,11 +42,13 @@ function mainOwner(database: DatabaseSync): string {
   return ownerId;
 }
 
-function ensureCommenter(ownerId: string, userId: string, database: DatabaseSync): void {
+function ensureMainRole(ownerId: string, userId: string, database: DatabaseSync): void {
+  const row = database.prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined;
+  const expectedRole = row?.email === MAIN_BOSS_EMAIL ? 'Admin' : 'Commenter';
   const role = getMemberRole(MAIN_WORKSPACE_ID, userId, database);
-  if (role === 'Commenter') return;
+  if (role === expectedRole) return;
   if (role) {
-    changeMemberRole(ownerId, MAIN_WORKSPACE_ID, userId, 'Commenter', database);
+    changeMemberRole(ownerId, MAIN_WORKSPACE_ID, userId, expectedRole, database);
     return;
   }
 
@@ -52,11 +56,11 @@ function ensureCommenter(ownerId: string, userId: string, database: DatabaseSync
     joinWorkspace(userId, MAIN_WORKSPACE_ID, database);
   } catch (error) {
     if (!(error instanceof CommandError)) throw error;
-    inviteMember(ownerId, MAIN_WORKSPACE_ID, userId, 'Commenter', database);
+    inviteMember(ownerId, MAIN_WORKSPACE_ID, userId, expectedRole, database);
     joinWorkspace(userId, MAIN_WORKSPACE_ID, database);
   }
-  if (getMemberRole(MAIN_WORKSPACE_ID, userId, database) !== 'Commenter') {
-    changeMemberRole(ownerId, MAIN_WORKSPACE_ID, userId, 'Commenter', database);
+  if (getMemberRole(MAIN_WORKSPACE_ID, userId, database) !== expectedRole) {
+    changeMemberRole(ownerId, MAIN_WORKSPACE_ID, userId, expectedRole, database);
   }
 }
 
@@ -68,7 +72,7 @@ function isMainWorkspaceSyncUser(userId: string, database: DatabaseSync): boolea
 export function syncMainWorkspaceUser(userId: string, database = db): void {
   const ownerId = mainOwner(database);
   if (userId === ownerId) return;
-  if (isMainWorkspaceSyncUser(userId, database)) ensureCommenter(ownerId, userId, database);
+  if (isMainWorkspaceSyncUser(userId, database)) ensureMainRole(ownerId, userId, database);
   else removeMainWorkspaceMember(ownerId, userId, database);
 }
 
@@ -84,9 +88,10 @@ export function syncMainWorkspace(database = db): void {
   const users = database.prepare('SELECT id FROM users').all() as unknown as Array<{ id: string }>;
   for (const user of users) {
     if (user.id === ownerId) continue;
-    if (isMainWorkspaceSyncUser(user.id, database)) ensureCommenter(ownerId, user.id, database);
+    if (isMainWorkspaceSyncUser(user.id, database)) ensureMainRole(ownerId, user.id, database);
     else removeMainWorkspaceMember(ownerId, user.id, database);
   }
+  syncObserverAdmin(database);
 
   const tasks = listTasks(MAIN_WORKSPACE_ID, database);
   for (const task of tasks) {
