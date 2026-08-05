@@ -1,14 +1,15 @@
 import assert from 'node:assert';
 import './notificationTelemetry.test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
 import {
   CONCLUSION_MARKER,
   handoffLine,
+  MAIN_BOSS_EMAIL,
   MAIN_POLICY_TITLE,
   MAIN_WORKSPACE_ID,
   NO_CONSENSUS_FIELDS,
@@ -33,6 +34,7 @@ import {
   canonicalWorkspaceForRepoRoot,
   compareSweepCandidates,
   commitIfSessionSucceeded,
+  commitMemberWork,
   createRunDir,
   dirtyReviewChecks,
   ensureCanonicalWorkspaceCandidates,
@@ -45,7 +47,10 @@ import {
   isSweepWorkTask,
   isManagedRosterWorkspace,
   loadMembersFromUsers,
-  mainDiscussionNeedsOwner,
+  mainDiscussionMissingOwnerThought,
+  MAIN_DISCUSSION_TARGET,
+  ideationIntervalMs,
+  shouldCreateMainDiscussion,
   memberWorktreePathspecs,
   MAIN_OWNER_TOOLS,
   MEMBER_TOOLS,
@@ -74,13 +79,14 @@ import {
   notificationGatePrompt,
   AGREE_MARKER,
   CONCERN_MARKER,
-  notificationSweepMembers,
   processNotificationGate,
+  isPrunableWorktreeEntry,
   reconcileManagedRoster,
   runNotificationSweep,
   runNotificationSweepForMember,
   runNotificationGatedSession,
   runNotificationGateOrNormal,
+  type Member,
   type NotificationGateActor,
   type NotificationGateRequest,
   type NotificationSweepMember,
@@ -91,6 +97,10 @@ const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
 const ownerProbe = source.match(/function probeOwnerRunner\(\): Promise<boolean> \{[\s\S]*?\n\}/)?.[0];
 assert.ok(ownerProbe?.includes('const child = execFile('), 'owner probe 必須保留 child，才能管理 stdin lifecycle');
 assert.ok(ownerProbe?.includes('child.stdin?.end()'), 'owner probe 必須關閉 Codex stdin，避免等待 EOF 而逾時');
+assert.ok(
+  source.includes('pruneStaleWorktreeRegistration(RUN.repoRoot, wt(m));'),
+  'missing member worktree 必須先清理確認過的 stale registration',
+);
 assert.ok(source.includes('const SWEEP_OWNER_TIMEOUT = 20 * 60 * 1000;'), 'owner sweep 基準必須至少 20 分鐘');
 assert.ok(source.includes('const SWEEP_MEMBER_TIMEOUT = 20 * 60 * 1000;'), 'team member sweep 必須至少 20 分鐘');
 assert.ok(
@@ -98,13 +108,13 @@ assert.ok(
   'owner sweep 必須保留既有 30 分鐘 adaptive cap',
 );
 assert.ok(
-  source.includes('function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number): string'),
-  'owner sweep prompt 必須接受本輪 timeout 分鐘數',
+  source.includes('function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number, createDiscussion = false): string'),
+  'owner sweep prompt 必須接受本輪 timeout 分鐘數與發想額度',
 );
 assert.ok(source.includes('你有 ${timeoutMinutes} 分鐘硬時限'), 'owner sweep prompt 必須插入本輪 timeout 分鐘數');
 assert.ok(
-  source.includes("ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000))"),
-  'owner sweep 必須把計算後的 timeout 分鐘數傳進 prompt',
+  source.includes("ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000), p.createDiscussion)"),
+  'owner sweep 必須把計算後的 timeout 分鐘數與發想額度傳進 prompt',
 );
 assert.ok(!source.includes('const MEMBERS: Member[] = ['), 'MEMBERS 不應在 sim/run.ts 寫死 email/name');
 assert.ok(!source.includes('let REPO_ROOT'), 'scenario 狀態不應拆成多個可不同步的 global');
@@ -895,11 +905,6 @@ assert.deepStrictEqual(
   { route: { runner: 'claude', model: 'claude-sonnet-5' }, fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' } },
   'user02 一般工作必須由 Claude 產生並保留 fallback',
 );
-assert.deepStrictEqual(
-  notificationSweepMembers(['user02', 'user03', 'user04', 'user05', 'user06'].map((user) => ({ user }))).map((member) => member.user),
-  ['user02', 'user03', 'user04', 'user05'],
-  '通知巡檢必須跳過 user06',
-);
 const normalWorkSessions = source.match(
   /normal: \(\) => runSession\([\s\S]{0,160}?workSession\.route\.runner[\s\S]{0,160}?workSession\.route\.model[\s\S]{0,800}?fallback: workSession\.fallback/g,
 ) ?? [];
@@ -913,7 +918,7 @@ assert.strictEqual(
   2,
   'full sprint 與 team sweep 的 driver commit 都必須記錄實際一般工作模型',
 );
-const commitMemberWorkSource = source.match(/function commitMemberWork\(m: Member, round: number, model: string\): boolean \{[\s\S]*?\n\}/)?.[0] ?? '';
+const commitMemberWorkSource = source.match(/(?:export )?function commitMemberWork\(m: Member, round: number, model: string\): boolean \{[\s\S]*?\n\}/)?.[0] ?? '';
 assert.ok(
   commitMemberWorkSource.includes("git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m))"),
   'driver 代 commit 必須以排除 node_modules 的 pathspec stage，不能再無差別 git add -A',
@@ -925,6 +930,11 @@ assert.ok(
 assert.ok(
   commitMemberWorkSource.includes("git(['diff', '--cached', '--name-only'], wt(m))"),
   'driver commit 前必須確認還有可提交的非依賴檔案，僅有 node_modules 時不得建立空 commit',
+);
+assert.ok(
+  commitMemberWorkSource.indexOf("git(['diff', '--cached', '--name-only'], wt(m))")
+    < commitMemberWorkSource.indexOf("git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m))"),
+  'driver commit 必須先檢查 cached path，再進行 pathspec add',
 );
 assert.strictEqual(isQuotaExhaustion('HTTP 429: quota exhausted'), true, 'quota 錯誤應可辨識');
 assert.strictEqual(isQuotaExhaustion('agy binary not found'), false, 'agy 不存在不可誤判為 quota');
@@ -1121,10 +1131,62 @@ assert.strictEqual(isSweepWorkTask({ title: MAIN_POLICY_TITLE }), false);
 assert.strictEqual(isSweepWorkTask({ title: '[討論] 方向' }), false);
 assert.strictEqual(isSweepWorkTask({ title: '實作功能' }), true);
 
-assert.strictEqual(mainDiscussionNeedsOwner('Todo'), true);
-assert.strictEqual(mainDiscussionNeedsOwner('Done'), false);
-assert.strictEqual(mainDiscussionNeedsOwner('Doing'), false);
-assert.strictEqual(mainDiscussionNeedsOwner('Review'), false);
+// 發想節流：上限擋不住「自己建自己收」的循環（08-01 一天 37 則），所以真正生效的是間隔。
+const NOW = new Date('2026-08-03T12:00:00Z');
+const daysAgo = (n: number) => new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000).toISOString();
+assert.strictEqual(shouldCreateMainDiscussion(MAIN_DISCUSSION_TARGET, daysAgo(30), NOW), false, '達到上限就不建');
+assert.strictEqual(shouldCreateMainDiscussion(2, daysAgo(30), NOW), true, '未達上限且間隔已過');
+assert.strictEqual(shouldCreateMainDiscussion(2, daysAgo(1), NOW), false, '間隔未到');
+assert.strictEqual(
+  shouldCreateMainDiscussion(2, new Date(NOW.getTime() - ideationIntervalMs()).toISOString(), NOW),
+  true,
+  '剛好等於間隔要放行',
+);
+assert.strictEqual(
+  shouldCreateMainDiscussion(2, new Date(NOW.getTime() - ideationIntervalMs() + 1).toISOString(), NOW),
+  false,
+  '差 1 毫秒未到',
+);
+// fail-closed：查不到建立時間時，只有真的空看板才冷啟動，否則寧可不建。
+assert.strictEqual(shouldCreateMainDiscussion(0, null, NOW), true, '空看板冷啟動');
+assert.strictEqual(shouldCreateMainDiscussion(1, null, NOW), false, '有討論卻查無時間 → 不建');
+assert.strictEqual(shouldCreateMainDiscussion(2, 'not-a-date', NOW), false, '時間解析失敗 → 不建');
+
+// 間隔可用 SIM_IDEATION_INTERVAL_HOURS 外部調整；亂填要退回預設而不是變成 0（0 等於沒節流）。
+{
+  const saved = process.env.SIM_IDEATION_INTERVAL_HOURS;
+  const restore = () => {
+    if (saved === undefined) delete process.env.SIM_IDEATION_INTERVAL_HOURS;
+    else process.env.SIM_IDEATION_INTERVAL_HOURS = saved;
+  };
+  try {
+    delete process.env.SIM_IDEATION_INTERVAL_HOURS;
+    assert.strictEqual(ideationIntervalMs(), 72 * 60 * 60 * 1000, '未設定時預設 72 小時');
+    process.env.SIM_IDEATION_INTERVAL_HOURS = '6';
+    assert.strictEqual(ideationIntervalMs(), 6 * 60 * 60 * 1000, '設定值以小時換算');
+    assert.strictEqual(shouldCreateMainDiscussion(2, daysAgo(1), NOW), true, '縮短間隔後同一筆資料改為放行');
+    for (const bad of ['0', '-1', 'abc', '']) {
+      process.env.SIM_IDEATION_INTERVAL_HOURS = bad;
+      assert.strictEqual(ideationIntervalMs(), 72 * 60 * 60 * 1000, `非正數「${bad}」必須退回預設，不得變成無節流`);
+    }
+  } finally {
+    restore();
+  }
+}
+
+// 保險絲用產物齊備與否判斷，補完就永久為假，不會像時間式 backstop 那樣週期性空轉。
+const ownerId = 'owner-1';
+assert.strictEqual(mainDiscussionMissingOwnerThought([], ownerId), true, '沒有留言 → 缺想法');
+assert.strictEqual(
+  mainDiscussionMissingOwnerThought([{ user_id: 'member-1', content: `${THOUGHT_MARKER}\n假的` }], ownerId),
+  true,
+  '別人貼的想法不算',
+);
+assert.strictEqual(
+  mainDiscussionMissingOwnerThought([{ user_id: ownerId, content: `${THOUGHT_MARKER}\n現況／問題：x` }], ownerId),
+  false,
+  'owner 已貼想法 → 保險絲關閉',
+);
 
 const directory = canonicalWorkspaceDirectory();
 assert.match(directory, new RegExp(ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
@@ -1198,6 +1260,39 @@ assert.doesNotThrow(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'master
 assert.throws(() => validateGitRootFacts('/tmp/repo/nested', '/tmp/repo', 'master'), /Git top-level/);
 assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test'), /必須位於 master/);
 
+// ── stale worktree metadata：只接受目標路徑自己的 prunable entry ──
+{
+  const listing = [
+    'worktree /tmp/task-tracker',
+    'HEAD 1111111111111111111111111111111111111111',
+    'branch refs/heads/master',
+    '',
+    'worktree /tmp/task-tracker/sim-work/user03',
+    'HEAD 2222222222222222222222222222222222222222',
+    'branch refs/heads/sim/user03',
+    'prunable gitdir file points to non-existent location',
+    '',
+    'worktree /tmp/task-tracker/sim-work/user04',
+    'HEAD 3333333333333333333333333333333333333333',
+    'branch refs/heads/sim/user04',
+  ].join('\n');
+  assert.strictEqual(
+    isPrunableWorktreeEntry(listing, '/tmp/task-tracker/sim-work/user03'),
+    true,
+    '目標 worktree 缺失且 entry 是 prunable 時才可恢復',
+  );
+  assert.strictEqual(
+    isPrunableWorktreeEntry(listing, '/tmp/task-tracker/sim-work/user04'),
+    false,
+    '非 prunable entry 不可誤清理',
+  );
+  assert.strictEqual(
+    isPrunableWorktreeEntry(listing, '/tmp/task-tracker/sim-work/user05'),
+    false,
+    '其他 worktree 不可誤匹配',
+  );
+}
+
 // ── driver commit：node_modules symlink 不得進 index，正常 task 檔仍可提交 ──
 {
   const repo = mkdtempSync(join(tmpdir(), 'member-commit-guard-'));
@@ -1225,6 +1320,76 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
     false,
     '只剩 node_modules symlink 時不可視為待提交的 member 工作成果',
   );
+}
+
+{
+  const repo = mkdtempSync(join(tmpdir(), 'member-commit-comment-payload-'));
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  g(['init', '-b', 'master']);
+  g(['config', 'user.email', 't@t']);
+  g(['config', 'user.name', 't']);
+  writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+  g(['add', '.']);
+  g(['commit', '-m', 'base']);
+  writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+  writeFileSync(join(repo, '.comment-payload.json'), '{"content":"draft"}\n');
+  g(['add', '-A', '--', ...memberWorktreePathspecs()]);
+  assert.deepStrictEqual(
+    g(['diff', '--cached', '--name-only']).split('\n').filter(Boolean),
+    ['app.ts'],
+    'driver 代 commit 不得把 .comment-payload.json 一起 stage',
+  );
+  g(['reset', '--hard']);
+  assert.strictEqual(
+    hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
+    false,
+    '只剩 .comment-payload.json 時不可視為待提交的 member 工作成果',
+  );
+}
+
+{
+  const workRoot = join(ROOT, 'sim-work');
+  mkdirSync(workRoot, { recursive: true });
+  const repo = mkdtempSync(join(workRoot, 'member-commit-prestaged-'));
+  const user = basename(repo);
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const member: Member = {
+    email: `${user}@test.local`,
+    name: 't',
+    user,
+    runner: 'codex',
+    model: 'test-model',
+    profile: 'test',
+  };
+  try {
+    g(['init', '-b', `sim/${user}`]);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+    g(['add', '.']);
+    g(['commit', '-m', 'base']);
+
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+    writeFileSync(join(repo, '.comment-payload.json'), '{"content":"draft"}\n');
+    g(['add', '.comment-payload.json']);
+    assert.throws(
+      () => commitMemberWork(member, 1, 'test-model'),
+      /member worktree 噪音檔/,
+      '預先 stage 的 .comment-payload.json 必須在 commit 前直接拒絕',
+    );
+
+    g(['reset', '--hard']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.deepStrictEqual(
+      g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
+      ['app.ts'],
+      '正常 task 檔 commit 後不應帶入 .comment-payload.json',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(workRoot, { recursive: true, force: true });
+  }
 }
 
 const lockPath = join(dir, '.run.lock');
@@ -1405,6 +1570,27 @@ assert.ok(
     !mainPrompt.includes('【確認結論】'),
     'owner prompt 不得要求 validator 不認得的確認留言（owner 會空等到收尾逾時）',
   );
+
+  // user09 那一票是 validator 硬擋的，prompt 必須用同一組常數講同一件事，否則 owner 會一直
+  // 撞 400 重試。四人門檻仍是純 prompt 規則，不在 validator 數票。
+  assert.ok(mainPrompt.includes(AGREE_MARKER), 'owner prompt 必須列出成員表態 marker');
+  assert.ok(
+    mainPrompt.includes(MAIN_BOSS_EMAIL),
+    'owner prompt 必須指名 validator 會擋的那位同意者，不能只寫 user09 字面',
+  );
+
+  // 發想額度由 sweep 端決定，prompt 只轉述結論；owner 不再自己數看板。
+  const noQuota = ownerSweepPrompt(MAIN_WORKSPACE_ID, parseScenario(['node', 'run.ts']), [], '老闆', 20, false);
+  const withQuota = ownerSweepPrompt(MAIN_WORKSPACE_ID, parseScenario(['node', 'run.ts']), [], '老闆', 20, true);
+  assert.ok(noQuota.includes('不要建立任何新討論'), '沒有額度時必須明講不要建立');
+  assert.ok(withQuota.includes('本輪要建立一則新討論'), '有額度時必須明講要建立');
+  assert.ok(!noQuota.includes('本輪要建立一則新討論'), '沒有額度時不得同時出現建立指令');
+  for (const prompt of [noQuota, withQuota]) {
+    assert.ok(prompt.includes(THOUGHT_MARKER), '兩種額度下都必須保留想法模板');
+    for (const marker of [CONCLUSION_MARKER, NO_IMPLEMENTATION_MARKER, NO_CONSENSUS_MARKER]) {
+      assert.ok(prompt.includes(marker), `兩種額度下都必須保留收尾 marker ${marker}`);
+    }
+  }
 }
 
 // describeError：fetch 失敗的 errno 只存在於 cause，不印出來就等於沒有診斷資料。

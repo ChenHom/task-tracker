@@ -7,6 +7,7 @@ This is the long-form companion to [AGENTS.md](../../AGENTS.md). `AGENTS.md` sta
 | Need | Read |
 | --- | --- |
 | Current shipped state, verified rollout notes, and remaining backlog | [docs/tasks/current.md](../tasks/current.md) |
+| Notable release history and changelog entry format | [CHANGELOG.md](../../CHANGELOG.md) |
 | HTTP API endpoint contracts | [docs/api.md](../api.md) |
 | Single design baseline and current architecture | [design.md](../../design.md) |
 | Deployment, systemd, `/api/health`, logs, main-workspace policy, sim operations | [docs/operations.md](../operations.md) |

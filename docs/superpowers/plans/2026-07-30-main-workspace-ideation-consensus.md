@@ -6,6 +6,19 @@
 
 **Architecture:** 全部在 prompt 層加規則，`src/` 一行不動。四人門檻不做成 validator，由 owner 在收尾時自行清點——`176b576`（07-14）建立共識守門、`75e2033`（07-23）又拆掉，同一道閘門一個月內建了又拆；純 prompt 規則沒有 validator 對手就沒得漂移，最壞情況是被忽略，不會造成 400。成員的喚醒完全靠 notification sweep，所以本計畫的最後一步是恢復 07-29 停用的 gate，而恢復之前要先補上成員側 login 的可診斷性與韌性。
 
+> **2026-08-03 修訂：同意門檻現在是兩半、兩層。** 上面「`src/` 一行不動」只對其中一半仍然成立：
+>
+> - **「至少 4 位同意」維持純 prompt**，理由與原文相同，不做 validator、不數票。
+> - **「其中一位必須是 user09（老闆本人）」升級為 validator**，見 `src/mainDiscussion.ts` 的
+>   `resolveMainDiscussionConclusion`：走 `implement` 時，本輪 `【OWNER想法】` 之後必須存在一則
+>   user09 的 `【同意】`，否則回 400。
+>
+> 為什麼這一條要破例：實測 2026-07-30～08-02 的 61 次收尾中，**user09 一票都沒投過**，
+> 而 owner 仍開出 31 個實作 task。這一票是人工授權閘門，被忽略就等於閘門不存在——與「四人門檻
+> 被忽略只是少了個形式」性質不同。原文擔心的 prompt↔validator 漂移，由
+> `src/mainWorkspacePolicy.ts` 作為雙方唯一字串來源來擋（`AGREE_MARKER`、`MAIN_BOSS_EMAIL`
+> 都已搬進去，`sim/run.ts` 改為 import），並在 `sim/run.test.ts` 的 round-trip 守門加了斷言。
+
 **Tech Stack:** TypeScript, Node `node:sqlite`, `tsx` focused tests, npm build/test scripts, systemd user timers.
 
 ---

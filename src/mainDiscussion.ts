@@ -2,8 +2,10 @@ import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
 import { CommandError } from './eventStore';
 import {
+  AGREE_MARKER,
   CONCLUSION_MARKER,
   handoffLine,
+  MAIN_BOSS_EMAIL,
   MAIN_OWNER_EMAIL,
   MAIN_POLICY_TITLE,
   MAIN_WORKSPACE_ID,
@@ -70,6 +72,17 @@ function getMainOwnerId(database: DatabaseSync): string | null {
        JOIN workspace_members_read_model m ON m.user_id = u.id
       WHERE u.email = ? AND m.workspace_id = ? AND m.role = 'Owner'`,
   ).get(MAIN_OWNER_EMAIL, MAIN_WORKSPACE_ID) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+// 老闆不限定角色（他是 Commenter），只要是主工作區的 active 成員即可。
+function getMainBossId(database: DatabaseSync): string | null {
+  const row = database.prepare(
+    `SELECT u.id
+       FROM users u
+       JOIN workspace_members_read_model m ON m.user_id = u.id
+      WHERE u.email = ? AND m.workspace_id = ?`,
+  ).get(MAIN_BOSS_EMAIL, MAIN_WORKSPACE_ID) as { id: string } | undefined;
   return row?.id ?? null;
 }
 
@@ -159,6 +172,16 @@ export function resolveMainDiscussionConclusion(
       implementationTaskName: null,
       implementationTasks: [],
     };
+  }
+
+  // 實作結論的必要同意票：老闆（user09）必須在這一輪 OWNER想法之後留下「【同意】」。
+  // 「至少 4 位同意」仍是 owner prompt 的自律規則，不在這裡數票；這裡只擋人工授權那一票，
+  // 因為它被忽略就等於整個閘門不存在（2026-08-03 實測：61 次收尾中老闆 0 票）。
+  const bossId = getMainBossId(database);
+  const bossAgreed = bossId !== null
+    && laterComments.some((comment) => comment.user_id === bossId && isMarker(comment.content, AGREE_MARKER));
+  if (!bossAgreed) {
+    throw new CommandError(`實作結論需要 ${MAIN_BOSS_EMAIL} 的「${AGREE_MARKER}」；沒有就改用「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」`);
   }
 
   const handoffs = laterComments

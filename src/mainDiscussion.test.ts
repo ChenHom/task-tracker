@@ -4,6 +4,8 @@ import { runMigrations } from './schema';
 import { CommandError } from './eventStore';
 import { resolveMainDiscussionConclusion } from './mainDiscussion';
 import {
+  AGREE_MARKER,
+  MAIN_BOSS_EMAIL,
   MAIN_OWNER_EMAIL,
   MAIN_POLICY_TITLE,
   MAIN_WORKSPACE_ID,
@@ -26,11 +28,13 @@ db.prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, creat
 const insertUser = db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)');
 insertUser.run('owner', MAIN_OWNER_EMAIL, 'Owner', 'hash');
 insertUser.run('user02', 'user02@test.local', 'User 02', 'hash');
+insertUser.run('boss', MAIN_BOSS_EMAIL, 'Boss', 'hash');
 const insertMember = db.prepare(
   'INSERT INTO workspace_members_read_model (workspace_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)',
 );
 insertMember.run(MAIN_WORKSPACE_ID, 'owner', 'Owner', AT);
 insertMember.run(MAIN_WORKSPACE_ID, 'user02', 'Commenter', AT);
+insertMember.run(MAIN_WORKSPACE_ID, 'boss', 'Commenter', AT);
 
 function seedTask(taskId: string, status = 'Todo', title = `[討論] ${taskId}`): void {
   db.prepare(
@@ -44,11 +48,13 @@ function addComment(taskId: string, commentId: string, userId: string, content: 
   ).run(commentId, taskId, userId, content, AT);
 }
 
-// 討論的收尾前置只剩「owner 留過完整的 OWNER想法」，沒有窗口、沒有期限。
-function seedDiscussion(taskId: string, thoughtContent = OWNER_THOUGHT): string {
+// 討論的收尾前置：owner 留過完整的 OWNER想法；走 implement 時還要老闆（user09）的【同意】。
+// bossAgrees 預設 true，因為多數既有案例驗的是 implement 以外的規則，不該被這道閘門干擾。
+function seedDiscussion(taskId: string, thoughtContent = OWNER_THOUGHT, bossAgrees = true): string {
   seedTask(taskId);
   const thoughtId = `${taskId}-thought`;
   addComment(taskId, thoughtId, 'owner', thoughtContent);
+  if (bossAgrees) addComment(taskId, `${taskId}-boss-agree`, 'boss', `${AGREE_MARKER}\n可以做。`);
   return thoughtId;
 }
 
@@ -173,6 +179,49 @@ assert.throws(
     message: '尚未留下合法的主工作區結論；實作請依序留下「【結論】」→「【實作任務】工作區：...｜TASK：...」',
   },
   '實作結論 marker 錯誤時應回傳可直接修正的格式',
+);
+
+// ── 老闆同意票：implement 專屬的人工授權閘門 ──────────────────────────
+// 2026-08-03 實測：61 次收尾中老闆一票都沒投過，靠 owner prompt 自律等於沒有閘門，
+// 所以這一票（且只有這一票）升級成 validator 硬擋；「至少 4 位同意」仍是純 prompt 規則。
+seedDiscussion('task-boss-silent', OWNER_THOUGHT, false);
+addComment('task-boss-silent', 'task-boss-silent-decision', 'owner', '【結論】\n採用此方向。');
+addComment('task-boss-silent', 'task-boss-silent-handoff', 'owner', '【實作任務】工作區：Task Tracker｜TASK：某項實作');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-boss-silent', 'owner', db),
+  CommandError,
+  '老闆沒表態就不得走 implement，即使交接格式完全正確',
+);
+
+// 湊票數不能取代那一票：其他成員全部同意，老闆沉默，照樣擋。
+seedDiscussion('task-others-agree', OWNER_THOUGHT, false);
+addComment('task-others-agree', 'task-others-agree-vote', 'user02', `${AGREE_MARKER}\n我贊成。`);
+addComment('task-others-agree', 'task-others-agree-decision', 'owner', '【結論】\n採用此方向。');
+addComment('task-others-agree', 'task-others-agree-handoff', 'owner', '【實作任務】工作區：Task Tracker｜TASK：某項實作');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-others-agree', 'owner', db),
+  CommandError,
+  '這道閘門擋的是特定人，不是票數，成員同意不能替代',
+);
+
+// 老闆的【疑慮】不算同意。
+seedDiscussion('task-boss-concern', OWNER_THOUGHT, false);
+addComment('task-boss-concern', 'task-boss-concern-vote', 'boss', '【疑慮】\n先別做。');
+addComment('task-boss-concern', 'task-boss-concern-decision', 'owner', '【結論】\n採用此方向。');
+addComment('task-boss-concern', 'task-boss-concern-handoff', 'owner', '【實作任務】工作區：Task Tracker｜TASK：某項實作');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-boss-concern', 'owner', db),
+  CommandError,
+  '老闆表達疑慮不等於同意',
+);
+
+// 閘門只擋 implement：不實作與未達共識不受影響，否則老闆不表態就連收尾都做不了。
+seedDiscussion('task-boss-silent-no-impl', OWNER_THOUGHT, false);
+addComment('task-boss-silent-no-impl', 'task-boss-silent-no-impl-decision', 'owner', '【結論：不實作】\n先不做。');
+assert.strictEqual(
+  resolveMainDiscussionConclusion('task-boss-silent-no-impl', 'owner', db).outcome,
+  'no_implementation',
+  '老闆沉默時仍可走不實作，閘門不得擴大到其他 outcome',
 );
 
 seedDiscussion('task-missing-handoff');
