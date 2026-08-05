@@ -50,7 +50,7 @@ import {
 import { createProject, listProjects, renameProject, deleteProject, getProjectWorkspaceId } from './project';
 import { createComment, listComments, updateComment, getCommentContext } from './comment';
 import { registerNotificationProjections, listNotifications, listNotificationsPage, markNotificationRead } from './notification';
-import { createAttachment, listAttachments, readAttachment, deleteAttachment, getAttachmentContext, attachmentMaxBytes } from './attachment';
+import { createAttachment, listAttachments, readAttachment, deleteAttachment, getAttachmentContext, attachmentMaxBytes, contentDispositionHeader } from './attachment';
 import { searchWorkspace } from './search';
 import { getAggregateWorkspace, getAuditTrail } from './audit';
 import { createRateLimiter } from './rateLimit';
@@ -118,6 +118,41 @@ const MIME: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
 };
 
+// CSP report-only（task 7186cf1f 第一輪）：只觀察、不 enforce、不擋任何請求。
+// script-src 'self' 對應現有同源 ESM（public/index.html 只有一個 <script type=module src="app.js">，無 inline script/eval）。
+// style-src 需 unsafe-inline + fonts.googleapis.com：repo 內大量以 el() 動態設定 style 屬性、HTML 亦有 style="" 靜態屬性，
+// global.css 又 @import Google Fonts；如實放寬並記錄成已知落差（見 docs/frontend/dom-sink-inventory.md），不擅自改前端行為。
+// ponytail: CSP 不能取代既有 MIME／filename／權限驗證，零違規也不代表沒有 XSS，僅是可觀察的相容性訊號。
+const CSP_REPORT_ONLY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  'report-uri /api/csp-report',
+].join('; ');
+
+// 只彙總 violated-directive 計數；不留存 blocked-uri／document-uri／source-file 等可能含頁面內容或識別資訊的欄位。
+const cspReportDirectiveCounts = new Map<string, number>();
+export function recordCspReport(raw: unknown): string {
+  const body = (raw && typeof raw === 'object' ? (raw as Record<string, unknown>)['csp-report'] ?? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  const directiveField = body['effective-directive'] ?? body['violated-directive'];
+  const directive = typeof directiveField === 'string' && directiveField.trim() ? directiveField.trim().slice(0, 40) : 'unknown';
+  cspReportDirectiveCounts.set(directive, (cspReportDirectiveCounts.get(directive) ?? 0) + 1);
+  return directive;
+}
+export function getCspReportSummary(): Record<string, number> {
+  return Object.fromEntries(cspReportDirectiveCounts);
+}
+
 // ponytail: body 上限 1MB，擋掉超大 payload；真要調大等有需求再說。
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -159,6 +194,22 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const row = db.prepare('SELECT 1 AS ok').get() as { ok: number };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', db: row.ok === 1, rev: GIT_REV }));
+    return;
+  }
+
+  // ── CSP report-only 收集端點：無需登入（瀏覽器自動送出）。只彙總 directive 計數，見 recordCspReport 註解。──
+  if (req.url === '/api/csp-report' && req.method === 'POST') {
+    const raw = await readBody(req, 50_000).catch(() => null);
+    if (raw && raw.length > 0) {
+      try {
+        const directive = recordCspReport(JSON.parse(raw.toString('utf8')));
+        console.log(`[csp-report-only] violated-directive=${directive}`);
+      } catch {
+        // 無法解析的 report body：忽略，且不記錄原始內容
+      }
+    }
+    res.writeHead(204);
+    res.end();
     return;
   }
 
@@ -769,7 +820,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
         res.writeHead(200, {
           'Content-Type': file.mime,
           'X-Content-Type-Options': 'nosniff',
-          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.originalName)}`,
+          'Content-Disposition': contentDispositionHeader(file.originalName),
         });
         res.end(file.data);
       } catch (e) {
@@ -837,10 +888,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 
   try {
     const content = await readFile(filePath);
-    res.writeHead(200, {
-      'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream' ,
-      'x-content-type-options': 'nosniff'
-    });
+    const headers: Record<string, string> = {
+      'Content-Type': MIME[extname(filePath)] ?? 'application/octet-stream',
+      'x-content-type-options': 'nosniff',
+    };
+    if (extname(filePath) === '.html') {
+      headers['Content-Security-Policy-Report-Only'] = CSP_REPORT_ONLY_POLICY;
+    }
+    res.writeHead(200, headers);
     res.end(content);
   } catch {
     res.writeHead(404);

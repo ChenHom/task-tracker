@@ -46,6 +46,12 @@ function sanitizeFilename(name: unknown): string {
   return (base || 'file').slice(0, 255);
 }
 
+// 下載 Content-Disposition 值：RFC 5987 filename* + encodeURIComponent 雙重防 header injection
+// （sanitizeFilename 已在存檔時擋 CRLF/引號，這裡是第二層防線，不信任任一層單獨足夠）。
+export function contentDispositionHeader(originalName: string): string {
+  return `attachment; filename*=UTF-8''${encodeURIComponent(originalName)}`;
+}
+
 // symlink 守門：storedName 必為 uuid；解析真實路徑後必須仍在 ATTACH_REAL 內（字串比對擋不住 symlink）。
 function resolveInside(storedName: string): string {
   if (!UUID_RE.test(storedName)) throw new CommandError('非法的 stored_name');
