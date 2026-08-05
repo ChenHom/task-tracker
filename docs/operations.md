@@ -90,7 +90,7 @@ If `/tracker/` returns `502`, first check whether `task-tracker.service` is acti
 
 ## Autodeploy（master 自動部署）
 
-`sim-autodeploy.path` 監看本地 `refs/heads/master`（含 `packed-refs`），變動即觸發 `deploy/sim-autodeploy.sh`：等待進行中的 sim sweep（最多 30 分）→ `npm run build` → 重啟 `task-tracker.service` → 以 `/api/health` 的 `rev` 欄位 readback 確認與 `git rev-parse master` 一致。build 失敗或 readback 不符時**不會**留下新版（服務續跑舊版），並經 `sim/notify-human.sh` 推 Discord。
+`sim-autodeploy.path` 監看本地 `refs/heads/master`（含 `packed-refs`），變動即觸發 `deploy/sim-autodeploy.sh`：等待進行中的 sim sweep（最多 30 分）→ 重新讀取部署目標 revision → `npm run build` → 重啟 `task-tracker.service` → 以 `/api/health` 的 `rev` 欄位 readback 確認與該目標一致。若 build 或 restart 期間 `master` 又變更，最多重試三次；build 失敗、revision 持續變動或 readback 不符時**不會**留下未驗證的新版（服務續跑舊版），並經 `sim/notify-human.sh` 推 Discord。
 
 `sim-autodeploy` 的實際邊界清單如下：
 

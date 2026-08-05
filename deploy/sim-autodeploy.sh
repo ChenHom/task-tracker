@@ -9,40 +9,66 @@ HEALTH_URL="${SIM_AUTODEPLOY_HEALTH_URL:-http://localhost:3000/api/health}"
 LOG="$STATE/deploy.log"
 mkdir -p "$STATE"
 cd "$REPO"
-HEAD=$(git rev-parse master)
+INITIAL_HEAD=$(git rev-parse master)
 DEPLOYED=$(cat "$STATE/deployed_rev" 2>/dev/null || echo none)
-[ "$HEAD" = "$DEPLOYED" ] && exit 0
+[ "$INITIAL_HEAD" = "$DEPLOYED" ] && exit 0
 # ponytail: sweep 進行中就等（最多 30 分），避免重啟打斷 in-flight session
 for _ in $(seq 60); do
   pgrep -f '\.bin/tsx sim/run\.ts' >/dev/null || break
   sleep 30
 done
-echo "[$(date -Is)] deploying $HEAD (was $DEPLOYED)" >>"$LOG"
-if ! npm run build >>"$LOG" 2>&1; then
-  echo "[$(date -Is)] BUILD FAILED, not restarting" >>"$LOG"
-  "$REPO/sim/notify-human.sh" "⚠️ autodeploy build FAILED at $HEAD（服務仍跑舊版 $DEPLOYED）" || true
-  exit 1
-fi
-if [ "${SIM_AUTODEPLOY_SKIP_RESTART:-0}" = 1 ]; then
-  if [ "${SIM_AUTODEPLOY_SKIP_BUS_CHECK:-0}" = 1 ]; then
-    ACTIVE_STATE=skipped
-    SUB_STATE=skipped
-  else
-    ACTIVE_STATE=$(systemctl --user show "$TARGET_SERVICE" --property=ActiveState --value)
-    SUB_STATE=$(systemctl --user show "$TARGET_SERVICE" --property=SubState --value)
+
+# HEAD may advance while the sweep is draining, or while build/restart runs.
+# Re-read it after the wait and retry a bounded number of times if it moves.
+for attempt in $(seq 1 3); do
+  HEAD=$(git rev-parse master)
+  [ "$HEAD" = "$DEPLOYED" ] && exit 0
+  echo "[$(date -Is)] deploying $HEAD (was $DEPLOYED, attempt=$attempt)" >>"$LOG"
+  if ! npm run build >>"$LOG" 2>&1; then
+    echo "[$(date -Is)] BUILD FAILED, not restarting" >>"$LOG"
+    "$REPO/sim/notify-human.sh" "⚠️ autodeploy build FAILED at $HEAD（服務仍跑舊版 $DEPLOYED）" || true
+    exit 1
   fi
+  BUILT_HEAD=$(git rev-parse master)
+  if [ "$BUILT_HEAD" != "$HEAD" ]; then
+    echo "[$(date -Is)] HEAD advanced during build: $HEAD -> $BUILT_HEAD; retrying" >>"$LOG"
+    continue
+  fi
+  if [ "${SIM_AUTODEPLOY_SKIP_RESTART:-0}" = 1 ]; then
+    if [ "${SIM_AUTODEPLOY_SKIP_BUS_CHECK:-0}" = 1 ]; then
+      ACTIVE_STATE=skipped
+      SUB_STATE=skipped
+    else
+      ACTIVE_STATE=$(systemctl --user show "$TARGET_SERVICE" --property=ActiveState --value)
+      SUB_STATE=$(systemctl --user show "$TARGET_SERVICE" --property=SubState --value)
+    fi
+    REV=$(curl -sf --max-time 10 "$HEALTH_URL" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).rev))" || echo readback-failed)
+    echo "[$(date -Is)] PILOT DRY RUN active=$ACTIVE_STATE/$SUB_STATE health_rev=$REV" >>"$LOG"
+    exit 0
+  fi
+  if [ "$(git rev-parse master)" != "$HEAD" ]; then
+    echo "[$(date -Is)] HEAD advanced before restart; retrying" >>"$LOG"
+    continue
+  fi
+  systemctl --user restart "$TARGET_SERVICE"
+  sleep 3
   REV=$(curl -sf --max-time 10 "$HEALTH_URL" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).rev))" || echo readback-failed)
-  echo "[$(date -Is)] PILOT DRY RUN active=$ACTIVE_STATE/$SUB_STATE health_rev=$REV" >>"$LOG"
-  exit 0
-fi
-systemctl --user restart "$TARGET_SERVICE"
-sleep 3
-REV=$(curl -sf --max-time 10 "$HEALTH_URL" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).rev))" || echo readback-failed)
-if [ "$REV" = "$HEAD" ]; then
-  echo "$HEAD" >"$STATE/deployed_rev"
-  echo "[$(date -Is)] deployed OK rev=$REV" >>"$LOG"
-else
+  if [ "$REV" = "$HEAD" ]; then
+    echo "$HEAD" >"$STATE/deployed_rev"
+    echo "[$(date -Is)] deployed OK rev=$REV" >>"$LOG"
+    exit 0
+  fi
+  CURRENT_HEAD=$(git rev-parse master)
+  if [ "$CURRENT_HEAD" != "$HEAD" ]; then
+    echo "[$(date -Is)] HEAD advanced during restart: $HEAD -> $CURRENT_HEAD; retrying" >>"$LOG"
+    continue
+  fi
   echo "[$(date -Is)] READBACK MISMATCH rev=$REV head=$HEAD" >>"$LOG"
   "$REPO/sim/notify-human.sh" "⚠️ autodeploy readback 不符：health rev=$REV, master=$HEAD" || true
   exit 1
-fi
+done
+
+HEAD=$(git rev-parse master)
+echo "[$(date -Is)] HEAD kept changing during deployment; giving up at $HEAD" >>"$LOG"
+"$REPO/sim/notify-human.sh" "⚠️ autodeploy HEAD 持續變更，暫停部署於 $HEAD（服務仍跑舊版 $DEPLOYED）" || true
+exit 1

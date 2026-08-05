@@ -24,9 +24,11 @@ systemctl --user reload task-tracker.service
 ## Autodeploy
 
 `sim-autodeploy.path` watches the local `master` ref; on change it runs `sim-autodeploy.sh`
-(waits for any in-flight sim sweep, `npm run build`, restarts the service, then verifies
-`/api/health` `rev` matches `git rev-parse master`). Build failure or readback mismatch
-notifies Discord via `sim/notify-human.sh` and leaves the old version running.
+(waits for any in-flight sim sweep, re-reads the target revision, `npm run build`, restarts
+the service, then verifies `/api/health` `rev` matches that target). If `master` advances
+during build or restart, it retries up to three times. Build failure, persistent revision
+churn, or readback mismatch notifies Discord via `sim/notify-human.sh` and leaves the old
+version running.
 
 Pilot copy:
 
