@@ -1364,6 +1364,57 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
 {
   const workRoot = join(ROOT, 'sim-work');
   mkdirSync(workRoot, { recursive: true });
+  const repo = mkdtempSync(join(workRoot, 'member-commit-root-scratch-'));
+  const user = basename(repo);
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const member: Member = {
+    email: `${user}@test.local`,
+    name: 't',
+    user,
+    runner: 'codex',
+    model: 'test-model',
+    profile: 'test',
+  };
+  try {
+    g(['init', '-b', `sim/${user}`]);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+    g(['add', '.']);
+    g(['commit', '-m', 'base']);
+
+    writeFileSync(join(repo, '.filter_tasks.py'), 'print("scratch")\n');
+    g(['add', '.filter_tasks.py']);
+    assert.strictEqual(
+      hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
+      false,
+      '預先 stage 的根目錄 scratch 查詢檔不應被視為可提交成果',
+    );
+    assert.strictEqual(
+      commitMemberWork(member, 1, 'test-model'),
+      false,
+      '預先 stage 的根目錄 scratch 查詢檔不應產生代 commit',
+    );
+
+    g(['reset', '--hard']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+    writeFileSync(join(repo, '.filter_tasks.py'), 'print("scratch")\n');
+    g(['add', '.filter_tasks.py']);
+    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.deepStrictEqual(
+      g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
+      ['app.ts'],
+      '正常 task 檔 commit 後不應帶入根目錄 scratch 查詢檔',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(workRoot, { recursive: true, force: true });
+  }
+}
+
+{
+  const workRoot = join(ROOT, 'sim-work');
+  mkdirSync(workRoot, { recursive: true });
   const repo = mkdtempSync(join(workRoot, 'member-commit-prestaged-'));
   const user = basename(repo);
   const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();

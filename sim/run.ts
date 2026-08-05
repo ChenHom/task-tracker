@@ -118,22 +118,36 @@ function isMemberWorktreeNoise(path: string): boolean {
   return path.split(/[\\/]/).some((segment) => MEMBER_WORKTREE_NOISE_SEGMENTS.has(segment));
 }
 
+function memberWorktreePorcelainPath(entry: string): string {
+  if (entry === '') return '';
+  if (entry.startsWith('?? ')) return entry.slice(3);
+  if (entry.length < 3) return '';
+  return entry[1] === ' ' && entry[2] !== ' ' ? entry.slice(2) : entry.slice(3);
+}
+
 function isMemberWorktreeScratch(path: string): boolean {
   return path.split(/[\\/]/).some((segment) => segment.startsWith('.'));
 }
 
+function isMemberWorktreeRootScratch(path: string): boolean {
+  const normalized = path.replace(/[\\/]+$/, '');
+  return normalized !== '' && normalized.split(/[\\/]/).length === 1 && normalized.startsWith('.');
+}
+
 function isMemberWorktreeNoiseEntry(entry: string): boolean {
-  const path = entry.slice(3);
+  const path = memberWorktreePorcelainPath(entry);
   if (path === '') return true;
-  if (isMemberWorktreeNoise(path)) return true;
+  if (isMemberWorktreeNoise(path) || isMemberWorktreeRootScratch(path)) return true;
   return entry.startsWith('?? ') && isMemberWorktreeScratch(path);
 }
 
 function memberWorktreeScratchPaths(status: string): string[] {
   return status.split('\n').flatMap((entry) => {
-    if (entry === '' || !entry.startsWith('?? ')) return [];
-    const path = entry.slice(3);
-    return path !== '' && isMemberWorktreeScratch(path) ? [path] : [];
+    if (entry === '') return [];
+    const path = memberWorktreePorcelainPath(entry);
+    if (path === '') return [];
+    if (isMemberWorktreeRootScratch(path)) return [path.replace(/[\\/]+$/, '')];
+    return entry.startsWith('?? ') && isMemberWorktreeScratch(path) ? [path] : [];
   });
 }
 
