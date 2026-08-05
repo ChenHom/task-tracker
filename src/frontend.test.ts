@@ -384,6 +384,39 @@ assert.strictEqual(localPartMention.childNodes.length, 1, 'email local-part ment
 assert.strictEqual(localPartMention.childNodes[0].className, 'rich-mention', 'email local-part mention should use mention styling');
 assert.strictEqual(localPartMention.childNodes[0].textContent, '@小美', 'email local-part mention should display the member name');
 
+// ── DOM sink 合成字元 fixture：HTML/script 樣式輸入只能落成文字節點，不可被解析成真實元素 ──
+const xssPlainText = renderRichText('<script>alert(1)</script><img src=x onerror=alert(2)>', [], [], []);
+assert.strictEqual(xssPlainText.childNodes.length, 1, 'raw HTML-like 內容應整段落為單一節點，不應被 regex 拆成連結／mention');
+assert.strictEqual(xssPlainText.childNodes[0].tag, '#text', '不得建立 script/img 等真實 DOM 元素');
+assert.strictEqual(
+  xssPlainText.childNodes[0].textContent,
+  '<script>alert(1)</script><img src=x onerror=alert(2)>',
+  '內容須原樣以文字呈現',
+);
+
+// ── 跨帳號情境：即使成員顯示名稱本身含 HTML 特殊字元，mention 仍只能經 el()/textContent 顯示，不建立子元素 ──
+const evilMember = { user_id: 'evil-1', name: '<img src=x onerror=alert(1)>', email: 'evil@test.local' };
+const mentionWithEvilName = renderRichText('@evil@test.local', [evilMember], [], []);
+assert.strictEqual(mentionWithEvilName.childNodes.length, 1);
+assert.strictEqual(mentionWithEvilName.childNodes[0].tag, 'span', '應建立單一 span，而非注入解析後的子元素');
+assert.strictEqual(mentionWithEvilName.childNodes[0].className, 'rich-mention');
+assert.strictEqual(
+  mentionWithEvilName.childNodes[0].textContent,
+  '@<img src=x onerror=alert(1)>',
+  '顯示名稱應以 textContent 原樣顯示，不被當成 HTML 解析',
+);
+assert.strictEqual(mentionWithEvilName.childNodes[0].childNodes.length, 0, '不應產生任何子元素（證明走的是 textContent 而非 innerHTML）');
+
+// ── URL 屬性斷點：URL 正則排除 <>"'，屬性 context 不會被提早關閉注入額外內容 ──
+const urlBreakout = renderRichText('https://evil.com/"><script>alert(1)</script>', [], [], []);
+const urlLink = urlBreakout.childNodes.find((n: MockElement) => n.tag === 'a');
+assert.ok(urlLink, '合法前綴仍應被渲染成連結');
+assert.strictEqual(urlLink!.href, 'https://evil.com/', 'href 應在遇到 " 時提前截斷，不含後續注入片段');
+assert.ok(
+  urlBreakout.childNodes.some((n: MockElement) => n.tag === '#text' && n.textContent.includes('<script>')),
+  '截斷後的殘餘字串仍應以純文字節點呈現，不會被解析成元素',
+);
+
 function findElement(el: MockElement, predicate: (element: MockElement) => boolean): MockElement | null {
   if (predicate(el)) return el;
   for (const child of el.childNodes) {

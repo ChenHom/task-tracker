@@ -304,6 +304,58 @@ void (async () => {
     assert.deepStrictEqual(Object.keys(row).sort(), allowedAttachmentFields, 'attachment 輸出欄位不可外洩 stored_name');
   }
 
+  // ── CSP report-only（task 7186cf1f）：先觀察相容性，第一輪不 enforce ──
+  {
+    const { recordCspReport, getCspReportSummary } = await import('./server');
+
+    let htmlHeaders: Record<string, unknown> = {};
+    const htmlReq = { url: '/', method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' } };
+    const htmlRes = {
+      writeHead: (_code: number, headers?: Record<string, unknown>) => { htmlHeaders = headers ?? {}; },
+      end: () => {},
+    };
+    await handle(htmlReq as never, htmlRes as never);
+    const cspValue = String(htmlHeaders['Content-Security-Policy-Report-Only'] ?? '');
+    assert.match(cspValue, /script-src 'self'/, 'HTML 回應應帶 report-only CSP，script-src 限 self（對應現有同源 ESM）');
+    assert.match(cspValue, /report-uri \/api\/csp-report/, 'CSP 須指向本專案的 report 收集端點');
+    assert.ok(!('Content-Security-Policy' in htmlHeaders), '第一輪只做 report-only，不可誤植成 enforce 的 Content-Security-Policy');
+
+    let apiHeaders: Record<string, unknown> = {};
+    const apiRes = {
+      writeHead: (_code: number, headers?: Record<string, unknown>) => { apiHeaders = headers ?? {}; },
+      end: () => {},
+    };
+    await handle({ url: '/api/health', method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' } } as never, apiRes as never);
+    assert.ok(!('Content-Security-Policy-Report-Only' in apiHeaders), 'JSON API 回應不需要頁面用的 CSP header');
+
+    const before = getCspReportSummary()['style-src-elem'] ?? 0;
+    let reportStatus = 0;
+    const reportBody = JSON.stringify({
+      'csp-report': {
+        'document-uri': 'http://localhost:3000/#/task/should-not-be-logged',
+        'violated-directive': 'style-src-elem',
+        'blocked-uri': 'inline',
+      },
+    });
+    const reportReq = Object.assign(Readable.from([Buffer.from(reportBody)]), {
+      url: '/api/csp-report', method: 'POST', headers: {}, socket: { remoteAddress: '127.0.0.1' },
+    });
+    const reportRes = { writeHead: (code: number) => { reportStatus = code; }, end: () => {} };
+    await handle(reportReq as never, reportRes as never);
+    assert.strictEqual(reportStatus, 204, 'CSP report 端點應回 204');
+    assert.strictEqual(getCspReportSummary()['style-src-elem'], before + 1, '應依 violated-directive 彙總計數');
+    assert.strictEqual(recordCspReport({ 'csp-report': { 'blocked-uri': 'http://localhost:3000/#/secret' } }), 'unknown', '缺 directive 欄位時歸為 unknown，不得改記錄 blocked-uri 等可能含識別資訊的欄位');
+
+    // 無法解析的 report body 不可讓伺服器丟未捕捉例外
+    let badStatus = 0;
+    const badReq = Object.assign(Readable.from([Buffer.from('not json{{{')]), {
+      url: '/api/csp-report', method: 'POST', headers: {}, socket: { remoteAddress: '127.0.0.1' },
+    });
+    const badRes = { writeHead: (code: number) => { badStatus = code; }, end: () => {} };
+    await handle(badReq as never, badRes as never);
+    assert.strictEqual(badStatus, 204, '無法解析的 report body 仍應回 204');
+  }
+
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
   console.log('server.test.ts OK');

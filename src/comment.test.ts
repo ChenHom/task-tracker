@@ -58,4 +58,16 @@ assert.strictEqual(
   '2026-07-14T09:00:00.000Z',
 );
 
+// ── 合成字元 fixture：HTML/script 樣式內容應原樣存回，伺服器不做任何 escape/淨化 ──
+// escaping 責任在前端 renderRichText（public/js/views/task-detail.js）的 textContent 路徑，
+// 見 docs/frontend/dom-sink-inventory.md；這裡鎖定「伺服器只是原樣存取」的邊界，避免日後有人
+// 誤以為伺服器已處理過而在前端改用 innerHTML。
+const xssContent = '<script>alert(document.cookie)</script><img src=x onerror=alert(1)>';
+const xssId = createComment('t1', 'alice', xssContent, db);
+assert.strictEqual(
+  listComments('t1', db).find((c) => c.comment_id === xssId)?.content,
+  xssContent,
+  '伺服器不應修改／跳脫留言內容',
+);
+
 console.log('comment.test.ts OK');

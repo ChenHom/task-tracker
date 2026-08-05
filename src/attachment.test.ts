@@ -12,6 +12,7 @@ import {
   readAttachment,
   deleteAttachment,
   getAttachmentContext,
+  contentDispositionHeader,
   ATTACH_DIR,
 } from './attachment';
 
@@ -62,6 +63,28 @@ assert.throws(() => createAttachment('t1', 'fake.png', 'image/png', Buffer.from(
 // ── 其他輸入驗證 ──
 assert.throws(() => createAttachment('t1', 'empty.png', 'image/png', Buffer.alloc(0), db), CommandError, '空檔應拒');
 assert.throws(() => createAttachment('no-task', 'x.png', 'image/png', PNG, db), CommandError, '不存在的 task 應拒');
+
+// ── 合成字元 fixture：filename 含 CRLF／引號／控制字元應被淨化，Content-Disposition 不可含原始 CRLF（防 header injection）──
+const evilName = 'evil\r\nSet-Cookie: x=1\r\n"quote".png';
+const evilId = createAttachment('t1', evilName, 'image/png', PNG, db);
+created.push(evilId);
+const evilRow = listAttachments('t1', db).find((r) => r.attachment_id === evilId)!;
+assert.ok(!/[\r\n"]/.test(evilRow.original_name), 'CRLF／引號應在存檔時被淨化');
+const evilHeader = contentDispositionHeader(evilRow.original_name);
+assert.ok(!/[\r\n]/.test(evilHeader), 'Content-Disposition 值不可含原始 CRLF');
+assert.match(evilHeader, /^attachment; filename\*=UTF-8''/, 'header 需為 RFC 5987 編碼格式');
+deleteAttachment(evilId, db);
+created.pop();
+
+// ── 合成字元 fixture：unicode 檔名仍受長度上限保護，且 header 建構安全 ──
+const unicodeName = '附件😀-'.repeat(60) + '.png'; // 遠超過 255 字元上限
+const unicodeId = createAttachment('t1', unicodeName, 'image/png', PNG, db);
+created.push(unicodeId);
+const unicodeRow = listAttachments('t1', db).find((r) => r.attachment_id === unicodeId)!;
+assert.ok(unicodeRow.original_name.length <= 255, 'unicode 檔名仍應受 255 字元上限保護');
+assert.ok(!/[\r\n]/.test(contentDispositionHeader(unicodeRow.original_name)), 'unicode 檔名建構的 header 不可含原始 CRLF');
+deleteAttachment(unicodeId, db);
+created.pop();
 
 // ── symlink 守門：attachments 目錄裡指向外部的 symlink 必須被擋（字串比對擋不住）──
 const outside = join(tmpdir(), `secret-${randomUUID()}.txt`);
