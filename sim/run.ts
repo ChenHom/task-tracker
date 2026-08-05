@@ -478,13 +478,18 @@ export function compareSweepCandidates(
   timedOutWs: string[],
 ): number {
   const canonicalIds = Object.values(CANONICAL_WORKSPACE_BY_REPOROOT);
+  const fixedSweepIds = new Set(Object.keys(FIXED_SWEEP_WORKSPACE_SCENARIOS));
   const score = (item: { wsId: string }) => {
     if (timedOutWs.includes(item.wsId)) return 3;
     if (item.wsId === MAIN_WORKSPACE_ID) return 2;
+    if (fixedSweepIds.has(item.wsId)) return 2;
     if (canonicalIds.includes(item.wsId)) return 1;
     return 0;
   };
-  return score(b) - score(a) || b.startedAt.localeCompare(a.startedAt);
+  const mainPriority = (item: { wsId: string }) => item.wsId === MAIN_WORKSPACE_ID ? 1 : 0;
+  return score(b) - score(a)
+    || mainPriority(b) - mainPriority(a)
+    || b.startedAt.localeCompare(a.startedAt);
 }
 
 export function sweepCandidateUsesRepoSlot(wsId: string): boolean {

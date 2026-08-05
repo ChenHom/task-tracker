@@ -1158,11 +1158,13 @@ const ordered = [
   { wsId: 'ordinary-new', startedAt: '2026-07-11T00:00:00.000Z' },
   { wsId: 'timed-out', startedAt: '1970-01-01T00:00:00.000Z' },
   { wsId: EXPECTED_ROOT_WORKSPACE_ID, startedAt: '1970-01-01T00:00:00.000Z' },
+  { wsId: FIXED_BASELINE_WORKSPACE_ID, startedAt: '1970-01-01T00:00:00.000Z' },
   { wsId: MAIN_WORKSPACE_ID, startedAt: '1970-01-01T00:00:00.000Z' },
 ].sort((a, b) => compareSweepCandidates(a, b, ['timed-out']));
 assert.deepStrictEqual(ordered.map((item) => item.wsId), [
   'timed-out',
   MAIN_WORKSPACE_ID,
+  FIXED_BASELINE_WORKSPACE_ID,
   EXPECTED_ROOT_WORKSPACE_ID,
   'ordinary-new',
 ]);

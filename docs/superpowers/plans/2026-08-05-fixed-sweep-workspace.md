@@ -42,6 +42,7 @@
 - [x] Add a managed workspace ID helper that combines canonical workspace IDs and fixed sweep workspace IDs without duplicates.
 - [x] Make `isManagedRosterWorkspace` use that combined set by default, while preserving explicit `managedWorkspaceIds` test overrides.
 - [x] Call `ensureFixedSweepWorkspaceCandidates(wsScenario)` after the existing main/canonical candidate calls.
+- [x] Prioritize fixed sweep workspaces alongside main and before canonical workspaces so a shared repo slot cannot starve them; keep the existing one-repo-per-tick guard.
 - [x] Leave all-repository DB discovery, fake report creation, and automatic Team self-assignment out of scope.
 
 ### Task 4: Write the operator usage guide
