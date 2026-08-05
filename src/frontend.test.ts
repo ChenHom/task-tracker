@@ -523,6 +523,21 @@ async function runTests() {
   assert.ok(unsavedBadge, 'Unsaved warning badge should exist');
   assert.ok(saveBtn, 'Save button should exist');
 
+  // Accessibility regression (WCAG 受限試點): dialog 語意、關閉鈕可及名稱、留言框 label
+  const modalContainerEl = findElement(overlay, (n) => n.tag === 'div' && n.className.includes('modal-container'));
+  assert.ok(modalContainerEl, 'Modal container should exist');
+  assert.strictEqual(modalContainerEl.role, 'dialog', 'Modal container should expose role="dialog"');
+  assert.strictEqual(modalContainerEl['aria-modal'], 'true', 'Modal container should expose aria-modal="true"');
+  assert.strictEqual(modalContainerEl['aria-label'], 'Test Task', 'Modal container should be labelled with the task title');
+
+  const modalCloseBtn = findElement(overlay, (n) => n.tag === 'button' && n.className === 'modal-close-btn');
+  assert.ok(modalCloseBtn, 'Close button should exist');
+  assert.strictEqual(modalCloseBtn['aria-label'], '關閉', 'Close button needs an accessible name beyond the "×" glyph');
+
+  const commentTextarea = findElement(overlay, (n) => n.tag === 'textarea' && n.className === 'comment-textarea');
+  assert.ok(commentTextarea, 'Comment textarea should exist');
+  assert.strictEqual(commentTextarea['aria-label'], '留言內容', 'Comment textarea needs a label beyond its placeholder');
+
   // Trigger Enter key on descInput
   let preventDefaultCalled4 = false;
   let blurred = false;

@@ -232,10 +232,15 @@ export async function openTaskDetailModal(taskId, {
     }
   };
 
-  container = el('div', { class: 'modal-container sketch-box' });
-  
+  container = el('div', {
+    class: 'modal-container sketch-box',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': currentTask.title || '任務詳情'
+  });
+
   // 關閉按鈕 [X]
-  closeBtn = el('button', { type: 'button', class: 'modal-close-btn' }, '×');
+  closeBtn = el('button', { type: 'button', class: 'modal-close-btn', 'aria-label': '關閉' }, '×');
   closeBtn.onclick = closeModalOrShake;
   container.appendChild(closeBtn);
 
@@ -374,6 +379,7 @@ export async function openTaskDetailModal(taskId, {
     commInput = el('textarea', {
       class: 'comment-textarea',
       placeholder: placeholderText,
+      'aria-label': '留言內容',
       required: true,
       rows: '1'
     });
@@ -963,6 +969,8 @@ export async function openTaskDetailModal(taskId, {
   container.appendChild(scrollArea);
   overlay.appendChild(container);
   document.body.appendChild(overlay);
+  // 對話框開啟時把焦點移入，避免鍵盤／輔具使用者停留在背景已被遮蔽的元素上
+  closeBtn.focus();
 
   // Initial loads
   await Promise.all([loadComments(), loadAttachments()]);
