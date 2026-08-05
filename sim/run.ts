@@ -244,6 +244,12 @@ export const CANONICAL_WORKSPACE_BY_REPOROOT: Record<string, string> = {
   [ROOT]: 'd9da9945-ce5f-400f-806e-1d75e95e313a',
 };
 
+// 既有但沒有 report.json 的 workspace 若仍需由 legacy sweep 處理，另列在這裡。
+// 這不是 repo canonical mapping：b263 是跨 repo 基線 workspace，沒有單一 repo 收件語意。
+export const FIXED_SWEEP_WORKSPACE_SCENARIOS: Record<string, keyof typeof SCENARIOS> = {
+  'b2637f07-44b3-49b0-b2c4-4da4e19cd1ac': 'self-directed',
+};
+
 export function canonicalWorkspaceForRepoRoot(repoRoot: string): string | undefined {
   return CANONICAL_WORKSPACE_BY_REPOROOT[repoRoot];
 }
@@ -255,6 +261,16 @@ export function ensureCanonicalWorkspaceCandidates(
     const scenario = Object.values(SCENARIOS).find((s) => s.repoRoot === repoRoot);
     if (scenario && !candidates.has(wsId)) {
       candidates.set(wsId, { key: scenario.key, startedAt: '1970-01-01T00:00:00.000Z' });
+    }
+  }
+}
+
+export function ensureFixedSweepWorkspaceCandidates(
+  candidates: Map<string, { key: string; startedAt: string }>,
+): void {
+  for (const [workspaceId, scenarioKey] of Object.entries(FIXED_SWEEP_WORKSPACE_SCENARIOS)) {
+    if (!candidates.has(workspaceId)) {
+      candidates.set(workspaceId, { key: scenarioKey, startedAt: '1970-01-01T00:00:00.000Z' });
     }
   }
 }
@@ -275,10 +291,17 @@ export interface ManagedRosterMember {
 
 const MANAGED_MEMBER_ROLES = new Set(['Member', 'Admin', 'Owner']);
 
+export function managedSweepWorkspaceIds(): string[] {
+  return [...new Set([
+    ...Object.values(CANONICAL_WORKSPACE_BY_REPOROOT),
+    ...Object.keys(FIXED_SWEEP_WORKSPACE_SCENARIOS),
+  ])];
+}
+
 export function isManagedRosterWorkspace(
   workspaceId: string,
   newlyCreated: boolean,
-  managedWorkspaceIds = Object.values(CANONICAL_WORKSPACE_BY_REPOROOT),
+  managedWorkspaceIds = managedSweepWorkspaceIds(),
 ): boolean {
   return newlyCreated || managedWorkspaceIds.includes(workspaceId);
 }
@@ -2289,6 +2312,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   // canonical workspace 不能因為安靜太久（沒有最近的 report.json）而從候選名單消失
   ensureMainWorkspaceCandidate(wsScenario);
   ensureCanonicalWorkspaceCandidates(wsScenario);
+  ensureFixedSweepWorkspaceCandidates(wsScenario);
 
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
   const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${role}`);

@@ -38,6 +38,7 @@ import {
   createRunDir,
   dirtyReviewChecks,
   ensureCanonicalWorkspaceCandidates,
+  ensureFixedSweepWorkspaceCandidates,
   ensureMainWorkspaceCandidate,
   eligibleManagedRunners,
   formatReportMarkdown,
@@ -46,6 +47,7 @@ import {
   hasNonDependencyWorktreeChanges,
   isSweepWorkTask,
   isManagedRosterWorkspace,
+  FIXED_SWEEP_WORKSPACE_SCENARIOS,
   loadMembersFromUsers,
   mainDiscussionMissingOwnerThought,
   MAIN_DISCUSSION_TARGET,
@@ -1049,6 +1051,20 @@ assert.strictEqual(canonicalWorkspaceForRepoRoot(BRAIN_ROOT), undefined);
 const canonicalCandidates = new Map<string, { key: string; startedAt: string }>();
 ensureCanonicalWorkspaceCandidates(canonicalCandidates);
 assert.ok(canonicalCandidates.has(EXPECTED_ROOT_WORKSPACE_ID));
+
+const FIXED_BASELINE_WORKSPACE_ID = 'b2637f07-44b3-49b0-b2c4-4da4e19cd1ac';
+assert.strictEqual(FIXED_SWEEP_WORKSPACE_SCENARIOS[FIXED_BASELINE_WORKSPACE_ID], 'self-directed');
+const fixedCandidates = new Map<string, { key: string; startedAt: string }>();
+ensureFixedSweepWorkspaceCandidates(fixedCandidates);
+assert.deepStrictEqual(fixedCandidates.get(FIXED_BASELINE_WORKSPACE_ID), {
+  key: 'self-directed',
+  startedAt: '1970-01-01T00:00:00.000Z',
+});
+assert.strictEqual(
+  isManagedRosterWorkspace(FIXED_BASELINE_WORKSPACE_ID, false),
+  true,
+  '固定 sweep workspace 必須同步 user02–user06 roster，Owner 派工後 Team 才能執行',
+);
 
 const mainCandidates = new Map<string, { key: string; startedAt: string }>();
 ensureMainWorkspaceCandidate(mainCandidates);

@@ -292,9 +292,41 @@ Timer output is written to `sim-logs/sweep-owner-cron-*.log` and `sim-logs/sweep
 
 #### Sweep 掃得到哪些 workspace（會漏，不是 bug）
 
-候選名單由 `sweep()` 掃描 `sim-logs/*/report.json` 的 `workspaceId` 組成，外加固定補上的 main（`11a82028`）與 canonical（`d9da9945`）。**沒有 report.json 的 workspace 不會進候選**，裡面卡著再多 Doing/Review 也不會被 owner 收——2026-07-30 清看板時，四個舊 sprint workspace 共 11 個 Review task 全在名單外，手動 tick 只列出 `d9da9945` 與 `11a82028`。
+候選名單由 `sweep()` 掃描 `sim-logs/*/report.json` 的 `workspaceId` 組成，外加固定補上的 main（`11a82028`）、repo canonical（`d9da9945`）與固定 sweep workspace（目前是 `b2637f07`）。**沒有 report.json 的一般 workspace 不會進候選**，裡面卡著再多 Doing/Review 也不會被 owner 收——2026-07-30 清看板時，四個舊 sprint workspace 共 11 個 Review task 全在名單外，手動 tick 只列出 `d9da9945` 與 `11a82028`。
 
-這類殘留只能由該 workspace 的 Owner（sim 場景一律是 `user01@test.local`）直接 PATCH 收掉。**不要為了讓 sweep 掃到而補造 report.json**：等於復活已停止的 AI sprint，還會連帶觸發 member session。
+這裡有兩種不同的 mapping，不要混用：
+
+1. **Canonical mapping：repo → 固定收件 workspace**
+
+   `CANONICAL_WORKSPACE_BY_REPOROOT` 用在「某個 repo 的跨 repo task 要轉送到哪個正式收件 workspace」。例如：
+
+   ```ts
+   {
+     '/home/hom/code/task-tracker': 'd9da9945-ce5f-400f-806e-1d75e95e313a',
+   }
+   ```
+
+   只有當某個 repo 有一個固定、正式的收件 workspace 時才加這裡；它也會影響 canonical 優先順序與 managed roster。
+
+2. **Fixed sweep allowlist：workspace → scenario**
+
+   `FIXED_SWEEP_WORKSPACE_SCENARIOS` 用在「既有 workspace 沒有 report.json，但仍要由 legacy Owner/Team sweep 處理」。目前設定：
+
+   ```ts
+   {
+     'b2637f07-44b3-49b0-b2c4-4da4e19cd1ac': 'self-directed',
+   }
+   ```
+
+   `b2637f07` 是跨 repo 工程基線，沒有單一 repo，因此只放 fixed sweep allowlist，不放 canonical mapping。它會先經過 workspace `status=active` 檢查；Owner 先依 profile 派工並留下 `【OWNER派工】`，下一個 Team tick 才處理已指派給 eligible runner 的 Todo/Doing。fixed sweep workspace 同時會同步 user02–user06 managed roster，否則只有 workspace Owner／老闆而沒有可執行的 team member。
+
+要新增另一個既有 workspace：
+
+- 它代表某個 repo 的固定正式收件處：加 `CANONICAL_WORKSPACE_BY_REPOROOT[repoRoot] = workspaceId`。
+- 它只是既有的工作佇列、沒有單一 repo、但要讓 Owner/Team 收：加 `FIXED_SWEEP_WORKSPACE_SCENARIOS[workspaceId] = scenarioKey`。
+- 不要為了讓 sweep 發現而手動補造 `report.json`，也不要直接掃所有 active workspace；那會重新啟動歷史或已停止的 sprint。
+
+未列入 fixed sweep allowlist 的這類殘留只能由該 workspace 的 Owner（sim 場景一律是 `user01@test.local`）直接 PATCH 收掉。**不要為了讓 sweep 掃到而補造 report.json**：等於復活已停止的 AI sprint，還會連帶觸發 member session。
 
 另外 owner 每個 tick 只收 2 個 workspace（`sweepBudgets()`，逾時 streak 會再往下砍），workspace 一多本來就要跑好幾輪才收得完。
 

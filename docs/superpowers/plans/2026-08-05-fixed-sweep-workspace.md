@@ -26,40 +26,40 @@
 - Modify: `sim/run.test.ts` near the existing candidate and roster assertions.
 - Test: `sim/run.test.ts`
 
-- [ ] Import `ensureFixedSweepWorkspaceCandidates`, `FIXED_SWEEP_WORKSPACE_SCENARIOS`, and the roster helper used by `isManagedRosterWorkspace` tests.
-- [ ] Assert the fixed candidate map adds `b2637f07-44b3-49b0-b2c4-4da4e19cd1ac` with `{ key: 'self-directed', startedAt: '1970-01-01T00:00:00.000Z' }`.
-- [ ] Assert the existing canonical mapping still resolves only the task-tracker root to `d9da9945-ce5f-400f-806e-1d75e95e313a`.
-- [ ] Assert `isManagedRosterWorkspace('b2637f07-44b3-49b0-b2c4-4da4e19cd1ac', false)` is true.
-- [ ] Run `node --import tsx sim/run.test.ts`; it must fail because the new exports/helper do not exist yet.
+- [x] Import `ensureFixedSweepWorkspaceCandidates`, `FIXED_SWEEP_WORKSPACE_SCENARIOS`, and the roster helper used by `isManagedRosterWorkspace` tests.
+- [x] Assert the fixed candidate map adds `b2637f07-44b3-49b0-b2c4-4da4e19cd1ac` with `{ key: 'self-directed', startedAt: '1970-01-01T00:00:00.000Z' }`.
+- [x] Assert the existing canonical mapping still resolves only the task-tracker root to `d9da9945-ce5f-400f-806e-1d75e95e313a`.
+- [x] Assert `isManagedRosterWorkspace('b2637f07-44b3-49b0-b2c4-4da4e19cd1ac', false)` is true.
+- [x] Run the RED test before implementation; it failed because the new export was undefined.
 
 ### Task 3: Implement the separate fixed sweep allowlist
 
 **Files:**
 - Modify: `sim/run.ts` near `CANONICAL_WORKSPACE_BY_REPOROOT`, candidate helpers, and `isManagedRosterWorkspace`.
 
-- [ ] Add `FIXED_SWEEP_WORKSPACE_SCENARIOS` with the exact b263 workspace ID mapped to `self-directed`.
-- [ ] Add `ensureFixedSweepWorkspaceCandidates(candidates)` that inserts only missing fixed candidates and never overwrites report-derived scenario data.
-- [ ] Add a managed workspace ID helper that combines canonical workspace IDs and fixed sweep workspace IDs without duplicates.
-- [ ] Make `isManagedRosterWorkspace` use that combined set by default, while preserving explicit `managedWorkspaceIds` test overrides.
-- [ ] Call `ensureFixedSweepWorkspaceCandidates(wsScenario)` after the existing main/canonical candidate calls.
-- [ ] Leave all-repository DB discovery, fake report creation, and automatic Team self-assignment out of scope.
+- [x] Add `FIXED_SWEEP_WORKSPACE_SCENARIOS` with the exact b263 workspace ID mapped to `self-directed`.
+- [x] Add `ensureFixedSweepWorkspaceCandidates(candidates)` that inserts only missing fixed candidates and never overwrites report-derived scenario data.
+- [x] Add a managed workspace ID helper that combines canonical workspace IDs and fixed sweep workspace IDs without duplicates.
+- [x] Make `isManagedRosterWorkspace` use that combined set by default, while preserving explicit `managedWorkspaceIds` test overrides.
+- [x] Call `ensureFixedSweepWorkspaceCandidates(wsScenario)` after the existing main/canonical candidate calls.
+- [x] Leave all-repository DB discovery, fake report creation, and automatic Team self-assignment out of scope.
 
 ### Task 4: Write the operator usage guide
 
 **Files:**
 - Modify: `docs/operations.md` in the sweep candidate and managed-roster sections.
 
-- [ ] Explain that canonical mapping is `repoRoot -> workspaceId` for fixed receiving destinations.
-- [ ] Explain that fixed sweep allowlist is `workspaceId -> scenarioKey` for existing workspaces that should be swept without reports.
-- [ ] Document the b263 mapping, `self-directed` scenario, active check, roster sync, Owner-first/Team-second sequence, and the rule not to fabricate reports.
-- [ ] Document how to add another repo canonical mapping versus how to add another existing sweep workspace.
+- [x] Explain that canonical mapping is `repoRoot -> workspaceId` for fixed receiving destinations.
+- [x] Explain that fixed sweep allowlist is `workspaceId -> scenarioKey` for existing workspaces that should be swept without reports.
+- [x] Document the b263 mapping, `self-directed` scenario, active check, roster sync, Owner-first/Team-second sequence, and the rule not to fabricate reports.
+- [x] Document how to add another repo canonical mapping versus how to add another existing sweep workspace.
 
 ### Task 5: Verify and validate the live flow
 
 **Files:**
 - No additional files.
 
-- [ ] Run `node --import tsx sim/run.test.ts`, `npx tsc --noEmit`, `npx tsc -p sim/tsconfig.json`, `npm test`, and `git diff --check`.
-- [ ] Confirm the working tree contains only the intended code/test/docs changes and preserve all existing live sweep commits.
+- [x] Run `node --import tsx sim/run.test.ts`, `npx tsc --noEmit`, `npx tsc -p sim/tsconfig.json`, `npm test`, and `git diff --check`.
+- [x] Confirm the working tree contains only the intended code/test/docs changes and preserve all existing live sweep commits.
 - [ ] Let the next scheduled Owner timer validate candidate discovery and roster reconciliation; do not manually start a live AI sweep.
 - [ ] Verify the Owner log includes `b2637f07`, then verify the following Team log contains member handling after Owner assignments exist.
