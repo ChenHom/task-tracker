@@ -16,7 +16,9 @@
 
 **請勿**透過公開 GitHub Issue、Discussion 或 Pull Request 揭露漏洞細節，以避免在修補前公開曝光。
 
-若上述入口暫時無法使用（例如尚未啟用），請改以 repo owner（[@ChenHom](https://github.com/ChenHom)）的 GitHub 帳號私訊或既有聯絡管道回報，並在訊息中註明是安全性回報。
+目前 GitHub Private Vulnerability Reporting 的自動通知僅會送達 repo administrator（[@ChenHom](https://github.com/ChenHom)），為唯一主要接收者——本專案為個人帳號（非 Organization）repo，協作者權限僅有 Write／Triage 兩級、無法授予 Admin，因此無法再新增第二位會收到 PVR 自動通知的帳號。
+
+若 PVR 入口暫時無法使用，或主要接收者未能於合理時間內回應，請改用以下**獨立備援聯絡管道**（非 PVR 自動通知，需回報者主動聯絡）：透過 GitHub 私訊 [@AAAHom](https://github.com/AAAHom)，並在訊息中註明是安全性回報。
 
 ### 回報請包含
 
@@ -38,4 +40,4 @@
 
 ## 聯絡資訊維護
 
-本檔案與 GitHub private vulnerability reporting 設定會隨專案維護一併複核，若長期無人監看或聯絡方式已失效，請以 Issue 或 repo owner 既有聯絡管道反映。
+本檔案與 GitHub private vulnerability reporting 設定會隨專案維護一併複核。主要接收者為 [@ChenHom](https://github.com/ChenHom)（PVR 自動通知），備援聯絡管道為 [@AAAHom](https://github.com/AAAHom)（僅供 PVR 無法使用時主動聯絡，不會收到自動通知）。若任一方長期無人監看或聯絡方式已失效，請以 Issue 反映。
