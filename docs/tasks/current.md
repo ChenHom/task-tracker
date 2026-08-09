@@ -176,7 +176,7 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 ## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex + Antigravity 混合車隊）
 
 - [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-06、join）→ spawn headless 子行程
-- [x] 混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna；Claude 五小時額度恢復後，user06 notification preflight=Codex gpt-5.4-mini，正常工作=Claude claude-sonnet-5（無 AGY fallback）
+- [x] 歷史混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna；user06 notification preflight 曾使用 Codex gpt-5.4-mini，正常工作=Claude claude-sonnet-5（現行主工作區 safe discussion route 見 Phase 24）
 - [x] 主題 Dogfooding：owner prompt 內嵌本專案真實技術債清單（ponytail: 註記）出題
 - [x] 全員 QA 規則：可重現的系統問題建 `[BUG]` task（重現步驟/預期 vs 實際/原始回應），owner 收尾 triage
 - [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
@@ -187,7 +187,7 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 - [x] scenario 啟用前驗證 Git top-level/master，commit 前再驗 worktree/branch；legacy `technical-debt` report 明確映射，未知 scenario fail closed
 - [x] `sim-logs/.run.lock` 序列化 manual/timer 流程並回收 dead-PID lock；平行 member 全部 settle 後才解鎖
 - [x] 每個既有自動 Owner／member session 先處理登入當下的未讀通知；主工作區需驗證新的非自我 mention 留言後才已讀，來源 403/404 會記錄並清除，其他失敗保留未讀並跳過該 actor 的一般工作（不含前端通知 UI 或 user09 runner）
-- [x] Owner runner probe 只影響 owner 預算；`team` 不做全域 probe，member 各自依 runner 執行。user06 notification preflight 使用 Codex gpt-5.4-mini，正常工作使用 Claude claude-sonnet-5 且無 AGY fallback；2026-07-16 AGY 試行沒有產生副作用，僅保留為歷史證據
+- [x] Owner runner probe 只影響 owner 預算；`team` 不做全域 probe，member 各自依 runner 執行。user06 的舊 notification preflight 使用 Codex gpt-5.4-mini 僅為歷史設定；現行主工作區 notification 改走 Phase 24 的 Claude safe discussion，正常工作使用 Claude claude-sonnet-5 且無 AGY fallback；2026-07-16 AGY 試行沒有產生副作用，僅保留為歷史證據
 - [x] `sim/tsconfig.json` 納入 `npm test`，讓 sim harness 也受 strict TypeScript 檢查
 - [x] `docs/operations.md` 記錄手動模式、scenario、systemd owner/team timers、logs、lock 與權限邊界
 - [x] 跑完整端到端 `--fast` self-directed sprint（`sim-run-1783392991269`）
@@ -322,14 +322,14 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 ## Phase 19 — 全成員通知巡檢
 
 - [x] `team`／`both` sweep 每 tick 依序檢查 user02–user06 未讀通知，不受一般 TASK claim 派工限制
-- [x] 零未讀不啟動 AI；有未讀沿用主工作區留言驗證、禁止自我 mention 與 driver 標已讀規則
+- [x] 零未讀不啟動 safe discussion；有主工作區未讀才走 bounded safe discussion、留言驗證、禁止自我 mention 與 driver 標已讀規則，一般 workspace 仍 API-only
 - [x] 通知巡檢不占用一般 member budget、不建立 worktree、不 commit；失敗成員本 tick 跳過一般工作
 - [x] focused tests、完整測試與 build
 - [ ] live readback（需另取得人工 live sweep 授權）
 
 ## Phase 20 — SIM Owner 派工與通知處理規則
 
-- [x] 每筆 notification 獨立建立 bounded prompt、獨立由 AI 閱讀判斷、獨立 readback；重複內容仍逐筆處理，可由後筆留下固定無補充訊息
+- [x] 每筆 notification 獨立建立 bounded sanitized packet、由 safe discussion 閱讀判斷並獨立 readback；重複內容仍逐筆處理，無效或 no-op 回覆留未讀
 - [x] prompt 以 16,000 字元 fail-closed 上限保護，保留完整來源留言並對 context 做明確省略
 - [x] managed roster 只同步 canonical task-tracker workspace 與本次新建 SIM workspace；補缺 user02–user06、修正 Viewer/Commenter 為 Member，保留更高角色，不觸碰主協作／歷史 workspace
 - [x] Owner 依 profile／負載派工並留下 `【OWNER派工】`；member 只處理自己名下任務
@@ -391,3 +391,17 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 ——`176b576`（07-14）建共識守門、`75e2033`（07-23）又拆掉，同一道閘門一個月內建了又拆。
 
 **刻意延後、不是遺漏**：無腦按讚（不要求`【同意】`附理由）與來源灌水（不驗證來源品質）這一輪都不處理，先把流程建出來。後續 session 不要順手補回來。
+
+## Phase 24 — 主工作區安全外網查證與成員實質回覆（2026-08-09）
+
+設計與計畫：
+[安全討論設計](../superpowers/specs/2026-08-09-safe-main-discussion-member-replies-design.md)、
+[實作計畫](../superpowers/plans/2026-08-09-safe-main-discussion-member-replies.md)。
+
+- [x] 移除主工作區 notification 的固定 `已閱讀，目前無補充。` POST；每筆通知改由 safe discussion callback 產生 `【同意】`／`【疑慮】`，exact comment readback 後才標已讀
+- [x] task/comment 輸入做 NFC、control/bidi、credential、private URL/IP 消毒，prompt 上限 16,000；無效輸出、runner/tool/post/readback 失敗一律留未讀
+- [x] safe route 固定 Claude `claude-sonnet-5`，只宣告 `WebSearch,WebFetch`，使用空白 cwd、filtered environment、PreToolUse egress hook；Codex/AGY 不作 fallback
+- [x] 一般 workspace notification 仍 API-only；user02–user06 的一般工作 route、Owner、scheduler、member budget 與共識 validator 不變
+- [x] 每筆 discussion telemetry 只記錄 route、latency、tokens、outcome 與 error category，不記 prompt、query、回覆全文或 cookie
+- [x] `npx tsx sim/run.test.ts`、`npx tsx sim/notificationTelemetry.test.ts`、兩份 TypeScript check 與 `npm test` baseline 通過
+- [ ] service restart、timer 啟用與 live AI/readback（需另取得人工 live sweep 授權）

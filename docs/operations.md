@@ -181,23 +181,23 @@ sqlite3 data/dev.db "SELECT aggregate_id, occurred_at, json_extract(payload_json
 
 ## Sim harness
 
-### Notification preflight（已恢復）
+### Safe discussion notification gate（已恢復）
 
-SIM notification preflight 已由 timer wrapper 設定 `SIM_NOTIFICATION_GATE=1` 恢復。這只影響 `sim/run.ts` 的自動巡檢；網站的 notification API 與前端不受影響。恢復前已補上 member login 的 `TypeError` 連線重試（最多 2 次，保留 `cause` errno），HTTP／429 失敗不重試；gate 失敗仍會保留未讀並跳過該 actor 的一般工作 session。
+SIM notification gate 由 timer wrapper 以 `SIM_NOTIFICATION_GATE=1` 控制。這只影響 `sim/run.ts` 的自動巡檢；網站的 notification API 與前端不受影響。member login 保留 `TypeError` 連線重試（最多 2 次，保留 `cause` errno），HTTP／429 失敗不重試；gate 失敗仍會保留未讀並跳過該 actor 的一般工作 session。
 
-**為什麼停用**（07-29 00:44，`15e2641`）：gate 的 login 從 07-16 12:30 起持續丟 `TypeError: fetch failed`，而 gate 失敗會 `略過一般 session`，導致工作區的 owner 巡檢 577 次裡有 540 次完全沒跑（13 天只跑到 37 次）。`cd92ec7` 已讓 owner 路徑改用 sweep 開頭取得的 cookie，07-29 22:49 實跑驗證通過；member 路徑尚未比照修正。恢復前請先讀 [current.md 的主因分析](tasks/current.md)。
+**歷史根因**（07-29 00:44，`15e2641`）：gate 的 login 曾持續丟 `TypeError: fetch failed`，失敗會 `略過一般 session`。`cd92ec7` 已讓 owner 路徑重用 sweep 開頭取得的 cookie；目前 member 與 discussion runner 採 fail-closed，錯誤要留未讀並待下一 tick。
 
-啟用時，每個自動 Owner 與已設定 member session（`user01`、`user02`–`user05`）會先 snapshot 自己未讀的 `GET /api/notifications` rows。driver 會讀取來源 task/comment，並在一般看板工作前執行專用 API-only notification session；`user06` 依主工作區發想決策跳過通知巡檢。
+啟用時，每個自動 Owner 與 member session（`user01`、`user02`–`user06`）會先 snapshot 自己未讀的 `GET /api/notifications` rows。driver 會讀取來源 task/comment；主工作區的 user02–user06 notification 交給隔離的 safe discussion session，其他 workspace 仍只做 API read。
 
-Main-workspace sources receive the driver's exact post-snapshot reply `已閱讀，目前無補充。`; the driver then verifies it and marks the notification read. Normal-workspace sources are read without a reply. Notification content never starts an AI session, receives a cookie, or gains shell, file, Git, state-change, or external-network authority. A `403`/`404` or deleted source is logged and marked read; malformed data, network/5xx failures, or a failed main reply stay unread and skip that actor's ordinary session for this run.
+Main-workspace sources build an NFC/control/credential-sanitized bounded packet (16,000 characters maximum) and start a Claude-only discussion session. Its effective tools are `WebSearch,WebFetch`, each call is checked by the deterministic egress hook, and the session has an empty cwd, filtered environment, no task-tracker cookie/API, no shell/file/Git tools, and no Codex/AGY fallback. The driver validates a substantive `【同意】` or `【疑慮】` reply, verifies the exact new actor comment, then marks the notification read. `已閱讀，目前無補充。` is rejected. Normal-workspace sources are read without a reply. A `403`/`404` or deleted source is logged and marked read; malformed data, network/5xx failures, safe-runner/tool failures, invalid output, or failed main readback stay unread and skip that actor's ordinary session for this run.
 
-The snapshot is bounded to login time. Notifications received later wait for the next actor session. The runner never creates a self-mention in notification handling. `user09` is not currently a sim runner, so this automation does not consume that account's notifications. This is not a frontend inbox and does not authorize running a live sweep.
+The snapshot is bounded to login time. Notifications received later wait for the next actor session. Each notification is processed independently; a task with three mentions gets three separate discussion calls and three exact-comment readbacks. The runner rejects self-mentions and never logs prompt/output/query/cookie content. `user09` is not currently a sim runner, so this automation does not consume that account's notifications. This is not a frontend inbox and does not authorize running a live sweep.
 
-每筆未讀 notification 都是獨立處理單位；同一 task 的三筆通知仍各自讀取來源、套用固定回覆（僅主工作區）並 readback，不得合併。這是 driver 固定 allowlist，不以 prompt 或模型判斷授權。
+每筆未讀 notification 都是獨立處理單位；同一 task 的三筆通知仍各自讀取來源、啟動 bounded safe discussion、驗證留言並 readback，不得合併。工具能力由 runner allowlist 與 egress hook 執行，不以 prompt 自我宣告授權。
 
 #### 全成員通知巡檢（啟用時）
 
-設定 `SIM_NOTIFICATION_GATE=1` 時，`--sweep team` 與 `--sweep both` 每個 tick 會依序巡檢 user02–user05，與成員是否有 Todo/Doing 任務無關。每位成員都會登入並 snapshot 自己的未讀通知；零未讀只寫入 `notification-sweep` 結束紀錄。若有未讀，由 driver 執行上方的固定 API allowlist，不啟動 AI。
+設定 `SIM_NOTIFICATION_GATE=1` 時，`--sweep team` 與 `--sweep both` 每個 tick 會依序巡檢 user02–user06，與成員是否有 Todo/Doing 任務無關。每位成員都會登入並 snapshot 自己的未讀通知；零未讀只寫入 `notification-sweep` 結束紀錄。主工作區有未讀時才啟動上方 safe discussion；一般 workspace 仍由 driver API-only 處理。
 
 恢復後的常規檢查：
 
@@ -206,9 +206,9 @@ grep -c '略過一般 session' sim-logs/sweep-*-cron-$(date +%Y%m%d)-*.log 2>/de
 grep -h 'notification-sweep:' sim-logs/sweep-team-cron-$(date +%Y%m%d)-*.log | tail -30
 ```
 
-第一個指令應無輸出；第二個應看到 user02–user05 各自的開始／結束紀錄，且不含 user06。若重新出現 `略過一般 session`，先查看同段 `describeError` 的 `cause` errno，再暫停 gate 排查。
+第一個指令應無輸出；第二個應看到 user02–user06 各自的開始／結束紀錄。若重新出現 `略過一般 session`，先查看同段 `describeError` 的 `cause` errno，再暫停 gate 排查。
 
-通知巡檢不建立 worktree、不 commit，也不占用一般 member task budget。登入、API、preflight 或主工作區留言驗證失敗時，該成員的未讀保留，且本 tick 跳過該成員的一般工作；其他成員照常繼續。`--sweep owner` 不啟動 user02–user06 通知巡檢；user01 仍由 owner session 的既有 gate 處理，user09 目前不在 sim runner 範圍。
+通知巡檢不建立 worktree、不 commit，也不占用一般 member task budget。登入、API、safe discussion、輸出驗證或主工作區留言 readback 失敗時，該成員的未讀保留，且本 tick 跳過該成員的一般工作；其他成員照常繼續。`--sweep owner` 不啟動 user02–user06 通知巡檢；user01 仍由 owner session 的既有 gate 處理，user09 目前不在 sim runner 範圍。
 
 #### SIM managed roster 與派工
 
@@ -222,7 +222,7 @@ Owner 依成員 profile 與目前 Todo/Doing 負載直接 PATCH `assignee_id`，
 - `task-tracker.service` must answer HTTP 200 at `http://localhost:3000/api/health`.
 - Run `npm run seed` once so `user01-06@test.local` and `user09@test.local` exist.
 - The `claude`, `codex`, and `agy` CLIs must be installed, authenticated, and available in `PATH`.
-- Claude's five-hour quota has recovered, so user06 ordinary work uses Claude `claude-sonnet-5` with no AGY fallback. Notification preflight does not invoke a model. No current route uses or authorizes `--dangerously-skip-permissions`.
+- Claude's five-hour quota has recovered, so user06 ordinary work uses Claude `claude-sonnet-5` with no AGY fallback. Main-workspace discussion uses the fixed safe Claude route `claude-sonnet-5`; it has no Codex/AGY fallback. No current route uses or authorizes `--dangerously-skip-permissions`.
 - Historical evidence only: the following AGY curl capability probe was invoked once on 2026-07-16:
 
   ```bash
