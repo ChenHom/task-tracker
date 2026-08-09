@@ -1412,7 +1412,7 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
   }
 }
 
-// driver 代 commit：根目錄非 dot 的 JSON/API readback 暫存檔也要當 scratch。
+// driver 代 commit：根目錄任意新 JSON/API readback 暫存檔也要當 scratch。
 {
   const workRoot = join(ROOT, 'sim-work');
   mkdirSync(workRoot, { recursive: true });
@@ -1435,26 +1435,26 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
     g(['add', '.']);
     g(['commit', '-m', 'base']);
 
-    writeFileSync(join(repo, 'comment_payload_b399.json'), '{"content":"draft"}\n');
+    writeFileSync(join(repo, 'api_readback.json'), '{"content":"draft"}\n');
     assert.strictEqual(
       hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
       false,
-      '只剩根目錄非 dot 的 JSON/API readback 暫存檔時不應被視為可提交成果',
+      '只剩根目錄任意新 JSON/API readback 暫存檔時不應被視為可提交成果',
     );
     assert.strictEqual(
       commitMemberWork(member, 1, 'test-model'),
       false,
-      '只剩根目錄非 dot 的 JSON/API readback 暫存檔時不應產生代 commit',
+      '只剩根目錄任意新 JSON/API readback 暫存檔時不應產生代 commit',
     );
 
     g(['reset', '--hard']);
     writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
-    writeFileSync(join(repo, 'comment_payload_b399.json'), '{"content":"draft"}\n');
+    writeFileSync(join(repo, 'api_readback.json'), '{"content":"draft"}\n');
     assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
     assert.deepStrictEqual(
       g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
       ['app.ts'],
-      '正常 task 檔 commit 後不應帶入根目錄非 dot 的 JSON/API readback 暫存檔',
+      '正常 task 檔 commit 後不應帶入根目錄任意新 JSON/API readback 暫存檔',
     );
   } finally {
     rmSync(repo, { recursive: true, force: true });
