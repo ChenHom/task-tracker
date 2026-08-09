@@ -978,7 +978,7 @@ assert.strictEqual(SAFE_DISCUSSION_TOOLS, 'WebSearch,WebFetch');
 assert.strictEqual(parseReportedTokenTotal('{"usage":{"total_tokens":1,234}}'), 1234, '可用的 runner usage 必須保留總 token 數');
 assert.strictEqual(parseReportedTokenTotal('no usage reported'), null, '沒有可用 usage 時不得編造 token 總量');
 const teamSweepSource = source.slice(source.indexOf("if (role !== 'owner' && notificationGateEnabled())"), source.indexOf('interface PendingWs'));
-assert.ok(!teamSweepSource.includes('runSession('), 'team notification preflight 不得啟動模型 session');
+assert.ok(!teamSweepSource.includes('runSession('), 'team sweep driver 不應直接在 snapshot loop 建立 session');
 assert.ok(teamSweepSource.includes('runNotificationSweepForMember'), 'team notification sweep 必須走 member safe discussion runner seam');
 assert.ok(teamSweepSource.includes('telemetry,'), 'team notification preflight 必須接入 allowlisted telemetry recorder');
 assert.ok(!teamSweepSource.includes('.jar-notification-'), 'team notification preflight 不得建立 cookie jar');
