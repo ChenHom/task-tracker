@@ -857,7 +857,42 @@ async function runTests() {
   assert.strictEqual(findElement(mainMemberOverlay, (node) => node.tag === 'button' && node.textContent === '儲存'), null, 'Main Member should not save tasks');
   assert.strictEqual(findElement(mainMemberOverlay, (node) => node.classList.contains('status-change-btn')), null, 'Main Member should not transition tasks');
   assert.strictEqual(findElement(mainMemberOverlay, (node) => node.tag === 'select'), null, 'Main Member should not edit task attributes');
-  assert.strictEqual(findElement(mainMemberOverlay, (node) => node.tag === 'input'), null, 'Main Member should not upload attachments');
+  assert.ok(findElement(mainMemberOverlay, (node) => node.tag === 'input' && node.type === 'file'), 'Main Member should have attachment upload permission (backend writeAttachment only requires Member)');
+
+  // Bug fix regression: a main-workspace Admin (non-owner) must retain attachment upload/delete
+  // (backend ACCESS_ROLE.writeAttachment only requires Member) even though task attribute
+  // management (status/priority/assignee/due date/title/description) stays Owner-only.
+  bodyChildren.length = 0;
+  mockLocation.hash = '#/task/task-1';
+  sandbox.state.userEmail = 'user09@test.local';
+  sandbox.api = async (path: string) => path.endsWith('/attachments')
+    ? [{ attachment_id: 'attachment-9', original_name: 'admin-upload.txt', size: 2048 }]
+    : [];
+  await openTaskDetailModal('task-1', {
+    cachedTasks: [{
+      task_id: 'task-1',
+      title: 'Main Admin Task',
+      description: 'Discuss only',
+      status: 'Todo',
+      priority: 'Medium',
+      assignee_id: null,
+      due_at: null
+    }],
+    cachedMembers: [],
+    memberMap: new Map(),
+    memberEmailMap: new Map(),
+    onUpdate: async () => {},
+    currentRole: 'Admin',
+    isMainWorkspace: true
+  });
+  const mainAdminOverlay = bodyChildren[bodyChildren.length - 1];
+  assert.strictEqual(findElement(mainAdminOverlay, (node) => node.tag === 'button' && node.textContent === '儲存'), null, 'Main Admin should not save task title/description');
+  assert.strictEqual(findElement(mainAdminOverlay, (node) => node.classList.contains('status-change-btn')), null, 'Main Admin should not transition tasks');
+  assert.strictEqual(findElement(mainAdminOverlay, (node) => node.tag === 'select'), null, 'Main Admin should not edit task attributes');
+  assert.ok(findElement(mainAdminOverlay, (node) => node.tag === 'input' && node.type === 'file'), 'Main Admin should see the attachment upload input');
+  assert.ok(findElement(mainAdminOverlay, (node) => node.tag === 'button' && node.textContent === '上傳附件'), 'Main Admin should see the upload button');
+  assert.ok(findElement(mainAdminOverlay, (node) => node.tag === 'button' && node.textContent === '刪除' && node.classList.contains('btn-danger')), 'Main Admin should see attachment delete controls');
+  sandbox.state.userEmail = 'test@test.com';
 
   // Test 7: Viewers retain task, comment, sharing, and attachment reads without mutation controls
   bodyChildren.length = 0;
