@@ -113,6 +113,7 @@ export function hasReviewChanges(ahead: number, dirty: boolean): boolean {
 }
 
 const MEMBER_WORKTREE_NOISE_SEGMENTS = new Set(['node_modules', '.comment-payload.json']);
+const MEMBER_WORKTREE_ROOT_JSON_ALLOWLIST = new Set(['package.json', 'package-lock.json', 'tsconfig.json']);
 
 function isMemberWorktreeNoise(path: string): boolean {
   return path.split(/[\\/]/).some((segment) => MEMBER_WORKTREE_NOISE_SEGMENTS.has(segment));
@@ -131,7 +132,10 @@ function isMemberWorktreeScratch(path: string): boolean {
 
 function isMemberWorktreeRootScratch(path: string): boolean {
   const normalized = path.replace(/[\\/]+$/, '');
-  return normalized !== '' && normalized.split(/[\\/]/).length === 1 && normalized.startsWith('.');
+  if (normalized === '' || normalized.split(/[\\/]/).length !== 1) return false;
+  if (normalized.startsWith('.')) return true;
+  // 根目錄 JSON readback 暫存檔一律視為 scratch，僅保留少數 repo 設定檔例外。
+  return normalized.endsWith('.json') && !MEMBER_WORKTREE_ROOT_JSON_ALLOWLIST.has(normalized);
 }
 
 function isMemberWorktreeNoiseEntry(entry: string): boolean {

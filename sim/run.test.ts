@@ -1412,6 +1412,110 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
   }
 }
 
+// driver 代 commit：根目錄任意新 JSON/API readback 暫存檔也要當 scratch。
+{
+  const workRoot = join(ROOT, 'sim-work');
+  mkdirSync(workRoot, { recursive: true });
+  const repo = mkdtempSync(join(workRoot, 'member-commit-root-json-'));
+  const user = basename(repo);
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const member: Member = {
+    email: `${user}@test.local`,
+    name: 't',
+    user,
+    runner: 'codex',
+    model: 'test-model',
+    profile: 'test',
+  };
+  try {
+    g(['init', '-b', `sim/${user}`]);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+    g(['add', '.']);
+    g(['commit', '-m', 'base']);
+
+    writeFileSync(join(repo, 'api_readback.json'), '{"content":"draft"}\n');
+    assert.strictEqual(
+      hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
+      false,
+      '只剩根目錄任意新 JSON/API readback 暫存檔時不應被視為可提交成果',
+    );
+    assert.strictEqual(
+      commitMemberWork(member, 1, 'test-model'),
+      false,
+      '只剩根目錄任意新 JSON/API readback 暫存檔時不應產生代 commit',
+    );
+
+    g(['reset', '--hard']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+    writeFileSync(join(repo, 'api_readback.json'), '{"content":"draft"}\n');
+    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.deepStrictEqual(
+      g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
+      ['app.ts'],
+      '正常 task 檔 commit 後不應帶入根目錄任意新 JSON/API readback 暫存檔',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(workRoot, { recursive: true, force: true });
+  }
+}
+
+// driver 代 commit：原始 reproducer 的 comments/task/tasks root readback 也要當 scratch。
+{
+  const workRoot = join(ROOT, 'sim-work');
+  mkdirSync(workRoot, { recursive: true });
+  const repo = mkdtempSync(join(workRoot, 'member-commit-root-readback-'));
+  const user = basename(repo);
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const member: Member = {
+    email: `${user}@test.local`,
+    name: 't',
+    user,
+    runner: 'codex',
+    model: 'test-model',
+    profile: 'test',
+  };
+  try {
+    g(['init', '-b', `sim/${user}`]);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 1;\n');
+    g(['add', '.']);
+    g(['commit', '-m', 'base']);
+
+    writeFileSync(join(repo, 'comments_d94_now2.json'), '[]\n');
+    writeFileSync(join(repo, 'task_d94_now.json'), '{"task_id":"d94"}\n');
+    writeFileSync(join(repo, 'tasks_now7.json'), '[]\n');
+    assert.strictEqual(
+      hasNonDependencyWorktreeChanges(g(['status', '--porcelain'])),
+      false,
+      '原始 reproducer 的 comments/task/tasks root readback 暫存檔不應被視為可提交成果',
+    );
+    assert.strictEqual(
+      commitMemberWork(member, 1, 'test-model'),
+      false,
+      '原始 reproducer 的 comments/task/tasks root readback 暫存檔不應產生代 commit',
+    );
+
+    g(['reset', '--hard']);
+    writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
+    writeFileSync(join(repo, 'comments_d94_now2.json'), '[]\n');
+    writeFileSync(join(repo, 'task_d94_now.json'), '{"task_id":"d94"}\n');
+    writeFileSync(join(repo, 'tasks_now7.json'), '[]\n');
+    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.deepStrictEqual(
+      g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
+      ['app.ts'],
+      '正常 task 檔 commit 後不應帶入 root readback 暫存檔',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(workRoot, { recursive: true, force: true });
+  }
+}
+
 {
   const workRoot = join(ROOT, 'sim-work');
   mkdirSync(workRoot, { recursive: true });
