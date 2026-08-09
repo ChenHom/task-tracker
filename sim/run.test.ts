@@ -98,6 +98,9 @@ import {
   type NotificationGateRequest,
   type NotificationSweepMember,
   type ManagedRosterMember,
+  runSafeDiscussionSession,
+  safeDiscussionEnvironment,
+  SAFE_DISCUSSION_TOOLS,
 } from './run';
 
 const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
@@ -903,6 +906,24 @@ assert.ok(
   !privateCodexInvocation.args.includes('--output-last-message'),
   'notification preflight 禁止把模型回覆寫入 --output-last-message 檔案',
 );
+const safeInvocation = buildRunnerInvocation(
+  { runner: 'claude', model: 'claude-sonnet-5' },
+  'safe discussion prompt',
+  {
+    cwd: '/tmp/notification-safe', logFile: '/tmp/notification-safe.log',
+    tools: SAFE_DISCUSSION_TOOLS, safeDiscussion: true, settings: '/tmp/notification-safe/settings.json',
+  },
+);
+assert.strictEqual(safeInvocation.command, 'claude');
+assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--tools') + 1], SAFE_DISCUSSION_TOOLS);
+assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--allowedTools') + 1], SAFE_DISCUSSION_TOOLS);
+assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--settings') + 1], '/tmp/notification-safe/settings.json');
+assert.ok(!safeInvocation.args.some((arg) => /curl|Bash|Read|Write|Git/u.test(arg)));
+assert.deepStrictEqual(
+  safeDiscussionEnvironment({ PATH: '/bin', HOME: '/home/test', PASSWORD: 'secret', SESSION_COOKIE: 'cookie', CUSTOM: 'do-not-pass' }),
+  { PATH: '/bin', HOME: '/home/test' },
+);
+assert.strictEqual(SAFE_DISCUSSION_TOOLS, 'WebSearch,WebFetch');
 assert.strictEqual(parseReportedTokenTotal('{"usage":{"total_tokens":1,234}}'), 1234, '可用的 runner usage 必須保留總 token 數');
 assert.strictEqual(parseReportedTokenTotal('no usage reported'), null, '沒有可用 usage 時不得編造 token 總量');
 const teamSweepSource = source.slice(source.indexOf("if (role !== 'owner' && notificationGateEnabled())"), source.indexOf('interface PendingWs'));
@@ -1678,6 +1699,10 @@ async function runAsyncPolicyTests(): Promise<void> {
 
   await runRosterTests();
   await runNotificationGateTests();
+  await assert.rejects(
+    () => runSafeDiscussionSession({ route: { runner: 'codex', model: 'gpt-test' }, prompt: 'x', sourceTexts: [] }),
+    /safe discussion route 只允許 Claude/,
+  );
   let calls = 0;
   const success = await runMemberSession(
     async () => ({ timedOut: false, errored: false }),

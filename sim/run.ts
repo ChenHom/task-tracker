@@ -7,8 +7,9 @@
 // 前置：task-tracker 跑在 localhost:3000、`npm run seed` 已建立 user01-30、目標 repo 工作樹乾淨（會打 tag）
 // 回退：git reset --hard <本場 tag>；git worktree remove sim-work/<u> --force；git branch -D sim/<u>
 import { execFile, execFileSync } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync, symlinkSync, unlinkSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import {
   createNotificationTelemetryRecorder,
@@ -36,6 +37,7 @@ import {
 import {
   buildDiscussionPacket,
   validateDiscussionReply,
+  type EgressPolicy,
   type DiscussionPacket,
 } from './notificationSecurity';
 
@@ -1248,7 +1250,11 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
 // Claude Code 的 Bash 權限用冒號前綴語法 Bash(<cmd>:*)（實測：空格版 Bash(curl *) 會卡在權限批准）
 export const MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git status:*),Bash(git diff:*),Bash(git merge:*),Bash(git add:*),Bash(git commit:*),Read,Write,Edit,Glob,Grep';
 export const MAIN_OWNER_TOOLS = 'Bash(curl:*)';
-export const NOTIFICATION_TOOLS = 'Bash(curl:*)';
+export const SAFE_DISCUSSION_TOOLS = 'WebSearch,WebFetch';
+export const SAFE_DISCUSSION_ROUTE: ModelRoute = { runner: 'claude', model: 'claude-sonnet-5' };
+const SAFE_DISCUSSION_TIMEOUT = 12 * 60 * 1000;
+export const NOTIFICATION_TOOLS = SAFE_DISCUSSION_TOOLS;
+const NOTIFICATION_EGRESS_HOOK = join(ROOT, 'sim/notification-egress-hook.ts');
 const OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git:*),Read,Glob,Grep';
 // owner 開場是生成型工作（發想＋開題），交給 Claude Sonnet 5；中場/收尾/repair 是審查判斷，改用 GPT-5.6 Sol
 const OWNER_OPEN_MODEL = 'claude-sonnet-5';
@@ -1331,6 +1337,7 @@ export interface SessionResult {
   errorCategory?: NotificationTelemetryErrorCategory;
   tokenTotal?: number | null;
   attempts?: SessionAttempt[];
+  output?: string;
 }
 
 export interface SessionAttempt {
@@ -1422,12 +1429,28 @@ export function buildRunnerInvocation(
   // sandbox 只對 codex 有效（claude 走 --allowedTools，agy 沒有對應開關）。省略時是
   // 'workspace-write'，legacy 呼叫端因此行為不變；需要真唯讀的呼叫端要自己傳 'read-only'
   // ——工具白名單擋不住 codex，它根本不看 opts.tools。
-  opts: { cwd: string; logFile: string; tools?: string; sandbox?: 'read-only' | 'workspace-write'; captureLastMessage?: boolean },
+  opts: {
+    cwd: string;
+    logFile: string;
+    tools?: string;
+    sandbox?: 'read-only' | 'workspace-write';
+    captureLastMessage?: boolean;
+    safeDiscussion?: boolean;
+    claudeTools?: string;
+    settings?: string;
+  },
 ): RunnerInvocation {
   if (route.runner === 'claude') {
+    const args = ['-p', prompt, '--model', route.model];
+    if (opts.safeDiscussion) {
+      args.push('--tools', opts.claudeTools ?? opts.tools ?? '', '--allowedTools', opts.tools ?? '');
+      if (opts.settings) args.push('--settings', opts.settings);
+    } else {
+      args.push('--allowedTools', opts.tools ?? '');
+    }
     return {
       command: 'claude',
-      args: ['-p', prompt, '--model', route.model, '--allowedTools', opts.tools ?? ''],
+      args,
     };
   }
   if (route.runner === 'codex') {
@@ -1466,6 +1489,10 @@ interface SessionOptions {
   promptLabel?: string;
   fallback?: ModelRoute;
   captureContent?: boolean;
+  safeDiscussion?: boolean;
+  claudeTools?: string;
+  settings?: string;
+  env?: NodeJS.ProcessEnv;
 }
 
 function sessionErrorCategory(output: string, timedOut: boolean, quotaExhausted: boolean): NotificationTelemetryErrorCategory {
@@ -1492,13 +1519,21 @@ function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opt
     const artifact = writePromptArtifact(opts.runDir, opts.promptLabel ?? label, prompt);
     opts.promptArtifacts?.push(artifact);
   }
-  const invocation = buildRunnerInvocation(route, prompt, { cwd: opts.cwd, logFile, tools: opts.tools, captureLastMessage: captureContent });
+  const invocation = buildRunnerInvocation(route, prompt, {
+    cwd: opts.cwd,
+    logFile,
+    tools: opts.tools,
+    captureLastMessage: captureContent,
+    safeDiscussion: opts.safeDiscussion,
+    claudeTools: opts.claudeTools,
+    settings: opts.settings,
+  });
   console.log(`[${label}] 開始（${route.runner}/${route.model}）`);
   mkdirSync(NPM_CACHE_DIR, { recursive: true });
   return new Promise((resolve) => {
     const child = execFile(invocation.command, invocation.args,
       { cwd: opts.cwd, timeout: opts.timeoutMs, killSignal: 'SIGKILL', maxBuffer: 20 * 1024 * 1024,
-        env: { ...process.env, npm_config_cache: NPM_CACHE_DIR } },
+        env: { ...(opts.env ?? process.env), npm_config_cache: NPM_CACHE_DIR } },
       (err, stdout, stderr) => {
         // execFile 逾時→送 killSignal(SIGKILL)＋err.killed=true；據此明確判定「逾時」而非額度/API 錯誤
         const e = err as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null;
@@ -1519,6 +1554,7 @@ function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opt
           quotaExhausted,
           errorCategory,
           tokenTotal,
+          output: stdout.trim() || undefined,
           attempts: [{
             route: { ...route }, retry, started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(),
             timedOut, errored: !!err, quotaExhausted, errorCategory, tokenTotal,
@@ -1550,6 +1586,77 @@ function runSession(
     );
     return { ...fallbackResult, fallbackUsed: true, attempts: [...(result.attempts ?? []), ...(fallbackResult.attempts ?? [])] };
   });
+}
+
+export interface SafeDiscussionSessionInput {
+  route: ModelRoute;
+  prompt: string;
+  sourceTexts: readonly string[];
+  fetchAllowed?: boolean;
+  label?: string;
+}
+
+const SAFE_DISCUSSION_ENV_KEYS = new Set([
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'TMPDIR',
+  'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'SSL_CERT_FILE',
+]);
+
+export function safeDiscussionEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key, value]) => SAFE_DISCUSSION_ENV_KEYS.has(key) && value !== undefined));
+}
+
+function writeSafeDiscussionSettings(settingsPath: string): void {
+  const command = `${process.execPath} --import ${join(ROOT, 'node_modules/tsx/dist/loader.mjs')} ${NOTIFICATION_EGRESS_HOOK}`;
+  writeFileSync(settingsPath, JSON.stringify({
+    hooks: {
+      PreToolUse: [{
+        matcher: 'WebSearch|WebFetch',
+        hooks: [{ type: 'command', command }],
+      }],
+    },
+  }), { mode: 0o600 });
+  chmodSync(settingsPath, 0o600);
+}
+
+export async function runSafeDiscussionSession(input: SafeDiscussionSessionInput): Promise<SessionResult> {
+  if (input.route.runner !== SAFE_DISCUSSION_ROUTE.runner) {
+    throw new Error('safe discussion route 只允許 Claude');
+  }
+  const workingDir = mkdtempSync(join(tmpdir(), 'task-tracker-discussion-'));
+  const policyPath = join(workingDir, 'egress-policy.json');
+  const settingsPath = join(workingDir, 'claude-settings.json');
+  const policy: EgressPolicy = {
+    sourceTexts: [...input.sourceTexts],
+    fetchAllowed: input.fetchAllowed !== false,
+    searchCount: 0,
+  };
+  try {
+    writeFileSync(policyPath, JSON.stringify(policy), { mode: 0o600 });
+    chmodSync(policyPath, 0o600);
+    writeSafeDiscussionSettings(settingsPath);
+    const env = {
+      ...safeDiscussionEnvironment(),
+      NOTIFICATION_EGRESS_POLICY_FILE: policyPath,
+    };
+    return await runSession(
+      input.label ?? 'notification-discussion',
+      input.route.runner,
+      input.route.model,
+      input.prompt,
+      {
+        cwd: workingDir,
+        tools: SAFE_DISCUSSION_TOOLS,
+        claudeTools: SAFE_DISCUSSION_TOOLS,
+        safeDiscussion: true,
+        settings: settingsPath,
+        timeoutMs: SAFE_DISCUSSION_TIMEOUT,
+        captureContent: false,
+        env,
+      },
+    );
+  } finally {
+    rmSync(workingDir, { recursive: true, force: true });
+  }
 }
 
 // ── Owner 開場的探勘材料（driver 預蒐，機械工作交給 code，不佔 owner session）──
