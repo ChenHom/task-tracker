@@ -54,6 +54,9 @@ export async function openTaskDetailModal(taskId, {
 
   const canManageTask = hasRole(currentRole, 'Member')
     && (!isMainWorkspace || state.userEmail === MAIN_OWNER_EMAIL);
+  // 附件權限與 task 屬性管理（狀態／優先度／指派／截止日）分開判斷：
+  // 後端 ACCESS_ROLE.writeAttachment 只要求 Member，不受主工作區僅 Owner 可管理屬性的限制。
+  const canWriteAttachment = hasRole(currentRole, 'Member');
   const canComment = hasRole(currentRole, 'Commenter');
   const currentEmail = (state.userEmail || '').trim().toLowerCase();
   const currentUserId = cachedMembers.find(member => member.email?.trim().toLowerCase() === currentEmail)?.user_id;
@@ -875,7 +878,7 @@ export async function openTaskDetailModal(taskId, {
   attachSec.appendChild(attachList);
   let attachForm = null;
   let attachInput = null;
-  if (canManageTask) {
+  if (canWriteAttachment) {
     attachForm = el('form', { class: 'attach-form' });
     attachInput = el('input', { type: 'file', required: true });
     const attachSubmit = el('button', { type: 'submit' }, '上傳附件');
@@ -909,7 +912,7 @@ export async function openTaskDetailModal(taskId, {
         }, `${a.original_name} (${(a.size/1024).toFixed(1)} KB)`);
         li.appendChild(link);
 
-        if (canManageTask) {
+        if (canWriteAttachment) {
           const delBtn = el('button', { type: 'button', class: 'btn-danger' }, '刪除');
           delBtn.onclick = async () => {
             if (!confirm('確定要刪除附件嗎？')) return;
@@ -930,7 +933,7 @@ export async function openTaskDetailModal(taskId, {
     }
   }
 
-  if (canManageTask) {
+  if (canWriteAttachment) {
     attachForm.onsubmit = async (e) => {
       e.preventDefault();
       const file = attachInput.files[0];
