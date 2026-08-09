@@ -133,8 +133,8 @@ function isMemberWorktreeRootScratch(path: string): boolean {
   const normalized = path.replace(/[\\/]+$/, '');
   if (normalized === '' || normalized.split(/[\\/]/).length !== 1) return false;
   if (normalized.startsWith('.')) return true;
-  // 根目錄 API readback 暫存檔：例如 comments_b399.json / comment_payload_b399.json。
-  return /^(?:comments|comment_payload)_[^/]+\.json$/u.test(normalized);
+  // 根目錄 API readback 暫存檔：例如 task_d94_now.json / tasks_now7.json / comments_b399.json。
+  return /^(?:task|tasks|comments|comment_payload)_[^/]+\.json$/u.test(normalized);
 }
 
 function isMemberWorktreeNoiseEntry(entry: string): boolean {
