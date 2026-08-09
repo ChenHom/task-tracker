@@ -1520,6 +1520,7 @@ export function buildRunnerInvocation(
     if (opts.safeDiscussion) {
       args.push('--tools', opts.claudeTools ?? opts.tools ?? '', '--allowedTools', opts.tools ?? '');
       if (opts.settings) args.push('--settings', opts.settings);
+      args.push('--setting-sources', '', '--no-session-persistence');
     } else {
       args.push('--allowedTools', opts.tools ?? '');
     }

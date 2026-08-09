@@ -969,6 +969,8 @@ assert.strictEqual(safeInvocation.command, 'claude');
 assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--tools') + 1], SAFE_DISCUSSION_TOOLS);
 assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--allowedTools') + 1], SAFE_DISCUSSION_TOOLS);
 assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--settings') + 1], '/tmp/notification-safe/settings.json');
+assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--setting-sources') + 1], '');
+assert.ok(safeInvocation.args.includes('--no-session-persistence'), 'safe discussion 不應把內容寫入持久 session');
 assert.ok(!safeInvocation.args.some((arg) => /curl|Bash|Read|Write|Git/u.test(arg)));
 assert.deepStrictEqual(
   safeDiscussionEnvironment({ PATH: '/bin', HOME: '/home/test', PASSWORD: 'secret', SESSION_COOKIE: 'cookie', CUSTOM: 'do-not-pass' }),
