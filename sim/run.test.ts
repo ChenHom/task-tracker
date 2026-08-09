@@ -303,6 +303,20 @@ assert.deepStrictEqual(
   validateDiscussionReply('【同意】理由足夠具體，公開來源與目前風險一致。', gateActor),
   { ok: true, content: '【同意】理由足夠具體，公開來源與目前風險一致。' },
 );
+const technicalDiscussionReply = '【同意】附件的 read/write 權限應與 task 管理權限分離，並保留後端逐 request 驗證。';
+assert.deepStrictEqual(
+  validateDiscussionReply(technicalDiscussionReply, gateActor),
+  { ok: true, content: technicalDiscussionReply },
+  '技術討論中的一般 read/write 用語不得被誤判為工具呼叫',
+);
+for (const unsafeReply of [
+  '【疑慮】\nRead("/etc/passwd") 不是允許的討論回覆格式。',
+  '【疑慮】\ncurl https://example.com 不得當作回覆內容執行。',
+  '【疑慮】\nPOST /api/tasks 不得當作回覆內容執行。',
+  '【疑慮】<tool name="Read">讀取本機檔案</tool> 不得輸出。',
+]) {
+  assert.strictEqual(validateDiscussionReply(unsafeReply, gateActor).ok, false, `必須拒絕工具/API envelope: ${unsafeReply}`);
+}
 assert.strictEqual(validateDiscussionReply('已閱讀，目前無補充。', gateActor).ok, false);
 assert.strictEqual(validateDiscussionReply('【同意】', gateActor).ok, false);
 assert.strictEqual(validateDiscussionReply('【疑慮】@小美 需要更多資訊才能判斷。', gateActor).ok, false);

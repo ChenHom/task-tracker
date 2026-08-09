@@ -14,7 +14,7 @@ const PRIVATE_URL = /\bhttps?:\/\/[^\s/]+(?::\d+)?[^\s]*/giu;
 const URL_USERINFO = /\b(https?:\/\/)[^\s/@]+@/giu;
 const PRIVATE_IPV4 = /\b(?:0|10|127|169\.254|192\.168|172\.(?:1[6-9]|2\d|3[0-1])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?\b/g;
 const PRIVATE_HOST = /\b(?:localhost|[^\s./]+\.local)\b/giu;
-const TOOL_OR_API_ENVELOPE = /(?:<\/?(?:tool|function|function_calls?)\b|\b(?:curl|wget|Bash|Read|Write|Edit|Glob|Grep)\b|(?:^|\n)\s*(?:GET|POST|PATCH|DELETE)\s+\/?(?:api|http))/iu;
+const TOOL_OR_API_ENVELOPE = /(?:<\/?(?:tool|function|function_calls?)\b|["']?(?:tool_name|function_call)["']?\s*:|(?:^|\n)\s*(?:(?:curl|wget|bash)\b|(?:Read|Write|Edit|Glob|Grep)\s*\(|(?:GET|POST|PATCH|DELETE)\s+\/?(?:api|http)))/iu;
 
 export interface DiscussionPacketInput {
   actorName: string;
