@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 export type NotificationTelemetryOutcome = 'succeeded' | 'failed' | 'refused';
 export type NotificationTelemetryErrorCategory = 'none' | 'network' | 'timeout' | 'quota' | 'permission' | 'process';
-export type NotificationTelemetryEvaluationCode = 'login_succeeded' | 'login_failed' | 'preflight_ready' | 'preflight_failed' | 'permission_refused';
+export type NotificationTelemetryEvaluationCode = 'login_succeeded' | 'login_failed' | 'preflight_ready' | 'preflight_failed' | 'discussion_succeeded' | 'discussion_failed' | 'permission_refused';
 
 export interface NotificationTelemetryEvent {
   run_id: string;
@@ -12,7 +12,7 @@ export interface NotificationTelemetryEvent {
   configuration_version: string;
   agent: 'claude' | 'codex' | 'agy';
   model: string;
-  tool_type: 'auth.login' | 'agent.preflight';
+  tool_type: 'auth.login' | 'agent.preflight' | 'agent.discussion';
   tool_sequence: number;
   started_at: string;
   ended_at: string;
@@ -47,10 +47,10 @@ const AGGREGATE_KEYS = new Set<keyof NotificationTelemetryAggregate>([
   'date', 'workflow_version', 'error_category', 'run_count', 'token_total', 'latency_ms',
 ]);
 const AGENTS = new Set<NotificationTelemetryEvent['agent']>(['claude', 'codex', 'agy']);
-const TOOL_TYPES = new Set<NotificationTelemetryEvent['tool_type']>(['auth.login', 'agent.preflight']);
+const TOOL_TYPES = new Set<NotificationTelemetryEvent['tool_type']>(['auth.login', 'agent.preflight', 'agent.discussion']);
 const OUTCOMES = new Set<NotificationTelemetryOutcome>(['succeeded', 'failed', 'refused']);
 const ERROR_CATEGORIES = new Set<NotificationTelemetryErrorCategory>(['none', 'network', 'timeout', 'quota', 'permission', 'process']);
-const EVALUATION_CODES = new Set<NotificationTelemetryEvaluationCode>(['login_succeeded', 'login_failed', 'preflight_ready', 'preflight_failed', 'permission_refused']);
+const EVALUATION_CODES = new Set<NotificationTelemetryEvaluationCode>(['login_succeeded', 'login_failed', 'preflight_ready', 'preflight_failed', 'discussion_succeeded', 'discussion_failed', 'permission_refused']);
 const RUN_RETENTION_MS = 14 * 24 * 60 * 60 * 1_000;
 const AGGREGATE_RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
 

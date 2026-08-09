@@ -46,7 +46,7 @@ export const ROOT = join(__dirname, '..');
 const LOG_DIR = join(ROOT, 'sim-logs'); // 產物一律留在 task-tracker 底下，方便統一查看
 const NOTIFICATION_TELEMETRY_DIR = join(LOG_DIR, 'notification-preflight');
 const NOTIFICATION_TELEMETRY_WORKFLOW_VERSION = 'legacy-team-sweep-v1';
-const NOTIFICATION_TELEMETRY_CONFIGURATION_VERSION = 'notification-gate-v1';
+const NOTIFICATION_TELEMETRY_CONFIGURATION_VERSION = 'notification-gate-v2-safe-discussion';
 const SMOKE = process.argv.includes('--smoke');
 const FAST = process.argv.includes('--fast');
 const SWEEP = process.argv.includes('--sweep');
@@ -777,7 +777,7 @@ export function notificationGateEnabled(env: NodeJS.ProcessEnv = process.env): b
   return env.SIM_NOTIFICATION_GATE === '1';
 }
 
-export type NotificationSweepMember = Pick<Member, 'email' | 'name' | 'user' | 'runner' | 'model' | 'fallback' | 'notificationRoute'>;
+export type NotificationSweepMember = Pick<Member, 'email' | 'name' | 'user' | 'runner' | 'model' | 'fallback' | 'notificationRoute'> & { profile?: string };
 
 export interface NotificationSweepResult {
   actor: string;
@@ -1071,6 +1071,52 @@ function recordFinalPreflightTelemetry(input: {
   }
 }
 
+function recordDiscussionTelemetry(input: {
+  recorder: NotificationTelemetryRecorder | undefined;
+  log: (line: string) => void;
+  deploymentRevision: string;
+  result: SessionResult;
+  startedAt: Date;
+  endedAt: Date;
+}): void {
+  const attempts = telemetryAttemptsFor(input.result, SAFE_DISCUSSION_ROUTE, input.startedAt, input.endedAt);
+  for (const attempt of attempts) {
+    const failed = attempt.errored || attempt.timedOut;
+    const errorCategory = failed
+      ? attempt.errorCategory ?? (attempt.timedOut ? 'timeout' : 'process')
+      : 'none';
+    recordNotificationTelemetry(input.recorder, input.log, {
+      deployment_revision: input.deploymentRevision,
+      workflow_version: NOTIFICATION_TELEMETRY_WORKFLOW_VERSION,
+      configuration_version: NOTIFICATION_TELEMETRY_CONFIGURATION_VERSION,
+      agent: attempt.route.runner,
+      model: attempt.route.model,
+      tool_type: 'agent.discussion',
+      started_at: attempt.started_at,
+      ended_at: attempt.ended_at,
+      outcome: !failed ? 'succeeded' : errorCategory === 'permission' ? 'refused' : 'failed',
+      error_category: errorCategory,
+      retry: attempt.retry,
+      token_total: attempt.tokenTotal,
+      latency_ms: Math.max(0, Date.parse(attempt.ended_at) - Date.parse(attempt.started_at)),
+      evaluation_code: !failed ? 'discussion_succeeded' : errorCategory === 'permission' ? 'permission_refused' : 'discussion_failed',
+    });
+  }
+}
+
+async function runMemberDiscussionSession(
+  member: NotificationSweepMember,
+  discussion: NotificationDiscussionInput,
+): Promise<NotificationDiscussionResult> {
+  const session = await runSafeDiscussionSession({
+    route: SAFE_DISCUSSION_ROUTE,
+    prompt: discussion.prompt,
+    sourceTexts: discussion.packet.sourceTexts,
+    label: `notification-${member.user}-${discussion.notificationId}`,
+  });
+  return { output: session.output ?? '', session };
+}
+
 export async function runNotificationSweepForMember(
   input: NotificationSweepForMemberInput,
 ): Promise<NotificationSweepResult> {
@@ -1124,10 +1170,37 @@ export async function runNotificationSweepForMember(
     }
   }
 
+  const discussionRunner = input.runDiscussion ?? ((discussion: NotificationDiscussionInput) => runMemberDiscussionSession(input.member, discussion));
+  const runDiscussion = async (discussion: NotificationDiscussionInput): Promise<NotificationDiscussionResult> => {
+    const startedAt = new Date();
+    try {
+      const result = await discussionRunner(discussion);
+      recordDiscussionTelemetry({
+        recorder: input.telemetry,
+        log: input.log,
+        deploymentRevision,
+        result: result.session ?? { errored: false, timedOut: false },
+        startedAt,
+        endedAt: new Date(),
+      });
+      return result;
+    } catch (error) {
+      recordDiscussionTelemetry({
+        recorder: input.telemetry,
+        log: input.log,
+        deploymentRevision,
+        result: { errored: true, timedOut: false, errorCategory: telemetryFailure(error).errorCategory },
+        startedAt,
+        endedAt: new Date(),
+      });
+      throw error;
+    }
+  };
   const gate = await processNotificationGate({
-    actor: input.member,
+    actor: { ...input.member, profile: input.member.profile },
     cookie,
     request: input.request,
+    runDiscussion,
     log: input.log,
     snapshotAt: input.snapshotAt ?? new Date().toISOString(),
   });
@@ -1382,8 +1455,9 @@ export async function runNotificationGateOrNormal(
 
 async function runActorSessionWithNotificationGate(input: {
   label: string;
-  actor: Pick<NotificationGateActor, 'email' | 'name'>;
+  actor: Pick<NotificationGateActor, 'email' | 'name' | 'profile'>;
   getNotificationCookie: () => Promise<string>;
+  runDiscussion?: (discussion: NotificationDiscussionInput) => Promise<NotificationDiscussionResult>;
   normal: () => Promise<SessionResult>;
 }): Promise<SessionResult | null> {
   const enabled = notificationGateEnabled();
@@ -1402,6 +1476,7 @@ async function runActorSessionWithNotificationGate(input: {
         actor: input.actor,
         cookie,
         request: api,
+        runDiscussion: input.runDiscussion,
         log: (line) => console.log(`[${input.label}] ${line}`),
         snapshotAt: new Date().toISOString(),
       });
@@ -2205,6 +2280,7 @@ async function main(): Promise<void> {
       label: `${m.name}-r${round}`,
       actor: m,
       getNotificationCookie: () => login(m.email),
+      runDiscussion: (discussion) => runMemberDiscussionSession(m, discussion),
       normal: () => runSession(`${m.name}-r${round}`, workSession.route.runner, workSession.route.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}`, fallback: workSession.fallback }),
     });
     if (!gated) {
@@ -2719,6 +2795,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
             label: `${m.name}-巡檢`,
             actor: m,
             getNotificationCookie: () => login(m.email),
+            runDiscussion: (discussion) => runMemberDiscussionSession(m, discussion),
             normal: () => runSession(`${m.name}-巡檢`, workSession.route.runner, workSession.route.model, (syncNotes.get(m.user) ?? '') + memberPrompt(m, p.wsId, hour, p.scenario),
               { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: workSession.fallback }),
           });

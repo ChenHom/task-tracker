@@ -697,12 +697,63 @@ async function runNotificationGateTests(): Promise<void> {
     member: sweepMember,
     request: sweepMainMissingReply.request,
     loginActor: async () => 'session=test',
+    runDiscussion: async () => ({ output: '' }),
     runPreflight: async () => ({ errored: false, timedOut: false }),
     log: () => undefined,
     snapshotAt: '2026-07-14T04:00:00.000Z',
   });
   assert.strictEqual(sweepMainResult.ready, false);
   assert.ok(!sweepMainMissingReply.calls.some((call) => call.includes('/read')));
+
+  const sweepMainSafe = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-sweep-main-safe', 'task-sweep-main-safe', 'comment-sweep-main-safe')] },
+      { status: 200, body: [{ ...unreadNotification('n-sweep-main-safe', 'task-sweep-main-safe', 'comment-sweep-main-safe'), read_at: '2026-07-14T04:02:00.000Z' }] },
+    ],
+    'GET /api/tasks/task-sweep-main-safe': [{ status: 200, body: gateTask('task-sweep-main-safe', MAIN_WORKSPACE_ID) }],
+    'GET /api/tasks/task-sweep-main-safe/comments': [
+      { status: 200, body: [gateComment('task-sweep-main-safe', 'comment-sweep-main-safe')] },
+      { status: 200, body: [
+        gateComment('task-sweep-main-safe', 'comment-sweep-main-safe'),
+        gateComment('task-sweep-main-safe', 'reply-sweep-main-safe', gateActor.id, '【同意】來源與目前討論相符，風險邊界已說明。', '2026-07-14T04:01:00.000Z'),
+      ] },
+    ],
+    'POST /api/tasks/task-sweep-main-safe/comments': [{ status: 201, body: { id: 'reply-sweep-main-safe' } }],
+    'POST /api/notifications/n-sweep-main-safe/read': [{ status: 200, body: { ok: true } }],
+  });
+  let sweepMainDiscussionRuns = 0;
+  const sweepMainDiscussionTelemetry: Array<Record<string, unknown>> = [];
+  const sweepMainSafeResult = await runNotificationSweepForMember({
+    member: sweepMember,
+    request: sweepMainSafe.request,
+    loginActor: async () => 'session=test',
+    runDiscussion: async ({ notificationId, prompt }) => {
+      sweepMainDiscussionRuns++;
+      assert.strictEqual(notificationId, 'n-sweep-main-safe');
+      assert.ok(prompt.includes('UNTRUSTED_TASK_DATA'));
+      return { output: '【同意】來源與目前討論相符，風險邊界已說明。' };
+    },
+    log: () => undefined,
+    telemetry: {
+      record: (event) => {
+        sweepMainDiscussionTelemetry.push(event as unknown as Record<string, unknown>);
+        return { ...event, run_id: 'test-run', tool_sequence: sweepMainDiscussionTelemetry.length };
+      },
+    },
+    deploymentRevision: 'deployed-safe-discussion',
+    snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(sweepMainSafeResult, {
+    actor: gateActor.email, ready: true, unreadCount: 1, preflightStarted: true,
+  });
+  assert.strictEqual(sweepMainDiscussionRuns, 1);
+  assert.deepStrictEqual(
+    sweepMainDiscussionTelemetry.map((event) => [event.tool_type, event.agent, event.model, event.evaluation_code]),
+    [
+      ['auth.login', 'codex', 'test-model', 'login_succeeded'],
+      ['agent.discussion', 'claude', 'claude-sonnet-5', 'discussion_succeeded'],
+    ],
+  );
 
   const postconditionFailure = fakeGateRequest({
     'GET /api/notifications': [
@@ -928,10 +979,15 @@ assert.strictEqual(parseReportedTokenTotal('{"usage":{"total_tokens":1,234}}'), 
 assert.strictEqual(parseReportedTokenTotal('no usage reported'), null, '沒有可用 usage 時不得編造 token 總量');
 const teamSweepSource = source.slice(source.indexOf("if (role !== 'owner' && notificationGateEnabled())"), source.indexOf('interface PendingWs'));
 assert.ok(!teamSweepSource.includes('runSession('), 'team notification preflight 不得啟動模型 session');
+assert.ok(teamSweepSource.includes('runNotificationSweepForMember'), 'team notification sweep 必須走 member safe discussion runner seam');
 assert.ok(teamSweepSource.includes('telemetry,'), 'team notification preflight 必須接入 allowlisted telemetry recorder');
 assert.ok(!teamSweepSource.includes('.jar-notification-'), 'team notification preflight 不得建立 cookie jar');
 assert.ok(teamSweepSource.includes('deploymentRevision'), 'team notification telemetry 必須帶部署版本 readback');
 assert.ok(!source.includes('.jar-owner-notification'), 'owner notification preflight 也不得建立 cookie jar');
+const memberGateSource = source.slice(source.indexOf('const memberSession = async'), source.indexOf('// 一輪：成員並行'));
+assert.ok(memberGateSource.includes('runMemberDiscussionSession(m, discussion)'), '完整 sim member gate 必須接回 safe discussion');
+const ownerGateSource = source.slice(source.indexOf("const ownerOpen = await runActorSessionWithNotificationGate"), source.indexOf('if (SMOKE)'));
+assert.ok(!ownerGateSource.includes('runMemberDiscussionSession'), 'owner gate 不得使用 member discussion runner');
 const user06 = members.find((member) => member.email === 'user06@test.local')!;
 const user02 = members.find((member) => member.email === 'user02@test.local')!;
 assert.deepStrictEqual(

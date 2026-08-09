@@ -74,6 +74,11 @@ const recorded = [
     token_total: null,
     evaluation_code: 'permission_refused',
   }),
+  emitNotificationTelemetry(root, {
+    ...base,
+    tool_type: 'agent.discussion',
+    evaluation_code: 'discussion_succeeded',
+  }),
 ];
 for (const event of recorded) assert.deepStrictEqual(Object.keys(event).sort(), expectedEventKeys, 'emit 只能落允許欄位');
 
@@ -89,9 +94,10 @@ const runEvents = readFileSync(join(root, 'runs', `${base.run_id}.jsonl`), 'utf8
   .trim()
   .split('\n')
   .map((line) => JSON.parse(line));
-assert.strictEqual(runEvents.length, 3, '成功、錯誤、retry 與權限拒絕都要各自留一筆 allowlisted event');
+assert.strictEqual(runEvents.length, 4, '成功、錯誤、retry、權限拒絕與 discussion 都要各自留一筆 allowlisted event');
 assert.ok(runEvents.some((event) => event.retry === 1 && event.error_category === 'network'));
 assert.ok(runEvents.some((event) => event.outcome === 'refused' && event.error_category === 'permission'));
+assert.ok(runEvents.some((event) => event.tool_type === 'agent.discussion' && event.evaluation_code === 'discussion_succeeded'));
 assert.ok(!JSON.stringify(runEvents).includes('secret'), '敏感值不得寫入 telemetry');
 
 const aggregates = JSON.parse(readFileSync(join(root, 'aggregates', '2026-08-01.json'), 'utf8'));
