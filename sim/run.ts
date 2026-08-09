@@ -33,6 +33,11 @@ import {
   THOUGHT_FIELD_HINTS,
   THOUGHT_MARKER,
 } from '../src/mainWorkspacePolicy';
+import {
+  buildDiscussionPacket,
+  validateDiscussionReply,
+  type DiscussionPacket,
+} from './notificationSecurity';
 
 const BASE = 'http://localhost:3000';
 export const ROOT = join(__dirname, '..');
@@ -717,7 +722,7 @@ async function login(email: string): Promise<string> {
   return m[0];
 }
 
-export interface NotificationGateActor { id?: string; email: string; name: string }
+export interface NotificationGateActor { id?: string; email: string; name: string; profile?: string }
 interface NotificationRow {
   notification_id: string;
   recipient_id: string;
@@ -747,6 +752,21 @@ export interface NotificationGateResult {
   ready: boolean;
   snapshotIds: string[];
   preflightStarted: boolean;
+}
+
+export interface NotificationDiscussionInput {
+  notificationId: string;
+  actor: NotificationGateActor;
+  task: NotificationTask;
+  sourceComment: NotificationComment;
+  comments: readonly NotificationComment[];
+  prompt: string;
+  packet: DiscussionPacket;
+}
+
+export interface NotificationDiscussionResult {
+  output: string;
+  session?: SessionResult;
 }
 
 // notification preflight 會額外登入、讀取並標記通知；目前先預設停用，避免它阻斷
@@ -829,19 +849,18 @@ async function markNotificationRead(
   if (response.status !== 200) throw new Error(`notification ${input.notificationId} read 失敗: HTTP ${response.status}`);
 }
 
-const NOTIFICATION_NOOP_REPLY = '已閱讀，目前無補充。';
-
-async function postNotificationNoopReply(input: {
+async function postNotificationReply(input: {
   taskId: string;
+  content: string;
   request: NotificationGateRequest;
   cookie: string;
 }): Promise<void> {
   const response = await input.request(
     `/api/tasks/${encodeURIComponent(input.taskId)}/comments`,
-    { method: 'POST', body: JSON.stringify({ content: NOTIFICATION_NOOP_REPLY }) },
+    { method: 'POST', body: JSON.stringify({ content: input.content }) },
     input.cookie,
   );
-  if (response.status !== 201) throw new Error(`主工作區 task ${input.taskId} 固定回覆失敗: HTTP ${response.status}`);
+  if (response.status !== 201) throw new Error(`主工作區 task ${input.taskId} 討論回覆失敗: HTTP ${response.status}`);
 }
 
 async function finalNotificationReadback(
@@ -860,7 +879,8 @@ export async function processNotificationGate(input: {
   actor: NotificationGateActor;
   cookie: string;
   request: NotificationGateRequest;
-  /** @deprecated Notification preflight no longer invokes an agent. */
+  runDiscussion?: (discussion: NotificationDiscussionInput) => Promise<NotificationDiscussionResult>;
+  /** @deprecated Kept for offline fixture compatibility; it is never invoked. */
   runPreflight?: (prompt: string, notificationId?: string) => Promise<SessionResult>;
   log: (line: string) => void;
   snapshotAt: string;
@@ -919,13 +939,37 @@ export async function processNotificationGate(input: {
       preflightStarted = true;
 
       if (task.workspace_id === MAIN_WORKSPACE_ID) {
-        await postNotificationNoopReply({ taskId: task.task_id, request: input.request, cookie: input.cookie });
+        if (!input.runDiscussion) throw new Error('主工作區 safe discussion runner 未提供');
+        const packet = buildDiscussionPacket({
+          actorName: actor.name,
+          actorProfile: actor.profile ?? '以具體理由、風險與可驗證依據審查討論',
+          taskTitle: task.title,
+          taskDescription: task.description,
+          sourceComment: sourceComment.content,
+          contextComments: comments,
+        });
+        const discussion = await input.runDiscussion({
+          notificationId: notification.notification_id,
+          actor,
+          task,
+          sourceComment,
+          comments,
+          prompt: packet.prompt,
+          packet,
+        });
+        if (discussion.session && (discussion.session.errored || discussion.session.timedOut)) {
+          throw new Error(`主工作區 notification ${notification.notification_id} safe discussion session 失敗`);
+        }
+        const validated = validateDiscussionReply(discussion.output, actor);
+        if (!validated.ok) throw new Error(`主工作區 notification ${notification.notification_id} 回覆驗證失敗: ${validated.reason}`);
+        await postNotificationReply({ taskId: task.task_id, content: validated.content, request: input.request, cookie: input.cookie });
         const commentsResponse = await input.request(`/api/tasks/${encodeURIComponent(task.task_id)}/comments`, {}, input.cookie);
         if (commentsResponse.status !== 200) throw new Error(`主工作區 task ${task.task_id} 留言驗證失敗: HTTP ${commentsResponse.status}`);
-        const comments = parseNotificationComments(commentsResponse.body);
-        const recentActorComments = comments.filter((comment) => comment.task_id === task.task_id
-          && comment.user_id === actor.id && !beforeCommentIds.has(comment.comment_id));
-        if (!recentActorComments.length || recentActorComments.some((comment) => hasSelfMention(comment.content, actor))) {
+        const verifiedComments = parseNotificationComments(commentsResponse.body);
+        const recentActorComments = verifiedComments.filter((comment) => comment.task_id === task.task_id
+          && comment.user_id === actor.id && !beforeCommentIds.has(comment.comment_id)
+          && comment.content === validated.content && !hasSelfMention(comment.content, actor));
+        if (!recentActorComments.length) {
           throw new Error(`主工作區 notification ${notification.notification_id} 缺少合格的新留言`);
         }
       }
@@ -948,7 +992,8 @@ export interface NotificationSweepForMemberInput {
   member: NotificationSweepMember;
   request: NotificationGateRequest;
   loginActor: (email: string) => Promise<string>;
-  /** @deprecated Notification preflight no longer invokes an agent. */
+  runDiscussion?: (discussion: NotificationDiscussionInput) => Promise<NotificationDiscussionResult>;
+  /** @deprecated Kept for offline fixture compatibility; it is never invoked. */
   runPreflight?: (prompt: string) => Promise<SessionResult>;
   log: (line: string) => void;
   telemetry?: NotificationTelemetryRecorder;
