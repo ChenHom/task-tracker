@@ -24,6 +24,13 @@ import {
   parseImplementationHandoff,
 } from '../src/mainDiscussion';
 import {
+  buildDiscussionPacket,
+  sanitizeUntrustedText,
+  validateDiscussionReply,
+  validateEgressCall,
+  validatePublicUrl,
+} from './notificationSecurity';
+import {
   acquireRunLock,
   allChecksPass,
   assertPathWithin,
@@ -269,6 +276,46 @@ const gateTask = (taskId: string, workspaceId: string) => ({
 const gateComment = (taskId: string, commentId: string, userId = 'owner', content = '請確認', createdAt = '2026-07-14T03:59:00.000Z') => ({
   comment_id: commentId, task_id: taskId, user_id: userId, content, created_at: createdAt,
 });
+
+const securityFixture = 'A\u0000B\u202E C session=super-secret password:pw 192.168.50.109 http://user:pass@localhost:3000/x';
+const sanitizedSecurityFixture = sanitizeUntrustedText(securityFixture, 5000);
+assert.ok(!sanitizedSecurityFixture.includes('\u0000'));
+assert.ok(!sanitizedSecurityFixture.includes('\u202E'));
+assert.ok(!sanitizedSecurityFixture.includes('super-secret'));
+assert.ok(!sanitizedSecurityFixture.includes('password:pw'));
+assert.ok(!sanitizedSecurityFixture.includes('192.168.50.109'));
+assert.ok(!sanitizedSecurityFixture.includes('user:pass@localhost'));
+
+const securityPacket = buildDiscussionPacket({
+  actorName: '小美', actorProfile: '安全與 auth',
+  taskTitle: '討論公開 OAuth 風險',
+  taskDescription: '請查證公開資料',
+  sourceComment: securityFixture,
+  contextComments: [],
+});
+assert.ok(securityPacket.prompt.length <= 16_000);
+assert.ok(securityPacket.prompt.includes('UNTRUSTED_TASK_DATA'));
+assert.ok(!securityPacket.prompt.includes('super-secret'));
+assert.deepStrictEqual(
+  validateDiscussionReply('【同意】理由足夠具體，公開來源與目前風險一致。', gateActor),
+  { ok: true, content: '【同意】理由足夠具體，公開來源與目前風險一致。' },
+);
+assert.strictEqual(validateDiscussionReply('已閱讀，目前無補充。', gateActor).ok, false);
+assert.strictEqual(validateDiscussionReply('【同意】', gateActor).ok, false);
+assert.strictEqual(validateDiscussionReply('【疑慮】@小美 需要更多資訊才能判斷。', gateActor).ok, false);
+assert.strictEqual(validatePublicUrl('http://127.0.0.1:3000/api/health').ok, false);
+assert.strictEqual(validatePublicUrl('https://example.com/research').ok, true);
+assert.strictEqual(
+  validateEgressCall({ type: 'WebSearch', query: 'session=secret' }, { sourceTexts: [] }).ok,
+  false,
+);
+assert.strictEqual(
+  validateEgressCall(
+    { type: 'WebSearch', query: 'OAuth security design risk signal' },
+    { sourceTexts: ['OAuth security design risk signal appears in private discussion'] },
+  ).ok,
+  false,
+);
 
 async function runNotificationGateTests(): Promise<void> {
   const empty = fakeGateRequest({
