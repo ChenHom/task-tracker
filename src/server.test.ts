@@ -117,6 +117,9 @@ void (async () => {
     { items: [], page: 1, pageSize: 15, totalCount: 0, totalPages: 1, unreadTotal: 0 },
     '0 筆時 page=1 應回空清單且 totalPages 至少為 1',
   );
+  const invalidFilter = await getNotifications('?page=1&filter=unknown');
+  assert.strictEqual(invalidFilter.status, 400, '未知通知 filter 應回 400');
+  assert.strictEqual(JSON.parse(invalidFilter.body).error, 'filter 參數不合法');
   for (const [query, label] of [
     ['?page=0', 'page=0'],
     ['?page=-1', 'page=-1'],

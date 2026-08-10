@@ -42,6 +42,8 @@
 - 需要登入。
 - 只回傳目前登入使用者自己的通知。
 - 未登入時回 `401 {"error":"未登入"}`。
+- 可帶 `filter=all|unread|read`，預設為 `all`。`all` 包含未讀與已讀未滿 10 天的通知；`unread` 只回未讀；`read` 只回已讀未滿 10 天的通知。
+- 已讀通知從 `read_at` 起連續滿 10 個 24 小時（含剛好 10 天）後由 server 隱藏，不刪除資料；未讀通知不因時間隱藏。
 
 回傳資料：
 
@@ -82,7 +84,7 @@
 - 點擊通知後，先導向 `source_task_id` 對應的 task，再呼叫標記已讀。
 - 若要做 comment 深連結，可再用 `source_comment_id` 定位留言錨點。
 
-### 2.1a GET `/api/notifications?page=N&pageSize=M`（opt-in 分頁）
+### 2.1a GET `/api/notifications?page=N&pageSize=M&filter=all|unread|read`（opt-in 分頁）
 
 用途：通知頁（收件夾 UI）用傳統頁碼瀏覽通知，避免一次拉全部。
 
@@ -92,6 +94,7 @@
 - 分頁是 opt-in：只要帶 `page` 參數就會回傳分頁格式；不帶 `page` 時走 2.1 既有的 array 回應與排序，不受影響。
 - `page` 必填（在有帶分頁參數的前提下）；`pageSize` 選填，預設 15，上限 100。
 - `page`／`pageSize` 必須是正整數；不合法格式（非數字、0、負數、小數）回 `400 {"error":"page 參數不合法"}` 或 `400 {"error":"pageSize 參數不合法"}`。
+- `filter` 只能是 `all`、`unread` 或 `read`，不合法回 `400 {"error":"filter 參數不合法"}`。
 - `page` 超過目前總頁數回 `400 {"error":"page 超出範圍"}`；前端應以 UI（disable 超界的頁碼按鈕）避免發出這種請求，遇到仍可退回第 1 頁重試。
 
 回傳資料：
@@ -108,7 +111,8 @@
 ```
 
 - `items` 排序固定為 `created_at DESC`、`notification_id DESC` 作穩定次排序（分頁情境下不採 2.1 的「未讀優先」排序，避免標記已讀把項目移到清單後段、造成分頁跳動）。
-- `unreadTotal` 是這個使用者「全體」未讀數（不受目前頁面限制），前端 badge 應以此欄位為準，不要用 `items` 內未讀筆數估算。
+- `totalCount`／`totalPages` 是套用 filter 與已讀 10 天隱藏規則後的結果；`unreadTotal` 是這個使用者「全體」未讀數（不受目前 filter／頁面限制），前端 badge 應以此欄位為準，不要用 `items` 內未讀筆數估算。
+- 通知頁提供「全部／未讀／已讀」篩選與 10／15 筆原生選單；切換 filter 會從第 1 頁重新查詢，空結果顯示空狀態。
 - 目前的通知頁（`public/js/views/notifications.js`）提供 10／15 筆原生選單切換：無已保存偏好時手機預設 10、桌面預設 15，切換後存入 `localStorage`（key `notif-page-size`）並優先套用。
 
 ### 2.2 POST `/api/notifications/:id/read`

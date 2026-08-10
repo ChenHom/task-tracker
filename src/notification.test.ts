@@ -153,4 +153,41 @@ assert.deepStrictEqual(erinPage1AfterInsert, ['e08', 'e07', 'e06']);
 deleteNotificationsByTask('task-1', db); // 清光 task-1 來源的全部通知，模擬來源 task 被刪除的極端漏讀情境
 assert.strictEqual(listNotificationsPage('erin', '1', null, db).totalCount, 0, '來源刪除後應歸零，不留孤兒通知');
 
+// ── filter 與已讀 10 天保留邊界 ───────────────────────────────────
+db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run('frank', 'frank@test.local', 'Frank', 'x');
+function insertFrank(id: string, readAt: string | null): void {
+  db.prepare(
+    `INSERT INTO notifications_read_model
+       (notification_id, recipient_id, source_task_id, source_comment_id, snippet, created_at, read_at)
+     VALUES (?, 'frank', 'task-1', 'c-filter', 'filter fixture', ?, ?)`,
+  ).run(id, '2026-08-01T00:00:00.000Z', readAt);
+}
+const filterNow = new Date('2026-08-10T00:00:00.000Z');
+const tenDaysMs = 10 * 24 * 60 * 60 * 1000;
+const cutoff = filterNow.getTime() - tenDaysMs;
+insertFrank('f-unread', null);
+insertFrank('f-visible-read', new Date(cutoff + 1).toISOString());
+insertFrank('f-exact-read', new Date(cutoff).toISOString());
+insertFrank('f-expired-read', new Date(cutoff - 1).toISOString());
+
+const frankAll = listNotificationsPage('frank', '1', '10', db, 'all', filterNow);
+assert.deepStrictEqual(
+  frankAll.items.map((n) => n.notification_id).sort(),
+  ['f-unread', 'f-visible-read'].sort(),
+  '全部篩選應排除已讀滿 10 天，剛好 10 天也必須隱藏',
+);
+assert.strictEqual(frankAll.totalCount, 2, 'totalCount 應在篩選後計算');
+assert.strictEqual(frankAll.unreadTotal, 1, 'unreadTotal 應維持使用者全體未讀數');
+
+const frankUnread = listNotificationsPage('frank', '1', '10', db, 'unread', filterNow);
+assert.deepStrictEqual(frankUnread.items.map((n) => n.notification_id), ['f-unread'], '未讀篩選只應回未讀通知');
+assert.strictEqual(frankUnread.totalCount, 1);
+
+const frankRead = listNotificationsPage('frank', '1', '1', db, 'read', filterNow);
+assert.deepStrictEqual(frankRead.items.map((n) => n.notification_id), ['f-visible-read'], '已讀篩選應只回仍在 10 天內的已讀通知');
+assert.strictEqual(frankRead.totalCount, 1, '已讀篩選應在分頁前計算總數');
+assert.strictEqual(frankRead.totalPages, 1);
+assert.deepStrictEqual(listNotifications('frank', db, 'read', filterNow).map((n) => n.notification_id), ['f-visible-read']);
+assert.throws(() => listNotificationsPage('frank', '1', null, db, 'invalid', filterNow), CommandError, '未知 filter 應被拒絕');
+
 console.log('notification.test.ts OK');

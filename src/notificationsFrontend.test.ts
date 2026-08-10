@@ -74,6 +74,9 @@ class MockElement {
     if (val.includes('id="notif-page-size"')) {
       this.appendChild(new MockElement('select').setAttribute2('id', 'notif-page-size'));
     }
+    if (val.includes('id="notif-filter"')) {
+      this.appendChild(new MockElement('select').setAttribute2('id', 'notif-filter'));
+    }
   }
 }
 // 小工具：setAttribute 回傳 this 方便鏈式建立節點
@@ -475,9 +478,37 @@ async function testSavedPreferenceWins(): Promise<void> {
   console.log('testSavedPreferenceWins OK');
 }
 
+/** 通知頁應把全部／未讀／已讀篩選交給後端，並在切換後保留目前頁面的正常空狀態。 */
+async function testNotificationFilters(): Promise<void> {
+  const env = createEnv({ innerWidth: 1024 });
+  const requestedFilters: string[] = [];
+  env.setApiMock(async (path: string) => {
+    const match = path.match(/(?:^|&)filter=([^&]+)/);
+    requestedFilters.push(match ? match[1] : 'missing');
+    return page([]);
+  });
+  await env.NotificationsView.render(env.container);
+
+  const filterSelect = findById(env.root, 'notif-filter');
+  assert.ok(filterSelect, '通知頁應提供全部／未讀／已讀篩選選單');
+  assert.strictEqual(filterSelect!.value, 'all', '初始篩選應為全部');
+
+  filterSelect!.value = 'unread';
+  filterSelect!.onchange!();
+  await flushPromises();
+  filterSelect!.value = 'read';
+  filterSelect!.onchange!();
+  await flushPromises();
+  assert.deepStrictEqual(requestedFilters.slice(-3), ['all', 'unread', 'read'], '篩選切換應以 query 交給後端');
+  assert.ok(findById(env.root, 'notif-list')!.childNodes[0].textContent.includes('目前沒有通知'), '空結果應顯示空狀態');
+  env.stopNotificationPolling();
+  console.log('testNotificationFilters OK');
+}
+
 main()
   .then(testMobileDefault)
   .then(testSavedPreferenceWins)
+  .then(testNotificationFilters)
   .catch(err => {
     console.error('notificationsFrontend.test.ts FAILED:', err);
     process.exit(1);

@@ -192,16 +192,20 @@ body {
 .notif-controls {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.75rem;
   margin-bottom: 0.6rem;
 }
-.notif-page-size-label {
+.notif-page-size-label,
+.notif-filter-label {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   font-weight: bold;
   font-size: 0.9rem;
 }
-.notif-page-size-label select {
+.notif-page-size-label select,
+.notif-filter-label select {
   font-size: 0.9rem;
   padding: 0.2rem 0.4rem;
   font-family: inherit;

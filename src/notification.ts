@@ -21,6 +21,10 @@ export interface NotificationRow {
   read_at: string | null;
 }
 
+export type NotificationFilter = 'all' | 'unread' | 'read';
+
+const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000;
+
 function trimHandleToken(token: string): string {
   return token.replace(/[.,，。！？!?;；:：)\]}>`"'”’]+$/u, '').trim();
 }
@@ -114,15 +118,23 @@ export function deleteNotificationsByTask(taskId: string, database = db): void {
   database.prepare('DELETE FROM notifications_read_model WHERE source_task_id = ?').run(taskId);
 }
 
-export function listNotifications(userId: string, database = db): NotificationRow[] {
+export function listNotifications(
+  userId: string,
+  database = db,
+  filterRaw: string | null = 'all',
+  now = new Date(),
+): NotificationRow[] {
+  const filter = parseNotificationFilter(filterRaw);
+  const cutoff = readCutoff(now);
+  const visibilityParams = filter === 'unread' ? [] : [cutoff];
   return database
     .prepare(
       `SELECT notification_id, recipient_id, source_task_id, source_comment_id, snippet, created_at, read_at
          FROM notifications_read_model
-        WHERE recipient_id = ?
+        WHERE recipient_id = ? AND ${filterClause(filter)}
         ORDER BY CASE WHEN read_at IS NULL THEN 0 ELSE 1 END, created_at DESC, notification_id DESC`,
     )
-    .all(userId) as unknown as NotificationRow[];
+    .all(userId, ...visibilityParams) as unknown as NotificationRow[];
 }
 
 export interface NotificationPage {
@@ -137,6 +149,22 @@ export interface NotificationPage {
 const DEFAULT_PAGE_SIZE = 15;
 const MAX_PAGE_SIZE = 100;
 const MAX_PAGE = 1_000_000;
+
+function parseNotificationFilter(raw: string | null | undefined): NotificationFilter {
+  const value = raw ?? 'all';
+  if (value === 'all' || value === 'unread' || value === 'read') return value;
+  throw new CommandError('filter 參數不合法');
+}
+
+function filterClause(filter: NotificationFilter): string {
+  if (filter === 'unread') return 'read_at IS NULL';
+  if (filter === 'read') return 'read_at IS NOT NULL AND read_at > ?';
+  return '(read_at IS NULL OR read_at > ?)';
+}
+
+function readCutoff(now: Date): string {
+  return new Date(now.getTime() - TEN_DAYS_MS).toISOString();
+}
 
 function parsePositiveInt(raw: string, max: number, label: string): number {
   if (!/^[1-9]\d*$/.test(raw) || Number(raw) > max) {
@@ -153,12 +181,20 @@ export function listNotificationsPage(
   pageRaw: string,
   pageSizeRaw: string | null,
   database = db,
+  filterRaw: string | null = 'all',
+  now = new Date(),
 ): NotificationPage {
+  const filter = parseNotificationFilter(filterRaw);
   const pageSize = pageSizeRaw === null ? DEFAULT_PAGE_SIZE : parsePositiveInt(pageSizeRaw, MAX_PAGE_SIZE, 'pageSize');
   const page = parsePositiveInt(pageRaw, MAX_PAGE, 'page');
+  const cutoff = readCutoff(now);
+  const where = filterClause(filter);
+  const visibilityParams = filter === 'unread' ? [] : [cutoff];
 
   const totalCount = (
-    database.prepare('SELECT COUNT(*) AS c FROM notifications_read_model WHERE recipient_id = ?').get(userId) as { c: number }
+    database
+      .prepare(`SELECT COUNT(*) AS c FROM notifications_read_model WHERE recipient_id = ? AND ${where}`)
+      .get(userId, ...visibilityParams) as { c: number }
   ).c;
   const unreadTotal = (
     database
@@ -172,11 +208,11 @@ export function listNotificationsPage(
     .prepare(
       `SELECT notification_id, recipient_id, source_task_id, source_comment_id, snippet, created_at, read_at
          FROM notifications_read_model
-        WHERE recipient_id = ?
+        WHERE recipient_id = ? AND ${where}
         ORDER BY created_at DESC, notification_id DESC
         LIMIT ? OFFSET ?`,
     )
-    .all(userId, pageSize, (page - 1) * pageSize) as unknown as NotificationRow[];
+    .all(userId, ...visibilityParams, pageSize, (page - 1) * pageSize) as unknown as NotificationRow[];
 
   return { items, page, pageSize, totalCount, totalPages, unreadTotal };
 }

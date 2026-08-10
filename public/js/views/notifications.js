@@ -3,7 +3,7 @@
 /**
  * @fileoverview @mention 通知中心視圖，以及桌機 sidebar／手機漢堡共用的未讀 badge 邏輯。
  * 依 docs/frontend/mentions-and-notifications.md 的 API 契約實作。
- * 通知列表走 GET /api/notifications?page=N&pageSize=10|15 的 opt-in 分頁回應
+ * 通知列表走 GET /api/notifications?page=N&pageSize=10|15&filter=all|unread|read 的 opt-in 分頁回應
  * （{ items, page, pageSize, totalCount, totalPages, unreadTotal }）。
  * 每頁筆數 10／15 可由使用者切換並存入 localStorage；無偏好時手機預設 10、桌面預設 15。
  */
@@ -23,6 +23,7 @@ const FRIENDLY_SOURCE_ERROR = {
 const PAGE_SIZE_OPTIONS = [10, 15];
 const PAGE_SIZE_STORAGE_KEY = 'notif-page-size';
 const MOBILE_BREAKPOINT = 768;
+const NOTIFICATION_FILTERS = ['all', 'unread', 'read'];
 
 // 首次載入且無已保存偏好時，依目前螢幕寬度決定預設每頁筆數（手機 10／桌面 15）。
 function loadPageSize() {
@@ -36,6 +37,7 @@ function loadPageSize() {
 }
 
 let pageSize = loadPageSize();
+let notificationFilter = 'all';
 
 function emptyPage() {
   return { items: [], page: 1, pageSize, totalCount: 0, totalPages: 1, unreadTotal: 0 };
@@ -62,6 +64,16 @@ function changePageSize(newSize) {
   loadPage(pageState.page);
 }
 
+function changeNotificationFilter(newFilter) {
+  if (!NOTIFICATION_FILTERS.includes(newFilter) || newFilter === notificationFilter) return;
+  notificationFilter = newFilter;
+  loadPage(1);
+}
+
+function notificationPageUrl(page) {
+  return `/api/notifications?page=${page}&pageSize=${pageSize}&filter=${notificationFilter}`;
+}
+
 function renderBadges() {
   const count = pageState.unreadTotal;
   document.querySelectorAll('.notif-badge').forEach(badgeEl => {
@@ -86,7 +98,7 @@ export async function refreshNotificationBadge() {
     return;
   }
   try {
-    pageState = await api(`/api/notifications?page=${mounted ? pageState.page : 1}&pageSize=${pageSize}`);
+    pageState = await api(notificationPageUrl(mounted ? pageState.page : 1));
   } catch {
     // 拉取失敗不影響其他頁面，維持既有快取數字
   }
@@ -108,12 +120,12 @@ export function stopNotificationPolling() {
 
 async function loadPage(page) {
   try {
-    pageState = await api(`/api/notifications?page=${page}&pageSize=${pageSize}`);
+    pageState = await api(notificationPageUrl(page));
   } catch {
     // 頁碼可能因資料變動或切換每頁筆數而越界；退回第 1 頁重試一次
     if (page !== 1) {
       try {
-        pageState = await api(`/api/notifications?page=1&pageSize=${pageSize}`);
+        pageState = await api(notificationPageUrl(1));
       } catch {
         // 忽略，維持既有畫面
       }
@@ -272,6 +284,14 @@ export const NotificationsView = {
         <h2 class="red-pen-underline" style="margin-top:0; margin-bottom:0;">通知</h2>
       </div>
       <div class="notif-controls">
+        <label class="notif-filter-label" for="notif-filter">
+          顯示
+          <select id="notif-filter">
+            <option value="all">全部</option>
+            <option value="unread">未讀</option>
+            <option value="read">已讀</option>
+          </select>
+        </label>
         <label class="notif-page-size-label" for="notif-page-size">
           每頁筆數
           <select id="notif-page-size">
@@ -285,6 +305,9 @@ export const NotificationsView = {
     `;
 
     const sizeSelect = document.getElementById('notif-page-size');
+    const filterSelect = document.getElementById('notif-filter');
+    filterSelect.value = notificationFilter;
+    filterSelect.onchange = () => changeNotificationFilter(filterSelect.value);
     sizeSelect.value = String(pageSize);
     sizeSelect.onchange = () => changePageSize(Number(sizeSelect.value));
 
