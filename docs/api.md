@@ -524,7 +524,9 @@ target 必須存在且為 active，不能與 source 相同；archived/deleted ta
 
 ### `GET /api/notifications`
 
-需要登入。只回傳目前 user 的 [Notification](#notification) array，未讀優先，再依建立時間新到舊排序。
+需要登入。只回傳目前 user 的 [Notification](#notification) array，未讀優先，再依建立時間新到舊排序。可用 `filter=all|unread|read` 篩選，預設為 `all`：`all` 包含未讀與已讀未滿 10 天的通知；`unread` 只回未讀；`read` 只回已讀未滿 10 天。已讀通知自 `read_at` 起連續滿 10 個 24 小時（含剛好邊界）後不再列出，但資料不會被刪除；`unreadTotal` 的 badge 語意以全部未讀為準。
+
+帶 `page=N` 時回傳分頁物件：`GET /api/notifications?page=N&pageSize=M&filter=all|unread|read`。`pageSize` 預設 15、上限 100；`totalCount`／`totalPages` 先套用 filter 與 10 天保留規則再計算，`unreadTotal` 仍是目前 user 的全體未讀數。`filter` 不是上述三值時回 `400`。
 
 ### `POST /api/notifications/:id/read`
 

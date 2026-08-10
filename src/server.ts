@@ -607,13 +607,18 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const params = new URL(req.url, 'http://localhost').searchParams;
     const page = params.get('page');
     if (page === null) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(listNotifications(userId)));
+      try {
+        const body = JSON.stringify(listNotifications(userId, db, params.get('filter')));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(body);
+      } catch (e) {
+        sendCommandError(res, e);
+      }
       return;
     }
     try {
       // 先算完再送 header：writeHead 若排在前面，非法頁碼會變成「已送出 200 才想改 400」
-      const body = JSON.stringify(listNotificationsPage(userId, page, params.get('pageSize')));
+      const body = JSON.stringify(listNotificationsPage(userId, page, params.get('pageSize'), db, params.get('filter')));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);
     } catch (e) {
