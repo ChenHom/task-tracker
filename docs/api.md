@@ -480,7 +480,8 @@ target 必須是該 workspace 的 active member，否則回 `404`。Owner 任命
 - `title`、`description`、`priority`、`assignee`、`dueAt` 都會做型別/長度/日期驗證。
 - 一般 workspace 的 status 只允許相鄰流程：`Todo → Doing → Review → Done`，以及一步回退 `Doing → Todo`、`Review → Doing`、`Done → Review`。
 - 主協作 workspace 的非規則 task 不走一般流程，只能由 OWNER 依完整收尾證據一次從 `Todo` 變為 `Done`；不可使用 `Doing`、`Review`，也不可從 `Done` 回退。
-- 討論沒有等待期限。收尾前必須有 OWNER 留下的完整六欄 `【OWNER想法】`；其後必須具備三條收尾路徑之一：`【結論】` + 至少一則 `【實作任務】工作區：...｜TASK：...`；`【結論：不實作】`；或 `【未達共識】`（含三個必要說明欄位）。三者都不需要任何確認留言，成員回覆或缺席都不影響收尾。
+- 收尾前必須有 OWNER 留下的完整六欄 `【OWNER想法】`；其 server `created_at` 固定起算兩個連續 24 小時。期限前，該想法之後必須有四位不同主工作區成員留下 `【同意】`，且包含 user09，三種收尾才可執行；期限到後則不再要求同意票。
+- 收尾仍須具備三條路徑之一：`【結論】` + 至少一則 `【實作任務】工作區：...｜TASK：...`；`【結論：不實作】`；或 `【未達共識】`（含三個必要說明欄位）。期限／四票 gate 對三者共用；不需要使用者提供期限 marker 或確認留言。
 - 系統不提供回覆進度、缺席名單或期限 API；成員是否回覆由留言紀錄呈現。
 - Commenter 只有在 task creator 是自己時，才能只 PATCH `description`；其他欄位需要 Member。
 - 主協作 workspace 的 task status 只有 user01 能改。
@@ -566,7 +567,7 @@ content trim 後必須非空、最多 5000 字。成功回 `201`、`{ "id": "com
 
 在主協作 workspace，留言仍使用同一個 endpoint，且**沒有任何格式閘門** —— OWNER 以六欄格式留下 `【OWNER想法】`、再 mention user02-06 與 user09 徵詢意見，兩者都只是一般留言。其他討論與一般 workspace 留言維持原本 CRUD 行為。
 
-收尾證據直接從 comment 串推導，不另外保存 metadata，也不由前端新增期限選擇器。原討論若要實作，`【實作任務】` 只記錄目標工作區與 TASK 名稱，不產生或儲存 URL。
+收尾證據直接從 comment 串推導；完整 OWNER想法的伺服器 `created_at` 是固定兩天期限的起點，不另設期限欄位或前端選擇器。原討論若要實作，`【實作任務】` 只記錄目標工作區與 TASK 名稱，不產生或儲存 URL。
 
 ### `PATCH /api/comments/:id`
 

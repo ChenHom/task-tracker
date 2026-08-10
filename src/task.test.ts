@@ -486,7 +486,7 @@ assert.deepStrictEqual(
   { priority: 'Medium', assigneeId: null, projectId: null, dueAt: null },
 );
 
-// ── 主討論只允許 OWNER 在想法與結論齊備後 Todo → Done（沒有等待期限）──
+// ── 主討論只允許 OWNER 在期限到達或四票後 Todo → Done ────────────────
 assert.throws(
   () => changeTaskStatus('main-user', discussionId, 'Doing', db),
   { name: 'CommandError', message: '只有 user01 可以改變主工作區 task 狀態' },
@@ -508,12 +508,12 @@ assert.strictEqual(loadEvents(discussionId, db).length, beforeDiscussionEvidence
 
 createComment(discussionId, 'main-owner', OWNER_THOUGHT, db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-user', '請交由前端成員接手。', db, new Date('2026-07-14T08:00:00.000Z'));
-// implement 需要老闆（user09）的同意票，validator 會擋；細節見 mainDiscussion.test.ts。
+// 期限到後不要求同意票；仍保留既有 user09 同意，驗證實作收尾其餘證據不變。
 createComment(discussionId, 'main-boss', '【同意】\n可以做。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【結論】\n採用。', db, new Date('2026-07-14T08:00:00.000Z'));
 createComment(discussionId, 'main-owner', '【實作任務】工作區：目標工作區｜TASK：實作討論方向', db, new Date('2026-07-14T08:00:00.000Z'));
-// 想法與結論在同一時刻留下即可收尾，不必等待任何期限。
-changeTaskStatus('main-owner', discussionId, 'Done', db, new Date('2026-07-14T08:00:01.000Z'));
+// 想法起算剛好兩天後可收尾；changeTaskStatus 必須把同一個 server 時鐘交給 validator。
+changeTaskStatus('main-owner', discussionId, 'Done', db, new Date('2026-07-16T08:00:00.000Z'));
 const concludedDiscussion = getTask(discussionId, db)!;
 assert.strictEqual(concludedDiscussion.status, 'Done');
 assert.strictEqual(concludedDiscussion.assignee_id, null, '收尾不可指派 OWNER');

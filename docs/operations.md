@@ -158,8 +158,8 @@ Owner 每次啟動或巡檢時的看板治理、驗收、阻塞、想法與封�
 - 留言只能由原作者透過 PATCH 編輯，`DELETE /api/comments/:id` 固定回 405；不提供留言刪除或由刪除觸發的 notification 清理流程。
 - 只有主協作工作區會同步 user02-06 為 Commenter、user09 為 Admin；其他 workspace 由 user01 建立時自動加入 user09 為 Admin，既有 user01-owned workspace 由啟動同步升級，其他 workspace 不受影響。
 - 主協作工作區所有人都可建立 Todo 討論與留言；user01 先留下 `【OWNER想法】`，再通知 user02-06 與 user09。
-- 討論沒有等待期限，成員隨時可以回覆；主工作區留言沒有任何格式閘門。
-- 只有 user01 能以 `【結論】`/`【結論：不實作】`/`【未達共識】` 的完整證據將主工作區 task 由 Todo 直接移到 Done；收尾前必須有 user01 留下的完整六欄 `【OWNER想法】`。未達共識需留下分歧、缺少資訊與下次建議，三種收尾都不要求任何確認留言。
+- 完整 `【OWNER想法】` 由伺服器留言時間固定起算兩天；主工作區留言本身沒有期限 marker 格式閘門，成員仍可隨時回覆。
+- 只有 user01 能以 `【結論】`/`【結論：不實作】`/`【未達共識】` 的完整證據將主工作區 task 由 Todo 直接移到 Done；期限前，三種收尾都要求本輪想法後四位不同成員的 `【同意】` 且含 user09，期限到後才不要求同意票。未達共識仍需留下分歧、缺少資訊與下次建議。
 - 有共識且要實作時，在目標工作區另建 TASK；原討論只記 `【實作任務】工作區：...｜TASK：...`，不產生或儲存 URL。主工作區不使用 Doing、Review，也不追蹤缺席名單或提供期限/回覆 UI。
 - `[規則] 主工作區協作與交接` 是政策提示，不是 sweep work。
 - Server startup 會修復固定名稱、成員角色、規則 task 與 legacy 討論；成功登入時也會同步該使用者。既有 legacy `task.discussion_started` 事件只供歷史 replay，新的主工作區收尾使用 `task.main_discussion_concluded`。
@@ -415,7 +415,7 @@ State 存在 `sim-logs/production-coordinator.db`（gitignored）。主要表格
 
 ### Discussion policy（主討論 `10e65231...`）
 
-討論收尾條件由 `src/mainDiscussion.ts` 管理，**已無等待窗口**（`【全員回覆：N天】` 與 `main_discussion_windows` 於 2026-07-29 移除）；production coordinator 這一層只在 evidence fingerprint（留言／狀態）自上次 checkpoint 後已變化時才產生 Owner action。狀態沒變化的巡檢不會重複觸發 AI。
+討論收尾條件由 `src/mainDiscussion.ts` 管理：舊的 `【全員回覆：N天】` 與 `main_discussion_windows` 仍維持移除；改以完整 OWNER想法的 server `created_at` 固定起算兩天，期限前需四位不同成員 `【同意】` 且含 user09，三種 outcome 共用。production coordinator 這一層只在 evidence fingerprint（留言／狀態）自上次 checkpoint 後已變化時才產生 Owner action。狀態沒變化的巡檢不會重複觸發 AI。
 
 ### Human-blocked 行為
 

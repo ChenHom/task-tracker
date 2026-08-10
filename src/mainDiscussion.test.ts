@@ -28,13 +28,19 @@ db.prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, creat
 const insertUser = db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)');
 insertUser.run('owner', MAIN_OWNER_EMAIL, 'Owner', 'hash');
 insertUser.run('user02', 'user02@test.local', 'User 02', 'hash');
+insertUser.run('user03', 'user03@test.local', 'User 03', 'hash');
+insertUser.run('user04', 'user04@test.local', 'User 04', 'hash');
+insertUser.run('user05', 'user05@test.local', 'User 05', 'hash');
 insertUser.run('boss', MAIN_BOSS_EMAIL, 'Boss', 'hash');
 const insertMember = db.prepare(
   'INSERT INTO workspace_members_read_model (workspace_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)',
 );
 insertMember.run(MAIN_WORKSPACE_ID, 'owner', 'Owner', AT);
 insertMember.run(MAIN_WORKSPACE_ID, 'user02', 'Commenter', AT);
-insertMember.run(MAIN_WORKSPACE_ID, 'boss', 'Commenter', AT);
+insertMember.run(MAIN_WORKSPACE_ID, 'user03', 'Commenter', AT);
+insertMember.run(MAIN_WORKSPACE_ID, 'user04', 'Commenter', AT);
+insertMember.run(MAIN_WORKSPACE_ID, 'user05', 'Commenter', AT);
+insertMember.run(MAIN_WORKSPACE_ID, 'boss', 'Admin', AT);
 
 function seedTask(taskId: string, status = 'Todo', title = `[討論] ${taskId}`): void {
   db.prepare(
@@ -42,10 +48,10 @@ function seedTask(taskId: string, status = 'Todo', title = `[討論] ${taskId}`)
   ).run(taskId, MAIN_WORKSPACE_ID, title, status, 'Medium', 1);
 }
 
-function addComment(taskId: string, commentId: string, userId: string, content: string): void {
+function addComment(taskId: string, commentId: string, userId: string, content: string, createdAt = AT): void {
   db.prepare(
     'INSERT INTO comments (comment_id, task_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(commentId, taskId, userId, content, AT);
+  ).run(commentId, taskId, userId, content, createdAt);
 }
 
 // 討論的收尾前置：owner 留過完整的 OWNER想法；走 implement 時還要老闆（user09）的【同意】。
@@ -58,7 +64,7 @@ function seedDiscussion(taskId: string, thoughtContent = OWNER_THOUGHT, bossAgre
   return thoughtId;
 }
 
-// ── 核心變更：沒有等待期，留完想法就能立刻收尾 ──────────────────────
+// ── 已過固定期限的既有討論可收尾 ────────────────────────────────────
 const implementThought = seedDiscussion('task-implement');
 addComment('task-implement', 'task-implement-decision', 'owner', '【結論】\n採用此方向。');
 addComment('task-implement', 'task-implement-handoff', 'owner', '【實作任務】工作區：Task Tracker｜TASK：加入主工作區收尾守門');
@@ -75,7 +81,88 @@ assert.deepStrictEqual(
     implementationTaskName: '加入主工作區收尾守門',
     implementationTasks: [{ workspaceName: 'Task Tracker', taskName: '加入主工作區收尾守門' }],
   },
-  '留完想法與結論即可收尾，不需要等待任何期限',
+  'OWNER想法已超過固定期限時可依完整結論收尾',
+);
+
+// ── 固定兩天期限或四票（含 user09）是三種 outcome 共用的後端閘門 ─────
+const BEFORE_DEADLINE = new Date('2026-07-15T08:00:00.000Z');
+const AFTER_DEADLINE = new Date('2026-07-16T08:00:00.000Z');
+
+function addDecision(taskId: string, outcome: 'implement' | 'no_implementation' | 'no_consensus'): void {
+  if (outcome === 'implement') {
+    addComment(taskId, `${taskId}-decision`, 'owner', '【結論】\n採用。');
+    addComment(taskId, `${taskId}-handoff`, 'owner', '【實作任務】工作區：Task Tracker｜TASK：驗證收尾 gate');
+    return;
+  }
+  if (outcome === 'no_implementation') {
+    addComment(taskId, `${taskId}-decision`, 'owner', '【結論：不實作】\n先不做。');
+    return;
+  }
+  addComment(taskId, `${taskId}-decision`, 'owner', `【未達共識】
+尚未解決的分歧：意見不同
+缺少的確認或資訊：缺少資料
+下次重新思考前的建議：補齊資料`);
+}
+
+for (const outcome of ['implement', 'no_implementation', 'no_consensus'] as const) {
+  const taskId = `task-${outcome}-before-deadline`;
+  seedDiscussion(taskId);
+  addDecision(taskId, outcome);
+  assert.throws(
+    () => resolveMainDiscussionConclusion(taskId, 'owner', db, BEFORE_DEADLINE),
+    { name: 'CommandError', message: /尚未達成四位不同成員的「【同意】」/ },
+    `未滿兩天且同意票不足時，${outcome} 不可收尾`,
+  );
+}
+
+for (const outcome of ['implement', 'no_implementation', 'no_consensus'] as const) {
+  const taskId = `task-${outcome}-after-deadline`;
+  seedDiscussion(taskId, OWNER_THOUGHT, false);
+  addDecision(taskId, outcome);
+  assert.strictEqual(
+    resolveMainDiscussionConclusion(taskId, 'owner', db, AFTER_DEADLINE).outcome,
+    outcome,
+    `剛滿兩天時，${outcome} 可依既有完整證據收尾`,
+  );
+}
+
+const consensusThought = seedDiscussion('task-consensus-before-deadline', OWNER_THOUGHT, false);
+for (const userId of ['user02', 'user03', 'user04', 'boss']) {
+  addComment('task-consensus-before-deadline', `task-consensus-before-deadline-${userId}`, userId, `${AGREE_MARKER}\n同意。`);
+}
+addDecision('task-consensus-before-deadline', 'no_implementation');
+assert.strictEqual(
+  resolveMainDiscussionConclusion('task-consensus-before-deadline', 'owner', db, BEFORE_DEADLINE).ownerThoughtCommentId,
+  consensusThought,
+  '未滿兩天時，四位不同成員同意且含 user09 可收尾',
+);
+
+seedDiscussion('task-duplicate-votes-before-deadline', OWNER_THOUGHT, false);
+for (const [index, userId] of ['user02', 'user02', 'user03', 'boss'].entries()) {
+  addComment('task-duplicate-votes-before-deadline', `task-duplicate-votes-before-deadline-${index}`, userId, `${AGREE_MARKER}\n同意。`);
+}
+addDecision('task-duplicate-votes-before-deadline', 'no_implementation');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-duplicate-votes-before-deadline', 'owner', db, BEFORE_DEADLINE),
+  { name: 'CommandError', message: /尚未達成四位不同成員的「【同意】」/ },
+  '同一人重複留言不得灌票',
+);
+
+seedDiscussion('task-renewed-thought-before-deadline', OWNER_THOUGHT, false);
+for (const userId of ['user02', 'user03', 'user04', 'boss']) {
+  addComment('task-renewed-thought-before-deadline', `task-renewed-thought-before-deadline-old-${userId}`, userId, `${AGREE_MARKER}\n同意。`);
+}
+addComment('task-renewed-thought-before-deadline', 'task-renewed-thought-before-deadline-new-thought', 'owner', OWNER_THOUGHT);
+addDecision('task-renewed-thought-before-deadline', 'no_implementation');
+assert.throws(
+  () => resolveMainDiscussionConclusion('task-renewed-thought-before-deadline', 'owner', db, BEFORE_DEADLINE),
+  { name: 'CommandError', message: /尚未達成四位不同成員的「【同意】」/ },
+  '新一輪 OWNER想法不得沿用舊輪同意票',
+);
+assert.strictEqual(
+  resolveMainDiscussionConclusion('task-renewed-thought-before-deadline', 'owner', db, AFTER_DEADLINE).ownerThoughtCommentId,
+  'task-renewed-thought-before-deadline-new-thought',
+  '固定期限到達後不受票數影響，且仍以最新完整 OWNER想法為準',
 );
 
 // ── 三種 outcome ────────────────────────────────────────────────────
@@ -181,47 +268,17 @@ assert.throws(
   '實作結論 marker 錯誤時應回傳可直接修正的格式',
 );
 
-// ── 老闆同意票：implement 專屬的人工授權閘門 ──────────────────────────
-// 2026-08-03 實測：61 次收尾中老闆一票都沒投過，靠 owner prompt 自律等於沒有閘門，
-// 所以這一票（且只有這一票）升級成 validator 硬擋；「至少 4 位同意」仍是純 prompt 規則。
-seedDiscussion('task-boss-silent', OWNER_THOUGHT, false);
-addComment('task-boss-silent', 'task-boss-silent-decision', 'owner', '【結論】\n採用此方向。');
-addComment('task-boss-silent', 'task-boss-silent-handoff', 'owner', '【實作任務】工作區：Task Tracker｜TASK：某項實作');
+// 四票裡缺 user09 不得提早收尾；user09 的【疑慮】也不計為同意。
+seedDiscussion('task-missing-boss-before-deadline', OWNER_THOUGHT, false);
+for (const userId of ['user02', 'user03', 'user04', 'user05']) {
+  addComment('task-missing-boss-before-deadline', `task-missing-boss-before-deadline-${userId}`, userId, `${AGREE_MARKER}\n同意。`);
+}
+addComment('task-missing-boss-before-deadline', 'task-missing-boss-before-deadline-boss-concern', 'boss', '【疑慮】\n先別做。');
+addDecision('task-missing-boss-before-deadline', 'no_implementation');
 assert.throws(
-  () => resolveMainDiscussionConclusion('task-boss-silent', 'owner', db),
-  CommandError,
-  '老闆沒表態就不得走 implement，即使交接格式完全正確',
-);
-
-// 湊票數不能取代那一票：其他成員全部同意，老闆沉默，照樣擋。
-seedDiscussion('task-others-agree', OWNER_THOUGHT, false);
-addComment('task-others-agree', 'task-others-agree-vote', 'user02', `${AGREE_MARKER}\n我贊成。`);
-addComment('task-others-agree', 'task-others-agree-decision', 'owner', '【結論】\n採用此方向。');
-addComment('task-others-agree', 'task-others-agree-handoff', 'owner', '【實作任務】工作區：Task Tracker｜TASK：某項實作');
-assert.throws(
-  () => resolveMainDiscussionConclusion('task-others-agree', 'owner', db),
-  CommandError,
-  '這道閘門擋的是特定人，不是票數，成員同意不能替代',
-);
-
-// 老闆的【疑慮】不算同意。
-seedDiscussion('task-boss-concern', OWNER_THOUGHT, false);
-addComment('task-boss-concern', 'task-boss-concern-vote', 'boss', '【疑慮】\n先別做。');
-addComment('task-boss-concern', 'task-boss-concern-decision', 'owner', '【結論】\n採用此方向。');
-addComment('task-boss-concern', 'task-boss-concern-handoff', 'owner', '【實作任務】工作區：Task Tracker｜TASK：某項實作');
-assert.throws(
-  () => resolveMainDiscussionConclusion('task-boss-concern', 'owner', db),
-  CommandError,
-  '老闆表達疑慮不等於同意',
-);
-
-// 閘門只擋 implement：不實作與未達共識不受影響，否則老闆不表態就連收尾都做不了。
-seedDiscussion('task-boss-silent-no-impl', OWNER_THOUGHT, false);
-addComment('task-boss-silent-no-impl', 'task-boss-silent-no-impl-decision', 'owner', '【結論：不實作】\n先不做。');
-assert.strictEqual(
-  resolveMainDiscussionConclusion('task-boss-silent-no-impl', 'owner', db).outcome,
-  'no_implementation',
-  '老闆沉默時仍可走不實作，閘門不得擴大到其他 outcome',
+  () => resolveMainDiscussionConclusion('task-missing-boss-before-deadline', 'owner', db, BEFORE_DEADLINE),
+  { name: 'CommandError', message: /須含 user09@test\.local/ },
+  '未滿兩天時，四票缺少 user09 的【同意】仍不可收尾',
 );
 
 seedDiscussion('task-missing-handoff');

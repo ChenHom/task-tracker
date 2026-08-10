@@ -10,6 +10,7 @@ import {
   CONCLUSION_MARKER,
   handoffLine,
   MAIN_BOSS_EMAIL,
+  MAIN_DISCUSSION_WAIT_DAYS,
   MAIN_POLICY_TITLE,
   MAIN_WORKSPACE_ID,
   NO_CONSENSUS_FIELDS,
@@ -1907,13 +1908,15 @@ assert.ok(
     'owner prompt 不得要求 validator 不認得的確認留言（owner 會空等到收尾逾時）',
   );
 
-  // user09 那一票是 validator 硬擋的，prompt 必須用同一組常數講同一件事，否則 owner 會一直
-  // 撞 400 重試。四人門檻仍是純 prompt 規則，不在 validator 數票。
+  // 固定期限與四人（含 user09）都是 validator 硬擋，prompt 必須用同一組常數講同一件事。
   assert.ok(mainPrompt.includes(AGREE_MARKER), 'owner prompt 必須列出成員表態 marker');
   assert.ok(
     mainPrompt.includes(MAIN_BOSS_EMAIL),
     'owner prompt 必須指名 validator 會擋的那位同意者，不能只寫 user09 字面',
   );
+  assert.ok(mainPrompt.includes(`固定起算 ${MAIN_DISCUSSION_WAIT_DAYS} 天`), 'owner prompt 必須說明伺服器固定期限');
+  assert.ok(mainPrompt.includes('4 位不同成員'), 'owner prompt 必須說明去重的四票門檻');
+  assert.ok(mainPrompt.includes('三種收尾共用的後端硬規則'), 'owner prompt 不得讓不實作或未達共識繞過 gate');
 
   // 發想額度由 sweep 端決定，prompt 只轉述結論；owner 不再自己數看板。
   const noQuota = ownerSweepPrompt(MAIN_WORKSPACE_ID, parseScenario(['node', 'run.ts']), [], '老闆', 20, false);
