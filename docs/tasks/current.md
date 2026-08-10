@@ -2,7 +2,7 @@
 
 > 對應 [design.md](../../design.md)，接續 [history.md](history.md) 已完成的 Phase 0-7。
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
-> 最後巡檢：2026-07-30；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 20-21 為目前最新交付。
+> 最後巡檢：2026-08-10；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 25 為目前最新交付。
 
 ---
 
@@ -309,7 +309,7 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 
 ## Phase 18 — 主工作區固定期限共識收斂 ✅（等待窗口已於 2026-07-29 移除）
 
-> **後續變更**：本 Phase 的「固定 2–7 天回覆窗口」已整套移除 —— `【全員回覆：N天】` marker、`main_discussion_windows` 資料表、期限守門與 payload 的窗口欄位皆不再存在。原因：21 天內只成功開出 2 個窗口，卻因 prompt／validator 對該 marker 的雙向漂移，讓主討論連續兩週開不出來（2026-07-23 `75e2033` 與 2026-07-29 `3157213` 各斷一次）。目前討論沒有等待期限，OWNER 判斷討論充分即可收尾；`【OWNER想法】` 六欄與三種結論 marker 保留。
+> **後續變更**：本 Phase 的「固定 2–7 天回覆窗口」已整套移除 —— `【全員回覆：N天】` marker、`main_discussion_windows` 資料表與 payload 的窗口欄位皆不再存在。原因：21 天內只成功開出 2 個窗口，卻因 prompt／validator 對該 marker 的雙向漂移，讓主討論連續兩週開不出來（2026-07-23 `75e2033` 與 2026-07-29 `3157213` 各斷一次）。自 2026-08-10 起，改由完整 `【OWNER想法】` 的 server `created_at` 固定起算兩天：期限前要四位不同成員 `【同意】` 且含 user09，期限到後才可不依同意票收尾；`【OWNER想法】` 六欄與三種結論 marker 保留。
 
 - [x] 主工作區維持 user01-06 與 user09 的固定成員政策；所有成員都可建立 Todo 討論，新增 task 描述預填 OWNER 評估方向範本
 - [x] OWNER 先留下結構化 `【OWNER想法】`，再以 `【全員回覆：N天】` 開啟固定 2–7 天窗口；半天為 12 小時、一天為連續 24 小時，期限不可延長或重開，超過 2 天需說明理由
@@ -405,3 +405,9 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 - [x] 每筆 discussion telemetry 只記錄 route、latency、tokens、outcome 與 error category，不記 prompt、query、回覆全文或 cookie
 - [x] `npx tsx sim/run.test.ts`、`npx tsx sim/notificationTelemetry.test.ts`、兩份 TypeScript check 與 `npm test` baseline 通過
 - [ ] service restart、timer 啟用與 live AI/readback（需另取得人工 live sweep 授權）
+
+## Phase 25 — 主工作區兩天／四票收尾 gate（2026-08-10）
+
+- [x] 完整 `【OWNER想法】` 的既有 server `created_at` 固定起算兩個連續 24 小時，不恢復使用者期限 marker、窗口表或期限 UI
+- [x] 期限前，`【結論】`、`【結論：不實作】`、`【未達共識】` 三種 outcome 共用四位不同成員 `【同意】` 且含 user09 的後端 gate；OWNER 與重複留言不計票，舊輪票不可沿用
+- [x] owner sweep prompt、主工作區政策、API、operations、設計與回歸測試同步；不改一般 workspace 狀態機

@@ -6,6 +6,7 @@ import {
   CONCLUSION_MARKER,
   handoffLine,
   MAIN_BOSS_EMAIL,
+  MAIN_DISCUSSION_WAIT_DAYS,
   MAIN_OWNER_EMAIL,
   MAIN_POLICY_TITLE,
   MAIN_WORKSPACE_ID,
@@ -15,6 +16,8 @@ import {
   REQUIRED_THOUGHT_FIELDS,
   THOUGHT_MARKER,
 } from './mainWorkspacePolicy';
+
+const MAIN_DISCUSSION_WAIT_MS = MAIN_DISCUSSION_WAIT_DAYS * 24 * 60 * 60 * 1000;
 
 function lineValue(content: string, label: string): string | null {
   const match = content.match(new RegExp(`^${label}：\\s*(.+?)\\s*$`, 'mu'));
@@ -75,7 +78,7 @@ function getMainOwnerId(database: DatabaseSync): string | null {
   return row?.id ?? null;
 }
 
-// 老闆不限定角色（他是 Commenter），只要是主工作區的 active 成員即可。
+// 老闆固定為主工作區 Admin，但查詢不硬綁角色，投票資格仍由 getEligibleVoterIds 統一判斷。
 function getMainBossId(database: DatabaseSync): string | null {
   const row = database.prepare(
     `SELECT u.id
@@ -84,6 +87,16 @@ function getMainBossId(database: DatabaseSync): string | null {
       WHERE u.email = ? AND m.workspace_id = ?`,
   ).get(MAIN_BOSS_EMAIL, MAIN_WORKSPACE_ID) as { id: string } | undefined;
   return row?.id ?? null;
+}
+
+function getEligibleVoterIds(database: DatabaseSync): ReadonlySet<string> {
+  return new Set(
+    (database.prepare(
+      `SELECT user_id
+         FROM workspace_members_read_model
+        WHERE workspace_id = ? AND role IN ('Commenter', 'Admin')`,
+    ).all(MAIN_WORKSPACE_ID) as { user_id: string }[]).map((row) => row.user_id),
+  );
 }
 
 function isMarker(content: string, marker: string): boolean {
@@ -127,6 +140,7 @@ export function resolveMainDiscussionConclusion(
   taskId: string,
   actorId: string,
   database = db,
+  now = new Date(),
 ): MainDiscussionConcludedPayload {
   const task = database.prepare(
     'SELECT workspace_id, title FROM tasks_read_model WHERE task_id = ?',
@@ -138,8 +152,6 @@ export function resolveMainDiscussionConclusion(
   const ownerId = getMainOwnerId(database);
   if (!ownerId || actorId !== ownerId) throw new CommandError('只有 user01 可以收尾主工作區討論');
 
-  // 不設等待期限：owner 認為討論夠了就能收尾。收尾證據是「完整的 OWNER想法」加上其後的
-  // 結論 marker，順序仍然固定，但沒有時間閘門。
   const comments = loadOrderedComments(taskId, database);
   const thought = comments
     .filter((comment) => comment.user_id === ownerId && isStructuredOwnerThought(comment.content))
@@ -154,6 +166,19 @@ export function resolveMainDiscussionConclusion(
   const latestDecision = decisions.at(-1);
   if (!latestDecision) {
     throw new CommandError(`尚未留下合法的主工作區結論；實作請依序留下「${CONCLUSION_MARKER}」→「${handoffLine('...', '...')}」`);
+  }
+
+  const deadlineAt = Date.parse(thought.created_at) + MAIN_DISCUSSION_WAIT_MS;
+  const eligibleVoterIds = getEligibleVoterIds(database);
+  const agreeingVoterIds = new Set(
+    laterComments
+      .filter((comment) => eligibleVoterIds.has(comment.user_id) && isMarker(comment.content, AGREE_MARKER))
+      .map((comment) => comment.user_id),
+  );
+  const bossId = getMainBossId(database);
+  const hasEarlyConsensus = bossId !== null && agreeingVoterIds.has(bossId) && agreeingVoterIds.size >= 4;
+  if (!Number.isFinite(deadlineAt) || (now.getTime() < deadlineAt && !hasEarlyConsensus)) {
+    throw new CommandError(`主工作區討論尚未達成四位不同成員的「${AGREE_MARKER}」（須含 ${MAIN_BOSS_EMAIL}），請等待固定 ${MAIN_DISCUSSION_WAIT_DAYS} 天期限到達`);
   }
 
   const base = {
@@ -172,16 +197,6 @@ export function resolveMainDiscussionConclusion(
       implementationTaskName: null,
       implementationTasks: [],
     };
-  }
-
-  // 實作結論的必要同意票：老闆（user09）必須在這一輪 OWNER想法之後留下「【同意】」。
-  // 「至少 4 位同意」仍是 owner prompt 的自律規則，不在這裡數票；這裡只擋人工授權那一票，
-  // 因為它被忽略就等於整個閘門不存在（2026-08-03 實測：61 次收尾中老闆 0 票）。
-  const bossId = getMainBossId(database);
-  const bossAgreed = bossId !== null
-    && laterComments.some((comment) => comment.user_id === bossId && isMarker(comment.content, AGREE_MARKER));
-  if (!bossAgreed) {
-    throw new CommandError(`實作結論需要 ${MAIN_BOSS_EMAIL} 的「${AGREE_MARKER}」；沒有就改用「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」`);
   }
 
   const handoffs = laterComments

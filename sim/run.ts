@@ -23,6 +23,7 @@ import {
   CONCLUSION_MARKER,
   handoffLine,
   MAIN_BOSS_EMAIL,
+  MAIN_DISCUSSION_WAIT_DAYS,
   MAIN_DISCUSSION_PREFIX,
   MAIN_OWNER_EMAIL,
   MAIN_POLICY_TITLE,
@@ -2514,11 +2515,10 @@ ${API_RULES(jar)}
 ${THOUGHT_MARKER}
 ${REQUIRED_THOUGHT_FIELDS.map((field) => `${field}：<${THOUGHT_FIELD_HINTS[field]}>`).join('\n')}
 4. 在上述六欄之外另起「來源」區塊，列出至少三條 repo 以外、可追溯的出處；「現況／問題」與「預期價值」必須呼應這些來源。六欄欄位值必須各自單行，來源清單不可當作欄位續行。
-5. 再獨立 POST 一則徵詢留言，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位 Commenter，OWNER 不 mention 自己。沒有等待期限，成員隨時可以回覆。
+5. 再獨立 POST 一則徵詢留言，手動列出 @user02 @user03 @user04 @user05 @user06 @user09 六位成員，OWNER 不 mention 自己。完整 OWNER想法一建立，伺服器即以留言時間固定起算 ${MAIN_DISCUSSION_WAIT_DAYS} 天；不要貼任何期限 marker，成員隨時可以回覆。
 6. 沒有新增實質意見、直接指示或流程節點變化時，不得 POST 留言：重複說明仍為 Todo、既有共識未變，全部視為無變化並保持靜默。只有新的實質 Commenter／建立者意見、老闆直接指示、初始 OWNER想法或徵詢留言、阻塞／範圍／決策變化，或收斂時才留言。
-7. 讀取留言並收集意見。系統不追蹤回覆或缺席，也不因未回覆阻擋收尾，不需要任何確認留言。
-8. 你判斷討論已充分時，先清點同意票：同意池是 user01、user02、user03、user04、user05、user09 六位，需至少 4 位，**且其中一位一定要是 ${MAIN_BOSS_EMAIL}（user09，老闆本人）**；OWNER 的「${CONCLUSION_MARKER}」算 1 票，所以必須在 user02、user03、user04、user05、user09 中找到至少 3 位以「${AGREE_MARKER}」表態、而且 user09 必須在其中，才可走「${CONCLUSION_MARKER}」並開實作 task；否則使用「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」。
-   ⚠️ user09 那一票是後端硬規則：沒有他在本輪「${THOUGHT_MARKER}」之後留下的「${AGREE_MARKER}」，收尾 API 會直接回 400，重試也不會過。不要嘗試、不要繞道，直接走不實作或未達共識。
+7. 讀取留言並收集意見。系統不追蹤回覆或缺席，也不提供期限 UI。
+8. 收尾只在兩種情況放行：本輪完整「${THOUGHT_MARKER}」起算的 ${MAIN_DISCUSSION_WAIT_DAYS} 天已到；或期限前已有 user02、user03、user04、user05、user06、user09 中 **4 位不同成員**以「${AGREE_MARKER}」表態，且一定包含 ${MAIN_BOSS_EMAIL}（user09）。OWNER 不計票，重複留言不加票，舊一輪想法前的票不可沿用。這是三種收尾共用的後端硬規則；條件不符時 API 會回 400，不得以不實作或未達共識繞過。
    不追逐、不列缺席者，只允許 Todo→Done。
    - 實作：OWNER「${CONCLUSION_MARKER}」→OWNER「${handoffLine('<工作區名稱>', '<TASK 名稱>')}」。不得使用「【結論：實作】」或「【結論：implement】」。
    - 不實作：OWNER「${NO_IMPLEMENTATION_MARKER}」。

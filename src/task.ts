@@ -234,7 +234,7 @@ export function changeTaskStatus(
     if (state.status !== 'Todo' || target !== 'Done') {
       throw new CommandError(`主工作區討論只允許 Todo → Done：${state.status} → ${target}`);
     }
-    const payload = resolveMainDiscussionConclusion(taskId, actorId, database);
+    const payload = resolveMainDiscussionConclusion(taskId, actorId, database, now);
     appendEvent('Task', taskId, version, 'task.main_discussion_concluded', payload, meta(actorId), database);
     return;
   }

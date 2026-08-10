@@ -76,9 +76,9 @@
 - `Archived` 是獨立封存流程，不是正常前進狀態。
 - Mutating API 走 command handler，不直接寫 `tasks_read_model`。
 
-主協作工作區是狀態機的明確例外：所有成員都可建立 Todo 討論，OWNER 先留下結構化 `【OWNER想法】`，成員隨時可以回覆。**討論沒有等待期限**：OWNER 判斷討論已充分時，即可依完整證據直接將 `Todo` 結束為 `Done`；主工作區不使用 `Doing` 或 `Review`，也不從 `Done` 回退。
+主協作工作區是狀態機的明確例外：所有成員都可建立 Todo 討論，OWNER 先留下結構化 `【OWNER想法】`，成員隨時可以回覆。完整想法的伺服器 `created_at` 固定起算兩天；期限前，只有該輪之後四位不同成員的 `【同意】` 且包含 user09 才能收尾，期限到後才可不依同意票直接依完整證據將 `Todo` 結束為 `Done`。主工作區不使用 `Doing` 或 `Review`，也不從 `Done` 回退。
 
-收尾證據分為三種：有共識且實作（`【結論】` + 至少一則 `【實作任務】工作區：...｜TASK：...`）、有共識但不實作（`【結論：不實作】`），或未達共識（`【未達共識】` 及分歧、缺少資訊、下次建議三欄）。三種都不需要任何確認留言。前端不新增期限、逾期、回覆或缺席 UI；後端以 comment 作為唯一守門來源。
+收尾證據分為三種：有共識且實作（`【結論】` + 至少一則 `【實作任務】工作區：...｜TASK：...`）、有共識但不實作（`【結論：不實作】`），或未達共識（`【未達共識】` 及分歧、缺少資訊、下次建議三欄）。固定期限／同意票 gate 對三種 outcome 共用，不需要確認留言或使用者提供期限 marker。前端不新增期限、逾期、回覆或缺席 UI；後端以 comment 作為唯一守門來源。
 
 ### Frontend
 
@@ -92,7 +92,7 @@
 - `user01@test.local` 是唯一 Owner；其餘內部測試帳號在主工作區同步為 `Commenter`。
 - 主工作區只放討論與交接；實作工作需建立在對應 target workspace / repo。
 
-主工作區討論不保存任何額外 metadata：收尾證據直接從 comment 串推導（最後一則 OWNER 完整想法，及其之後的結論與交接留言）。合法收尾追加 `task.main_discussion_concluded`，payload 保存 outcome、證據 comment id，以及實作時的工作區/TASK 名稱；該事件將 task read model 設為 `Done` 並清除 assignee。Comment 仍是既有 CRUD。
+主工作區討論不保存額外期限 metadata：收尾證據直接從 comment 串推導（最後一則 OWNER 完整想法及其 server `created_at`、其後的同意、結論與交接留言）。合法收尾追加 `task.main_discussion_concluded`，payload 保存 outcome、證據 comment id，以及實作時的工作區/TASK 名稱；該事件將 task read model 設為 `Done` 並清除 assignee。Comment 仍是既有 CRUD。
 
 ## Event-Sourced Aggregates
 

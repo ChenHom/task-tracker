@@ -9,6 +9,7 @@ import { renameWorkspace, registerWorkspaceProjections } from './workspace';
 import { changeTaskDescription, getTask, listTasks, registerTaskProjections } from './task';
 import {
   MAIN_BOSS_EMAIL,
+  MAIN_DISCUSSION_WAIT_DAYS,
   MAIN_OWNER_EMAIL,
   MAIN_POLICY_DESCRIPTION,
   MAIN_POLICY_TITLE,
@@ -119,11 +120,13 @@ const activePolicies = () =>
 assert.strictEqual(activePolicies().length, 1, '應只有一筆 active policy task');
 assert.strictEqual(activePolicies()[0].description, MAIN_POLICY_DESCRIPTION);
 assert.match(MAIN_POLICY_DESCRIPTION, /先留下 OWNER想法/);
-assert.match(MAIN_POLICY_DESCRIPTION, /不設等待期限/);
-assert.match(MAIN_POLICY_DESCRIPTION, /Todo 直接完成為 Done/);
+assert.match(MAIN_POLICY_DESCRIPTION, new RegExp(`固定 ${MAIN_DISCUSSION_WAIT_DAYS} 天期限`));
+assert.match(MAIN_POLICY_DESCRIPTION, /四位不同成員/);
+assert.match(MAIN_POLICY_DESCRIPTION, /user09/);
+assert.match(MAIN_POLICY_DESCRIPTION, /期限到後/);
 assert.match(MAIN_POLICY_DESCRIPTION, /工作區與 TASK 名稱/);
 assert.doesNotMatch(MAIN_POLICY_DESCRIPTION, /完整連結|Doing|Review|缺席名單|確認結論|雙方確認/);
-// 等待窗口已移除：政策不得再提到期限、截止或全員回覆 marker。
+// 不恢復舊的 user-supplied window marker 或回覆進度 UI。
 assert.doesNotMatch(MAIN_POLICY_DESCRIPTION, /全員回覆|截止|回覆期限|半天遞增/);
 
 const afterFirstSync = eventCount();

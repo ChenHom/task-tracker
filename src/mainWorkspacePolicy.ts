@@ -1,8 +1,9 @@
 export const MAIN_WORKSPACE_ID = '11a82028-fc50-466a-a723-e002032cd9a6';
 export const MAIN_WORKSPACE_NAME = '主協作工作區';
 export const MAIN_OWNER_EMAIL = 'user01@test.local';
-// 老闆（真人）。實作結論的必要同意票，validator 會擋，見 mainDiscussion.ts。
+// 老闆（真人）。主討論提早收尾的四票中必須有他，validator 會擋，見 mainDiscussion.ts。
 export const MAIN_BOSS_EMAIL = 'user09@test.local';
+export const MAIN_DISCUSSION_WAIT_DAYS = 2;
 export const MAIN_DISCUSSION_PREFIX = '[討論]';
 export const MAIN_POLICY_TITLE = '[規則] 主工作區協作與交接';
 
@@ -14,8 +15,7 @@ export const CONCLUSION_MARKER = '【結論】';
 export const NO_IMPLEMENTATION_MARKER = '【結論：不實作】';
 export const NO_CONSENSUS_MARKER = '【未達共識】';
 export const HANDOFF_MARKER = '【實作任務】';
-// 成員表態。原本只在 sim/run.ts，2026-08-03 起 validator 也要用（實作結論必須有
-// MAIN_BOSS_EMAIL 的 AGREE_MARKER），所以搬來這裡當雙方唯一來源。
+// 成員表態。validator 與 sim owner prompt 都用這組常數，避免兩邊的收尾協議漂移。
 export const AGREE_MARKER = '【同意】';
 export const CONCERN_MARKER = '【疑慮】';
 
@@ -53,7 +53,7 @@ export const handoffLine = (workspaceName: string, taskName: string): string =>
 export const MAIN_POLICY_DESCRIPTION = [
   '此處供目前七位成員提出工作問題、改善方向與優化想法；只討論，不直接實作。',
   '所有成員都可建立 Todo 討論與留言；user01 先留下 OWNER想法，成員隨時可以回覆。',
-  '不設等待期限；系統不追蹤回覆或缺席，也不因未回覆阻擋收尾。',
-  `user01 認為討論已充分時，依「${CONCLUSION_MARKER}」「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」將 Todo 直接完成為 Done，不需要任何確認留言。`,
+  `完整 OWNER想法建立固定 ${MAIN_DISCUSSION_WAIT_DAYS} 天期限；期限前須有四位不同成員留下「${AGREE_MARKER}」，且必含 user09，才可收尾。`,
+  `期限到後，user01 可依「${CONCLUSION_MARKER}」「${NO_IMPLEMENTATION_MARKER}」或「${NO_CONSENSUS_MARKER}」將 Todo 直接完成為 Done；系統不追蹤缺席或提供期限 UI。`,
   '需要實作時在對應工作區另建 TASK，原討論只記錄工作區與 TASK 名稱，不提供連結。',
 ].join('\n');
