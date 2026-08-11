@@ -1,9 +1,0 @@
-【task-tracker /api/notifications 分頁契約盤點＋隔離 smoke】
-- 契約（src/notification.ts, server.ts:604-623）：opt-in 分頁，帶 page 才回 items/page/pageSize/totalCount/totalPages/unreadTotal；不帶 page 走舊有未分頁 array（未讀優先排序）。offset-based：page(1起)+pageSize(預設15/上限100)，無 cursor/token、無 filter 綁定（僅 recipient=自己）。
-- 排序 tie-breaker：created_at DESC, notification_id DESC；刻意與未分頁版「未讀優先」不同，避免標記已讀把項目移到清單後段造成分頁跳動（程式碼註解已寫明）。
-- 頁尾/空頁：totalPages=max(1, ceil(totalCount/pageSize))；0 筆時 page=1 回空陣列；page 超過總頁數回 400 錯誤（page 超出範圍）；page/pageSize 非正整數回對應 400。
-- consumer（public/js/views/notifications.js）：單頁瀏覽＋60秒輪詢重抓「目前頁」，不做跨頁彙總/全量巡覽；pageSize 10/15 存 localStorage；loadPage() 遇 400 時若非第1頁會退回第1頁重試一次，否則保留舊畫面（loading/error 狀態有落地，非空白卡死）。
-- 併發新增/刪除邊界：offset 分頁沒有快照鎖定。已在 src/notification.test.ts 新增隔離驗證（in-memory DB，非正式資料）：翻頁期間插入新通知會把原 page1 尾端項目推入 page2 造成跨頁重複讀取；來源 task 刪除時 deleteNotificationsByTask 會清空對應通知、不留孤兒。此為已知 offset 分頁限制非 bug，目前 consumer 因「只看目前頁+輪詢」不受影響，但若未來有 consumer 要做跨頁全量巡覽需注意。
-- 驗證：npx tsc --noEmit 乾淨；npx tsx src/notification.test.ts 與 npx tsx src/notificationsFrontend.test.ts 皆 OK（新增的併發新增/刪除案例通過）。
-
-【CROSS-REPO】任務範圍要求「至少一條不同 repo 的實際列表 consumer」（如 job-risk-radar、ai-quota 等，見 task 描述提及的候選）。我的 session sandbox 僅允許存取 /home/hom/code/task-tracker/sim-work/user06 這個 repoRoot，讀取 /home/hom/services 等路徑會被工具權限直接擋下（非 code 問題），無法唯讀核對其他 repo 的分頁 consumer。task-tracker 自身的覆核與隔離 smoke 已如上完成；跨 repo 的第二條 consumer 需要能存取對應 repoRoot 的人或流程接手，或由 owner 決定是否先以 task-tracker 單一樣本驗收、待有跨 repo 存取權限時再補。

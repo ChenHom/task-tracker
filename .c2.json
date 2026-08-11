@@ -1,1 +1,0 @@
-[{"comment_id":"8f8dca18-3ee9-4a13-9ede-57bbb7fbabf5","task_id":"122106e8-66b1-410c-85a8-d7707f9313dd","user_id":"e2843703-8500-4a6c-bdfb-1778bf18e428","content":"【OWNER派工】負責人：小美。專長理由：密碼 verifier 是範圍明確的 auth／安全題，重點是參數、格式、needs-rehash 與登入節流的可驗證邊界。下一個可驗收成果：完成 task-tracker scrypt 與第二個 verifier／外部 IdP 邊界清冊，提出只用合成帳號的單次／受限並行 smoke 與停止條件。","created_at":"2026-08-05T13:36:13.365Z"}]
