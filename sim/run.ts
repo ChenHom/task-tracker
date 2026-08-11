@@ -141,7 +141,72 @@ export function hasReviewChanges(ahead: number, dirty: boolean): boolean {
 }
 
 const MEMBER_WORKTREE_NOISE_SEGMENTS = new Set(['node_modules', '.comment-payload.json']);
-const MEMBER_WORKTREE_ROOT_JSON_ALLOWLIST = new Set(['package.json', 'package-lock.json', 'tsconfig.json']);
+const MEMBER_WORKTREE_ROOT_FILE_ALLOWLIST = new Set([
+  '.eslintrc.json',
+  '.gitignore',
+  'AGENTS.md',
+  'CHANGELOG.md',
+  'LICENSE',
+  'README.md',
+  'SECURITY.md',
+  'design.md',
+  'package-lock.json',
+  'package.json',
+  'tsconfig.json',
+]);
+const MEMBER_WORKTREE_DEFAULT_TOP_LEVEL_ALLOWLIST = new Set([
+  '.githooks',
+  'deploy',
+  'docs',
+  'public',
+  'scripts',
+  'sim',
+  'src',
+]);
+
+function normalizeMemberWorktreePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+}
+
+function isMemberWorktreeDeliveryPath(path: string, allowedTopLevel = MEMBER_WORKTREE_DEFAULT_TOP_LEVEL_ALLOWLIST): boolean {
+  const isDirectoryStatus = /[\\/]$/.test(path);
+  const normalized = normalizeMemberWorktreePath(path);
+  if (normalized === '' || normalized.startsWith('/') || normalized.split('/').includes('..')) return false;
+  const [topLevel] = normalized.split('/');
+  if (isDirectoryStatus && !normalized.includes('/')) return allowedTopLevel.has(topLevel);
+  return normalized.includes('/') ? allowedTopLevel.has(topLevel) : MEMBER_WORKTREE_ROOT_FILE_ALLOWLIST.has(normalized);
+}
+
+export function findDisallowedMemberWorktreePaths(
+  paths: readonly string[],
+  allowedTopLevel = MEMBER_WORKTREE_DEFAULT_TOP_LEVEL_ALLOWLIST,
+): string[] {
+  return [...new Set(paths.flatMap((rawPath) => {
+    const normalized = normalizeMemberWorktreePath(rawPath);
+    return normalized !== '' && !isMemberWorktreeDeliveryPath(rawPath, allowedTopLevel) ? [normalized] : [];
+  }))].sort();
+}
+
+function memberWorktreeAllowedTopLevel(dir: string): Set<string> {
+  const allowed = new Set(MEMBER_WORKTREE_DEFAULT_TOP_LEVEL_ALLOWLIST);
+  try {
+    for (const path of git(['ls-tree', '-d', '--name-only', 'HEAD'], dir).split('\n').filter(Boolean)) allowed.add(path);
+  } catch {
+    // A repo without a readable HEAD keeps the conservative default allowlist.
+  }
+  return allowed;
+}
+
+function memberWorktreeDisallowedPaths(status: string, dir: string): string[] {
+  const statusAdded = status.split('\n')
+    .filter((entry) => entry.startsWith('?? ') || entry.startsWith('A ') || entry.startsWith(' A'))
+    .map(memberWorktreePorcelainPath)
+    .filter(Boolean);
+  const cachedAdded = git(['diff', '--cached', '--diff-filter=A', '--name-only'], dir).split('\n').filter(Boolean);
+  const allowedTopLevel = memberWorktreeAllowedTopLevel(dir);
+  return findDisallowedMemberWorktreePaths([...statusAdded, ...cachedAdded], allowedTopLevel)
+    .filter((path) => !isMemberWorktreeNoise(path));
+}
 
 function isMemberWorktreeNoise(path: string): boolean {
   return path.split(/[\\/]/).some((segment) => MEMBER_WORKTREE_NOISE_SEGMENTS.has(segment));
@@ -161,9 +226,9 @@ function isMemberWorktreeScratch(path: string): boolean {
 function isMemberWorktreeRootScratch(path: string): boolean {
   const normalized = path.replace(/[\\/]+$/, '');
   if (normalized === '' || normalized.split(/[\\/]/).length !== 1) return false;
-  if (normalized.startsWith('.')) return true;
-  // 根目錄 JSON readback 暫存檔一律視為 scratch，僅保留少數 repo 設定檔例外。
-  return normalized.endsWith('.json') && !MEMBER_WORKTREE_ROOT_JSON_ALLOWLIST.has(normalized);
+  if (MEMBER_WORKTREE_ROOT_FILE_ALLOWLIST.has(normalized)) return false;
+  // 根目錄隱藏檔與 JSON readback 暫存檔視為 scratch；其他未知根檔由 fail-closed path policy 擋下。
+  return normalized.startsWith('.') || normalized.endsWith('.json');
 }
 
 function isMemberWorktreeNoiseEntry(entry: string): boolean {
@@ -207,6 +272,16 @@ export function dirtyReviewChecks(tscPath: string, testPath: string): { tsc: Com
   };
 }
 
+export function disallowedReviewChecks(paths: string[], tscPath: string, testPath: string): { tsc: CommandCheck; test: CommandCheck } {
+  const message = `branch 含未允許的新檔案（${paths.join('、')}）；driver/Owner fail closed，不執行合併。\n`;
+  writeFileSync(tscPath, message);
+  writeFileSync(testPath, message);
+  return {
+    tsc: { status: 'fail', outputPath: tscPath },
+    test: { status: 'fail', outputPath: testPath },
+  };
+}
+
 export interface BranchReviewPacket {
   branch: string;
   memberName: string;
@@ -215,6 +290,7 @@ export interface BranchReviewPacket {
   dirty: boolean;
   commits: string[];
   changedFiles: string[];
+  disallowedFiles: string[];
   diffstat: string;
   tsc: CommandCheck;
   test: CommandCheck;
@@ -2027,8 +2103,9 @@ function ownerClosePrompt(wsId: string, tag: string, verified: BranchReviewPacke
   const packetByBranch = new Map(verified.map((packet) => [packet.branch, packet]));
   const map = RUN.members.map((m) => {
     const packet = packetByBranch.get(branch(m));
-    if (!packet || !hasReviewChanges(packet.ahead, packet.dirty)) return `- ${m.name} / ${branch(m)}: 無 commit`;
-    return `- ${m.name} / ${packet.branch}: tsc ${checkLabel(packet.tsc)}, test ${checkLabel(packet.test)}, ${packet.ahead} commits${packet.dirty ? ' + 未提交 diff' : ''}, ${packet.changedFiles.length} files changed, packet: ${packet.packetPath}`;
+    if (!packet || (!hasReviewChanges(packet.ahead, packet.dirty) && !packet.disallowedFiles.length)) return `- ${m.name} / ${branch(m)}: 無 commit`;
+    const blocked = packet.disallowedFiles.length ? ` + BLOCKED: ${packet.disallowedFiles.join('、')}` : '';
+    return `- ${m.name} / ${packet.branch}: tsc ${checkLabel(packet.tsc)}, test ${checkLabel(packet.test)}, ${packet.ahead} commits${packet.dirty ? ' + 未提交 diff' : ''}${blocked}, ${packet.changedFiles.length} files changed, packet: ${packet.packetPath}`;
   }).join('\n');
   const integrationStep = scenario.repoRoot === BRAIN_ROOT
     ? '3. 全部 merge 完成後，對「有被改動的子專案」各跑一次它自己的驗證（有 package.json+test script 就在該目錄 npm test；有 tsconfig 就 npx tsc --noEmit）做整合驗證；若失敗，git log 找出問題 merge、git reset --hard <該 merge 前> 退回它、在對應 task 留言退回原因 + PATCH {"status":"Doing"}'
@@ -2040,13 +2117,13 @@ ${map}
 ${API_RULES(jar)}
 本次流程（省時要點：信任上面 CI 預跑結果，不要逐 branch 重跑測試）：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks
-2. 對每個 status=Review 且 CI 顯示驗證皆 PASS 的 task，依其 branch 逐一 merge（一次一個）：
+2. 對每個 status=Review 且 CI 顯示驗證皆 PASS、且沒有 BLOCKED 檔案的 task，依其 branch 逐一 merge（一次一個）：
    a. git diff master...<branch> 快速看 code（審查重點，不用跑測試）
    b. git merge --no-ff <branch> -m "merge: <task 標題>"；⚠️ 絕對不要手動解衝突——你的 session 有硬時限，手動解衝突是上一場 owner 逾時被強制中止的死因。遇衝突一律：git merge --abort → task 留言衝突檔案清單＋請該成員 merge master → PATCH {"status":"Doing"} 退回 → 繼續合下一條乾淨的 branch
    c. task 留言「已合併進 master（附 merge commit hash）」→ PATCH {"status":"Done"}
 ${integrationStep}
 4. CI 顯示 SKIP（未附 tooling）的 branch：不可當成 PASS。人工審 diff、task 驗收證據與成員實際執行的檢查；證據足夠才可 merge，否則留言缺少的驗證並 PATCH {"status":"Doing"}
-5. CI 顯示 FAIL 的 branch：不要 merge，直接在 task 留言「具體」問題（引用檔案/行為，讓成員知道要修什麼）+ PATCH {"status":"Doing"} 退回——這題會進入重修
+5. CI 顯示 FAIL 或有 BLOCKED 檔案的 branch：不要 merge，直接在 task 留言「具體」問題（引用檔案/行為，讓成員知道要修什麼）+ PATCH {"status":"Doing"} 退回——這題會進入重修
 6. 還在 Todo/Doing 或無 assignee 的實作 task：依 eligible profile 與負載補上「【OWNER派工】」；沒有合適人選才留「[ESCALATE]」，不得交給 member 自行認領；[BUG]/[ESCALATE] task 另外 triage
 7. 輸出 sprint 總結（5 行內：合了幾件、退了幾件、學到什麼）
 （回退錨點 tag：${tag}，僅供你知道，不要動它）`;
@@ -2193,12 +2270,25 @@ export function commitMemberWork(m: Member, round: number, model: string): boole
   if (cached.split('\n').some((path) => path !== '' && isMemberWorktreeNoise(path))) {
     throw new Error('driver 拒絕提交 member worktree 噪音檔');
   }
+  const disallowed = memberWorktreeDisallowedPaths(status, wt(m));
+  if (disallowed.length) {
+    console.log(`[代commit] ${branch(m)} 拒絕未允許檔案：${disallowed.join('、')}`);
+    return false;
+  }
   git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m));
   const scratchPaths = memberWorktreeScratchPaths(status);
   if (scratchPaths.length) git(['reset', '--', ...scratchPaths], wt(m));
   const staged = git(['diff', '--cached', '--name-only'], wt(m));
   if (staged.split('\n').some((path) => path !== '' && isMemberWorktreeNoise(path))) {
     throw new Error('driver 拒絕提交 member worktree 噪音檔');
+  }
+  const stagedAdded = git(['diff', '--cached', '--diff-filter=A', '--name-only'], wt(m)).split('\n').filter(Boolean);
+  const stagedDisallowed = findDisallowedMemberWorktreePaths(stagedAdded, memberWorktreeAllowedTopLevel(wt(m)))
+    .filter((path) => !isMemberWorktreeNoise(path));
+  if (stagedDisallowed.length) {
+    console.log(`[代commit] ${branch(m)} 拒絕未允許檔案：${stagedDisallowed.join('、')}`);
+    git(['reset', '--', ...stagedDisallowed], wt(m));
+    return false;
   }
   if (!staged) return false;
   git(['diff', '--cached', '--check'], wt(m));
@@ -2225,6 +2315,10 @@ export function formatReviewPacket(packet: BranchReviewPacket): string {
     '## Changed Files',
     ...packet.changedFiles.map((file) => `- ${file}`),
     ...(packet.changedFiles.length ? [] : ['- (none)']),
+    '',
+    '## Disallowed Files',
+    ...packet.disallowedFiles.map((file) => `- ${file}`),
+    ...(packet.disallowedFiles.length ? [] : ['- (none)']),
     '',
     '## Diffstat',
     '```text',
@@ -2307,7 +2401,7 @@ async function verifyBranches(runDir: string, scenario: Scenario): Promise<Branc
     const testPath = join(runDir, 'review-packets', `${packetBase}-test.txt`);
     const base = (ahead: number, dirty = false): BranchReviewPacket => ({
       branch: branch(m), memberName: m.name, memberEmail: m.email, ahead, dirty,
-      commits: [], changedFiles: [], diffstat: '',
+      commits: [], changedFiles: [], disallowedFiles: [], diffstat: '',
       tsc: { status: 'skip', outputPath: tscPath }, test: { status: 'skip', outputPath: testPath }, packetPath,
     });
     if (!existsSync(wt(m))) return base(0);
@@ -2315,7 +2409,13 @@ async function verifyBranches(runDir: string, scenario: Scenario): Promise<Branc
     const ahead = Number(git(['rev-list', '--count', `master..${branch(m)}`]));
     const dirty = memberWorktreeDirty(wt(m));
     const packet = base(ahead, dirty);
-    if (!hasReviewChanges(ahead, dirty)) return packet;
+    const allowedTopLevel = memberWorktreeAllowedTopLevel(wt(m));
+    const committedAddedFiles = ahead
+      ? git(['diff', '--name-only', '--diff-filter=A', `master...${branch(m)}`]).split('\n').filter(Boolean)
+      : [];
+    const workingDisallowedFiles = memberWorktreeDisallowedPaths(git(['status', '--porcelain'], wt(m)), wt(m));
+    packet.disallowedFiles = findDisallowedMemberWorktreePaths([...committedAddedFiles, ...workingDisallowedFiles], allowedTopLevel);
+    if (!hasReviewChanges(ahead, dirty) && !packet.disallowedFiles.length) return packet;
     if (ahead) packet.commits = git(['log', '--oneline', `master..${branch(m)}`]).split('\n').filter(Boolean);
     const committedFiles = ahead ? git(['diff', '--name-only', `master...${branch(m)}`]).split('\n').filter(Boolean) : [];
     const workingFiles = dirty ? [
@@ -2329,7 +2429,11 @@ async function verifyBranches(runDir: string, scenario: Scenario): Promise<Branc
       dirty ? git(['diff', '--stat'], wt(m)) : '',
       dirty ? git(['diff', '--cached', '--stat'], wt(m)) : '',
     ].filter(Boolean).join('\n');
-    if (dirty) {
+    if (packet.disallowedFiles.length) {
+      const checks = disallowedReviewChecks(packet.disallowedFiles, tscPath, testPath);
+      packet.tsc = checks.tsc;
+      packet.test = checks.test;
+    } else if (dirty) {
       const checks = dirtyReviewChecks(tscPath, testPath);
       packet.tsc = checks.tsc;
       packet.test = checks.test;

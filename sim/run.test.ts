@@ -44,7 +44,9 @@ import {
   commitIfSessionSucceeded,
   commitMemberWork,
   createRunDir,
+  disallowedReviewChecks,
   dirtyReviewChecks,
+  findDisallowedMemberWorktreePaths,
   ensureCanonicalWorkspaceCandidates,
   ensureFixedSweepWorkspaceCandidates,
   ensureMainWorkspaceCandidate,
@@ -1107,6 +1109,7 @@ const packetMarkdown = formatReviewPacket({
   dirty: true,
   commits: ['abc123 feat: example'],
   changedFiles: ['src/auth.ts'],
+  disallowedFiles: ['.c1.json'],
   diffstat: ' src/auth.ts | 2 ++',
   tsc: { status: 'pass', outputPath: '/tmp/tsc.txt' },
   test: { status: 'skip', outputPath: '/tmp/test.txt' },
@@ -1117,6 +1120,59 @@ assert.ok(packetMarkdown.includes('tsc: PASS'));
 assert.ok(packetMarkdown.includes('test: SKIP'));
 assert.ok(packetMarkdown.includes('dirty: yes'));
 assert.ok(packetMarkdown.includes('src/auth.ts'));
+assert.ok(packetMarkdown.includes('Disallowed Files'));
+assert.ok(packetMarkdown.includes('.c1.json'));
+
+assert.deepStrictEqual(
+  findDisallowedMemberWorktreePaths(['src/auth.ts', 'public/app.js', 'docs/ops.md']),
+  [],
+  '產品目錄內的新檔案應可交付',
+);
+assert.deepStrictEqual(
+  findDisallowedMemberWorktreePaths(['.gitignore', '.eslintrc.json', 'README.md', 'package.json']),
+  [],
+  '明確列入 allowlist 的根目錄設定/文件仍可交付',
+);
+assert.deepStrictEqual(
+  findDisallowedMemberWorktreePaths(['.c1.json', 'comment_body.txt', 'make_payload.js', 'make_payload.py']),
+  ['.c1.json', 'comment_body.txt', 'make_payload.js', 'make_payload.py'],
+  '未列入 allowlist 的根目錄產物必須被拒絕',
+);
+
+// driver 代 commit：產品目錄內的新檔案仍可正常交付。
+{
+  const workRoot = join(ROOT, 'sim-work');
+  mkdirSync(workRoot, { recursive: true });
+  const repo = mkdtempSync(join(workRoot, 'member-commit-product-paths-'));
+  const user = basename(repo);
+  const g = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+  const member: Member = {
+    email: `${user}@test.local`, name: 't', user, runner: 'codex', model: 'test-model', profile: 'test',
+  };
+  try {
+    g(['init', '-b', `sim/${user}`]);
+    g(['config', 'user.email', 't@t']);
+    g(['config', 'user.name', 't']);
+    writeFileSync(join(repo, 'README.md'), '# base\n');
+    g(['add', '.']);
+    g(['commit', '-m', 'base']);
+    mkdirSync(join(repo, 'src'));
+    mkdirSync(join(repo, 'public'));
+    mkdirSync(join(repo, 'docs'));
+    writeFileSync(join(repo, 'src/new.ts'), 'export const value = 1;\n');
+    writeFileSync(join(repo, 'public/new.js'), 'console.log(1);\n');
+    writeFileSync(join(repo, 'docs/new.md'), '# notes\n');
+    assert.strictEqual(commitMemberWork(member, 1, 'test-model'), true);
+    assert.deepStrictEqual(
+      g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
+      ['docs/new.md', 'public/new.js', 'src/new.ts'],
+      'src/public/docs 新檔案應可由 driver 代 commit',
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(workRoot, { recursive: true, force: true });
+  }
+}
 
 assert.strictEqual(allChecksPass(
   { status: 'pass', outputPath: '/tmp/tsc.txt' },
@@ -1190,6 +1246,11 @@ assert.strictEqual(allChecksPass(dirtyChecks.tsc, dirtyChecks.test), false);
 assert.strictEqual(dirtyChecks.tsc.status, 'fail');
 assert.match(readFileSync(dirtyTsc, 'utf8'), /不可視為工作佚失/);
 
+const blockedChecks = disallowedReviewChecks(['.c1.json'], join(dirtyRoot, 'blocked-tsc.txt'), join(dirtyRoot, 'blocked-test.txt'));
+assert.strictEqual(blockedChecks.tsc.status, 'fail');
+assert.strictEqual(blockedChecks.test.status, 'fail');
+assert.match(readFileSync(blockedChecks.tsc.outputPath, 'utf8'), /fail closed/);
+
 const reportMarkdown = formatReportMarkdown({
   runId: 'sim-run-test',
   scenarioKey: 'technical-debt',
@@ -1207,6 +1268,7 @@ const reportMarkdown = formatReportMarkdown({
     dirty: false,
     commits: ['abc123 feat: example'],
     changedFiles: ['src/auth.ts'],
+    disallowedFiles: [],
     diffstat: ' src/auth.ts | 2 ++',
     tsc: { status: 'pass', outputPath: '/tmp/tsc.txt' },
     test: { status: 'skip', outputPath: '/tmp/test.txt' },
@@ -1538,7 +1600,11 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
     g(['reset', '--hard']);
     writeFileSync(join(repo, '.filter_tasks.py'), 'print("scratch")\n');
     writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
-    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.strictEqual(
+      commitMemberWork(member, 2, 'test-model'),
+      false,
+      '正常變更與根目錄 scratch 同時存在時，driver 必須整批拒絕提交',
+    );
     assert.deepStrictEqual(
       g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
       ['app.ts'],
@@ -1589,7 +1655,11 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
     writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
     writeFileSync(join(repo, '.filter_tasks.py'), 'print("scratch")\n');
     g(['add', '.filter_tasks.py']);
-    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.strictEqual(
+      commitMemberWork(member, 2, 'test-model'),
+      false,
+      '預先 stage 的根目錄 scratch 存在時，driver 必須整批拒絕提交',
+    );
     assert.deepStrictEqual(
       g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
       ['app.ts'],
@@ -1639,7 +1709,11 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
     g(['reset', '--hard']);
     writeFileSync(join(repo, 'app.ts'), 'export const version = 2;\n');
     writeFileSync(join(repo, 'api_readback.json'), '{"content":"draft"}\n');
-    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.strictEqual(
+      commitMemberWork(member, 2, 'test-model'),
+      false,
+      '正常變更與根目錄 JSON scratch 同時存在時，driver 必須整批拒絕提交',
+    );
     assert.deepStrictEqual(
       g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
       ['app.ts'],
@@ -1693,7 +1767,11 @@ assert.throws(() => validateGitRootFacts('/tmp/repo', '/tmp/repo', 'feature/test
     writeFileSync(join(repo, 'comments_d94_now2.json'), '[]\n');
     writeFileSync(join(repo, 'task_d94_now.json'), '{"task_id":"d94"}\n');
     writeFileSync(join(repo, 'tasks_now7.json'), '[]\n');
-    assert.strictEqual(commitMemberWork(member, 2, 'test-model'), true);
+    assert.strictEqual(
+      commitMemberWork(member, 2, 'test-model'),
+      false,
+      '正常變更與 root readback scratch 同時存在時，driver 必須整批拒絕提交',
+    );
     assert.deepStrictEqual(
       g(['show', '--format=', '--name-only', 'HEAD']).split('\n').filter(Boolean),
       ['app.ts'],

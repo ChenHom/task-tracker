@@ -336,6 +336,8 @@ The driver holds `sim-logs/.run.lock` for the complete run. Manual runs and owne
 
 Member sessions edit and verify files but do not commit. After a successful, non-timeout session, the driver verifies the expected Git top-level/worktree branch, stages the isolated worktree, runs `git diff --cached --check`, and commits. A failed or timed-out session remains uncommitted; its dirty worktree is reported as CI `FAIL` so the Owner returns the task to `Doing` instead of treating the work as lost.
 
+The driver is fail-closed at this boundary: product files under tracked top-level directories (for example `src/`, `public/`, `docs/`, `sim/`, and `deploy/`) and the explicit root configuration/docs allowlist may be delivered. A newly added, unallowlisted root-level file (including JSON/TXT/JS/PY readback or scratch files) is not staged or committed. Owner review packets list such paths as `BLOCKED` and mark CI `FAIL`, so Owner must not merge them.
+
 ### Review results
 
 Review statuses are:
