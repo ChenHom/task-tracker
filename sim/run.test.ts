@@ -64,6 +64,8 @@ import {
   memberWorktreePathspecs,
   MAIN_OWNER_TOOLS,
   MEMBER_TOOLS,
+  INTERNAL_MEMBER_PROFILE,
+  INTERNAL_OWNER_PROFILE,
   notificationGateEnabled,
   describeError,
   isStaleSocketError,
@@ -100,6 +102,7 @@ import {
   type NotificationSweepMember,
   type ManagedRosterMember,
   runSafeDiscussionSession,
+  runInternalDiscussionSession,
   safeDiscussionEnvironment,
   SAFE_DISCUSSION_TOOLS,
 } from './run';
@@ -300,6 +303,13 @@ const securityPacket = buildDiscussionPacket({
 assert.ok(securityPacket.prompt.length <= 16_000);
 assert.ok(securityPacket.prompt.includes('UNTRUSTED_TASK_DATA'));
 assert.ok(!securityPacket.prompt.includes('super-secret'));
+const internalPacket = buildDiscussionPacket({
+  actorName: '小美', actorProfile: '安全與 auth',
+  taskTitle: '內部能力邊界', taskDescription: '可查 task-tracker API 與 repo 內容',
+  sourceComment: '請在 repo 內驗證', contextComments: [], mode: 'internal',
+});
+assert.ok(internalPacket.prompt.includes('task-tracker API'));
+assert.ok(!internalPacket.prompt.includes('不可使用 shell、檔案、Git、task-tracker API'));
 assert.deepStrictEqual(
   validateDiscussionReply('【同意】理由足夠具體，公開來源與目前風險一致。', gateActor),
   { ok: true, content: '【同意】理由足夠具體，公開來源與目前風險一致。' },
@@ -460,10 +470,14 @@ async function runNotificationGateTests(): Promise<void> {
   let mainDiscussionRuns = 0;
   const mainResult = await processNotificationGate({
     actor: gateActor, cookie: 'session=test', request: main.request,
-    runDiscussion: async ({ prompt, notificationId }) => {
+    discussionMode: 'internal',
+    runDiscussion: async ({ prompt, notificationId, mode }, cookie) => {
       mainDiscussionRuns++;
       assert.strictEqual(notificationId, 'n-main');
+      assert.strictEqual(cookie, 'session=test');
+      assert.strictEqual(mode, 'internal');
       assert.ok(prompt.includes('UNTRUSTED_TASK_DATA'));
+      assert.ok(prompt.includes('task-tracker API'));
       return { output: '【同意】理由具體，公開來源與目前討論的風險描述一致。' };
     },
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
@@ -987,6 +1001,15 @@ assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--settings')
 assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--setting-sources') + 1], '');
 assert.ok(safeInvocation.args.includes('--no-session-persistence'), 'safe discussion 不應把內容寫入持久 session');
 assert.ok(!safeInvocation.args.some((arg) => /curl|Bash|Read|Write|Git/u.test(arg)));
+assert.ok(INTERNAL_OWNER_PROFILE.tools.includes('Bash(curl:*)'));
+assert.ok(INTERNAL_MEMBER_PROFILE.tools.includes('Bash(git status:*)'));
+const internalRunnerInvocation = buildRunnerInvocation(
+  { runner: 'claude', model: 'claude-sonnet-5' },
+  'internal prompt cookie jar：/tmp/actor-cookie.jar',
+  { cwd: ROOT, logFile: '/tmp/internal.log', tools: INTERNAL_OWNER_PROFILE.tools, captureLastMessage: false },
+);
+assert.ok(!internalRunnerInvocation.args.includes('--no-session-persistence'), 'internal route 不應沿用 safe route 的 no-session-persistence');
+assert.ok(internalRunnerInvocation.args.includes(INTERNAL_OWNER_PROFILE.tools));
 assert.deepStrictEqual(
   safeDiscussionEnvironment({ PATH: '/bin', HOME: '/home/test', PASSWORD: 'secret', SESSION_COOKIE: 'cookie', CUSTOM: 'do-not-pass' }),
   { PATH: '/bin', HOME: '/home/test' },
@@ -1002,9 +1025,11 @@ assert.ok(!teamSweepSource.includes('.jar-notification-'), 'team notification pr
 assert.ok(teamSweepSource.includes('deploymentRevision'), 'team notification telemetry 必須帶部署版本 readback');
 assert.ok(!source.includes('.jar-owner-notification'), 'owner notification preflight 也不得建立 cookie jar');
 const memberGateSource = source.slice(source.indexOf('const memberSession = async'), source.indexOf('// 一輪：成員並行'));
-assert.ok(memberGateSource.includes('runMemberDiscussionSession(m, discussion)'), '完整 sim member gate 必須接回 safe discussion');
+assert.ok(memberGateSource.includes('runInternalMemberDiscussionSession(m, discussion, cookie)'), '完整 sim member gate 必須接回 Team internal discussion');
+assert.ok(memberGateSource.includes("discussionMode: 'internal'"), '完整 sim member gate 必須明示 internal discussion mode');
 const ownerGateSource = source.slice(source.indexOf("const ownerOpen = await runActorSessionWithNotificationGate"), source.indexOf('if (SMOKE)'));
-assert.ok(!ownerGateSource.includes('runMemberDiscussionSession'), 'owner gate 不得使用 member discussion runner');
+assert.ok(ownerGateSource.includes('runInternalOwnerDiscussionSession'), 'owner gate 必須接回 Owner internal discussion runner');
+assert.ok(ownerGateSource.includes("discussionMode: 'internal'"), 'owner gate 必須明示 internal discussion mode');
 const user06 = members.find((member) => member.email === 'user06@test.local')!;
 const user02 = members.find((member) => member.email === 'user02@test.local')!;
 assert.deepStrictEqual(
@@ -1776,6 +1801,37 @@ async function runAsyncPolicyTests(): Promise<void> {
     () => runSafeDiscussionSession({ route: { runner: 'codex', model: 'gpt-test' }, prompt: 'x', sourceTexts: [] }),
     /safe discussion route 只允許 Claude/,
   );
+  let internalInvocation: {
+    runner: string;
+    model: string;
+    prompt: string;
+    options: { cwd: string; tools: string; captureContent?: boolean; safeDiscussion?: boolean };
+  } | undefined;
+  let internalJarPath = '';
+  const internalResult = await runInternalDiscussionSession({
+    profile: { ...INTERNAL_OWNER_PROFILE, repoRoot: ROOT },
+    cwd: ROOT,
+    cookie: 'session=internal-secret-cookie',
+    prompt: 'internal discussion prompt',
+    sourceTexts: ['bounded task context'],
+    runSession: async (_label, runner, model, prompt, options) => {
+      internalInvocation = { runner, model, prompt, options };
+      const jarMatch = prompt.match(/cookie jar：([^\n]+)/u);
+      assert.ok(jarMatch, 'internal prompt 必須只注入 cookie jar 路徑');
+      internalJarPath = jarMatch![1];
+      assert.ok(existsSync(jarMatch![1]), 'internal session 執行期間 cookie jar 必須存在');
+      assert.ok(!prompt.includes('internal-secret-cookie'), 'internal prompt 不得包含 raw cookie');
+      return { errored: false, timedOut: false, output: '【同意】內部能力邊界已明確，driver 可驗證後回寫。' };
+    },
+  });
+  assert.strictEqual(internalResult.output, '【同意】內部能力邊界已明確，driver 可驗證後回寫。');
+  assert.strictEqual(internalInvocation?.runner, 'claude');
+  assert.strictEqual(internalInvocation?.options.cwd, ROOT);
+  assert.strictEqual(internalInvocation?.options.tools, INTERNAL_OWNER_PROFILE.tools);
+  assert.strictEqual(internalInvocation?.options.captureContent, false);
+  assert.strictEqual(internalInvocation?.options.safeDiscussion, undefined);
+  assert.ok(!internalInvocation?.prompt.includes('internal-secret-cookie'));
+  assert.ok(!existsSync(internalJarPath), 'internal session 結束後 cookie jar 必須清除');
   let calls = 0;
   const success = await runMemberSession(
     async () => ({ timedOut: false, errored: false }),

@@ -2,7 +2,7 @@
 
 日期：2026-08-11（Asia/Taipei）
 
-狀態：討論紀錄，尚未授權實作。
+狀態：討論紀錄；文件已於 `c4b3fae` 提交，後續實作已完成並通過驗證。
 
 ## 目前確認的問題根因
 
@@ -95,3 +95,16 @@ Owner 與 Team 的 task-tracker internal route 都需要能操作：
 - `docs/superpowers/specs/2026-08-09-safe-main-discussion-member-replies-design.md`
 - `docs/superpowers/plans/2026-08-09-safe-main-discussion-member-replies.md`
 - 根因相關 commit：`4aa6e56`、`c853a7b`
+
+## 實作結果（2026-08-11）
+
+已依本紀錄採用「safe research route」與「internal execution route」分離的方式：
+
+- `safeDiscussion` 維持 `WebSearch,WebFetch`、暫存工作目錄、egress policy 與私有目的地阻擋；沒有 cookie、task-tracker API、shell、檔案或 Git。
+- 新增 `safeDiscussion`、`ownerInternal`、`memberInternal` capability profiles。Owner internal session 的 cwd 是目前 active scenario repo root；Team internal session 的 root 是目前 scenario 的 `sim-work`，cwd 限制在該 member worktree（profile 的預設根仍是 task-tracker repo）。
+- internal route 可使用明確 allowlist：`curl`、`npm`、`npx`、Read/Write/Edit/Glob/Grep，以及 `git status/diff/log/show/merge/add/commit`；沒有 `git reset`、rebase 或 force 操作。
+- Owner／Team 的 internal discussion session 只把目前 actor 的 `session` cookie 寫成 mode `0600` 的暫時 Netscape cookie jar；session 結束後在 `finally` 移除，prompt 與 telemetry 不寫入 raw cookie。
+- internal prompt 只允許對 `http://localhost:3000/api/` 使用該 jar，並禁止 session 自己執行通知回覆 POST、標記已讀與最後 readback；driver 仍負責回覆驗證、寫入與 readback。
+- safe 與 internal packet 使用顯式 `discussionMode`，避免 internal session 收到 safe route 的互斥「不可使用 API／檔案」指令。Team 一般工作與 Owner sweep 已接上 internal callback；Team 的獨立 notification preflight 仍保留 safe runner。
+
+驗證：`node --import tsx sim/agentCapabilities.test.ts`、`node --import tsx sim/run.test.ts`、`npx tsc --noEmit`、`npm test` 均通過；沒有執行 live `npm run sim` 或 `--sweep`。
