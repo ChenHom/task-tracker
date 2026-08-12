@@ -44,6 +44,7 @@ import {
   commitIfSessionSucceeded,
   commitMemberWork,
   createRunDir,
+  assertAttachmentTargetWritable,
   disallowedReviewChecks,
   dirtyReviewChecks,
   findDisallowedMemberWorktreePaths,
@@ -543,6 +544,22 @@ async function runNotificationGateTests(): Promise<void> {
     );
   } finally {
     rmSync(traversalEscapePath, { force: true });
+  }
+
+  const symlinkRoot = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-symlink-'));
+  const symlinkOutside = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-symlink-outside-'));
+  try {
+    mkdirSync(join(symlinkRoot, 'attachments'), { recursive: true });
+    const symlinkPath = join(symlinkRoot, 'attachments', 'att-symlink');
+    symlinkSync(join(symlinkOutside, 'escaped.bin'), symlinkPath);
+    assert.throws(
+      () => assertAttachmentTargetWritable(join(symlinkRoot, 'attachments'), symlinkPath, 'attachment att-symlink'),
+      /symlink/,
+      'attachment 寫入前遇到 symlink 目標時必須 fail closed',
+    );
+  } finally {
+    rmSync(symlinkRoot, { recursive: true, force: true });
+    rmSync(symlinkOutside, { recursive: true, force: true });
   }
 
   const previousAttachmentMaxBytes = process.env.ATTACHMENT_MAX_BYTES;

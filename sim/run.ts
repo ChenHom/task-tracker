@@ -7,7 +7,7 @@
 // 前置：task-tracker 跑在 localhost:3000、`npm run seed` 已建立 user01-30、目標 repo 工作樹乾淨（會打 tag）
 // 回退：git reset --hard <本場 tag>；git worktree remove sim-work/<u> --force；git branch -D sim/<u>
 import { execFile, execFileSync } from 'node:child_process';
-import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
@@ -1000,6 +1000,18 @@ function assertAttachmentIdSafe(attachmentId: string): void {
   }
 }
 
+export function assertAttachmentTargetWritable(root: string, target: string, label: string): void {
+  assertPathWithin(root, target, label);
+  try {
+    if (lstatSync(target).isSymbolicLink()) {
+      throw new Error(`${label} 不得是 symlink`);
+    }
+  } catch (error) {
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+}
+
 function attachmentSourceTexts(context: NotificationAttachmentContext): string[] {
   return [
     `manifest:${context.manifestPath}`,
@@ -1095,6 +1107,7 @@ async function createAttachmentDiscussionContext(input: {
       if (!attachmentMimeMatches(mime, data)) {
         throw new Error(`attachment ${row.attachment_id} 內容簽章與 ${mime} 不符`);
       }
+      assertAttachmentTargetWritable(attachmentsDir, path, `attachment ${row.attachment_id}`);
       writeFileSync(path, data);
       assertRealPathWithin(attachmentsDir, path, `attachment ${row.attachment_id}`);
       files.push({ attachment_id: row.attachment_id, mime_type: mime, size: data.length, path: `attachments/${row.attachment_id}` });
