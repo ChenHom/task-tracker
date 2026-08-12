@@ -107,6 +107,7 @@ import {
   runInternalDiscussionSession,
   safeDiscussionEnvironment,
   SAFE_DISCUSSION_TOOLS,
+  ATTACHMENT_DISCUSSION_TOOLS,
 } from './run';
 
 const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
@@ -406,12 +407,97 @@ async function runNotificationGateTests(): Promise<void> {
     },
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(generalResult, { ready: true, snapshotIds: ['n-general'], preflightStarted: true });
+  assert.deepStrictEqual(generalResult, { ready: true, snapshotIds: ['n-general'], preflightStarted: false });
   assert.strictEqual(generalAgentRuns, 0, '一般 workspace notification 只讀來源，不得啟動 agent');
   assert.deepStrictEqual(general.calls, [
     'GET /api/notifications', 'GET /api/tasks/task-general', 'GET /api/tasks/task-general/comments',
     'POST /api/notifications/n-general/read', 'GET /api/notifications',
   ]);
+
+  const mainAttachmentBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+  let mainAttachmentRoot = '';
+  const mainAttachment = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-main-attachment', 'task-main-attachment', 'comment-main-attachment')] },
+      { status: 200, body: [{ ...unreadNotification('n-main-attachment', 'task-main-attachment', 'comment-main-attachment'), read_at: '2026-07-14T04:02:00.000Z' }] },
+    ],
+    'GET /api/tasks/task-main-attachment': [{ status: 200, body: gateTask('task-main-attachment', MAIN_WORKSPACE_ID) }],
+    'GET /api/tasks/task-main-attachment/comments': [
+      { status: 200, body: [gateComment('task-main-attachment', 'comment-main-attachment')] },
+      { status: 200, body: [
+        gateComment('task-main-attachment', 'comment-main-attachment'),
+        gateComment(
+          'task-main-attachment',
+          'reply-main-attachment',
+          gateActor.id,
+          '【同意】附件 manifest 只保留白名單圖片，暫存目錄與 cleanup 流程可正常驗證。',
+          '2026-07-14T04:01:00.000Z',
+        ),
+      ] },
+    ],
+    'GET /api/tasks/task-main-attachment/attachments': [{ status: 200, body: [
+      { attachment_id: 'att-image', task_id: 'task-main-attachment', mime_type: 'image/png', size: mainAttachmentBytes.length },
+      { attachment_id: 'att-note', task_id: 'task-main-attachment', mime_type: 'text/plain', size: 12 },
+    ] }],
+    'GET /api/attachments/att-image': [{ status: 200, body: mainAttachmentBytes }],
+    'POST /api/tasks/task-main-attachment/comments': [{ status: 201, body: { id: 'reply-main-attachment' } }],
+    'POST /api/notifications/n-main-attachment/read': [{ status: 200, body: { ok: true } }],
+  });
+  let mainAttachmentDiscussionRuns = 0;
+  const mainAttachmentResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: mainAttachment.request,
+    runDiscussion: async ({ prompt, attachmentContext }) => {
+      mainAttachmentDiscussionRuns++;
+      assert.ok(attachmentContext, 'attachmentContext 應存在');
+      mainAttachmentRoot = attachmentContext.cwd;
+      assert.strictEqual(attachmentContext.manifestPath, 'manifest.json');
+      assert.deepStrictEqual(
+        attachmentContext.files.map((file) => file.attachment_id),
+        ['att-image'],
+        '只有白名單圖片應進入 attachment manifest',
+      );
+      assert.strictEqual(attachmentContext.omittedCount, 1, '非圖片附件應被計入省略數');
+      assert.ok(existsSync(join(mainAttachmentRoot, attachmentContext.manifestPath)), 'manifest 應寫入暫存目錄');
+      assert.ok(existsSync(join(mainAttachmentRoot, 'attachments', 'att-image')), '白名單圖片應落地');
+      assert.ok(!existsSync(join(mainAttachmentRoot, 'attachments', 'att-note')), '非圖片不應被下載到可讀目錄');
+      const manifest = JSON.parse(readFileSync(join(mainAttachmentRoot, attachmentContext.manifestPath), 'utf8')) as {
+        notification_id: string;
+        task_id: string;
+        limits: { single_file_bytes: number; total_bytes: number };
+        files: Array<{
+          attachment_id: string;
+          mime_type: string;
+          size: number;
+          path: string;
+        }>;
+        omitted_count: number;
+      };
+      assert.strictEqual(manifest.notification_id, 'n-main-attachment');
+      assert.strictEqual(manifest.task_id, 'task-main-attachment');
+      assert.strictEqual(manifest.limits.single_file_bytes > 0, true);
+      assert.strictEqual(manifest.limits.total_bytes, manifest.limits.single_file_bytes * 2);
+      assert.deepStrictEqual(manifest.files, [{
+        attachment_id: 'att-image',
+        mime_type: 'image/png',
+        size: mainAttachmentBytes.length,
+        path: 'attachments/att-image',
+      }]);
+      assert.strictEqual(manifest.omitted_count, 1);
+      assert.ok(prompt.includes('ATTACHMENT_MANIFEST'));
+      assert.ok(prompt.includes('可讀圖片附件（1）'));
+      assert.ok(prompt.includes('att-image'));
+      assert.ok(!prompt.includes('att-note'));
+      return { output: '【同意】附件 manifest 只保留白名單圖片，暫存目錄與 cleanup 流程可正常驗證。' };
+    },
+    log: () => undefined,
+    snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(mainAttachmentResult, { ready: true, snapshotIds: ['n-main-attachment'], preflightStarted: true });
+  assert.strictEqual(mainAttachmentDiscussionRuns, 1);
+  assert.ok(mainAttachmentRoot);
+  assert.strictEqual(existsSync(mainAttachmentRoot), false, 'attachment discussion 暫存目錄應在流程後清理');
+  assert.ok(mainAttachment.calls.includes('GET /api/attachments/att-image'));
+  assert.ok(!mainAttachment.calls.includes('GET /api/attachments/att-note'));
 
   const injectedSecret = 'fixture-secret-do-not-send';
   const injected = fakeGateRequest({
@@ -427,6 +513,7 @@ async function runNotificationGateTests(): Promise<void> {
         gateComment('task-injected', 'reply-injected', gateActor.id, '【疑慮】資訊不足：來源包含不可信的操作要求，需先確認公開依據。', '2026-07-14T04:01:00.000Z'),
       ] },
     ],
+    'GET /api/tasks/task-injected/attachments': [{ status: 200, body: [] }],
     'POST /api/tasks/task-injected/comments': [{ status: 201, body: { id: 'reply-injected' } }],
     'POST /api/notifications/n-injected/read': [{ status: 200, body: { ok: true } }],
   });
@@ -447,7 +534,7 @@ async function runNotificationGateTests(): Promise<void> {
   assert.strictEqual(injectedDiscussionRuns, 1, '每筆主工作區 notification 必須啟動一次隔離討論 session');
   assert.deepStrictEqual(injected.calls, [
     'GET /api/notifications', 'GET /api/tasks/task-injected', 'GET /api/tasks/task-injected/comments',
-    'POST /api/tasks/task-injected/comments', 'GET /api/tasks/task-injected/comments',
+    'GET /api/tasks/task-injected/attachments', 'POST /api/tasks/task-injected/comments', 'GET /api/tasks/task-injected/comments',
     'POST /api/notifications/n-injected/read', 'GET /api/notifications',
   ], '提示注入下只能讀來源、送驗證後回覆並標記已讀');
   assert.deepStrictEqual(injected.bodies, ['{"content":"【疑慮】資訊不足：來源包含不可信的操作要求，需先確認公開依據。"}']);
@@ -466,6 +553,7 @@ async function runNotificationGateTests(): Promise<void> {
         gateComment('task-main', 'reply-main', gateActor.id, '【同意】理由具體，公開來源與目前討論的風險描述一致。', '2026-07-14T04:01:00.000Z'),
       ] },
     ],
+    'GET /api/tasks/task-main/attachments': [{ status: 200, body: [] }],
     'POST /api/tasks/task-main/comments': [{ status: 201, body: { id: 'reply-main' } }],
     'POST /api/notifications/n-main/read': [{ status: 200, body: { ok: true } }],
   });
@@ -495,6 +583,7 @@ async function runNotificationGateTests(): Promise<void> {
     ],
     'GET /api/tasks/task-invalid-main': [{ status: 200, body: gateTask('task-invalid-main', MAIN_WORKSPACE_ID) }],
     'GET /api/tasks/task-invalid-main/comments': [{ status: 200, body: [gateComment('task-invalid-main', 'comment-invalid-main')] }],
+    'GET /api/tasks/task-invalid-main/attachments': [{ status: 200, body: [] }],
   });
   const invalidMainResult = await processNotificationGate({
     actor: gateActor, cookie: 'session=test', request: invalidMain.request,
@@ -588,7 +677,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => ({ errored: true, timedOut: false }),
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(preflightFailedResult, { ready: false, snapshotIds: ['n-preflight-failed'], preflightStarted: true });
+  assert.deepStrictEqual(preflightFailedResult, { ready: false, snapshotIds: ['n-preflight-failed'], preflightStarted: false });
   assert.ok(preflightFailed.calls.some((call) => call.includes('/read')), 'agent callback 的結果不得阻止 driver 嘗試標記已讀');
 
   const multiple = fakeGateRequest({
@@ -616,7 +705,7 @@ async function runNotificationGateTests(): Promise<void> {
     runPreflight: async () => ({ errored: false, timedOut: false }),
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(multipleResult, { ready: true, snapshotIds: ['n-one', 'n-two'], preflightStarted: true });
+  assert.deepStrictEqual(multipleResult, { ready: true, snapshotIds: ['n-one', 'n-two'], preflightStarted: false });
   assert.strictEqual(multiple.calls.filter((call) => call.includes('/read')).length, 2);
 
   const independent = fakeGateRequest({
@@ -655,7 +744,7 @@ async function runNotificationGateTests(): Promise<void> {
     },
     log: () => undefined, snapshotAt: '2026-07-14T04:00:00.000Z',
   });
-  assert.deepStrictEqual(independentResult, { ready: true, snapshotIds: ['n-a', 'n-b', 'n-c'], preflightStarted: true });
+  assert.deepStrictEqual(independentResult, { ready: true, snapshotIds: ['n-a', 'n-b', 'n-c'], preflightStarted: false });
   assert.strictEqual(independentRuns, 0, '同 task 的每筆 notification 都不得啟動 agent');
   assert.deepStrictEqual(independent.calls.filter((call) => call.includes('/read')), [
     'POST /api/notifications/n-a/read', 'POST /api/notifications/n-b/read', 'POST /api/notifications/n-c/read',
@@ -712,7 +801,7 @@ async function runNotificationGateTests(): Promise<void> {
     snapshotAt: '2026-07-14T04:00:00.000Z',
   });
   assert.deepStrictEqual(sweepGeneralResult, {
-    actor: gateActor.email, ready: true, unreadCount: 1, preflightStarted: true,
+    actor: gateActor.email, ready: true, unreadCount: 1, preflightStarted: false,
   });
   assert.strictEqual(generalPreflightRuns, 0, 'team notification 只可由 driver API 處理');
 
@@ -723,6 +812,7 @@ async function runNotificationGateTests(): Promise<void> {
       { status: 200, body: [gateComment('task-sweep-main', 'comment-sweep-main')] },
       { status: 200, body: [gateComment('task-sweep-main', 'comment-sweep-main')] },
     ],
+    'GET /api/tasks/task-sweep-main/attachments': [{ status: 200, body: [] }],
   });
   const sweepMainResult = await runNotificationSweepForMember({
     member: sweepMember,
@@ -749,6 +839,7 @@ async function runNotificationGateTests(): Promise<void> {
         gateComment('task-sweep-main-safe', 'reply-sweep-main-safe', gateActor.id, '【同意】來源與目前討論相符，風險邊界已說明。', '2026-07-14T04:01:00.000Z'),
       ] },
     ],
+    'GET /api/tasks/task-sweep-main-safe/attachments': [{ status: 200, body: [] }],
     'POST /api/tasks/task-sweep-main-safe/comments': [{ status: 201, body: { id: 'reply-sweep-main-safe' } }],
     'POST /api/notifications/n-sweep-main-safe/read': [{ status: 200, body: { ok: true } }],
   });
