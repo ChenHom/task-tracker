@@ -189,7 +189,6 @@ export async function openTaskDetailModal(taskId, {
       if (valDesc !== (currentTask.description || '')) {
         await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { description: valDesc } });
       }
-      hideUnsavedBadge();
 
       // Update local and cached values on success before onUpdate() runs
       originalTitle = valTitle;
@@ -300,17 +299,19 @@ export async function openTaskDetailModal(taskId, {
         const [success] = await Promise.all([savePromise, delayPromise]);
 
         if (success) {
-          hideUnsavedBadge();
-          await new Promise(resolve => setTimeout(resolve, 400));
           if (unsavedBadge) {
             unsavedBadge.textContent = '完成';
             unsavedBadge.offsetHeight;
             showUnsavedBadge();
+            setTimeout(() => {
+              hideUnsavedBadge();
+            }, 1500);
           }
         } else {
-          hideUnsavedBadge();
-          await new Promise(resolve => setTimeout(resolve, 400));
-          if (unsavedBadge) unsavedBadge.textContent = '還未';
+          if (unsavedBadge) {
+            unsavedBadge.textContent = '還未';
+            showUnsavedBadge();
+          }
         }
       }
     });
@@ -336,18 +337,18 @@ export async function openTaskDetailModal(taskId, {
       const [success] = await Promise.all([savePromise, delayPromise]);
 
       if (success) {
-        hideUnsavedBadge();
-        await new Promise(resolve => setTimeout(resolve, 400));
         if (unsavedBadge) {
           unsavedBadge.textContent = '完成';
           unsavedBadge.offsetHeight;
           showUnsavedBadge();
+          setTimeout(() => {
+            hideUnsavedBadge();
+          }, 1500);
         }
       } else {
-        hideUnsavedBadge();
-        await new Promise(resolve => setTimeout(resolve, 400));
         if (unsavedBadge) {
           unsavedBadge.textContent = '還未';
+          showUnsavedBadge();
         }
       }
     };
@@ -436,11 +437,11 @@ export async function openTaskDetailModal(taskId, {
    * @returns {Promise<void>}
    */
   async function loadComments() {
-    commList.textContent = '';
     commErr.style.display = 'none';
     try {
       const rows = await api(`/api/tasks/${taskId}/comments`);
       cachedComments = rows; // Cache comments for autocomplete and rich links
+      commList.textContent = '';
       if (rows.length === 0) {
         commList.appendChild(el('li', { class: 'muted detail-empty-item' }, '（尚無留言）'));
         return;
@@ -620,9 +621,6 @@ export async function openTaskDetailModal(taskId, {
               await api(`/api/comments/${c.comment_id}`, { method: 'PATCH', body: { content: val } });
               await loadComments();
               if (editUnsavedBadge) {
-                editUnsavedBadge.style.transform = 'translateX(100%)';
-                editUnsavedBadge.style.opacity = '0';
-                await new Promise(resolve => setTimeout(resolve, 400));
                 editUnsavedBadge.textContent = '完成';
                 editUnsavedBadge.style.transform = 'translateX(0)';
                 editUnsavedBadge.style.opacity = '1';
@@ -684,9 +682,6 @@ export async function openTaskDetailModal(taskId, {
         commInput.style.height = '38px';
         await loadComments();
         if (commUnsavedBadge) {
-          commUnsavedBadge.style.transform = 'translateX(100%)';
-          commUnsavedBadge.style.opacity = '0';
-          await new Promise(resolve => setTimeout(resolve, 400));
           commUnsavedBadge.textContent = '完成';
           commUnsavedBadge.style.transform = 'translateX(0)';
           commUnsavedBadge.style.opacity = '1';
