@@ -1,4 +1,6 @@
+import { lstatSync, realpathSync } from 'node:fs';
 import { isIP } from 'node:net';
+import { isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 import { AGREE_MARKER, CONCERN_MARKER } from '../src/mainWorkspacePolicy';
 
 export const NOTIFICATION_NOOP_REPLY = '已閱讀，目前無補充。';
@@ -44,6 +46,11 @@ export interface EgressPolicy {
   sourceTexts: readonly string[];
   fetchAllowed?: boolean;
   searchCount?: number;
+}
+
+export interface AttachmentReadPolicy {
+  cwd: string;
+  allowedReadPaths: readonly string[];
 }
 
 function truncateWithMarker(value: string, maxChars: number): { value: string; truncated: boolean } {
@@ -217,6 +224,53 @@ export function validateEgressCall(call: EgressCall, policy: EgressPolicy): { ok
     for (let index = 0; index <= normalizedQuery.length - 24; index++) {
       if (normalizedSource.includes(normalizedQuery.slice(index, index + 24))) return { ok: false, reason: 'source_overlap' };
     }
+  }
+  return { ok: true };
+}
+
+function normalizeAttachmentReadPath(rawPath: string): string {
+  return normalize(rawPath.normalize('NFC'));
+}
+
+export function validateAttachmentReadPath(rawPath: string, policy: AttachmentReadPolicy): { ok: true } | { ok: false; reason: string } {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) return { ok: false, reason: 'missing_path' };
+  if (rawPath.length > 4_096) return { ok: false, reason: 'path_length' };
+  if (rawPath !== rawPath.normalize('NFC')) return { ok: false, reason: 'path_not_exact' };
+  if (rawPath.includes('\\') || isAbsolute(rawPath)) return { ok: false, reason: 'absolute_path' };
+  const normalized = normalizeAttachmentReadPath(rawPath);
+  if (normalized !== rawPath) return { ok: false, reason: 'path_not_exact' };
+  if (normalized === '.' || normalized === '..' || normalized.startsWith(`..${sep}`) || normalized.includes(`${sep}..${sep}`) || normalized.endsWith(`${sep}..`)) {
+    return { ok: false, reason: 'path_escape' };
+  }
+
+  const allowed = new Set(policy.allowedReadPaths.map((path) => normalizeAttachmentReadPath(path)));
+  if (!allowed.has(normalized)) return { ok: false, reason: 'path_not_allowed' };
+
+  let cwdReal: string;
+  let target: string;
+  try {
+    cwdReal = realpathSync(policy.cwd);
+    target = resolve(cwdReal, normalized);
+  } catch {
+    return { ok: false, reason: 'path_missing' };
+  }
+
+  try {
+    if (lstatSync(target).isSymbolicLink()) return { ok: false, reason: 'symlink' };
+  } catch {
+    return { ok: false, reason: 'path_missing' };
+  }
+
+  let targetReal: string;
+  try {
+    targetReal = realpathSync(target);
+  } catch {
+    return { ok: false, reason: 'path_missing' };
+  }
+
+  const escaped = relative(cwdReal, targetReal);
+  if (isAbsolute(escaped) || escaped === '..' || escaped.startsWith(`..${sep}`)) {
+    return { ok: false, reason: 'path_escape' };
   }
   return { ok: true };
 }

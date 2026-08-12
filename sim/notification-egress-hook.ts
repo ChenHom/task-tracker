@@ -1,11 +1,16 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { validateEgressCall, type EgressPolicy } from './notificationSecurity';
+import {
+  validateAttachmentReadPath,
+  validateEgressCall,
+  type AttachmentReadPolicy,
+  type EgressPolicy,
+} from './notificationSecurity';
 
 interface HookInput {
   tool_name?: string;
-  tool_input?: { query?: string; url?: string };
+  tool_input?: { query?: string; url?: string; path?: string; file_path?: string; filePath?: string };
   name?: string;
-  input?: { query?: string; url?: string };
+  input?: { query?: string; url?: string; path?: string; file_path?: string; filePath?: string };
 }
 
 function readStdin(): Promise<string> {
@@ -35,6 +40,24 @@ async function main(): Promise<void> {
   }
   const type = input.tool_name ?? input.name ?? '';
   const toolInput = input.tool_input ?? input.input ?? {};
+  if (type === 'Read') {
+    const path = toolInput.path ?? toolInput.file_path ?? toolInput.filePath;
+    if (typeof path !== 'string') {
+      process.exitCode = 2;
+      return;
+    }
+    if (!('cwd' in policy) || !('allowedReadPaths' in policy)) {
+      process.exitCode = 2;
+      return;
+    }
+    const decision = validateAttachmentReadPath(path, policy as AttachmentReadPolicy);
+    if (!decision.ok) {
+      process.exitCode = 2;
+      return;
+    }
+    process.exitCode = 0;
+    return;
+  }
   const decision = validateEgressCall({ type, query: toolInput.query, url: toolInput.url }, policy);
   if (!decision.ok) {
     process.exitCode = 2;

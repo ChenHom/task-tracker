@@ -7,7 +7,7 @@
 // 前置：task-tracker 跑在 localhost:3000、`npm run seed` 已建立 user01-30、目標 repo 工作樹乾淨（會打 tag）
 // 回退：git reset --hard <本場 tag>；git worktree remove sim-work/<u> --force；git branch -D sim/<u>
 import { execFile, execFileSync } from 'node:child_process';
-import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync, readFileSync, existsSync, realpathSync, readdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
@@ -37,6 +37,8 @@ import {
 } from '../src/mainWorkspacePolicy';
 import {
   buildDiscussionPacket,
+  type AttachmentReadPolicy,
+  DISCUSSION_MAX_PROMPT_CHARS,
   validateDiscussionReply,
   type EgressPolicy,
   type DiscussionPacket,
@@ -52,6 +54,7 @@ import {
   type CapabilityProfile,
   writeActorCookieJar,
 } from './agentCapabilities';
+import { attachmentMaxBytes } from '../src/attachment';
 export {
   assertCapabilityPath,
   INTERNAL_MEMBER_PROFILE,
@@ -793,6 +796,9 @@ async function api(path: string, init: RequestInit = {}, cookie?: string): Promi
     if (!retryable || !isStaleSocketError(error)) throw error;
     res = await fetch(BASE + path, { ...init, headers });
   }
+  if ((init.method ?? 'GET').toUpperCase() === 'GET' && /^\/api\/attachments\/[^/?]+$/u.test(path) && res.ok) {
+    return { status: res.status, body: Buffer.from(await res.arrayBuffer()) };
+  }
   const text = await res.text();
   let body: any = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
@@ -844,6 +850,25 @@ interface NotificationComment {
   content: string;
   created_at: string;
 }
+interface NotificationAttachmentRow {
+  attachment_id: string;
+  task_id: string;
+  mime_type: string;
+  size: number;
+}
+interface NotificationAttachmentFile {
+  attachment_id: string;
+  mime_type: string;
+  size: number;
+  path: string;
+}
+interface NotificationAttachmentContext {
+  cwd: string;
+  manifestPath: string;
+  files: NotificationAttachmentFile[];
+  omittedCount: number;
+  cleanup: () => void;
+}
 // notification prompt 是寫入端、owner prompt 是清點端、validator 是把關端，三邊共用同一組
 // 表態 marker。定義已移到 src/mainWorkspacePolicy.ts，這裡只轉出給既有 import 用。
 export { AGREE_MARKER, CONCERN_MARKER } from '../src/mainWorkspacePolicy';
@@ -862,6 +887,7 @@ export interface NotificationDiscussionInput {
   prompt: string;
   packet: DiscussionPacket;
   mode: DiscussionMode;
+  attachmentContext?: NotificationAttachmentContext;
 }
 
 export interface NotificationDiscussionResult {
@@ -924,6 +950,203 @@ function parseNotificationComments(value: unknown): NotificationComment[] {
     throw new Error('comments response 格式不合法');
   }
   return value as unknown as NotificationComment[];
+}
+
+function parseNotificationAttachments(value: unknown): NotificationAttachmentRow[] {
+  if (!Array.isArray(value) || !value.every((attachment) => isRecord(attachment)
+    && typeof attachment.attachment_id === 'string'
+    && typeof attachment.task_id === 'string'
+    && typeof attachment.mime_type === 'string'
+    && typeof attachment.size === 'number')) {
+    throw new Error('attachments response 格式不合法');
+  }
+  return value as unknown as NotificationAttachmentRow[];
+}
+
+const ATTACHMENT_PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const ATTACHMENT_JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
+const ATTACHMENT_GIF_87A_MAGIC = Buffer.from('GIF87a', 'latin1');
+const ATTACHMENT_GIF_89A_MAGIC = Buffer.from('GIF89a', 'latin1');
+const ATTACHMENT_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif']);
+
+function attachmentMimeMatches(mime: string, data: Buffer): boolean {
+  if (mime === 'image/png') return data.length >= 8 && data.subarray(0, 8).equals(ATTACHMENT_PNG_MAGIC);
+  if (mime === 'image/jpeg') return data.length >= 3 && data.subarray(0, 3).equals(ATTACHMENT_JPEG_MAGIC);
+  if (mime === 'image/gif') {
+    return data.length >= 6 && (data.subarray(0, 6).equals(ATTACHMENT_GIF_87A_MAGIC)
+      || data.subarray(0, 6).equals(ATTACHMENT_GIF_89A_MAGIC));
+  }
+  return false;
+}
+
+function coerceAttachmentBuffer(body: unknown): Buffer {
+  if (Buffer.isBuffer(body)) return body;
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  throw new Error('attachment 下載結果不是位元組');
+}
+
+function assertRealPathWithin(root: string, target: string, label: string): void {
+  const rootReal = realpathSync(root);
+  const targetReal = realpathSync(target);
+  const escaped = relative(rootReal, targetReal);
+  if (isAbsolute(escaped) || escaped === '..' || escaped.startsWith(`..${sep}`) || resolve(rootReal, escaped) !== targetReal) {
+    throw new Error(`${label} 超出允許目錄 ${rootReal}: ${targetReal}`);
+  }
+}
+
+function assertAttachmentIdSafe(attachmentId: string): void {
+  if (!attachmentId || attachmentId === '.' || attachmentId === '..' || attachmentId.includes('/') || attachmentId.includes('\\')) {
+    throw new Error(`attachment ${attachmentId} 檔名不合法`);
+  }
+}
+
+export function assertAttachmentTargetWritable(root: string, target: string, label: string): void {
+  assertPathWithin(root, target, label);
+  try {
+    if (lstatSync(target).isSymbolicLink()) {
+      throw new Error(`${label} 不得是 symlink`);
+    }
+  } catch (error) {
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+}
+
+function attachmentSourceTexts(context: NotificationAttachmentContext): string[] {
+  return [
+    `manifest:${context.manifestPath}`,
+    `files:${context.files.length}`,
+    ...context.files.map((file) => `${file.attachment_id} ${file.mime_type} ${file.size} ${file.path}`),
+    `omitted:${context.omittedCount}`,
+  ];
+}
+
+function formatAttachmentPromptSection(context: NotificationAttachmentContext, compact = false): string {
+  const files = compact ? context.files.slice(0, 3) : context.files;
+  return [
+    'ATTACHMENT_MANIFEST',
+    '這個 session 的工作目錄內已放好 `manifest.json` 與 `attachments/` 目錄。',
+    '只能 Read `manifest.json`，再依 manifest.files 逐一 Read `attachments/<attachment_id>`；不要讀取其他路徑。',
+    '附件檔名只使用 attachment_id，不要猜原始檔名，也不要尋找其他副檔名。',
+    files.length
+      ? `可讀圖片附件（${files.length}）:`
+      : '目前沒有可讀圖片附件；請直接根據 task、留言與 manifest 的省略數量做判斷。',
+    ...files.map((file) => `- ${file.attachment_id} (${file.mime_type}, ${file.size} bytes) -> ${file.path}`),
+    compact && context.files.length > files.length
+      ? `- 其餘 ${context.files.length - files.length} 個可讀圖片附件省略`
+      : null,
+    `未納入 manifest 的附件數：${context.omittedCount}`,
+    'END_ATTACHMENT_MANIFEST',
+  ].filter((line): line is string => line !== null).join('\n');
+}
+
+export function buildAttachmentDiscussionTools(context: Pick<NotificationAttachmentContext, 'files'>): string {
+  return ['Read(manifest.json)', ...context.files.map((file) => `Read(${file.path})`)].join(',');
+}
+
+export function buildAttachmentReadPolicy(context: Pick<NotificationAttachmentContext, 'cwd' | 'files'>): AttachmentReadPolicy {
+  return {
+    cwd: context.cwd,
+    allowedReadPaths: ['manifest.json', ...context.files.map((file) => file.path)],
+  };
+}
+
+function appendAttachmentPrompt(packet: DiscussionPacket, context: NotificationAttachmentContext): DiscussionPacket {
+  const sourceTexts = [...packet.sourceTexts, ...attachmentSourceTexts(context)];
+  const fullSection = formatAttachmentPromptSection(context);
+  const fullPrompt = `${packet.prompt}\n${fullSection}`;
+  if (fullPrompt.length <= DISCUSSION_MAX_PROMPT_CHARS) {
+    return { ...packet, prompt: fullPrompt, sourceTexts };
+  }
+  const compactSection = formatAttachmentPromptSection(context, true);
+  const compactPrompt = `${packet.prompt}\n${compactSection}`;
+  if (compactPrompt.length <= DISCUSSION_MAX_PROMPT_CHARS) {
+    return { ...packet, prompt: compactPrompt, sourceTexts };
+  }
+  throw new Error('discussion prompt 超過安全上限（含附件摘要）');
+}
+
+async function createAttachmentDiscussionContext(input: {
+  taskId: string;
+  notificationId: string;
+  request: NotificationGateRequest;
+  cookie: string;
+}): Promise<NotificationAttachmentContext | undefined> {
+  const response = await input.request(`/api/tasks/${encodeURIComponent(input.taskId)}/attachments`, {}, input.cookie);
+  if (response.status !== 200) {
+    throw new Error(`task ${input.taskId} attachments 讀取失敗: HTTP ${response.status}`);
+  }
+  const rows = parseNotificationAttachments(response.body);
+  if (!rows.length) return undefined;
+
+  const root = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-'));
+  const attachmentsDir = join(root, 'attachments');
+  mkdirSync(attachmentsDir, { recursive: true });
+  const singleLimit = attachmentMaxBytes();
+  const totalLimit = singleLimit * 2;
+  const manifestPath = join(root, 'manifest.json');
+  const files: NotificationAttachmentFile[] = [];
+  let totalBytes = 0;
+  let omittedCount = 0;
+
+  try {
+    for (const row of rows) {
+      const mime = row.mime_type.toLowerCase().split(';')[0].trim();
+      if (!ATTACHMENT_IMAGE_MIME_TYPES.has(mime)) {
+        omittedCount += 1;
+        continue;
+      }
+      if (row.size > singleLimit) {
+        omittedCount += 1;
+        continue;
+      }
+      if (totalBytes + row.size > totalLimit) {
+        omittedCount += 1;
+        continue;
+      }
+      assertAttachmentIdSafe(row.attachment_id);
+      const path = join(attachmentsDir, row.attachment_id);
+      assertPathWithin(attachmentsDir, path, `attachment ${row.attachment_id}`);
+      const download = await input.request(`/api/attachments/${encodeURIComponent(row.attachment_id)}`, {}, input.cookie);
+      if (download.status !== 200) {
+        throw new Error(`attachment ${row.attachment_id} 下載失敗: HTTP ${download.status}`);
+      }
+      const data = coerceAttachmentBuffer(download.body);
+      if (data.length !== row.size) {
+        throw new Error(`attachment ${row.attachment_id} 大小與 metadata 不符`);
+      }
+      if (!attachmentMimeMatches(mime, data)) {
+        throw new Error(`attachment ${row.attachment_id} 內容簽章與 ${mime} 不符`);
+      }
+      assertAttachmentTargetWritable(attachmentsDir, path, `attachment ${row.attachment_id}`);
+      writeFileSync(path, data);
+      assertRealPathWithin(attachmentsDir, path, `attachment ${row.attachment_id}`);
+      files.push({ attachment_id: row.attachment_id, mime_type: mime, size: data.length, path: `attachments/${row.attachment_id}` });
+      totalBytes += data.length;
+    }
+    writeFileSync(manifestPath, JSON.stringify({
+      notification_id: input.notificationId,
+      task_id: input.taskId,
+      limits: {
+        single_file_bytes: singleLimit,
+        total_bytes: totalLimit,
+      },
+      files,
+      omitted_count: omittedCount,
+    }, null, 2));
+    assertRealPathWithin(root, manifestPath, 'attachment manifest');
+    return {
+      cwd: root,
+      manifestPath: 'manifest.json',
+      files,
+      omittedCount,
+      cleanup: () => rmSync(root, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function isUnavailableStatus(status: number): boolean {
@@ -1012,6 +1235,7 @@ export async function processNotificationGate(input: {
   const snapshotSet = new Set(snapshotIds);
   let allProcessed = true;
   for (const notification of snapshot) {
+    let attachmentContext: NotificationAttachmentContext | undefined;
     try {
       const taskResponse = await input.request(`/api/tasks/${encodeURIComponent(notification.source_task_id)}`, {}, input.cookie);
       if (isUnavailableStatus(taskResponse.status)) {
@@ -1037,11 +1261,16 @@ export async function processNotificationGate(input: {
         continue;
       }
       const beforeCommentIds = new Set(comments.map((comment) => comment.comment_id));
-      preflightStarted = true;
 
       if (task.workspace_id === MAIN_WORKSPACE_ID) {
         const discussionMode = input.discussionMode ?? 'safe';
         if (!input.runDiscussion) throw new Error(`主工作區 ${discussionMode} discussion runner 未提供`);
+        attachmentContext = await createAttachmentDiscussionContext({
+          taskId: task.task_id,
+          notificationId: notification.notification_id,
+          request: input.request,
+          cookie: input.cookie,
+        });
         const packet = buildDiscussionPacket({
           actorName: actor.name,
           actorProfile: actor.profile ?? '以具體理由、風險與可驗證依據審查討論',
@@ -1051,15 +1280,18 @@ export async function processNotificationGate(input: {
           contextComments: comments,
           mode: discussionMode,
         });
+        const packetWithAttachments = attachmentContext ? appendAttachmentPrompt(packet, attachmentContext) : packet;
+        preflightStarted = true;
         const discussion = await input.runDiscussion({
           notificationId: notification.notification_id,
           actor,
           task,
           sourceComment,
           comments,
-          prompt: packet.prompt,
-          packet,
+          prompt: packetWithAttachments.prompt,
+          packet: packetWithAttachments,
           mode: discussionMode,
+          attachmentContext,
         }, input.cookie);
         if (discussion.session && (discussion.session.errored || discussion.session.timedOut)) {
           throw new Error(`主工作區 notification ${notification.notification_id} ${discussionMode} discussion session 失敗`);
@@ -1081,6 +1313,8 @@ export async function processNotificationGate(input: {
     } catch (error) {
       allProcessed = false;
       input.log(`[notification] notification=${notification.notification_id} failed: ${describeError(error)}`);
+    } finally {
+      attachmentContext?.cleanup();
     }
   }
   try {
@@ -1211,6 +1445,7 @@ async function runMemberDiscussionSession(
   member: NotificationSweepMember,
   discussion: NotificationDiscussionInput,
 ): Promise<NotificationDiscussionResult> {
+  if (discussion.attachmentContext) return runAttachmentDiscussionSession(discussion);
   const session = await runSafeDiscussionSession({
     route: SAFE_DISCUSSION_ROUTE,
     prompt: discussion.prompt,
@@ -1220,10 +1455,50 @@ async function runMemberDiscussionSession(
   return { output: session.output ?? '', session };
 }
 
+async function runAttachmentDiscussionSession(
+  discussion: NotificationDiscussionInput,
+): Promise<NotificationDiscussionResult> {
+  const attachmentContext = discussion.attachmentContext;
+  if (!attachmentContext) throw new Error('attachment discussion context missing');
+  const controlDir = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-discussion-'));
+  const settingsPath = join(controlDir, 'claude-settings.json');
+  const policyPath = join(controlDir, 'attachment-read-policy.json');
+  const tools = buildAttachmentDiscussionTools(attachmentContext);
+  const policy = buildAttachmentReadPolicy(attachmentContext);
+  try {
+    writeFileSync(policyPath, JSON.stringify(policy), { mode: 0o600 });
+    chmodSync(policyPath, 0o600);
+    writeAttachmentDiscussionSettings(settingsPath);
+    const session = await runSession(
+      `attachment-discussion-${discussion.notificationId}`,
+      SAFE_DISCUSSION_ROUTE.runner,
+      SAFE_DISCUSSION_ROUTE.model,
+      discussion.prompt,
+      {
+        cwd: attachmentContext.cwd,
+        tools,
+        claudeTools: tools,
+        safeDiscussion: true,
+        settings: settingsPath,
+        timeoutMs: SAFE_DISCUSSION_TIMEOUT,
+        captureContent: false,
+        env: {
+          ...safeDiscussionEnvironment(),
+          NOTIFICATION_EGRESS_POLICY_FILE: policyPath,
+        },
+      },
+    );
+    return { output: session.output ?? '', session };
+  } finally {
+    rmSync(controlDir, { recursive: true, force: true });
+  }
+}
+
 async function runInternalOwnerDiscussionSession(
   discussion: NotificationDiscussionInput,
   cookie: string,
 ): Promise<NotificationDiscussionResult> {
+  if (discussion.attachmentContext) return runAttachmentDiscussionSession(discussion);
   const session = await runInternalDiscussionSession({
     profile: { ...INTERNAL_OWNER_PROFILE, repoRoot: RUN.repoRoot },
     cwd: RUN.repoRoot,
@@ -1240,6 +1515,7 @@ async function runInternalMemberDiscussionSession(
   discussion: NotificationDiscussionInput,
   cookie: string,
 ): Promise<NotificationDiscussionResult> {
+  if (discussion.attachmentContext) return runAttachmentDiscussionSession(discussion);
   const cwd = wt(member as Member);
   const session = await runInternalDiscussionSession({
     profile: { ...INTERNAL_MEMBER_PROFILE, repoRoot: RUN.workDir },
@@ -1460,10 +1736,10 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
 export const MEMBER_TOOLS = INTERNAL_MEMBER_TOOLS;
 export const MAIN_OWNER_TOOLS = 'Bash(curl:*)';
 export const SAFE_DISCUSSION_TOOLS = SAFE_DISCUSSION_PROFILE.tools;
+export const ATTACHMENT_DISCUSSION_TOOLS = 'Read';
 export const SAFE_DISCUSSION_ROUTE: ModelRoute = { runner: 'claude', model: 'claude-sonnet-5' };
 const SAFE_DISCUSSION_TIMEOUT = 12 * 60 * 1000;
 export const NOTIFICATION_TOOLS = SAFE_DISCUSSION_TOOLS;
-const NOTIFICATION_EGRESS_HOOK = join(ROOT, 'sim/notification-egress-hook.ts');
 const OWNER_TOOLS = INTERNAL_OWNER_TOOLS;
 // owner 開場是生成型工作（發想＋開題），交給 Claude Sonnet 5；中場/收尾/repair 是審查判斷，改用 GPT-5.6 Sol
 const OWNER_OPEN_MODEL = 'claude-sonnet-5';
@@ -1880,17 +2156,28 @@ export function safeDiscussionEnvironment(env: NodeJS.ProcessEnv = process.env):
   return Object.fromEntries(Object.entries(env).filter(([key, value]) => SAFE_DISCUSSION_ENV_KEYS.has(key) && value !== undefined));
 }
 
-function writeSafeDiscussionSettings(settingsPath: string): void {
-  const command = `${process.execPath} --import ${join(ROOT, 'node_modules/tsx/dist/loader.mjs')} ${NOTIFICATION_EGRESS_HOOK}`;
+function notificationHookCommand(): string {
+  return `${process.execPath} --import ${join(ROOT, 'node_modules/tsx/dist/loader.mjs')} ${join(ROOT, 'sim/notification-egress-hook.ts')}`;
+}
+
+function writeClaudeHookSettings(settingsPath: string, matcher: string): void {
   writeFileSync(settingsPath, JSON.stringify({
     hooks: {
       PreToolUse: [{
-        matcher: 'WebSearch|WebFetch',
-        hooks: [{ type: 'command', command }],
+        matcher,
+        hooks: [{ type: 'command', command: notificationHookCommand() }],
       }],
     },
   }), { mode: 0o600 });
   chmodSync(settingsPath, 0o600);
+}
+
+function writeSafeDiscussionSettings(settingsPath: string): void {
+  writeClaudeHookSettings(settingsPath, 'WebSearch|WebFetch');
+}
+
+function writeAttachmentDiscussionSettings(settingsPath: string): void {
+  writeClaudeHookSettings(settingsPath, 'Read');
 }
 
 export async function runSafeDiscussionSession(input: SafeDiscussionSessionInput): Promise<SessionResult> {
