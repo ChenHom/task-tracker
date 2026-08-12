@@ -1042,13 +1042,13 @@ async function createAttachmentDiscussionContext(input: {
   notificationId: string;
   request: NotificationGateRequest;
   cookie: string;
-}): Promise<NotificationAttachmentContext | null> {
+}): Promise<NotificationAttachmentContext | undefined> {
   const response = await input.request(`/api/tasks/${encodeURIComponent(input.taskId)}/attachments`, {}, input.cookie);
   if (response.status !== 200) {
     throw new Error(`task ${input.taskId} attachments 讀取失敗: HTTP ${response.status}`);
   }
   const rows = parseNotificationAttachments(response.body);
-  if (!rows.length) return null;
+  if (!rows.length) return undefined;
 
   const root = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-'));
   const attachmentsDir = join(root, 'attachments');
