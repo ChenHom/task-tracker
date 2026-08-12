@@ -19,10 +19,11 @@ assert.throws(
   () => assertCapabilityPath(INTERNAL_MEMBER_PROFILE, '/home/hom/code/other-repo/file.ts'),
   /capability path/,
 );
-assert.ok(INTERNAL_MEMBER_PROFILE.repoRoot);
+const memberInternalRoot = INTERNAL_MEMBER_PROFILE.repoRoot;
+assert.ok(memberInternalRoot);
 assert.doesNotThrow(() => assertCapabilityPath(
   INTERNAL_MEMBER_PROFILE,
-  join(INTERNAL_MEMBER_PROFILE.repoRoot, 'user02', 'src', 'run.ts'),
+  join(memberInternalRoot, 'user02', 'src', 'run.ts'),
 ));
 
 const dir = mkdtempSync(join(tmpdir(), 'task-tracker-capability-test-'));
