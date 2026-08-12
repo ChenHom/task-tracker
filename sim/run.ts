@@ -994,6 +994,12 @@ function assertRealPathWithin(root: string, target: string, label: string): void
   }
 }
 
+function assertAttachmentIdSafe(attachmentId: string): void {
+  if (!attachmentId || attachmentId === '.' || attachmentId === '..' || attachmentId.includes('/') || attachmentId.includes('\\')) {
+    throw new Error(`attachment ${attachmentId} 檔名不合法`);
+  }
+}
+
 function attachmentSourceTexts(context: NotificationAttachmentContext): string[] {
   return [
     `manifest:${context.manifestPath}`,
@@ -1075,6 +1081,9 @@ async function createAttachmentDiscussionContext(input: {
         omittedCount += 1;
         continue;
       }
+      assertAttachmentIdSafe(row.attachment_id);
+      const path = join(attachmentsDir, row.attachment_id);
+      assertPathWithin(attachmentsDir, path, `attachment ${row.attachment_id}`);
       const download = await input.request(`/api/attachments/${encodeURIComponent(row.attachment_id)}`, {}, input.cookie);
       if (download.status !== 200) {
         throw new Error(`attachment ${row.attachment_id} 下載失敗: HTTP ${download.status}`);
@@ -1086,7 +1095,6 @@ async function createAttachmentDiscussionContext(input: {
       if (!attachmentMimeMatches(mime, data)) {
         throw new Error(`attachment ${row.attachment_id} 內容簽章與 ${mime} 不符`);
       }
-      const path = join(attachmentsDir, row.attachment_id);
       writeFileSync(path, data);
       assertRealPathWithin(attachmentsDir, path, `attachment ${row.attachment_id}`);
       files.push({ attachment_id: row.attachment_id, mime_type: mime, size: data.length, path: `attachments/${row.attachment_id}` });

@@ -499,6 +499,145 @@ async function runNotificationGateTests(): Promise<void> {
   assert.ok(mainAttachment.calls.includes('GET /api/attachments/att-image'));
   assert.ok(!mainAttachment.calls.includes('GET /api/attachments/att-note'));
 
+  const traversalAttachmentId = '../../task-tracker-attachment-escape-case.png';
+  const traversalEscapePath = join(tmpdir(), 'task-tracker-attachment-escape-case.png');
+  rmSync(traversalEscapePath, { force: true });
+  try {
+    const traversal = fakeGateRequest({
+      'GET /api/notifications': [
+        { status: 200, body: [unreadNotification('n-main-traversal', 'task-main-traversal', 'comment-main-traversal')] },
+        { status: 200, body: [readNotification('n-main-traversal', 'task-main-traversal', 'comment-main-traversal')] },
+      ],
+      'GET /api/tasks/task-main-traversal': [{ status: 200, body: gateTask('task-main-traversal', MAIN_WORKSPACE_ID) }],
+      'GET /api/tasks/task-main-traversal/comments': [{ status: 200, body: [gateComment('task-main-traversal', 'comment-main-traversal')] }],
+      'GET /api/tasks/task-main-traversal/attachments': [{
+        status: 200,
+        body: [{ attachment_id: traversalAttachmentId, task_id: 'task-main-traversal', mime_type: 'image/png', size: mainAttachmentBytes.length }],
+      }],
+      [`GET /api/attachments/${encodeURIComponent(traversalAttachmentId)}`]: [{ status: 200, body: mainAttachmentBytes }],
+    });
+    let traversalDiscussionRuns = 0;
+    const traversalResult = await processNotificationGate({
+      actor: gateActor, cookie: 'session=test', request: traversal.request,
+      runDiscussion: async () => {
+        traversalDiscussionRuns++;
+        throw new Error('attachment traversal 不應進入 discussion');
+      },
+      log: () => undefined,
+      snapshotAt: '2026-07-14T04:00:00.000Z',
+    });
+    assert.deepStrictEqual(
+      traversalResult,
+      { ready: false, snapshotIds: ['n-main-traversal'], preflightStarted: false },
+      '附件檔名含 path traversal 時應在下載前 fail closed',
+    );
+    assert.strictEqual(traversalDiscussionRuns, 0, 'path traversal 不應進入 discussion runner');
+    assert.strictEqual(existsSync(traversalEscapePath), false, 'path traversal 不得先把檔案寫到 /tmp');
+    assert.ok(
+      !traversal.calls.includes(`GET /api/attachments/${encodeURIComponent(traversalAttachmentId)}`),
+      '附件檔名必須在下載前先驗證，不能真的去抓 traversal 路徑',
+    );
+    assert.ok(
+      !traversal.calls.includes('POST /api/notifications/n-main-traversal/read'),
+      'path traversal 失敗時通知必須維持未讀',
+    );
+  } finally {
+    rmSync(traversalEscapePath, { force: true });
+  }
+
+  const previousAttachmentMaxBytes = process.env.ATTACHMENT_MAX_BYTES;
+  process.env.ATTACHMENT_MAX_BYTES = '8';
+  try {
+    const png8 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const totalLimit = fakeGateRequest({
+      'GET /api/notifications': [
+        { status: 200, body: [unreadNotification('n-main-limit', 'task-main-limit', 'comment-main-limit')] },
+        { status: 200, body: [{ ...readNotification('n-main-limit', 'task-main-limit', 'comment-main-limit'), read_at: '2026-07-14T04:02:00.000Z' }] },
+      ],
+      'GET /api/tasks/task-main-limit': [{ status: 200, body: gateTask('task-main-limit', MAIN_WORKSPACE_ID) }],
+      'GET /api/tasks/task-main-limit/comments': [
+        { status: 200, body: [gateComment('task-main-limit', 'comment-main-limit')] },
+        { status: 200, body: [
+          gateComment('task-main-limit', 'comment-main-limit'),
+          gateComment(
+            'task-main-limit',
+            'reply-main-limit',
+            gateActor.id,
+            '【同意】總量超限時只能帶前兩張圖片，第三張應被省略。',
+            '2026-07-14T04:01:00.000Z',
+          ),
+        ] },
+      ],
+      'GET /api/tasks/task-main-limit/attachments': [{
+        status: 200,
+        body: [
+          { attachment_id: 'att-limit-1', task_id: 'task-main-limit', mime_type: 'image/png', size: png8.length },
+          { attachment_id: 'att-limit-2', task_id: 'task-main-limit', mime_type: 'image/png', size: png8.length },
+          { attachment_id: 'att-limit-3', task_id: 'task-main-limit', mime_type: 'image/png', size: png8.length },
+        ],
+      }],
+      'GET /api/attachments/att-limit-1': [{ status: 200, body: png8 }],
+      'GET /api/attachments/att-limit-2': [{ status: 200, body: png8 }],
+      'GET /api/attachments/att-limit-3': [{ status: 200, body: png8 }],
+      'POST /api/tasks/task-main-limit/comments': [{ status: 201, body: { id: 'reply-main-limit' } }],
+      'POST /api/notifications/n-main-limit/read': [{ status: 200, body: { ok: true } }],
+    });
+    let totalLimitDiscussionRuns = 0;
+    const totalLimitResult = await processNotificationGate({
+      actor: gateActor, cookie: 'session=test', request: totalLimit.request,
+      runDiscussion: async ({ attachmentContext }) => {
+        totalLimitDiscussionRuns++;
+        assert.ok(attachmentContext, 'total-limit 的 attachmentContext 應存在');
+        assert.deepStrictEqual(
+          attachmentContext.files.map((file) => file.attachment_id),
+          ['att-limit-1', 'att-limit-2'],
+          '總量超限時只應留下前兩張圖片',
+        );
+        assert.strictEqual(attachmentContext.omittedCount, 1, '第三張圖片應因總量超限被省略');
+        return { output: '【同意】總量超限時只能帶前兩張圖片，第三張應被省略。' };
+      },
+      log: () => undefined,
+      snapshotAt: '2026-07-14T04:00:00.000Z',
+    });
+    assert.deepStrictEqual(totalLimitResult, { ready: true, snapshotIds: ['n-main-limit'], preflightStarted: true });
+    assert.strictEqual(totalLimitDiscussionRuns, 1, '總量超限測試仍應完成 discussion');
+    assert.ok(!totalLimit.calls.includes('GET /api/attachments/att-limit-3'), '第三張圖片不應被下載');
+  } finally {
+    if (previousAttachmentMaxBytes === undefined) delete process.env.ATTACHMENT_MAX_BYTES;
+    else process.env.ATTACHMENT_MAX_BYTES = previousAttachmentMaxBytes;
+  }
+
+  const spoofedMime = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-main-spoof', 'task-main-spoof', 'comment-main-spoof')] },
+      { status: 200, body: [readNotification('n-main-spoof', 'task-main-spoof', 'comment-main-spoof')] },
+    ],
+    'GET /api/tasks/task-main-spoof': [{ status: 200, body: gateTask('task-main-spoof', MAIN_WORKSPACE_ID) }],
+    'GET /api/tasks/task-main-spoof/comments': [{ status: 200, body: [gateComment('task-main-spoof', 'comment-main-spoof')] }],
+    'GET /api/tasks/task-main-spoof/attachments': [{ status: 200, body: [
+      { attachment_id: 'att-spoof', task_id: 'task-main-spoof', mime_type: 'image/png', size: 8 },
+    ] }],
+    'GET /api/attachments/att-spoof': [{ status: 200, body: Buffer.from('GIF89a!!', 'latin1') }],
+  });
+  let spoofedMimeDiscussionRuns = 0;
+  const spoofedMimeResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: spoofedMime.request,
+    runDiscussion: async () => {
+      spoofedMimeDiscussionRuns++;
+      throw new Error('spoofed mime 不應進入 discussion');
+    },
+    log: () => undefined,
+    snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(
+    spoofedMimeResult,
+    { ready: false, snapshotIds: ['n-main-spoof'], preflightStarted: false },
+    '偽裝 MIME 應該在 attachment 驗證階段 fail closed',
+  );
+  assert.strictEqual(spoofedMimeDiscussionRuns, 0, '偽裝 MIME 不應進入 discussion runner');
+  assert.ok(spoofedMime.calls.includes('GET /api/attachments/att-spoof'), '偽裝 MIME 仍需先下載才能比對簽章');
+  assert.ok(!spoofedMime.calls.includes('POST /api/notifications/n-main-spoof/read'), '偽裝 MIME 失敗時通知必須維持未讀');
+
   const injectedSecret = 'fixture-secret-do-not-send';
   const injected = fakeGateRequest({
     'GET /api/notifications': [
