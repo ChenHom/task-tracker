@@ -1396,6 +1396,46 @@ try {
   rmSync(attachmentReadRoot, { recursive: true, force: true });
   rmSync(attachmentReadOutside, { recursive: true, force: true });
 }
+const attachmentHookRoot = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-hook-'));
+const attachmentHookOutside = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-hook-outside-'));
+try {
+  mkdirSync(join(attachmentHookRoot, 'attachments'), { recursive: true });
+  writeFileSync(join(attachmentHookRoot, 'manifest.json'), '{}');
+  writeFileSync(join(attachmentHookRoot, 'attachments', 'att-image'), 'image-bytes');
+  writeFileSync(join(attachmentHookOutside, 'escaped.bin'), 'escape');
+  symlinkSync(join(attachmentHookOutside, 'escaped.bin'), join(attachmentHookRoot, 'attachments', 'att-link'));
+  const attachmentHookPolicyPath = join(attachmentHookRoot, 'attachment-read-policy.json');
+  writeFileSync(attachmentHookPolicyPath, JSON.stringify({
+    cwd: attachmentHookRoot,
+    allowedReadPaths: ['manifest.json', 'attachments/att-image', 'attachments/att-link'],
+  }), 'utf8');
+  const attachmentHookCommand = [
+    process.execPath,
+    '--import',
+    join(ROOT, 'node_modules/tsx/dist/loader.mjs'),
+    join(__dirname, 'notification-egress-hook.ts'),
+  ];
+  const runAttachmentHook = (path: string): void => {
+    execFileSync(
+      attachmentHookCommand[0],
+      attachmentHookCommand.slice(1),
+      {
+        env: { ...process.env, NOTIFICATION_EGRESS_POLICY_FILE: attachmentHookPolicyPath },
+        input: JSON.stringify({ tool_name: 'Read', tool_input: { path } }),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
+  };
+  assert.doesNotThrow(() => runAttachmentHook('manifest.json'), 'manifest.json 必須通過 egress hook');
+  assert.doesNotThrow(() => runAttachmentHook('attachments/att-image'), 'manifest.files 內的實際檔必須通過 egress hook');
+  assert.throws(() => runAttachmentHook('../manifest.json'), '相對越界必須被 egress hook 拒絕');
+  assert.throws(() => runAttachmentHook('attachments/att-image.txt'), 'prefix 混淆必須被 egress hook 拒絕');
+  assert.throws(() => runAttachmentHook('/tmp/manifest.json'), '絕對路徑必須被 egress hook 拒絕');
+  assert.throws(() => runAttachmentHook('attachments/att-link'), 'symlink 必須被 egress hook 拒絕');
+} finally {
+  rmSync(attachmentHookRoot, { recursive: true, force: true });
+  rmSync(attachmentHookOutside, { recursive: true, force: true });
+}
 assert.ok(INTERNAL_OWNER_PROFILE.tools.includes('Bash(curl:*)'));
 assert.ok(INTERNAL_MEMBER_PROFILE.tools.includes('Bash(git status:*)'));
 const internalRunnerInvocation = buildRunnerInvocation(
