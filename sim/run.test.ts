@@ -538,13 +538,99 @@ async function runNotificationGateTests(): Promise<void> {
       !traversal.calls.includes(`GET /api/attachments/${encodeURIComponent(traversalAttachmentId)}`),
       '附件檔名必須在下載前先驗證，不能真的去抓 traversal 路徑',
     );
-    assert.ok(
-      !traversal.calls.includes('POST /api/notifications/n-main-traversal/read'),
-      'path traversal 失敗時通知必須維持未讀',
-    );
+  assert.ok(
+    !traversal.calls.includes('POST /api/notifications/n-main-traversal/read'),
+    'path traversal 失敗時通知必須維持未讀',
+  );
   } finally {
     rmSync(traversalEscapePath, { force: true });
   }
+
+  const previousSingleLimit = process.env.ATTACHMENT_MAX_BYTES;
+  process.env.ATTACHMENT_MAX_BYTES = '8';
+  try {
+    const oversizedPng = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    ]);
+    const singleLimit = fakeGateRequest({
+      'GET /api/notifications': [
+        { status: 200, body: [unreadNotification('n-main-single-limit', 'task-main-single-limit', 'comment-main-single-limit')] },
+        { status: 200, body: [readNotification('n-main-single-limit', 'task-main-single-limit', 'comment-main-single-limit')] },
+      ],
+      'GET /api/tasks/task-main-single-limit': [{ status: 200, body: gateTask('task-main-single-limit', MAIN_WORKSPACE_ID) }],
+      'GET /api/tasks/task-main-single-limit/comments': [
+        { status: 200, body: [gateComment('task-main-single-limit', 'comment-main-single-limit')] },
+        { status: 200, body: [
+          gateComment('task-main-single-limit', 'comment-main-single-limit'),
+          gateComment(
+            'task-main-single-limit',
+            'reply-main-single-limit',
+            gateActor.id,
+            '【同意】單檔超限時應該直接省略，不下載也不落地。',
+            '2026-07-14T04:01:00.000Z',
+          ),
+        ] },
+      ],
+      'GET /api/tasks/task-main-single-limit/attachments': [{
+        status: 200,
+        body: [{ attachment_id: 'att-single-limit', task_id: 'task-main-single-limit', mime_type: 'image/png', size: oversizedPng.length }],
+      }],
+      'POST /api/tasks/task-main-single-limit/comments': [{ status: 201, body: { id: 'reply-main-single-limit' } }],
+      'POST /api/notifications/n-main-single-limit/read': [{ status: 200, body: { ok: true } }],
+    });
+    let singleLimitDiscussionRuns = 0;
+    const singleLimitResult = await processNotificationGate({
+      actor: gateActor, cookie: 'session=test', request: singleLimit.request,
+      runDiscussion: async ({ attachmentContext, prompt }) => {
+        singleLimitDiscussionRuns++;
+        assert.ok(attachmentContext, 'single-file limit 的 attachmentContext 應存在');
+        assert.deepStrictEqual(attachmentContext.files, [], '超限單檔不應進入 manifest');
+        assert.strictEqual(attachmentContext.omittedCount, 1, '超限單檔應被計入省略數');
+        assert.ok(prompt.includes('目前沒有可讀圖片附件'));
+        return { output: '【同意】單檔超限時應該直接省略，不下載也不落地。' };
+      },
+      log: () => undefined,
+      snapshotAt: '2026-07-14T04:00:00.000Z',
+    });
+    assert.deepStrictEqual(singleLimitResult, { ready: true, snapshotIds: ['n-main-single-limit'], preflightStarted: true });
+    assert.strictEqual(singleLimitDiscussionRuns, 1, '單檔超限應仍可完成 discussion');
+    assert.ok(!singleLimit.calls.includes('GET /api/attachments/att-single-limit'), '超限單檔不應被下載');
+  } finally {
+    if (previousSingleLimit === undefined) delete process.env.ATTACHMENT_MAX_BYTES;
+    else process.env.ATTACHMENT_MAX_BYTES = previousSingleLimit;
+  }
+
+  const downloadFailure = fakeGateRequest({
+    'GET /api/notifications': [
+      { status: 200, body: [unreadNotification('n-main-download-fail', 'task-main-download-fail', 'comment-main-download-fail')] },
+      { status: 200, body: [readNotification('n-main-download-fail', 'task-main-download-fail', 'comment-main-download-fail')] },
+    ],
+    'GET /api/tasks/task-main-download-fail': [{ status: 200, body: gateTask('task-main-download-fail', MAIN_WORKSPACE_ID) }],
+    'GET /api/tasks/task-main-download-fail/comments': [{ status: 200, body: [gateComment('task-main-download-fail', 'comment-main-download-fail')] }],
+    'GET /api/tasks/task-main-download-fail/attachments': [{
+      status: 200,
+      body: [{ attachment_id: 'att-download-fail', task_id: 'task-main-download-fail', mime_type: 'image/png', size: mainAttachmentBytes.length }],
+    }],
+    'GET /api/attachments/att-download-fail': [{ status: 500, body: { error: 'boom' } }],
+  });
+  let downloadFailureDiscussionRuns = 0;
+  const downloadFailureResult = await processNotificationGate({
+    actor: gateActor, cookie: 'session=test', request: downloadFailure.request,
+    runDiscussion: async () => {
+      downloadFailureDiscussionRuns++;
+      throw new Error('download failure 不應進入 discussion');
+    },
+    log: () => undefined,
+    snapshotAt: '2026-07-14T04:00:00.000Z',
+  });
+  assert.deepStrictEqual(
+    downloadFailureResult,
+    { ready: false, snapshotIds: ['n-main-download-fail'], preflightStarted: false },
+    'attachment 下載失敗時應 fail closed 並保留未讀',
+  );
+  assert.strictEqual(downloadFailureDiscussionRuns, 0, 'download failure 不應進入 discussion runner');
+  assert.ok(!downloadFailure.calls.includes('POST /api/notifications/n-main-download-fail/read'), 'download failure 失敗時通知必須維持未讀');
 
   const symlinkRoot = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-symlink-'));
   const symlinkOutside = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-symlink-outside-'));
