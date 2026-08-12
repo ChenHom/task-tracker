@@ -572,13 +572,13 @@ async function runTests() {
   assert.strictEqual(saveBtn.disabled, false, 'Save button should be re-enabled after saving');
   assert.strictEqual(unsavedBadge.textContent, '等待', 'Badge text should still be "等待"');
 
-  // Wait 400ms more (total 500ms). Promise.all (400ms) has resolved, hideUnsavedBadge() has run and is waiting for its 400ms delay.
+  // Wait 400ms more (total 500ms). The save delay has resolved and success is shown immediately.
   await new Promise(resolve => setTimeout(resolve, 400));
-  assert.strictEqual(unsavedBadge.textContent, '等待', 'Badge text should still be "等待" while hide animation is running');
+  assert.strictEqual(unsavedBadge.textContent, '完成', 'Badge text should update to "完成" after saving');
 
-  // Wait 450ms more (total 950ms). The hide delay (400ms) has resolved, text changed to '完成', showUnsavedBadge() has run.
+  // Wait 450ms more (total 950ms). The success badge remains visible until its delayed hide.
   await new Promise(resolve => setTimeout(resolve, 450));
-  assert.strictEqual(unsavedBadge.textContent, '完成', 'Badge text should update to "完成" after hide transition');
+  assert.strictEqual(unsavedBadge.textContent, '完成', 'Badge text should remain "完成" before its delayed hide');
 
   // Now await keydownPromise to wait for the rest of the sequence
   await keydownPromise;
