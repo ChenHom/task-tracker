@@ -37,6 +37,7 @@ import {
 } from '../src/mainWorkspacePolicy';
 import {
   buildDiscussionPacket,
+  type AttachmentReadPolicy,
   DISCUSSION_MAX_PROMPT_CHARS,
   validateDiscussionReply,
   type EgressPolicy,
@@ -1040,6 +1041,17 @@ function formatAttachmentPromptSection(context: NotificationAttachmentContext, c
   ].filter((line): line is string => line !== null).join('\n');
 }
 
+export function buildAttachmentDiscussionTools(context: Pick<NotificationAttachmentContext, 'files'>): string {
+  return ['Read(manifest.json)', ...context.files.map((file) => `Read(${file.path})`)].join(',');
+}
+
+export function buildAttachmentReadPolicy(context: Pick<NotificationAttachmentContext, 'cwd' | 'files'>): AttachmentReadPolicy {
+  return {
+    cwd: context.cwd,
+    allowedReadPaths: ['manifest.json', ...context.files.map((file) => file.path)],
+  };
+}
+
 function appendAttachmentPrompt(packet: DiscussionPacket, context: NotificationAttachmentContext): DiscussionPacket {
   const sourceTexts = [...packet.sourceTexts, ...attachmentSourceTexts(context)];
   const fullSection = formatAttachmentPromptSection(context);
@@ -1450,8 +1462,13 @@ async function runAttachmentDiscussionSession(
   if (!attachmentContext) throw new Error('attachment discussion context missing');
   const controlDir = mkdtempSync(join(tmpdir(), 'task-tracker-attachment-discussion-'));
   const settingsPath = join(controlDir, 'claude-settings.json');
+  const policyPath = join(controlDir, 'attachment-read-policy.json');
+  const tools = buildAttachmentDiscussionTools(attachmentContext);
+  const policy = buildAttachmentReadPolicy(attachmentContext);
   try {
-    writeSafeDiscussionSettings(settingsPath);
+    writeFileSync(policyPath, JSON.stringify(policy), { mode: 0o600 });
+    chmodSync(policyPath, 0o600);
+    writeAttachmentDiscussionSettings(settingsPath);
     const session = await runSession(
       `attachment-discussion-${discussion.notificationId}`,
       SAFE_DISCUSSION_ROUTE.runner,
@@ -1459,12 +1476,16 @@ async function runAttachmentDiscussionSession(
       discussion.prompt,
       {
         cwd: attachmentContext.cwd,
-        tools: ATTACHMENT_DISCUSSION_TOOLS,
-        claudeTools: ATTACHMENT_DISCUSSION_TOOLS,
+        tools,
+        claudeTools: tools,
         safeDiscussion: true,
         settings: settingsPath,
         timeoutMs: SAFE_DISCUSSION_TIMEOUT,
         captureContent: false,
+        env: {
+          ...safeDiscussionEnvironment(),
+          NOTIFICATION_EGRESS_POLICY_FILE: policyPath,
+        },
       },
     );
     return { output: session.output ?? '', session };
@@ -1719,7 +1740,6 @@ export const ATTACHMENT_DISCUSSION_TOOLS = 'Read';
 export const SAFE_DISCUSSION_ROUTE: ModelRoute = { runner: 'claude', model: 'claude-sonnet-5' };
 const SAFE_DISCUSSION_TIMEOUT = 12 * 60 * 1000;
 export const NOTIFICATION_TOOLS = SAFE_DISCUSSION_TOOLS;
-const NOTIFICATION_EGRESS_HOOK = join(ROOT, 'sim/notification-egress-hook.ts');
 const OWNER_TOOLS = INTERNAL_OWNER_TOOLS;
 // owner 開場是生成型工作（發想＋開題），交給 Claude Sonnet 5；中場/收尾/repair 是審查判斷，改用 GPT-5.6 Sol
 const OWNER_OPEN_MODEL = 'claude-sonnet-5';
@@ -2136,17 +2156,28 @@ export function safeDiscussionEnvironment(env: NodeJS.ProcessEnv = process.env):
   return Object.fromEntries(Object.entries(env).filter(([key, value]) => SAFE_DISCUSSION_ENV_KEYS.has(key) && value !== undefined));
 }
 
-function writeSafeDiscussionSettings(settingsPath: string): void {
-  const command = `${process.execPath} --import ${join(ROOT, 'node_modules/tsx/dist/loader.mjs')} ${NOTIFICATION_EGRESS_HOOK}`;
+function notificationHookCommand(): string {
+  return `${process.execPath} --import ${join(ROOT, 'node_modules/tsx/dist/loader.mjs')} ${join(ROOT, 'sim/notification-egress-hook.ts')}`;
+}
+
+function writeClaudeHookSettings(settingsPath: string, matcher: string): void {
   writeFileSync(settingsPath, JSON.stringify({
     hooks: {
       PreToolUse: [{
-        matcher: 'WebSearch|WebFetch',
-        hooks: [{ type: 'command', command }],
+        matcher,
+        hooks: [{ type: 'command', command: notificationHookCommand() }],
       }],
     },
   }), { mode: 0o600 });
   chmodSync(settingsPath, 0o600);
+}
+
+function writeSafeDiscussionSettings(settingsPath: string): void {
+  writeClaudeHookSettings(settingsPath, 'WebSearch|WebFetch');
+}
+
+function writeAttachmentDiscussionSettings(settingsPath: string): void {
+  writeClaudeHookSettings(settingsPath, 'Read');
 }
 
 export async function runSafeDiscussionSession(input: SafeDiscussionSessionInput): Promise<SessionResult> {

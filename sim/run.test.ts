@@ -26,6 +26,7 @@ import {
 } from '../src/mainDiscussion';
 import {
   buildDiscussionPacket,
+  validateAttachmentReadPath,
   sanitizeUntrustedText,
   validateDiscussionReply,
   validateEgressCall,
@@ -36,6 +37,8 @@ import {
   allChecksPass,
   assertPathWithin,
   BRAIN_ROOT,
+  buildAttachmentDiscussionTools,
+  buildAttachmentReadPolicy,
   buildRunnerInvocation,
   brainChecks,
   canonicalWorkspaceDirectory,
@@ -108,7 +111,6 @@ import {
   runInternalDiscussionSession,
   safeDiscussionEnvironment,
   SAFE_DISCUSSION_TOOLS,
-  ATTACHMENT_DISCUSSION_TOOLS,
 } from './run';
 
 const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
@@ -1336,6 +1338,64 @@ assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--settings')
 assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--setting-sources') + 1], '');
 assert.ok(safeInvocation.args.includes('--no-session-persistence'), 'safe discussion 不應把內容寫入持久 session');
 assert.ok(!safeInvocation.args.some((arg) => /curl|Bash|Read|Write|Git/u.test(arg)));
+assert.strictEqual(
+  buildAttachmentDiscussionTools({ files: [] }),
+  'Read(manifest.json)',
+  '附件 discussion tools 在沒有圖片時仍必須只允許 manifest.json',
+);
+assert.strictEqual(
+  buildAttachmentDiscussionTools({
+    files: [
+      { attachment_id: 'att-image', mime_type: 'image/png', size: 8, path: 'attachments/att-image' },
+      { attachment_id: 'att-note', mime_type: 'image/jpeg', size: 12, path: 'attachments/att-note' },
+    ],
+  }),
+  'Read(manifest.json),Read(attachments/att-image),Read(attachments/att-note)',
+  '附件 discussion tools 必須對應 manifest.files 的精確 allowlist',
+);
+assert.deepStrictEqual(
+  buildAttachmentReadPolicy({
+    cwd: '/tmp/task-tracker-attachment',
+    files: [
+      { attachment_id: 'att-image', mime_type: 'image/png', size: 8, path: 'attachments/att-image' },
+      { attachment_id: 'att-note', mime_type: 'image/jpeg', size: 12, path: 'attachments/att-note' },
+    ],
+  }),
+  {
+    cwd: '/tmp/task-tracker-attachment',
+    allowedReadPaths: ['manifest.json', 'attachments/att-image', 'attachments/att-note'],
+  },
+  '附件 read policy 必須只包含 manifest 與 manifest.files 的精確路徑',
+);
+const attachmentReadRoot = mkdtempSync(join(tmpdir(), 'task-tracker-read-policy-'));
+const attachmentReadOutside = mkdtempSync(join(tmpdir(), 'task-tracker-read-policy-outside-'));
+try {
+  mkdirSync(join(attachmentReadRoot, 'attachments'), { recursive: true });
+  writeFileSync(join(attachmentReadRoot, 'manifest.json'), '{}');
+  writeFileSync(join(attachmentReadRoot, 'attachments', 'att-image'), 'image-bytes');
+  const readPolicy = buildAttachmentReadPolicy({
+    cwd: attachmentReadRoot,
+    files: [
+      { attachment_id: 'att-image', mime_type: 'image/png', size: 11, path: 'attachments/att-image' },
+    ],
+  });
+  assert.deepStrictEqual(validateAttachmentReadPath('manifest.json', readPolicy), { ok: true }, 'manifest.json 應可讀');
+  assert.deepStrictEqual(validateAttachmentReadPath('attachments/att-image', readPolicy), { ok: true }, 'manifest.files 中的附件應可讀');
+  assert.strictEqual(validateAttachmentReadPath('../manifest.json', readPolicy).ok, false, '相對越界必須被拒絕');
+  assert.strictEqual(validateAttachmentReadPath('attachments/att-image.txt', readPolicy).ok, false, 'prefix 混淆必須被拒絕');
+  assert.strictEqual(validateAttachmentReadPath('/tmp/manifest.json', readPolicy).ok, false, '絕對路徑必須被拒絕');
+  symlinkSync(join(attachmentReadOutside, 'escaped.bin'), join(attachmentReadRoot, 'attachments', 'att-link'));
+  const symlinkPolicy = buildAttachmentReadPolicy({
+    cwd: attachmentReadRoot,
+    files: [
+      { attachment_id: 'att-link', mime_type: 'image/png', size: 11, path: 'attachments/att-link' },
+    ],
+  });
+  assert.strictEqual(validateAttachmentReadPath('attachments/att-link', symlinkPolicy).ok, false, 'symlink 必須被拒絕');
+} finally {
+  rmSync(attachmentReadRoot, { recursive: true, force: true });
+  rmSync(attachmentReadOutside, { recursive: true, force: true });
+}
 assert.ok(INTERNAL_OWNER_PROFILE.tools.includes('Bash(curl:*)'));
 assert.ok(INTERNAL_MEMBER_PROFILE.tools.includes('Bash(git status:*)'));
 const internalRunnerInvocation = buildRunnerInvocation(
