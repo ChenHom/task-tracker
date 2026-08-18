@@ -418,7 +418,7 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 
 - [ ] 階段 0：確認 15 個事件與出處無誤。事件語意從既有 SSOT 推導——`task_runs.phase` 的 CHECK（`sim/production/state.ts:37-40`）、`sim/production/coordinator.ts:202-210` 的 outcome union、`action_log.kind` 的實際值；不建立平行的第二套詞彙
 - [ ] 階段 1：新增 `sim/trace.ts`（約 60 行）。核心是 `TraceArgs` mapped type——寫入端依事件收不同參數（`ci.checked` 等 3 個事件 evidence 不可 null），落盤是單一扁平 `TraceRecord`，`formatTraceRecord` 維持單一函式無 switch。`buildTraceRecord` 純函式 / `formatTraceRecord` 人話 / `defaultSink` 寫出三者分離；`sink` 以 function type 參數注入，不定義 class 階層；export 面積只有 `createTracer` 與型別。附一個 `assert` 自檢，以 memory sink 驗證欄位齊全。不做 conditional types（`commit.recorded` 的 refused 路徑無 sha，收 `Evidence | null`）
-- [ ] 階段 2：掛 `sim/production.ts` 的 `beginTick`（`:689`）、`upsertTaskCheckpoint`（`:883` 等，`from === to` 不送）、`beginAction`（`:946` 等）呼叫處與 `sim/production/completion.ts:153`；session 事件掛 `runAiSession` 內部而非 `:287/:305` 的工廠層（否則拿不到 `logFile`）。trace 一律掛編排層，`state.ts` 與 `policy.ts` 保持純粹。coordinator 側按日切檔
+- [ ] 階段 2：先包 `checkpointAndTrace` wrapper（取代 8 處 `upsertTaskCheckpoint` 直接呼叫，把「先取舊 phase、比對、`from === to` 不送」三條規則收在一處，避免四種靜默漏記），再掛 `beginTick`（`:689`）、`beginAction`（`:946` 等 8 處，收斂方式待定）、`sim/production/completion.ts:153` 與 `sim/production/coordinator.ts:544`；session 事件掛 `runAiSession` 內部而非 `:287/:305` 的工廠層（否則拿不到 `logFile`）。編排層為 `production.ts`／`coordinator.ts`／`run.ts` 三個檔案，`state.ts` 與 `policy.ts` 保持純粹。coordinator 側按日切檔
 - [ ] 階段 3：掛 `sim/run.ts` 的 `runSessionAttempt`（`:2002`）、`commitMemberWork`（`:2550`）、`verifyBranches`（`:2680`）、`runActorSessionWithNotificationGate`（`:1866`）
 - [ ] 階段 4：既有 `console.log` 改由 `formatTraceRecord` 產生。**驗收方式是 fixture 比對**：固定 `TraceRecord` 進去，斷言輸出與現行模板逐字相同；不可用「跑兩次 sim 再 diff」（`sim/run.ts:85` 的時間戳前綴讓它永遠過不了）
 - [ ] `merge.integrated` 的掛載行號待定位（設計文件已列為未查證項）
