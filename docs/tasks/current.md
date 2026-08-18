@@ -2,7 +2,7 @@
 
 > 對應 [design.md](../../design.md)，接續 [history.md](history.md) 已完成的 Phase 0-7。
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
-> 最後巡檢：2026-08-10；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 25 為目前最新交付。
+> 最後巡檢：2026-08-18；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 25 為目前最新交付，Phase 26 為設計定稿待實作。
 
 ---
 
@@ -411,3 +411,19 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 - [x] 完整 `【OWNER想法】` 的既有 server `created_at` 固定起算兩個連續 24 小時，不恢復使用者期限 marker、窗口表或期限 UI
 - [x] 期限前，`【結論】`、`【結論：不實作】`、`【未達共識】` 三種 outcome 共用四位不同成員 `【同意】` 且含 user09 的後端 gate；OWNER 與重複留言不計票，舊輪票不可沿用
 - [x] owner sweep prompt、主工作區政策、API、operations、設計與回歸測試同步；不改一般 workspace 狀態機
+
+## Phase 26 — sim 車隊結構化 trace（2026-08-18）
+
+設計文件：[sim 車隊結構化 trace](../sim-trace.md)。範圍只含 sim 車隊；`src/` 應用層已有 `event_store`（`src/audit.ts:24`），不重複建置。
+
+- [ ] 階段 0：確認 15 個事件與出處無誤。事件語意從既有 SSOT 推導——`task_runs.phase` 的 CHECK（`sim/production/state.ts:37-40`）、`sim/production/coordinator.ts:202-210` 的 outcome union、`action_log.kind` 的實際值；不建立平行的第二套詞彙
+- [ ] 階段 1：新增 `sim/trace.ts`（約 40 行）。`buildTraceRecord` 純函式 / `formatTraceRecord` 人話 / `defaultSink` 寫出三者分離；`sink` 以 function type 參數注入，不定義 class 階層；export 面積只有 `createTracer` 與型別。附一個 `assert` 自檢，以 memory sink 驗證欄位齊全
+- [ ] 階段 2：掛 `sim/production.ts` 的 `beginTick`（`:689`）、`upsertTaskCheckpoint`（`:883` 等）、`beginAction`（`:946` 等）呼叫處與 `sim/production/completion.ts:153`。trace 一律掛編排層，`state.ts` 與 `policy.ts` 保持純粹
+- [ ] 階段 3：掛 `sim/run.ts` 的 `runSessionAttempt`（`:2002`）、`commitMemberWork`（`:2550`）、`verifyBranches`（`:2680`）、`runActorSessionWithNotificationGate`（`:1866`）
+- [ ] 階段 4：既有 `console.log` 改由 `formatTraceRecord` 產生。**驗收硬性要求：改動前後跑同樣場景，終端輸出 `diff` 為空**
+- [ ] `merge.integrated` 的掛載行號待定位（設計文件已列為未查證項）
+- [ ] 兩份 TypeScript check 與 `npm test` baseline 通過
+
+不納入本 phase：logging 框架（理由與翻案條件見設計文件附錄）、trace retention（`sim-logs/` 為 gitignored，需要時抄 `sim/notificationTelemetry.ts:191` 那 10 行）、`sim/notificationTelemetry.ts` 的合併或重寫（它有自己的外部 contract）、`sim-logs/*.log` 的檔案格式變更。
+
+施工前先停 `sim-sweep-owner.timer` 與 `sim-sweep-team.timer`；AI 車隊會在讀寫之間改同一批 `sim/` 檔案。
