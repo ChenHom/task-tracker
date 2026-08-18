@@ -228,12 +228,63 @@ function checkpointAndTrace(deps, input, detail) {
 
 第三種最危險：程式跑得好好的，直到出事要查 trace 才發現那個事件從頭到尾沒被記過。**一個會靜默漏記的 trace 比沒有 trace 更糟**，因為你會相信它是完整的。
 
+### `withAction` wrapper
+
+`beginAction` 在 `sim/production.ts` 也有 **8 處**呼叫，八處都是同一個骨架（`:944-957` 是其中一處），只有中間那段工作不同：
+
+```ts
+const key = `assign:${taskId}:${assigneeId}`;
+if (!getAction(deps.db, key)) {                       // 冪等檢查
+  beginAction(deps.db, { actionKey: key, taskId, kind: 'assign' }, now);
+  try {
+    …實際工作…
+    completeAction(deps.db, key, resultJson, now);
+  } catch (err) {
+    failAction(deps.db, key, (err as Error).message, now);
+    throw err;
+  }
+}
+```
+
+包成 wrapper，把冪等檢查、三段生命週期與 trace 一起收進去：
+
+```ts
+async function withAction(deps, key, kind, taskId, fn) {
+  if (getAction(deps.db, key)) return;                 // 已做過就跳過
+  beginAction(deps.db, { actionKey: key, taskId, kind }, deps.now());
+  deps.trace('action.started', { reason: kind, detail: … });
+  try {
+    const result = await fn();
+    completeAction(deps.db, key, result ?? null, deps.now());
+    deps.trace('action.ended', { outcome: 'ok', reason: kind, detail: … });
+  } catch (err) {
+    failAction(deps.db, key, (err as Error).message, deps.now());
+    deps.trace('action.ended', { outcome: 'fail', reason: kind, detail: … });
+    throw err;
+  }
+}
+```
+
+**這比 `checkpointAndTrace` 大一個量級，要有心理準備**：前者是多包一層呼叫，後者是**接管控制流**——try / catch / rethrow / 冪等檢查全交給 wrapper，8 個區塊要重構成 callback 形式。目前 8 處的 catch 行為剛好都是 `throw err`，所以包得起來；日後若有一處要吞掉錯誤，就得為它加參數，不要為了預留而現在就加。
+
+不包的代價是 8 × 3 = **24 處 trace 呼叫**，而漏掉 `fail` 那一條時，失敗的 action 就沒有 trace——失敗恰恰是最需要查的東西。
+
+### 為什麼不把 action 的 trace 放進 `state.ts`
+
+看起來最省：`beginAction` / `completeAction` / `failAction` 各加一行，3 個位置涵蓋全部呼叫、8 個呼叫端一個字都不用改、不可能漏。**但它會廢掉 `run_id`。**
+
+`beginAction(db, { actionKey, taskId, kind }, now)` 的簽章裡沒有 `run_id`、`actor`、`session_id`——那些都在編排層。硬做的話 action 事件的 `run_id` 是 null，等於無法把一個 tick 的事件 group 起來，而那正是這份設計的核心用途。
+
+要救就得把已綁好 base 的 tracer 整個傳進 `state.ts`。功能上可行，但簽章一樣要改、`state.ts` 還就此依賴 trace 型別，「純資料層」的規則破了卻沒省到多少。**明確不做。**
+
+### 掛載點總表
+
 | 檔案 | 位置 | 送出事件 |
 | --- | --- | --- |
 | `sim/production.ts` | `:689` `beginTick` 呼叫處 | `run.started` |
 | `sim/production.ts` | tick 結束處 | `run.ended` |
 | `sim/production.ts` | `checkpointAndTrace` 內（取代 8 處 `upsertTaskCheckpoint` 直接呼叫） | `task.phase_changed` |
-| `sim/production.ts` | `:946/:961/:1032/:1102/:1287/:1312/:1417/:1462` 共 8 處 `beginAction` 呼叫處（收斂方式未定，見〈已知細節與待確認〉） | `action.started` / `action.ended` |
+| `sim/production.ts` | `withAction` 內（取代 8 處 `beginAction` / `completeAction` / `failAction` 區塊） | `action.started` / `action.ended` |
 | `sim/production/completion.ts` | `:153` `postCompletionAndTransitionToDone` | `completion.confirmed` |
 | `sim/production/coordinator.ts` | `:544` `recordBatchAttempt` 呼叫處 | `notify.sent` |
 | `sim/production/runner.ts` | `runAiSession` 內部，`:88` 算出 `logFile` 之後、spawn 之前（**不是** `:287/:305` 的 runner 工廠層） | `session.started` / `session.ended` |
@@ -259,7 +310,6 @@ function checkpointAndTrace(deps, input, detail) {
 ## 已知細節與待確認
 
 - **`upsertTaskCheckpoint` 是 upsert，不知道舊 phase**（`state.ts:179`）。要送出 `task.phase_changed` 的 `from`，呼叫端必須先 `getTaskRun` 取值。這是把 trace 掛在編排層而非資料層的另一個理由——編排層本來就持有前後兩個狀態。
-- **`beginAction` 的 8 處呼叫如何收斂未定**。它是 `begin` → `complete` / `fail` 的三段生命週期，包 wrapper 要連錯誤處理一起接管，比 `checkpointAndTrace` 大得多。另一條路是把 trace 直接送在 `state.ts` 的 `beginAction` / `completeAction` / `failAction` 內——**3 個位置涵蓋全部呼叫且不可能漏**，但要放寬「trace 只掛編排層」這條規則，`state.ts` 會依賴 trace 型別。`action_log` 的寫入本身就是那個事件，兩者分開反而可能漂移，因此這個讓步可能是對的。階段 2 開工前決定。
 - **`merge.integrated` 的出處尚未定位到具體行號**，只確認流程在 `sim/production.ts` 內。階段 2 實作時補上；若該處拿不到 merge sha，〈evidence 的型別強制〉裡它的「必填」要退回 `Evidence | null`。
 - **retention 未實作**。`sim-logs/` 是 gitignored，先不管。真要清時抄 `pruneNotificationTelemetry`（`sim/notificationTelemetry.ts:191`）那 10 行，不另設計。
 - **`run.ts` 與 `production.ts` 是兩套並行的編排流程**，`run_id` 語意分別是 sim tag 與 tick_id。本設計不統一它們，只要求同一份 trace 格式。
