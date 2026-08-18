@@ -591,10 +591,8 @@ export function shouldCreateMainDiscussion(
   now: Date,
 ): boolean {
   if (openTodoCount >= MAIN_DISCUSSION_TARGET) return false;
-  // ponytail: 查不到建立時間就不建（fail-closed）。看板上還有討論卻查無時間，代表查詢或
-  // payload 漂移了，這時放行等於每 tick 狂建——正是這個節流要消滅的行為。只有真的空看板
-  // （count 0）才冷啟動。
-  if (!lastCreatedAt) return openTodoCount === 0;
+  // 沒有 Owner 歷史時允許首次發想；其他成員的討論不應阻擋 Owner 的排程。
+  if (!lastCreatedAt) return true;
   const elapsed = now.getTime() - Date.parse(lastCreatedAt);
   return Number.isFinite(elapsed) && elapsed >= ideationIntervalMs();
 }
@@ -3158,8 +3156,9 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         `SELECT MAX(occurred_at) AS at FROM event_store
           WHERE event_type = 'task.created'
             AND json_extract(payload_json, '$.workspaceId') = ?
-            AND json_extract(payload_json, '$.title') LIKE ?`,
-      ).get(wsId, `${MAIN_DISCUSSION_PREFIX}%`) as { at: string | null } | undefined)?.at ?? null;
+            AND json_extract(payload_json, '$.title') LIKE ?
+            AND json_extract(metadata_json, '$.actor_id') = ?`,
+      ).get(wsId, `${MAIN_DISCUSSION_PREFIX}%`, mainOwner?.id ?? '') as { at: string | null } | undefined)?.at ?? null;
       createDiscussion = shouldCreateMainDiscussion(discussions.length, lastCreatedAt, new Date());
       const ownerId = mainOwner?.id;
       const hasNewInput = !!ownerId && discussions.some((d) => lastCommenter(d.task_id) !== ownerId);

@@ -136,6 +136,10 @@ assert.ok(
   source.includes("ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000), p.createDiscussion)"),
   'owner sweep 必須把計算後的 timeout 分鐘數與發想額度傳進 prompt',
 );
+assert.ok(
+  source.includes("json_extract(metadata_json, '$.actor_id') = ?"),
+  '發想節流只能以 Owner 建立的討論計時，不能被其他成員重置',
+);
 assert.ok(!source.includes('const MEMBERS: Member[] = ['), 'MEMBERS 不應在 sim/run.ts 寫死 email/name');
 assert.ok(!source.includes('let REPO_ROOT'), 'scenario 狀態不應拆成多個可不同步的 global');
 assert.ok(!source.includes('let WORK_DIR'), 'scenario 狀態不應拆成多個可不同步的 global');
@@ -1793,9 +1797,10 @@ assert.strictEqual(
   false,
   '差 1 毫秒未到',
 );
-// fail-closed：查不到建立時間時，只有真的空看板才冷啟動，否則寧可不建。
+// 沒有 Owner 歷史時立即允許首次發想，但仍受 Todo 上限限制。
 assert.strictEqual(shouldCreateMainDiscussion(0, null, NOW), true, '空看板冷啟動');
-assert.strictEqual(shouldCreateMainDiscussion(1, null, NOW), false, '有討論卻查無時間 → 不建');
+assert.strictEqual(shouldCreateMainDiscussion(1, null, NOW), true, '只有其他成員的討論 → Owner 可首次發想');
+assert.strictEqual(shouldCreateMainDiscussion(MAIN_DISCUSSION_TARGET, null, NOW), false, 'Todo 上限已滿 → 不建');
 assert.strictEqual(shouldCreateMainDiscussion(2, 'not-a-date', NOW), false, '時間解析失敗 → 不建');
 
 // 間隔可用 SIM_IDEATION_INTERVAL_HOURS 外部調整；亂填要退回預設而不是變成 0（0 等於沒節流）。
