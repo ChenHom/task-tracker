@@ -1,6 +1,6 @@
 # sim 車隊結構化 trace 開發文件
 
-> 狀態：階段 1 已實作（`sim/trace.ts`、`sim/trace.test.ts`，2026-08-19），階段 2-4 未動。查證日 2026-08-18。本文所有 `file:line` 均為撰寫當日實際存在的位置；實作前請重新確認行號未因其他 session 提交而位移。
+> 狀態：階段 1、2 已實作（2026-08-19），階段 3-4 未動。實作時修正了本文六處與程式不符的地方，見〈實作與設計的出入〉。查證日 2026-08-18。本文所有 `file:line` 均為撰寫當日實際存在的位置；實作前請重新確認行號未因其他 session 提交而位移。
 
 ## 決策摘要
 
@@ -312,15 +312,15 @@ async function withAction(deps, key, kind, taskId, fn) {
 | 檔案 | 位置 | 送出事件 |
 | --- | --- | --- |
 | `sim/production.ts` | `:689` `beginTick` 呼叫處 | `run.started` |
-| `sim/production.ts` | `:694` / `:737` / `:755` / `:778` **四處** `endTick`（不同 outcome 分支） | `run.ended` |
+| `sim/production.ts` | `endTickAndTrace` 內（取代 **五處** `endTick`——含 catch block 那處） | `run.ended` |
 | `sim/production.ts` | `checkpointAndTrace` 內（取代 8 處 `upsertTaskCheckpoint` 直接呼叫） | `task.phase_changed` |
 | `sim/production.ts` | `withAction` 內（取代 8 處 `beginAction` / `completeAction` / `failAction` 區塊） | `action.started` / `action.ended` |
-| `sim/production/coordinator.ts` | `:108` `recordMemberAttempt` 呼叫處 | `task.attempted` |
-| `sim/production/coordinator.ts` | `:231` / `:244` / `:250`，以 `reason` 區分三種檢查 | `ci.checked` |
-| `sim/production/coordinator.ts` | `:270` `mergeTaskIntoMaster` 呼叫處，`evidence.ref` = 回傳的 `mergeSha` | `merge.integrated` |
-| `sim/production/coordinator.ts` | `:544` `recordBatchAttempt` 呼叫處 | `notify.sent` |
-| `sim/production/completion.ts` | `:153` `postCompletionAndTransitionToDone` | `completion.confirmed` |
-| `sim/production/runner.ts` | `runAiSession` 內部，`:88` 算出 `logFile` 之後、spawn 之前（**不是** `:287/:305` 的 runner 工廠層） | `session.started` / `session.ended` |
+| `sim/production.ts` | `applyMemberAttemptTransition` 內，`recordMemberSessionAttempt` 回傳後 | `task.attempted` |
+| `sim/production/coordinator.ts` | `runDeployAcceptance` 內三處，以 `reason` 區分 | `ci.checked` |
+| `sim/production/coordinator.ts` | `runDeployAcceptance` 內 `mergeTaskIntoMaster` 之後，`evidence.ref` = `mergeSha` | `merge.integrated` |
+| `sim/production.ts` | `runDiscordOutboxTick` 回傳的 outcome 迴圈 | `notify.sent` |
+| `sim/production.ts` | `completion.kind === 'done'` 分支（`completion.ts` 一個字都沒改） | `completion.confirmed` |
+| `sim/production/runner.ts` | `runAiSession` 內部，算出 `logFile` 之後、spawn 之前（**不是** runner 工廠層），tracer 由 module-level `setSessionTraceFactory` 注入 | `session.started` / `session.ended` |
 | `sim/run.ts` | `:3085` `sweep()` 起訖（**常態路徑，優先做**） | `run.started` / `run.ended` |
 | `sim/run.ts` | `:2774` `main()` 起訖 | `run.started` / `run.ended` |
 | `sim/run.ts` | `:2002` `runSessionAttempt` | `session.started` / `session.ended` |
@@ -336,7 +336,7 @@ async function withAction(deps, key, kind, taskId, fn) {
 | --- | --- | --- |
 | 0 | 確認本文 14 個事件與出處無誤 | 人工過目（出處已於 2026-08-18 實查） |
 | 1 ✅ | `sim/trace.ts` + `assert` 自檢 | 2026-08-19 完成：`npm test` 全綠（`sim/trace.test.ts` 已納入 `package.json` 的 test 串） |
-| 2 | 包 `checkpointAndTrace`，掛 `sim/production.ts`、`completion.ts`、`coordinator.ts` | 一次 tick 在 `sim-logs/trace/<YYYY-MM-DD>.jsonl` 追加事件，`jq 'select(.run_id=="<tick_id>")'` 查得到完整一輪 |
+| 2 ✅ | 包三個 wrapper，掛 `sim/production.ts`、`coordinator.ts`、`runner.ts` | 2026-08-19 完成：`production.integration.test.ts` 的 Todo→Done 端對端斷言——同一 `run_id`、10 種事件齊全、phase 轉移恰為 `∅→assigned→doing→review→done`、`ci.checked` 三種 `reason` 皆到齊且 evidence 非 null |
 | 3 | 掛 `sim/run.ts`：**先 `sweep()`（常態路徑）**，再 `main()` 與其餘四處 | 一次 sweep tick 的 trace 完整，`main()` 隨後 |
 | 4 | 既有 `console.log` 改由 `formatTraceRecord` 產生同樣人話 | fixture 比對通過，見下 |
 
@@ -344,11 +344,28 @@ async function withAction(deps, key, kind, taskId, fn) {
 
 **不要用「跑兩次 sim 再 diff 終端輸出」當判準**——`sim/run.ts:85` 為每行加了 `[HH:MM:SS]` 前綴，加上 session id、sha 與 AI 回應內容，兩次執行不可能逐字相同，那是一個永遠過不了的門檻。要驗的是格式化邏輯，不是跑一場 sim。
 
+## 實作與設計的出入
+
+階段 2 實作時發現六處與本文原稿不符，已直接改上面的表，理由記在這裡：
+
+| 項目 | 原稿 | 實際 | 原因 |
+| --- | --- | --- | --- |
+| `endTick` | 四處 | **五處** | catch block 那處（`UNCLASSIFIED ERROR`）漏掉了，而那正是最需要記的一種 `run.ended` |
+| `withAction` 覆蓋數 | 8 處 | **7 處** | `persistFatalError` 是 `beginAction` 之後直接 `failAction`，沒有工作區塊、也拿不到 `deps`，不適用 |
+| `withAction` 錯誤處理 | 「目前 8 處剛好都 `throw err`」 | 兩處原本就吞掉 | `human_blocked_notice` 與 `deployment_rollback_notice` 的 catch 沒有 rethrow，wrapper 因此**現在就**需要 `onError: 'throw' \| 'swallow'`，不是日後才需要 |
+| `task.attempted` | 掛 `coordinator.ts` | 掛 `production.ts` | `recordMemberSessionAttempt` 是 coordinator.ts 的純函式，塞 trace 進去會破壞它的零 I/O 契約 |
+| `completion.confirmed` / `notify.sent` | 掛 `completion.ts` / `coordinator.ts` | 都掛 `production.ts` | 呼叫端本來就在 switch/迴圈裡拿得到結果，兩個檔案一個字都不用改 |
+| session 事件的 tracer | 直接掛進 `runAiSession` | 需要 module-level 注入點 | runner 工廠在 CLI 層（`production.ts:1603`）就建好，那時 `tickId` 還不存在；`session_id` 又只有 `runAiSession` 內部算得出來。兩頭夾擊，`setSessionTraceFactory` 是唯一能同時保住 `run_id` 與 `session_id` 的做法 |
+
+另外，`RunDeployAcceptanceInput.trace` 刻意是**選填**：`sim/production.test.ts` 有 14 個 `runDeployAcceptance({...})` 呼叫點，為了一個測試根本不在意的欄位改 14 處不划算。正式呼叫端只有一個，`?.` 在程式碼裡看得見。
+
 ## 已知細節與待確認
 
 - **`upsertTaskCheckpoint` 是 upsert，不知道舊 phase**（`state.ts:179`）。要送出 `task.phase_changed` 的 `from`，呼叫端必須先 `getTaskRun` 取值。這是把 trace 掛在編排層而非資料層的另一個理由——編排層本來就持有前後兩個狀態。
 - **`ci_runs` 快取層是死碼**（2026-08-18 掃描發現，與 trace 無關的既有問題）。`storeCiRun`（`state.ts:377`）、`lookupCiRun`（`:387`）、`ciCacheKey`（`git.ts:301`）與 `ci_runs` 表都只有測試碰過，production 流程一次都沒呼叫——CI 快取寫好了從沒接上。**本 phase 不處理**（刪死碼超出範圍），但需另開 task：看到 `ci_runs` 表的人會誤以為 CI 有快取。
 - **`sim/escalateNotify.ts` 在 repo 內沒有呼叫端**，`deploy/` 下也沒有對應的 timer 或 service，是獨立 CLI。`escalation.raised` 因此移出 trace（見〈為什麼移除 `escalation.raised`〉）。若日後它被排程化，再評估是否加回。
+- **coordinator 的 `ci.checked` 沒有 logFile 可指**。`AcceptanceCheckResult` 只有 `{ passed, detail }`，檢查輸出沒有落成檔案，`evidence.ref` 只能填「在哪裡跑了什麼」（branch 名、`${command}@${worktreePath}`、`task:<id>`）而非輸出位置。要真的能回頭看輸出，得讓 `runBranchCi` / `runIntegrationCommand` 把輸出寫檔——那是另一件事。
+- **`session.started` / `session.ended` 目前沒有測試覆蓋**。整合測試注入的是假 runner，走不到 `runAiSession`；要驗只能實跑一次 `--live`。
 - **retention 未實作**。`sim-logs/` 是 gitignored，先不管。真要清時抄 `pruneNotificationTelemetry`（`sim/notificationTelemetry.ts:191`）那 10 行，不另設計。
 - **`run.ts` 與 `production.ts` 是兩套並行的編排流程**，`run_id` 語意分別是 sim tag 與 tick_id。本設計不統一它們，只要求同一份 trace 格式。
 

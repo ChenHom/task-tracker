@@ -74,7 +74,7 @@ import {
   type MemberSessionDriverActions,
   type MemberSessionResult,
 } from './production/agent';
-import { createOwnerSessionRunner, createMemberSessionRunner } from './production/runner';
+import { createOwnerSessionRunner, createMemberSessionRunner, setSessionTraceFactory } from './production/runner';
 import {
   recordMemberSessionAttempt,
   runDeployAcceptance,
@@ -748,6 +748,10 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
   const tracer = (taskId: string | null = null): Tracer =>
     createTracer({ run_id: tickId, session_id: null, task_id: taskId, actor: 'coordinator', model: null, round: null }, traceSink, now);
   const trace = tracer();
+  // runner 工廠在 CLI 層就建好了，拿不到 tickId；session_id 又只有 runAiSession 內部
+  // 算得出來。用 module-level 注入點把兩端接起來，見 runner.ts 的 SessionTraceFactory。
+  setSessionTraceFactory(({ taskId, sessionId, actor, model }) =>
+    createTracer({ run_id: tickId, session_id: sessionId, task_id: taskId, actor, model, round: null }, traceSink, now));
 
   const db = openDbEnsuringDir(dbPath);
   try {
@@ -841,7 +845,13 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
     for (const d of summary.errorDetails) lines.push(`  ERROR: ${d}`);
 
     const discordOutcomes = await runDiscordOutboxTick({ db, sendDiscordMessage: deps.sendDiscordMessage, newBatchId: deps.newId, now: now() });
-    for (const o of discordOutcomes) lines.push(`discord batch ${o.batchId}: ${o.status} (attempt ${o.attemptCount}, ${o.taskIds.length} tasks)`);
+    for (const o of discordOutcomes) {
+      lines.push(`discord batch ${o.batchId}: ${o.status} (attempt ${o.attemptCount}, ${o.taskIds.length} tasks)`);
+      trace('notify.sent', {
+        outcome: o.status === 'sent' ? 'ok' : 'fail',
+        detail: `discord batch ${o.batchId}: ${o.status}（第 ${o.attemptCount} 次，${o.taskIds.length} 個 task）`,
+      });
+    }
 
     const outcome = summary.errors > 0 ? 'partial_failure' : 'ok';
     endTickAndTrace(
@@ -1146,6 +1156,11 @@ async function applyMemberAttemptTransition(
 ): Promise<MemberAttemptTransition> {
   const currentEvidence = await buildTaskEvidence(deps.ownerClient, task);
   const transition = recordMemberSessionAttempt(run, result, currentEvidence);
+  deps.tracer(action.taskId)('task.attempted', {
+    outcome: result.outcome === 'progressed' ? 'ok' : 'fail',
+    reason: result.outcome,
+    detail: `evidenceChanged=${result.evidenceChanged} noProgress=${transition.run.noProgressCount} ownerIntervened=${transition.run.ownerIntervened}`,
+  });
 
   if (transition.humanBlockedNotice) {
     const key = transition.humanBlockedNotice.actionKey;
@@ -1380,6 +1395,7 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
     runTaskLiveAcceptance: () => deps.runTaskLiveAcceptance(action.taskId),
     now: () => deps.now().getTime(),
     sleep: deps.sleep,
+    trace: deps.tracer(action.taskId),
   });
 
   switch (deployResult.kind) {
@@ -1398,6 +1414,10 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
         now: deps.now(),
       });
       if (completion.kind === 'done') {
+        deps.tracer(action.taskId)('completion.confirmed', {
+          evidence: { kind: 'readback', ref: completion.commentId },
+          detail: `notification ${completion.notificationId}，deployRev ${deployResult.mergeSha}`,
+        });
         checkpointAndTrace(deps, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'done', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: reviewedHeadSha, evidenceFingerprint: run.evidenceFingerprint, noProgressCount: 0, ownerIntervened: false }, `部署完成，deployRev ${deployResult.mergeSha}`);
         return 'progressed';
       }

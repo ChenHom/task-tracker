@@ -30,8 +30,9 @@
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { buildRunnerInvocation, isQuotaExhaustion, type ModelRoute } from '../run';
+import type { Tracer } from '../trace';
 import type {
   MemberSessionOutput,
   MemberSessionRunner,
@@ -42,6 +43,19 @@ import type {
 } from './agent';
 
 const LOG_DIR = join(__dirname, '../../sim-logs/production-sessions');
+
+/**
+ * session trace 的注入點。runner 工廠在 CLI 層就被建好（見 production.ts 對「不在
+ * runOnce 裡給預設 runner」的註解），那時 tickId 還不存在；而 session_id 是
+ * runAiSession 內部才算得出來的 logFile basename，工廠那層拿不到。兩頭夾擊之下，
+ * module-level 的注入點是唯一能同時保住 run_id 與 session_id 的做法。
+ * runOnce 每個 tick 開頭覆寫一次；沒設就完全不送事件（測試與 smoke 走這條）。
+ */
+export type SessionTraceFactory = (base: { taskId: string; sessionId: string; actor: string; model: string }) => Tracer;
+let sessionTraceFactory: SessionTraceFactory | null = null;
+export function setSessionTraceFactory(factory: SessionTraceFactory | null): void {
+  sessionTraceFactory = factory;
+}
 
 // coordinator 的 session context 刻意不帶成員身分（見 agent.ts 的
 // MemberSessionRunnerContext 註解：「沒有任何欄位可以引用或切換到別的 task」），
@@ -83,9 +97,14 @@ function runAiSession(
   prompt: string,
   cwd: string,
   sandbox: 'read-only' | 'workspace-write',
+  taskId: string,
 ): Promise<AiSessionResult> {
   mkdirSync(LOG_DIR, { recursive: true });
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/gu, '-')}-${label}.log`);
+  // session_id 就是這個 logFile 的 basename——不發新 ID，順手把既有的純文字 transcript
+  // 與 trace 綁在一起（見 docs/sim-trace.md〈session_id 的粒度〉）。
+  const trace = sessionTraceFactory?.({ taskId, sessionId: basename(logFile), actor: label.split('-')[0], model: route.model });
+  trace?.('session.started', { detail: `${label} ${route.runner}/${route.model} sandbox=${sandbox}` });
   const invocation = buildRunnerInvocation(route, prompt, { cwd, logFile, sandbox });
   return new Promise((resolve) => {
     const child = execFile(
@@ -100,7 +119,13 @@ function runAiSession(
         // codex 會把最後一則訊息單獨寫到 <logFile>.last，比在 stdout 裡撈可靠。
         const lastFile = `${logFile}.last`;
         const text = existsSync(lastFile) ? readFileSync(lastFile, 'utf8') : stdout;
-        resolve({ text, timedOut, errored: !!err, quotaExhausted: !!err && isQuotaExhaustion(combined), logFile });
+        const quotaExhausted = !!err && isQuotaExhaustion(combined);
+        trace?.('session.ended', {
+          outcome: err ? 'fail' : 'ok',
+          evidence: { kind: 'log', ref: logFile },
+          detail: timedOut ? '逾時' : quotaExhausted ? '額度耗盡' : err ? String(err) : `${text.length} 字元輸出`,
+        });
+        resolve({ text, timedOut, errored: !!err, quotaExhausted, logFile });
       },
     );
     if (route.runner !== 'claude') child.stdin?.end(); // codex/agy headless 看到 piped stdin 會等 EOF
@@ -289,7 +314,7 @@ export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE): Mem
     const label = `member-${context.taskId.slice(0, 8)}`;
     const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
     try {
-      const session = await runAiSession(label, route, memberPrompt(context), cwd, MEMBER_SANDBOX);
+      const session = await runAiSession(label, route, memberPrompt(context), cwd, MEMBER_SANDBOX, context.taskId);
       assertSessionUsable(label, session);
       const raw = extractJsonBlock(session.text);
       if (raw === null) {
@@ -307,7 +332,7 @@ export function createOwnerSessionRunner(route: ModelRoute = OWNER_ROUTE): Owner
     const label = `owner-${context.taskId.slice(0, 8)}`;
     const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
     try {
-      const session = await runAiSession(label, route, ownerPrompt(context), cwd, OWNER_SANDBOX);
+      const session = await runAiSession(label, route, ownerPrompt(context), cwd, OWNER_SANDBOX, context.taskId);
       assertSessionUsable(label, session);
       const raw = extractJsonBlock(session.text);
       if (raw === null) {

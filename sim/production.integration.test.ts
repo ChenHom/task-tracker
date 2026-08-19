@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { runOnce, runStatus, describeCutoverDisposition } from './production';
-import type { TraceSink } from './trace';
+import type { TraceRecord, TraceSink } from './trace';
 
 // 測試不寫真的 trace：sim-logs/trace 是要拿來查真實車隊行為的，不能被測試資料汙染。
 const silentTrace: TraceSink = () => {};
@@ -342,8 +342,10 @@ async function testHappyPathTickLifecycle(): Promise<void> {
     let idCounter = 0;
     const newId = () => `id-${++idCounter}`;
 
+    // 這一條是完整 Todo -> Done 路徑，順便當 trace 的端對端判準（見 docs/sim-trace.md 階段 2）。
+    const traced: TraceRecord[] = [];
     const runOptions = {
-      traceSink: silentTrace,
+      traceSink: (r: TraceRecord) => traced.push(r),
       live: true,
       baseUrl,
       dbPath,
@@ -379,6 +381,29 @@ async function testHappyPathTickLifecycle(): Promise<void> {
     assert.strictEqual(patchCallsAfterFirst, 4, '恰好 4 次單欄位 PATCH：assignee, status=Doing, status=Review, status=Done');
     assert.strictEqual(postCommentCallsAfterFirst, 3, '恰好 3 則留言：OWNER派工 + member 摘要 + SYSTEM 完成留言');
     assert.strictEqual(discordCallsAfterFirst, 1, '恰好 1 次 Discord 傳送（單一 batch）');
+
+    // ---- trace：一個 tick 的事件必須完整且同屬一個 run_id ----
+    assert.ok(traced.every((r) => r.run_id === first.tickId), '同一個 tick 的每一筆 trace 都必須帶同一個 run_id，否則無法 group');
+    const seen = new Set(traced.map((r) => r.event));
+    for (const event of ['run.started', 'run.ended', 'task.phase_changed', 'task.attempted', 'action.started', 'action.ended', 'ci.checked', 'merge.integrated', 'completion.confirmed', 'notify.sent'] as const) {
+      assert.ok(seen.has(event), `Todo -> Done 這一輪應該送出 ${event}，實際只有 ${[...seen].join('、')}`);
+    }
+    assert.strictEqual(traced.filter((r) => r.event === 'run.ended').length, 1, '一個 tick 只能有一筆 run.ended');
+    assert.deepStrictEqual(
+      traced.filter((r) => r.event === 'task.phase_changed').map((r) => `${r.from ?? '∅'}→${r.to}`),
+      ['∅→assigned', 'assigned→doing', 'doing→review', 'review→done'],
+      'phase 轉移必須逐段記錄，且 from === to 的 upsert 不得產生事件',
+    );
+    assert.deepStrictEqual(
+      [...new Set(traced.filter((r) => r.event === 'ci.checked').map((r) => r.reason))],
+      ['branch_ci', 'integration', 'task_specific'],
+      'ci.checked 的三種來源都要出現，且用 reason 區分',
+    );
+    assert.ok(
+      traced.filter((r) => r.event === 'ci.checked').every((r) => r.evidence !== null),
+      'ci.checked 的 evidence 不得為 null',
+    );
+    assert.ok(traced.some((r) => r.event === 'merge.integrated' && r.evidence?.kind === 'git'), 'merge.integrated 的 evidence 必須是 merge sha');
 
     // ---- 重新開啟 state：第二個 tick 不得建立任何重複副作用 ----
     const second = await runOnce(runOptions);

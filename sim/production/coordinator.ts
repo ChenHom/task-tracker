@@ -13,6 +13,7 @@
 // human_blocked 的那一刻，產生一則唯一、可去重的 @user09 留言內容。
 import type { DatabaseSync } from 'node:sqlite';
 import type { TaskRun } from './types';
+import type { Tracer } from '../trace';
 import { recordMemberAttempt, shouldResumeHumanBlocked, taskEvidenceFingerprint, type TaskEvidence } from './policy';
 import type { MemberSessionResult } from './agent';
 import {
@@ -196,6 +197,11 @@ export interface RunDeployAcceptanceInput {
   runTaskLiveAcceptance: AcceptanceCheck;
   now: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * 選填：只有 production.ts 這一個正式呼叫端會傳，測試不傳。ci.checked 的成功案例
+   * 從回傳值看不出來（DeployAcceptanceResult 只回報第一個失敗），所以必須掛在這裡面。
+   */
+  trace?: Tracer;
 }
 
 export type DeployAcceptanceResult =
@@ -229,6 +235,12 @@ export async function runDeployAcceptance(input: RunDeployAcceptanceInput): Prom
   }
 
   const branchCi = await input.runBranchCi();
+  input.trace?.('ci.checked', {
+    outcome: branchCi.passed ? 'ok' : 'fail',
+    reason: 'branch_ci',
+    evidence: { kind: 'test', ref: input.taskBranch },
+    detail: branchCi.detail,
+  });
   if (!branchCi.passed) {
     return { kind: 'branch_ci_failed', detail: branchCi.detail };
   }
@@ -242,12 +254,24 @@ export async function runDeployAcceptance(input: RunDeployAcceptanceInput): Prom
   try {
     for (const command of INTEGRATION_COMMANDS) {
       const result = await input.runIntegrationCommand(command, integration.path);
+      input.trace?.('ci.checked', {
+        outcome: result.exitCode === 0 ? 'ok' : 'fail',
+        reason: 'integration',
+        evidence: { kind: 'test', ref: `${command}@${integration.path}` },
+        detail: result.output,
+      });
       if (result.exitCode !== 0) {
         return { kind: 'integration_command_failed', command, detail: result.output };
       }
     }
 
     const taskSpecific = await input.runTaskSpecificAcceptance();
+    input.trace?.('ci.checked', {
+      outcome: taskSpecific.passed ? 'ok' : 'fail',
+      reason: 'task_specific',
+      evidence: { kind: 'test', ref: `task:${input.taskId}` },
+      detail: taskSpecific.detail,
+    });
     if (!taskSpecific.passed) {
       return { kind: 'task_specific_acceptance_failed', detail: taskSpecific.detail };
     }
@@ -268,6 +292,10 @@ export async function runDeployAcceptance(input: RunDeployAcceptanceInput): Prom
   };
 
   const mergeSha = await mergeTaskIntoMaster(input.repoRoot, input.taskBranch, input.taskId);
+  input.trace?.('merge.integrated', {
+    evidence: { kind: 'git', ref: mergeSha },
+    detail: `${input.taskBranch} --no-ff→ master`,
+  });
 
   const waitResult = await waitForDeployment({
     targetSha: mergeSha,
