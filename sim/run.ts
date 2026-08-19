@@ -2074,7 +2074,8 @@ function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opt
         trace('session.ended', {
           outcome: err ? 'fail' : 'ok',
           evidence: captureContent ? { kind: 'log', ref: logFile } : null,
-          detail: `${errorCategory}${why} — ${tail}`,
+          // errorCategory 成功時是 'none'，印出來只會變成「none — …」的雜訊。
+          detail: `${err ? `${errorCategory}${why} — ` : ''}${tail}`,
         });
         resolve({
           timedOut,
