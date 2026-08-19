@@ -1,6 +1,6 @@
 # sim 車隊結構化 trace 開發文件
 
-> 狀態：設計定稿，尚未實作。查證日 2026-08-18。本文所有 `file:line` 均為撰寫當日實際存在的位置；實作前請重新確認行號未因其他 session 提交而位移。
+> 狀態：階段 1 已實作（`sim/trace.ts`、`sim/trace.test.ts`，2026-08-19），階段 2-4 未動。查證日 2026-08-18。本文所有 `file:line` 均為撰寫當日實際存在的位置；實作前請重新確認行號未因其他 session 提交而位移。
 
 ## 決策摘要
 
@@ -117,7 +117,7 @@ await withRunLock(lockPath, () => SWEEP ? sweep(SWEEP_ROLE) : main());
 
 `detail` **只供人閱讀，不得被任何程式解析**。300 字元上限沿用 `sim/run.ts:2038` 現行的 `tail.slice(0, 200)` 做法並放寬；AI 回應全文留在 `sim-logs/*.log`，trace 只記指標。
 
-`ref` 是 sha、logFile 路徑或 URL——只記類型與指標，全文留在原處。`kind` 與事件一一對應，不得任意搭配：
+`ref` 是 sha、logFile 路徑或 URL——只記類型與指標，全文留在原處。`kind` 與事件一一對應，不得任意搭配。**沒有事件用得到的 kind 不預先定義**——原先列的 `http` 已於實作時移出，需要時再加一個字串字面量：
 
 | `kind` | `ref` 是什麼 | 用在哪個事件 |
 | --- | --- | --- |
@@ -125,7 +125,6 @@ await withRunLock(lockPath, () => SWEEP ? sweep(SWEEP_ROLE) : main());
 | `git` | commit 或 merge sha | `commit.recorded`、`merge.integrated` |
 | `readback` | 被讀回驗證的 comment / notification id | `completion.confirmed` |
 | `log` | `sim-logs/` 下的 transcript 路徑 | `session.ended` |
-| `http` | API endpoint 與狀態碼 | 目前無事件使用，保留給日後 API 類證據 |
 
 ### session_id 的粒度
 
@@ -139,7 +138,7 @@ await withRunLock(lockPath, () => SWEEP ? sweep(SWEEP_ROLE) : main());
 
 ## 模組設計
 
-`sim/trace.ts`，約 60 行。核心是一張 mapped type：**寫入端依事件收不同參數，落盤是單一扁平形狀**。
+`sim/trace.ts`（實作 118 行，含註解）。核心是一張 mapped type：**寫入端依事件收不同參數，落盤是單一扁平形狀**。
 
 ```ts
 // 每個事件收哪些參數。這張表就是〈事件語意〉那節的程式碼形式。
@@ -162,12 +161,12 @@ interface TraceRecord extends TraceBase { ts: string; event: TraceEvent; outcome
 
 function buildTraceRecord<E extends TraceEvent>(base: TraceBase, event: E, args: TraceArgs[E], now: Date): TraceRecord;  // 純函式
 function formatTraceRecord(r: TraceRecord): string;   // 人話那行；單一函式，無 switch
-function defaultSink(r: TraceRecord): void;           // 寫檔 + console.log
+export function createFileSink(fileName?: string): TraceSink;   // 省略 fileName 則按日切檔
 
-export function createTracer(base: TraceBase, sink: TraceSink = defaultSink): Tracer;
+export function createTracer(base: TraceBase, sink?: TraceSink, now?: () => Date): Tracer;
 ```
 
-export 面積只有 `createTracer` 與型別；`buildTraceRecord` / `formatTraceRecord` / `defaultSink` 為 internal，測試透過 memory sink 驗證。
+export 面積為 `createTracer` / `createFileSink` / `formatTraceRecord` 與型別；`buildTraceRecord` 與 `TraceArgs` 為 internal。`createFileSink` 要 export 是因為手動跑的 `main()` 需要一場一檔，`formatTraceRecord` 則是階段 4 的 fixture 判準要直接斷言它。測試以 memory sink 驗證欄位齊全（`sim/trace.test.ts`）。
 
 ### 為什麼寫入端與落盤端用不同型別
 
@@ -336,7 +335,7 @@ async function withAction(deps, key, kind, taskId, fn) {
 | 階段 | 內容 | 完成判準 |
 | --- | --- | --- |
 | 0 | 確認本文 14 個事件與出處無誤 | 人工過目（出處已於 2026-08-18 實查） |
-| 1 | `sim/trace.ts` + `assert` 自檢 | `npm run typecheck` 過、自檢通過 |
+| 1 ✅ | `sim/trace.ts` + `assert` 自檢 | 2026-08-19 完成：`npm test` 全綠（`sim/trace.test.ts` 已納入 `package.json` 的 test 串） |
 | 2 | 包 `checkpointAndTrace`，掛 `sim/production.ts`、`completion.ts`、`coordinator.ts` | 一次 tick 在 `sim-logs/trace/<YYYY-MM-DD>.jsonl` 追加事件，`jq 'select(.run_id=="<tick_id>")'` 查得到完整一輪 |
 | 3 | 掛 `sim/run.ts`：**先 `sweep()`（常態路徑）**，再 `main()` 與其餘四處 | 一次 sweep tick 的 trace 完整，`main()` 隨後 |
 | 4 | 既有 `console.log` 改由 `formatTraceRecord` 產生同樣人話 | fixture 比對通過，見下 |
