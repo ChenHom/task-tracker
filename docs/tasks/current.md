@@ -423,7 +423,7 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 - [x] 階段 4（2026-08-19 完成）：`sim/run.ts` 刪掉 8 處與 trace 重複的 `console.log`，改由 `formatTraceRecord` 產生。**「逐字相同」做不到**——單一無 switch 的函式產不出 14 套模板；實際契約是 `detail` 逐字保留、前綴換成 `event` + 上下文，6 筆 fixture 鎖住格式。沒有用「跑兩次 sim 再 diff」（時間戳前綴讓它永遠過不了）。`traceOf` 在沒有 `run_id` 時改用 console-only sink 而非 no-op，確保刪掉 `console.log` 不會讓輸出整段消失
 - [ ] 另開 task：`ci_runs` 快取層是死碼——`storeCiRun`／`lookupCiRun`／`ciCacheKey` 與 `ci_runs` 表只有測試碰過，production 流程一次都沒呼叫。本 phase 不處理，但看到該表的人會誤以為 CI 有快取
 - [x] 兩份 TypeScript check 與 `npm test` baseline 通過（2026-08-19：`npm test` 全綠，另跑 `sim/production.test.ts` 與 `sim/production.integration.test.ts` 亦通過）
-- [ ] 未做：實跑一次 sweep tick 驗證真實 trace 落檔——那要真的燒 AI 呼叫，需人工決定何時開 timer
+- [x] 實跑驗證（2026-08-19 11:27）：手動觸發 `sim-sweep-team.service`，`run.started` / `run.ended` 正確落進 `sim-logs/trace/2026-08-19.jsonl`，程式未崩潰；兩個 timer 已開回。當時看板全收乾淨，`session.*` / `commit.recorded` / `ci.checked` / `gate.skipped` 仍待有工作流動時才會出現
 
 不納入本 phase：logging 框架（理由與翻案條件見設計文件附錄）、trace retention（`sim-logs/` 為 gitignored，需要時抄 `sim/notificationTelemetry.ts:191` 那 10 行）、`sim/notificationTelemetry.ts` 的合併或重寫（它有自己的外部 contract）、`sim-logs/*.log` 的檔案格式變更。
 

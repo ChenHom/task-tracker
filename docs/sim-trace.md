@@ -62,7 +62,7 @@ CI 不是單一檢查。production 側走注入點 `deps.runBranchCi`（預設�
 
 `[ESCALATE]` 不是編排層產生的事件，是 **AI 自己寫在留言正文裡的字串**（prompt 在 `run.ts:2257`），事後由 `sim/escalateNotify.ts:9` `scanNewEscalates` 以 `LIKE '%[ESCALATE]%'` 掃 DB 撈出。`run.ts:2527` 那行只是本場統計的印出，不是事件產生點。
 
-而且 `escalateNotify.ts` 在 repo 內**沒有任何呼叫端，`deploy/` 下也沒有對應的 timer 或 service**——是獨立 CLI。掛在它的掃描處，事件會零星產生或永遠不產生。
+至於呼叫端——2026-08-19 實跑 sweep 時查到，它其實**每個 tick 都會跑**：呼叫端在 repo 外的 `~/.local/bin/sim-sweep-cron.sh`（`npm run sim -- --sweep` 之後緊接著 `node --import tsx sim/escalateNotify.ts`）。先前寫「沒有任何呼叫端」是只搜了 repo 內部，錯了。但移除的理由不受影響——它掃的是留言正文，那不是編排層事件。
 
 事後掃留言內容得到的東西不屬於 trace 的語意。**移出，14 個事件。**
 
@@ -376,9 +376,11 @@ async function withAction(deps, key, kind, taskId, fn) {
 
 - **`upsertTaskCheckpoint` 是 upsert，不知道舊 phase**（`state.ts:179`）。要送出 `task.phase_changed` 的 `from`，呼叫端必須先 `getTaskRun` 取值。這是把 trace 掛在編排層而非資料層的另一個理由——編排層本來就持有前後兩個狀態。
 - **`ci_runs` 快取層是死碼**（2026-08-18 掃描發現，與 trace 無關的既有問題）。`storeCiRun`（`state.ts:377`）、`lookupCiRun`（`:387`）、`ciCacheKey`（`git.ts:301`）與 `ci_runs` 表都只有測試碰過，production 流程一次都沒呼叫——CI 快取寫好了從沒接上。**本 phase 不處理**（刪死碼超出範圍），但需另開 task：看到 `ci_runs` 表的人會誤以為 CI 有快取。
-- **`sim/escalateNotify.ts` 在 repo 內沒有呼叫端**，`deploy/` 下也沒有對應的 timer 或 service，是獨立 CLI。`escalation.raised` 因此移出 trace（見〈為什麼移除 `escalation.raised`〉）。若日後它被排程化，再評估是否加回。
+- **`sim/escalateNotify.ts` 的呼叫端在 repo 外**：`~/.local/bin/sim-sweep-cron.sh` 每個 sweep tick 結束後都會跑它（2026-08-19 實跑時查到；先前寫「沒有呼叫端」是只搜 repo 內部所致）。`escalation.raised` 仍然移出 trace，理由是它掃的是 AI 寫的留言正文、不是編排層事件——與有沒有呼叫端無關。
 - **coordinator 的 `ci.checked` 沒有 logFile 可指**。`AcceptanceCheckResult` 只有 `{ passed, detail }`，檢查輸出沒有落成檔案，`evidence.ref` 只能填「在哪裡跑了什麼」（branch 名、`${command}@${worktreePath}`、`task:<id>`）而非輸出位置。要真的能回頭看輸出，得讓 `runBranchCi` / `runIntegrationCommand` 把輸出寫檔——那是另一件事。
 - **`session.started` / `session.ended` 目前沒有測試覆蓋**。整合測試注入的是假 runner，走不到 `runAiSession`；要驗只能實跑一次 `--live`。
+- **2026-08-19 11:27 實跑一次 `sim-sweep-team.service`**：`run.started` / `run.ended` 正確落進 `sim-logs/trace/2026-08-19.jsonl`，`run_id` = `sweep-2026-08-19-03-27-team`，程式未崩潰。當時看板全收乾淨，所以只產生這兩筆——`session.*` / `commit.recorded` / `ci.checked` / `gate.skipped` 仍未在真實環境出現過，要等有工作流動才會長出來。
+- **`run_id` 的時間戳是 UTC，終端前綴是本地時間**（上例 `03-27` vs `[11:27:37]`）。這是 `createRunDir` 沿用已久的命名，不是 trace 引入的；對照 cron log 時要記得差 8 小時。
 - **retention 未實作**。`sim-logs/` 是 gitignored，先不管。真要清時抄 `pruneNotificationTelemetry`（`sim/notificationTelemetry.ts:191`）那 10 行，不另設計。
 - **`run.ts` 與 `production.ts` 是兩套並行的編排流程**，`run_id` 語意分別是 sim tag 與 tick_id。本設計不統一它們，只要求同一份 trace 格式。
 
