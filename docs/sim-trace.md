@@ -1,6 +1,6 @@
 # sim 車隊結構化 trace 開發文件
 
-> 狀態：階段 1-3 已實作（2026-08-19），階段 4 未動。實作時修正了本文八處與程式不符的地方，見〈實作與設計的出入〉。查證日 2026-08-18。本文所有 `file:line` 均為撰寫當日實際存在的位置；實作前請重新確認行號未因其他 session 提交而位移。
+> 狀態：階段 0-4 全數完成（2026-08-19）。實作時修正了本文九處與原稿不符的地方，見〈實作與設計的出入〉。查證日 2026-08-18。本文所有 `file:line` 均為撰寫當日實際存在的位置；實作前請重新確認行號未因其他 session 提交而位移。
 
 ## 決策摘要
 
@@ -337,9 +337,20 @@ async function withAction(deps, key, kind, taskId, fn) {
 | 1 ✅ | `sim/trace.ts` + `assert` 自檢 | 2026-08-19 完成：`npm test` 全綠（`sim/trace.test.ts` 已納入 `package.json` 的 test 串） |
 | 2 ✅ | 包三個 wrapper，掛 `sim/production.ts`、`coordinator.ts`、`runner.ts` | 2026-08-19 完成：`production.integration.test.ts` 的 Todo→Done 端對端斷言——同一 `run_id`、10 種事件齊全、phase 轉移恰為 `∅→assigned→doing→review→done`、`ci.checked` 三種 `reason` 皆到齊且 evidence 非 null |
 | 3 ✅ | 掛 `sim/run.ts` 六處 | 2026-08-19 程式完成：`npm run typecheck` 過、`sim/run.test.ts` 新增斷言（成功與拒絕兩種 `commit.recorded` 都送出、`run_id` 一致）。**未實跑一次 sweep tick**——那要真的燒 AI 呼叫 |
-| 4 | 既有 `console.log` 改由 `formatTraceRecord` 產生同樣人話 | fixture 比對通過，見下 |
+| 4 ✅ | 既有 `console.log` 改由 `formatTraceRecord` 產生同樣人話 | 2026-08-19 完成：`sim/run.ts` 刪掉 8 處與 trace 重複的 `console.log`，`sim/trace.test.ts` 以 6 筆 fixture 鎖住輸出格式 |
 
-階段 4 的驗證方式：準備一組固定的 `TraceRecord` fixture，斷言 `formatTraceRecord()` 的輸出與現行 `console.log` 模板逐字相同。
+階段 4 的驗證方式：準備一組固定的 `TraceRecord` fixture，斷言 `formatTraceRecord()` 的輸出。
+
+**「與舊模板逐字相同」做不到，也不該做**：一個無 switch 的格式化函式產不出 14 套 bespoke 模板，硬做就是把 Visitor 從後門放回來。實際契約是——**人話（`detail`）逐字保留，前綴由 `event` + 上下文取代**：
+
+| 舊 | 新 |
+| --- | --- |
+| `[代commit] sim/member-x r1 → 8a2fc56` | `commit.recorded [阿凱 ok git:8a2fc56] sim/member-x r1 → 8a2fc56` |
+| `[CI預跑] sim/member-x: tsc PASS / test FAIL（2 commit）` | 拆成兩筆 `ci.checked`，各自帶得到輸出檔位置 |
+
+換來的是每行都能 `jq` 篩、CI 那行從「兩個結果擠一行」變成兩筆各自帶 `evidence.ref`。
+
+**刪 `console.log` 的前提是輸出不會消失**：`traceOf` 在沒有 `run_id` 時（單元測試直接 import 這些函式）改用 console-only sink，而不是 no-op——否則刪掉 `console.log` 之後，缺進入點的情境會整段靜音。
 
 **不要用「跑兩次 sim 再 diff 終端輸出」當判準**——`sim/run.ts:85` 為每行加了 `[HH:MM:SS]` 前綴，加上 session id、sha 與 AI 回應內容，兩次執行不可能逐字相同，那是一個永遠過不了的門檻。要驗的是格式化邏輯，不是跑一場 sim。
 
@@ -356,6 +367,7 @@ async function withAction(deps, key, kind, taskId, fn) {
 | `completion.confirmed` / `notify.sent` | 掛 `completion.ts` / `coordinator.ts` | 都掛 `production.ts` | 呼叫端本來就在 switch/迴圈裡拿得到結果，兩個檔案一個字都不用改 |
 | `sweep()` 的 run_id | 「目前沒有任何 run 識別碼，需新發」 | **本來就有** | `createRunDir(LOG_DIR, `sweep-<stamp>-<role>`)` 早就在，只是建在函式中段，提前兩行即可 |
 | `run.ts` 的 `run.ended` | 掛在 `sweep()` / `main()` 各自 | 統一由 `runCli` 送 | 兩個進入點都可能拋錯，收尾寫在共同的 try/catch 才不會漏；`endRunTrace` 沒開始過就 no-op |
+| 階段 4 的「逐字相同」 | 斷言與舊模板逐字相同 | 只保 `detail` 逐字 | 單一無 switch 的函式產不出 14 套模板；要求逐字等於要求 Visitor |
 | session 事件的 tracer | 直接掛進 `runAiSession` | 需要 module-level 注入點 | runner 工廠在 CLI 層（`production.ts:1603`）就建好，那時 `tickId` 還不存在；`session_id` 又只有 `runAiSession` 內部算得出來。兩頭夾擊，`setSessionTraceFactory` 是唯一能同時保住 `run_id` 與 `session_id` 的做法 |
 
 另外，`RunDeployAcceptanceInput.trace` 刻意是**選填**：`sim/production.test.ts` 有 14 個 `runDeployAcceptance({...})` 呼叫點，為了一個測試根本不在意的欄位改 14 處不划算。正式呼叫端只有一個，`?.` 在程式碼裡看得見。

@@ -2,7 +2,7 @@
 
 > 對應 [design.md](../../design.md)，接續 [history.md](history.md) 已完成的 Phase 0-7。
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
-> 最後巡檢：2026-08-18；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 25 為目前最新交付，Phase 26 階段 1-3 已實作，階段 4 待做。
+> 最後巡檢：2026-08-18；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 25 為目前最新交付，Phase 26 四個階段全數完成，僅剩實跑一次 sweep 驗證。
 
 ---
 
@@ -416,13 +416,14 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 
 設計文件：[sim 車隊結構化 trace](../sim-trace.md)。範圍只含 sim 車隊；`src/` 應用層已有 `event_store`（`src/audit.ts:24`），不重複建置。
 
-- [ ] 階段 0：確認 **14** 個事件與出處無誤（出處已於 2026-08-18 逐條實查）。事件語意從既有 SSOT 推導——`task_runs.phase` 的 CHECK（`sim/production/state.ts:37-40`）、`sim/production/coordinator.ts:202-210` 的 outcome union、`action_log.kind` 的實際值；不建立平行的第二套詞彙。`escalation.raised` 已移除（`[ESCALATE]` 是 AI 寫在留言正文的字串，由獨立 CLI `escalateNotify.ts` 事後掃 DB 撈出，不是編排層事件）
+- [x] 階段 0（2026-08-19 過目）：確認 **14** 個事件與出處無誤（出處已於 2026-08-18 逐條實查）。事件語意從既有 SSOT 推導——`task_runs.phase` 的 CHECK（`sim/production/state.ts:37-40`）、`sim/production/coordinator.ts:202-210` 的 outcome union、`action_log.kind` 的實際值；不建立平行的第二套詞彙。`escalation.raised` 已移除（`[ESCALATE]` 是 AI 寫在留言正文的字串，由獨立 CLI `escalateNotify.ts` 事後掃 DB 撈出，不是編排層事件）
 - [x] 階段 1（2026-08-19 完成）：新增 `sim/trace.ts`（112 行）與 `sim/trace.test.ts`，已納入 `npm test`。核心是 `TraceArgs` mapped type——寫入端依事件收不同參數（`ci.checked` 等 3 個事件 evidence 不可 null），落盤是單一扁平 `TraceRecord`，`formatTraceRecord` 維持單一函式無 switch。`buildTraceRecord` 純函式 / `formatTraceRecord` 人話 / `defaultSink` 寫出三者分離；`sink` 以 function type 參數注入，不定義 class 階層；export 面積為 `createTracer` / `createFileSink` / `formatTraceRecord` 與型別（後兩者分別供一場一檔與階段 4 fixture 判準使用）。`evidence.kind` 的 `http` 因無事件使用已移出。附一個 `assert` 自檢，以 memory sink 驗證欄位齊全。不做 conditional types（`commit.recorded` 的 refused 路徑無 sha，收 `Evidence | null`）
-- [x] 階段 2（2026-08-19 完成）：包了**三個** wrapper（多一個 `endTickAndTrace`）——`checkpointAndTrace`（取代 8 處 `upsertTaskCheckpoint` 直接呼叫，把「先取舊 phase、比對、`from === to` 不送」收在一處，避免四種靜默漏記）與 `withAction`（取代 8 處 `beginAction`/`completeAction`/`failAction` 區塊，連冪等檢查與 try/catch 一起接管；**這是控制流重構，改動面比前者大一個量級**）。再掛 `beginTick`（`:689`）、`sim/production/completion.ts:153` 與 `sim/production/coordinator.ts:544`；session 事件掛 `runAiSession` 內部而非 `:287/:305` 的工廠層（否則拿不到 `logFile`）。編排層為 `production.ts`／`coordinator.ts`／`run.ts` 三個檔案，`state.ts` 與 `policy.ts` 保持純粹（action trace 不放進 `state.ts`，否則 `run_id` 會是 null）。coordinator 側按日切檔
-- [x] 階段 3（2026-08-19 程式完成，未實跑 sweep 驗證）：掛 `sim/run.ts` 六處。**先做 `sweep()`（`:3085`）**——它是 `sim-sweep-owner/team.timer` 每天觸發數十次的常態路徑，且目前沒有 run 識別碼，需新發 `sweep-<role>-<ISO>`；`main()`（`:2774`）是手動跑的完整場，隨後補。再掛 `runSessionAttempt`（`:2002`）、`commitMemberWork`（`:2550`）、`verifyBranches`（`:2680`）、`runActorSessionWithNotificationGate`（`:1866`）。此側無 `merge.integrated`——合併由 owner AI session 自己下 `git merge --no-ff`，沒有程式化呼叫可掛
-- [ ] 階段 4：既有 `console.log` 改由 `formatTraceRecord` 產生。**驗收方式是 fixture 比對**：固定 `TraceRecord` 進去，斷言輸出與現行模板逐字相同；不可用「跑兩次 sim 再 diff」（`sim/run.ts:85` 的時間戳前綴讓它永遠過不了）
+- [x] 階段 2（2026-08-19 完成）：包了**三個** wrapper（多一個 `endTickAndTrace`）——`checkpointAndTrace`（取代 8 處 `upsertTaskCheckpoint` 直接呼叫，把「先取舊 phase、比對、`from === to` 不送」收在一處，避免四種靜默漏記）與 `withAction`（取代 **7** 處 `beginAction`/`completeAction`/`failAction` 區塊——第 8 處 `persistFatalError` 是 begin 後直接 fail、沒有工作區塊，不適用；連冪等檢查與 try/catch 一起接管，**這是控制流重構，改動面比前者大一個量級**，且因為有兩處原本就吞掉錯誤，wrapper 需要 `onError` 參數）。再掛 `beginTick`（`:689`）、`sim/production/completion.ts:153` 與 `sim/production/coordinator.ts:544`；session 事件掛 `runAiSession` 內部而非 `:287/:305` 的工廠層（否則拿不到 `logFile`）。編排層為 `production.ts`／`coordinator.ts`／`run.ts` 三個檔案，`state.ts` 與 `policy.ts` 保持純粹（action trace 不放進 `state.ts`，否則 `run_id` 會是 null）。coordinator 側按日切檔
+- [x] 階段 3（2026-08-19 程式完成，未實跑 sweep 驗證）：掛 `sim/run.ts` 六處。`sweep()` 是 `sim-sweep-owner/team.timer` 每天觸發數十次的常態路徑；它**本來就有識別碼**（`sweep-<stamp>-<role>` 的 runDir basename），不必新發，只把建立 runDir 的兩行提前。`run.ended` 由 `runCli` 的 try/catch 統一送——兩個進入點都可能拋錯。再掛 `runSessionAttempt`、`commitMemberWork`、`verifyBranches`、`runActorSessionWithNotificationGate`。此側無 `merge.integrated`——合併由 owner AI session 自己下 `git merge --no-ff`，沒有程式化呼叫可掛
+- [x] 階段 4（2026-08-19 完成）：`sim/run.ts` 刪掉 8 處與 trace 重複的 `console.log`，改由 `formatTraceRecord` 產生。**「逐字相同」做不到**——單一無 switch 的函式產不出 14 套模板；實際契約是 `detail` 逐字保留、前綴換成 `event` + 上下文，6 筆 fixture 鎖住格式。沒有用「跑兩次 sim 再 diff」（時間戳前綴讓它永遠過不了）。`traceOf` 在沒有 `run_id` 時改用 console-only sink 而非 no-op，確保刪掉 `console.log` 不會讓輸出整段消失
 - [ ] 另開 task：`ci_runs` 快取層是死碼——`storeCiRun`／`lookupCiRun`／`ciCacheKey` 與 `ci_runs` 表只有測試碰過，production 流程一次都沒呼叫。本 phase 不處理，但看到該表的人會誤以為 CI 有快取
-- [ ] 兩份 TypeScript check 與 `npm test` baseline 通過
+- [x] 兩份 TypeScript check 與 `npm test` baseline 通過（2026-08-19：`npm test` 全綠，另跑 `sim/production.test.ts` 與 `sim/production.integration.test.ts` 亦通過）
+- [ ] 未做：實跑一次 sweep tick 驗證真實 trace 落檔——那要真的燒 AI 呼叫，需人工決定何時開 timer
 
 不納入本 phase：logging 框架（理由與翻案條件見設計文件附錄）、trace retention（`sim-logs/` 為 gitignored，需要時抄 `sim/notificationTelemetry.ts:191` 那 10 行）、`sim/notificationTelemetry.ts` 的合併或重寫（它有自己的外部 contract）、`sim-logs/*.log` 的檔案格式變更。
 

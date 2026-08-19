@@ -9,7 +9,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { createTracer, createFileSink, type Tracer, type TraceSink } from './trace';
+import { createTracer, createFileSink, formatTraceRecord, type Tracer, type TraceSink } from './trace';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import {
@@ -78,17 +78,18 @@ const NOTIFICATION_TELEMETRY_CONFIGURATION_VERSION = 'notification-gate-v3-capab
 // 設定一次 run_id，runCli 收尾送 run.ended。未設定時所有 trace 呼叫都是 no-op——單元
 // 測試直接 import commitMemberWork 之類的函式時不會寫出任何檔案。
 let traceRun: { runId: string; sink: TraceSink } | null = null;
-const NO_TRACE: Tracer = () => {};
+// 沒有進入點設定 run_id（單元測試直接 import 這些函式）時仍然把人話印出來：階段 4 已經
+// 刪掉原本的 console.log，trace 是唯一的輸出來源，不能因為少了 run_id 就整段消失。
+const CONSOLE_ONLY: TraceSink = (r) => console.log(formatTraceRecord(r));
 function traceOf(over: { taskId?: string | null; actor?: string; model?: string | null; sessionId?: string | null; round?: number | null } = {}): Tracer {
-  if (!traceRun) return NO_TRACE;
   return createTracer({
-    run_id: traceRun.runId,
+    run_id: traceRun?.runId ?? '-',
     session_id: over.sessionId ?? null,
     task_id: over.taskId ?? null,
     actor: over.actor ?? 'sim',
     model: over.model ?? null,
     round: over.round ?? null,
-  }, traceRun.sink);
+  }, traceRun?.sink ?? CONSOLE_ONLY);
 }
 export function startRunTrace(runId: string, sink: TraceSink, detail: string): void {
   traceRun = { runId, sink };
@@ -2052,7 +2053,6 @@ function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opt
     claudeTools: opts.claudeTools,
     settings: opts.settings,
   });
-  console.log(`[${label}] 開始（${route.runner}/${route.model}）`);
   mkdirSync(NPM_CACHE_DIR, { recursive: true });
   return new Promise((resolve) => {
     const child = execFile(invocation.command, invocation.args,
@@ -2071,7 +2071,6 @@ function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opt
         if (captureContent) writeFileSync(logFile, `PROMPT:\n${prompt}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\nERR:${errNote}\n`);
         const tail = captureContent ? (stdout || '').trim().split('\n').slice(-2).join(' / ') : '內容未記錄';
         const why = timedOut ? `（逾時 ${Math.round(opts.timeoutMs / 60000)} 分被中止）` : err ? (captureContent ? `（異常: ${String(err).slice(0, 80)}）` : '（異常）') : '';
-        console.log(`[${label}] 結束${why} — ${tail.slice(0, 200)}`);
         trace('session.ended', {
           outcome: err ? 'fail' : 'ok',
           evidence: captureContent ? { kind: 'log', ref: logFile } : null,
@@ -2598,7 +2597,6 @@ export function commitMemberWork(m: Member, round: number, model: string): boole
   }
   const disallowed = memberWorktreeDisallowedPaths(status, wt(m));
   if (disallowed.length) {
-    console.log(`[代commit] ${branch(m)} 拒絕未允許檔案：${disallowed.join('、')}`);
     traceOf({ actor: m.name, model, round })('commit.recorded', { outcome: 'refused', evidence: null, detail: `${branch(m)} 拒絕未允許檔案：${disallowed.join('、')}` });
     return false;
   }
@@ -2613,7 +2611,6 @@ export function commitMemberWork(m: Member, round: number, model: string): boole
   const stagedDisallowed = findDisallowedMemberWorktreePaths(stagedAdded, memberWorktreeAllowedTopLevel(wt(m)))
     .filter((path) => !isMemberWorktreeNoise(path));
   if (stagedDisallowed.length) {
-    console.log(`[代commit] ${branch(m)} 拒絕未允許檔案：${stagedDisallowed.join('、')}`);
     traceOf({ actor: m.name, model, round })('commit.recorded', { outcome: 'refused', evidence: null, detail: `${branch(m)} staged 後拒絕未允許檔案：${stagedDisallowed.join('、')}` });
     git(['reset', '--', ...stagedDisallowed], wt(m));
     return false;
@@ -2622,7 +2619,6 @@ export function commitMemberWork(m: Member, round: number, model: string): boole
   git(['diff', '--cached', '--check'], wt(m));
   git(['commit', '-m', `feat(${m.name}/${model}): r${round} 產出（driver 代 commit）`], wt(m));
   const hash = git(['log', '-1', '--format=%h'], wt(m));
-  console.log(`[代commit] ${branch(m)} r${round} → ${hash}`);
   traceOf({ actor: m.name, model, round })('commit.recorded', { outcome: 'ok', evidence: { kind: 'git', ref: hash }, detail: `${branch(m)} r${round} → ${hash}` });
   return true;
 }
@@ -2774,7 +2770,6 @@ async function verifyBranches(runDir: string, scenario: Scenario): Promise<Branc
       packet.test = runCheck(wt(m), 'npm', ['test'], testPath);
     }
     writeFileSync(packetPath, formatReviewPacket(packet));
-    console.log(`[CI預跑] ${branch(m)}: tsc ${checkLabel(packet.tsc)} / test ${checkLabel(packet.test)}（${ahead} commit）`);
     const trace = traceOf({ actor: m.name });
     for (const [kind, check] of [['tsc', packet.tsc], ['test', packet.test]] as const) {
       trace('ci.checked', {
@@ -2852,10 +2847,7 @@ async function main(): Promise<void> {
       discussionMode: 'internal',
       normal: () => runSession(`${m.name}-r${round}`, workSession.route.runner, workSession.route.model, memberPrompt(m, wsId, round, scenario), { ...memberOpts(m), promptLabel: `${m.user}-r${round}`, fallback: workSession.fallback }),
     });
-    if (!gated) {
-      console.log(`[${m.name}-r${round}] notification gate 未完成，略過一般 session`);
-      return;
-    }
+    if (!gated) return;
     const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, round, workSession.route.model));
     if (result.errored || result.timedOut) console.log(`[${m.name}-r${round}] session 未成功，保留未提交 diff，不進入 branch commit`);
   };
@@ -3383,10 +3375,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
             normal: () => runSession(`${m.name}-巡檢`, workSession.route.runner, workSession.route.model, (syncNotes.get(m.user) ?? '') + memberPrompt(m, p.wsId, hour, p.scenario),
               { cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: SWEEP_MEMBER_TIMEOUT, runDir, promptArtifacts, promptLabel: `${m.user}-sweep`, fallback: workSession.fallback }),
           });
-          if (!gated) {
-            console.log(`[${m.name}-巡檢] notification gate 未完成，略過一般 session`);
-            return;
-          }
+          if (!gated) return;
           const { result } = await runMemberSession(() => Promise.resolve(gated), () => commitMemberWork(m, hour, workSession.route.model));
           if (result.errored || result.timedOut) {
             console.log(`[${m.name}-巡檢] session 未成功，保留未提交 diff，不進入 branch commit`);
