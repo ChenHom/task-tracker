@@ -197,6 +197,8 @@ trace('task.phase_changed', { from: 'doing', to: 'review', detail: '…' });  //
 | --- | --- |
 | **必填、不可 null**（3） | `ci.checked`、`merge.integrated`、`completion.confirmed` |
 | **`Evidence \| null`**（2） | `commit.recorded`、`session.ended` |
+
+`commit.recorded` 的 `outcome` 有四種：`ok`（帶 sha）、`refused`（未允許檔案）、`skip`（檢查後確實無可提交內容，2026-08-19 實跑後補上——少了它就分不出「檢查過沒東西」與「driver 根本沒被呼叫到」，而後者正是這套車隊最該抓的失敗）。
 | **不收此參數**（9） | 其餘 |
 
 `merge.integrated` 的必填已確認可行：`coordinator.ts:270` 的 `mergeTaskIntoMaster(...)` 回傳 `mergeSha`，evidence 拿得到。

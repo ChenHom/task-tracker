@@ -2543,6 +2543,7 @@ assert.ok(
   const commits = tracedRecords.filter((r) => r.event === 'commit.recorded');
   assert.ok(commits.some((r) => r.outcome === 'ok' && r.evidence?.kind === 'git'), 'driver 代 commit 成功要送出帶 sha 的 commit.recorded');
   assert.ok(commits.some((r) => r.outcome === 'refused' && r.evidence === null), '拒絕未允許檔案要送出 outcome=refused、evidence=null 的 commit.recorded');
+  assert.ok(commits.some((r) => r.outcome === 'skip'), '沒東西可提交也要送出 outcome=skip——否則分不出「檢查後無變更」與「driver 沒被呼叫到」');
   assert.ok(tracedRecords.every((r) => r.run_id === 'run-test'), '每一筆 trace 都要帶進入點設定的 run_id');
 }
 

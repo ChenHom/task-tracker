@@ -2590,15 +2590,21 @@ function memberWorktreeDirty(dir: string): boolean {
 // 所有 member 都只改 worktree；driver 僅在 session 成功後統一提交，避免 runner 權限與完成語意分裂。
 export function commitMemberWork(m: Member, round: number, model: string): boolean {
   validateMemberWorktree(m);
+  const trace = traceOf({ actor: m.name, model, round });
   const status = git(['status', '--porcelain'], wt(m));
-  if (!hasNonDependencyWorktreeChanges(status)) return false;
+  // outcome=skip：driver 檢查過了、確實沒東西可提交。少了這一筆，trace 就分不出
+  // 「檢查後無變更」與「driver 根本沒被呼叫到」——而後者正是這套車隊最該抓的失敗。
+  if (!hasNonDependencyWorktreeChanges(status)) {
+    trace('commit.recorded', { outcome: 'skip', evidence: null, detail: `${branch(m)} 無可提交變更` });
+    return false;
+  }
   const cached = git(['diff', '--cached', '--name-only'], wt(m));
   if (cached.split('\n').some((path) => path !== '' && isMemberWorktreeNoise(path))) {
     throw new Error('driver 拒絕提交 member worktree 噪音檔');
   }
   const disallowed = memberWorktreeDisallowedPaths(status, wt(m));
   if (disallowed.length) {
-    traceOf({ actor: m.name, model, round })('commit.recorded', { outcome: 'refused', evidence: null, detail: `${branch(m)} 拒絕未允許檔案：${disallowed.join('、')}` });
+    trace('commit.recorded', { outcome: 'refused', evidence: null, detail: `${branch(m)} 拒絕未允許檔案：${disallowed.join('、')}` });
     return false;
   }
   git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m));
@@ -2612,15 +2618,18 @@ export function commitMemberWork(m: Member, round: number, model: string): boole
   const stagedDisallowed = findDisallowedMemberWorktreePaths(stagedAdded, memberWorktreeAllowedTopLevel(wt(m)))
     .filter((path) => !isMemberWorktreeNoise(path));
   if (stagedDisallowed.length) {
-    traceOf({ actor: m.name, model, round })('commit.recorded', { outcome: 'refused', evidence: null, detail: `${branch(m)} staged 後拒絕未允許檔案：${stagedDisallowed.join('、')}` });
+    trace('commit.recorded', { outcome: 'refused', evidence: null, detail: `${branch(m)} staged 後拒絕未允許檔案：${stagedDisallowed.join('、')}` });
     git(['reset', '--', ...stagedDisallowed], wt(m));
     return false;
   }
-  if (!staged) return false;
+  if (!staged) {
+    trace('commit.recorded', { outcome: 'skip', evidence: null, detail: `${branch(m)} 過濾噪音／scratch 後無可提交內容` });
+    return false;
+  }
   git(['diff', '--cached', '--check'], wt(m));
   git(['commit', '-m', `feat(${m.name}/${model}): r${round} 產出（driver 代 commit）`], wt(m));
   const hash = git(['log', '-1', '--format=%h'], wt(m));
-  traceOf({ actor: m.name, model, round })('commit.recorded', { outcome: 'ok', evidence: { kind: 'git', ref: hash }, detail: `${branch(m)} r${round} → ${hash}` });
+  trace('commit.recorded', { outcome: 'ok', evidence: { kind: 'git', ref: hash }, detail: `${branch(m)} r${round} → ${hash}` });
   return true;
 }
 
