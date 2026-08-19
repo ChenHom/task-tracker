@@ -138,7 +138,7 @@ await withRunLock(lockPath, () => SWEEP ? sweep(SWEEP_ROLE) : main());
 
 ## 模組設計
 
-`sim/trace.ts`（實作 118 行，含註解）。核心是一張 mapped type：**寫入端依事件收不同參數，落盤是單一扁平形狀**。
+`sim/trace.ts`（實作 112 行，含註解）。核心是一張 mapped type：**寫入端依事件收不同參數，落盤是單一扁平形狀**。
 
 ```ts
 // 每個事件收哪些參數。這張表就是〈事件語意〉那節的程式碼形式。
