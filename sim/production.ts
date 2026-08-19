@@ -30,6 +30,8 @@ import {
   failAction,
   beginTick,
   endTick,
+  type TaskCheckpointInput,
+  type EndTickInput,
 } from './production/state';
 import {
   TaskTrackerClient,
@@ -87,6 +89,7 @@ import {
   type MemberAttemptTransition,
 } from './production/coordinator';
 import { postCompletionAndTransitionToDone } from './production/completion';
+import { createTracer, createFileSink, type Tracer, type TraceSink } from './trace';
 import type { TaskRun, WorkPhase } from './production/types';
 
 // =============================================================================
@@ -646,6 +649,8 @@ export interface RunOnceOptions {
   sendDiscordMessage?: SendDiscordMessage;
   newId?: () => string;
   sleep?: (ms: number) => Promise<void>;
+  /** 測試以 memory sink 注入，避免寫進 sim-logs/trace 並汙染終端輸出。 */
+  traceSink?: TraceSink;
 }
 
 export interface RunOnceResult {
@@ -673,6 +678,62 @@ interface ResolvedDeps {
   sendDiscordMessage: SendDiscordMessage;
   newId: () => string;
   sleep?: (ms: number) => Promise<void>;
+  /** 取得綁好本 tick base 的 tracer；taskId 省略即 tick 層級事件。見 docs/sim-trace.md。 */
+  tracer: (taskId?: string | null) => Tracer;
+}
+
+// ---------------------------------------------------------------------------
+// trace wrapper：把「狀態變更 + 送事件」收在一處。詳見 docs/sim-trace.md〈掛載點〉——
+// 手寫在每個呼叫點會有四種編譯器擋不住的靜默漏記，其中「getTaskRun 寫在 upsert 之後」
+// 會讓 task.phase_changed 一筆都不產生，卻完全看不出來。
+// ---------------------------------------------------------------------------
+
+function endTickAndTrace(db: DatabaseSync, trace: Tracer, input: EndTickInput, now: Date): void {
+  endTick(db, input, now);
+  trace('run.ended', {
+    // outcome 由 errorCount 推導，不在五個呼叫點各自判斷（判斷分散就會漂移）。
+    outcome: input.errorCount > 0 ? 'fail' : input.outcome === 'ok' ? 'ok' : 'skip',
+    detail: `${input.outcome} discovered=${input.discoveredCount} processed=${input.processedCount} skipped=${input.skippedCount}${input.error ? ` — ${input.error}` : ''}`,
+  });
+}
+
+/** upsert 前先取舊 phase，只有真的轉移才送事件（`from === to` 不送）。 */
+function checkpointAndTrace(deps: ResolvedDeps, input: TaskCheckpointInput, detail: string, now: Date = deps.now()): TaskRun {
+  const before = getTaskRun(deps.db, input.taskId);
+  const run = upsertTaskCheckpoint(deps.db, input, now);
+  if (before?.phase !== run.phase) {
+    deps.tracer(input.taskId)('task.phase_changed', { from: before?.phase ?? null, to: run.phase, detail });
+  }
+  return run;
+}
+
+/**
+ * 冪等檢查 + action 三段生命週期 + trace。`fn` 回傳的字串會存進 action_log 的 result。
+ * `onError` 預設 rethrow；`'swallow'` 對應原本就吞掉錯誤的兩處通知（human_blocked_notice、
+ * deployment_rollback_notice）——它們失敗時本 tick 不該中斷，下一個 tick 會重試。
+ */
+async function withAction(
+  deps: ResolvedDeps,
+  key: string,
+  kind: string,
+  taskId: string,
+  fn: () => Promise<string | null | void>,
+  onError: 'throw' | 'swallow' = 'throw',
+): Promise<void> {
+  if (getAction(deps.db, key)) return;
+  const trace = deps.tracer(taskId);
+  beginAction(deps.db, { actionKey: key, taskId, kind }, deps.now());
+  trace('action.started', { reason: kind, detail: key });
+  try {
+    const result = await fn();
+    completeAction(deps.db, key, result ?? null, deps.now());
+    trace('action.ended', { outcome: 'ok', reason: kind, detail: key });
+  } catch (err) {
+    const message = (err as Error).message;
+    failAction(deps.db, key, message, deps.now());
+    trace('action.ended', { outcome: 'fail', reason: kind, detail: `${key} — ${message}` });
+    if (onError === 'throw') throw err;
+  }
 }
 
 export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
@@ -683,15 +744,20 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
   const isServiceActive = options.isServiceActive ?? isUnitActive;
   const tickId = randomUUID();
   const lines: string[] = [];
+  const traceSink = options.traceSink ?? createFileSink();
+  const tracer = (taskId: string | null = null): Tracer =>
+    createTracer({ run_id: tickId, session_id: null, task_id: taskId, actor: 'coordinator', model: null, round: null }, traceSink, now);
+  const trace = tracer();
 
   const db = openDbEnsuringDir(dbPath);
   try {
     beginTick(db, tickId, now());
+    trace('run.started', { detail: `coordinator tick ${tickId}` });
 
     const discovery = await performDiscovery(baseUrl, isServiceActive);
     if (!discovery.ok) {
       lines.push(`DiscoveryUnavailable: ${discovery.reason}`);
-      endTick(db, { tickId, outcome: 'discovery_unavailable', discoveredCount: 0, processedCount: 0, skippedCount: 0, errorCount: 1, error: discovery.reason }, now());
+      endTickAndTrace(db, trace, { tickId, outcome: 'discovery_unavailable', discoveredCount: 0, processedCount: 0, skippedCount: 0, errorCount: 1, error: discovery.reason }, now());
       return { exitCode: 3, tickId, lines };
     }
 
@@ -719,6 +785,7 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
       sendDiscordMessage: options.sendDiscordMessage ?? realSendDiscordMessage(),
       newId: options.newId ?? randomUUID,
       sleep: options.sleep,
+      tracer,
     };
 
     const snapshot = await gatherSnapshot(deps);
@@ -734,8 +801,9 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
     }
 
     if (!options.live) {
-      endTick(
+      endTickAndTrace(
         db,
+        trace,
         {
           tickId,
           outcome: prereqMissing ? 'cutover_prerequisite_missing' : 'dry_run',
@@ -752,8 +820,9 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
 
     if (prereqMissing) {
       lines.push('CutoverPrerequisiteMissing：本次 tick 零 mutation、零 AI。');
-      endTick(
+      endTickAndTrace(
         db,
+        trace,
         { tickId, outcome: 'cutover_prerequisite_missing', discoveredCount: actions.length, processedCount: 0, skippedCount: actions.length, errorCount: 1, error: 'CutoverPrerequisiteMissing' },
         now(),
       );
@@ -775,8 +844,9 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
     for (const o of discordOutcomes) lines.push(`discord batch ${o.batchId}: ${o.status} (attempt ${o.attemptCount}, ${o.taskIds.length} tasks)`);
 
     const outcome = summary.errors > 0 ? 'partial_failure' : 'ok';
-    endTick(
+    endTickAndTrace(
       db,
+      trace,
       { tickId, outcome, discoveredCount: summary.discovered, processedCount: summary.processed, skippedCount: summary.skipped, errorCount: summary.errors, error: summary.errorDetails[0] ?? null },
       now(),
     );
@@ -785,7 +855,7 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
     const message = (err as Error).message ?? String(err);
     lines.push(`UNCLASSIFIED ERROR: ${message}`);
     try {
-      endTick(db, { tickId, outcome: 'error', discoveredCount: 0, processedCount: 0, skippedCount: 0, errorCount: 1, error: message }, now());
+      endTickAndTrace(db, trace, { tickId, outcome: 'error', discoveredCount: 0, processedCount: 0, skippedCount: 0, errorCount: 1, error: message }, now());
     } catch {
       /* endTick 本身失敗就放棄記錄，不讓 heartbeat 寫入蓋過原始錯誤 */
     }
@@ -880,10 +950,10 @@ async function dispatchAction(
 ): Promise<'progressed' | 'no_change' | 'skipped'> {
   let run = getTaskRun(deps.db, action.taskId);
   if (!run) {
-    run = upsertTaskCheckpoint(
-      deps.db,
+    run = checkpointAndTrace(
+      deps,
       { taskId: action.taskId, workspaceId: action.workspaceId, phase: initialPhaseFor(action.kind), evidenceFingerprint: '' },
-      deps.now(),
+      `首次建立 task_run（${action.kind}）`,
     );
   }
 
@@ -942,40 +1012,27 @@ async function assignAndStartDoing(deps: ResolvedDeps, action: CoordinatorAction
   const now = deps.now();
 
   const assignKey = `assign:${action.taskId}:${assigneeId}`;
-  if (!getAction(deps.db, assignKey)) {
-    beginAction(deps.db, { actionKey: assignKey, taskId: action.taskId, kind: 'assign' }, now);
-    try {
-      const current = await deps.ownerClient.getTask(action.taskId);
-      if (current.assigneeId !== assigneeId) {
-        await deps.ownerClient.patchTaskField(action.taskId, 'assignee', assigneeId);
-      }
-      completeAction(deps.db, assignKey, JSON.stringify({ assigneeId }), now);
-    } catch (err) {
-      failAction(deps.db, assignKey, (err as Error).message, now);
-      throw err;
+  await withAction(deps, assignKey, 'assign', action.taskId, async () => {
+    const current = await deps.ownerClient.getTask(action.taskId);
+    if (current.assigneeId !== assigneeId) {
+      await deps.ownerClient.patchTaskField(action.taskId, 'assignee', assigneeId);
     }
-  }
+    return JSON.stringify({ assigneeId });
+  });
 
   const doingKey = `status:${action.taskId}:Doing`;
-  if (!getAction(deps.db, doingKey)) {
-    beginAction(deps.db, { actionKey: doingKey, taskId: action.taskId, kind: 'status' }, now);
-    try {
-      const current = await deps.ownerClient.getTask(action.taskId);
-      if (current.status !== 'Doing') {
-        await deps.ownerClient.patchTaskField(action.taskId, 'status', 'Doing');
-      }
-      completeAction(deps.db, doingKey, null, now);
-    } catch (err) {
-      failAction(deps.db, doingKey, (err as Error).message, now);
-      throw err;
+  await withAction(deps, doingKey, 'status', action.taskId, async () => {
+    const current = await deps.ownerClient.getTask(action.taskId);
+    if (current.status !== 'Doing') {
+      await deps.ownerClient.patchTaskField(action.taskId, 'status', 'Doing');
     }
-  }
+  });
 
   const masterSha = await getHeadSha(deps.repoRoot, 'master');
   const worktree = await ensureTaskWorktree(deps.repoRoot, action.taskId, masterSha);
 
-  upsertTaskCheckpoint(
-    deps.db,
+  checkpointAndTrace(
+    deps,
     {
       taskId: action.taskId,
       workspaceId: action.workspaceId,
@@ -992,6 +1049,7 @@ async function assignAndStartDoing(deps: ResolvedDeps, action: CoordinatorAction
       noProgressCount: 0,
       ownerIntervened: false,
     },
+    `指派給 ${assigneeId}，worktree ${worktree.branch}`,
     now,
   );
 
@@ -1028,16 +1086,9 @@ async function dispatchOwnerDispatch(
   if (!decision) return 'no_change'; // AI 沒有給出可用的決策，這次不指派，下一個 tick 重新評估
 
   const noticeKey = `dispatch_notice:${action.taskId}:${assigneeId}`;
-  if (!getAction(deps.db, noticeKey)) {
-    beginAction(deps.db, { actionKey: noticeKey, taskId: action.taskId, kind: 'dispatch_notice' }, deps.now());
-    try {
-      await deps.ownerClient.postCommentOnce(action.taskId, `【OWNER派工】${decision.rationale}\naction_key: ${noticeKey}`, noticeKey);
-      completeAction(deps.db, noticeKey, null, deps.now());
-    } catch (err) {
-      failAction(deps.db, noticeKey, (err as Error).message, deps.now());
-      throw err;
-    }
-  }
+  await withAction(deps, noticeKey, 'dispatch_notice', action.taskId, async () => {
+    await deps.ownerClient.postCommentOnce(action.taskId, `【OWNER派工】${decision.rationale}\naction_key: ${noticeKey}`, noticeKey);
+  });
 
   // 這一輪迭代裡先於本次 dispatch 已經解出的 assignee，必須在真正 PATCH assignee 之前
   // 就先記入「已認領」，讓同一輪要 dispatch 的其他 unassigned Todo task 不會再把同一個
@@ -1098,15 +1149,10 @@ async function applyMemberAttemptTransition(
 
   if (transition.humanBlockedNotice) {
     const key = transition.humanBlockedNotice.actionKey;
-    if (!getAction(deps.db, key)) {
-      beginAction(deps.db, { actionKey: key, taskId: action.taskId, kind: 'human_blocked_notice' }, deps.now());
-      try {
-        await deps.ownerClient.postCommentOnce(action.taskId, transition.humanBlockedNotice.content, key);
-        completeAction(deps.db, key, null, deps.now());
-      } catch (err) {
-        failAction(deps.db, key, (err as Error).message, deps.now());
-      }
-    }
+    const notice = transition.humanBlockedNotice;
+    await withAction(deps, key, 'human_blocked_notice', action.taskId, async () => {
+      await deps.ownerClient.postCommentOnce(action.taskId, notice.content, key);
+    }, 'swallow');
   }
 
   return transition;
@@ -1129,8 +1175,8 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     try {
       const masterSha = workingRun.baseSha ?? (await getHeadSha(deps.repoRoot, 'master'));
       const worktree = await ensureTaskWorktree(deps.repoRoot, action.taskId, masterSha);
-      workingRun = upsertTaskCheckpoint(
-        deps.db,
+      workingRun = checkpointAndTrace(
+        deps,
         {
           taskId: action.taskId,
           workspaceId: action.workspaceId,
@@ -1143,7 +1189,7 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
           noProgressCount: workingRun.noProgressCount,
           ownerIntervened: workingRun.ownerIntervened,
         },
-        deps.now(),
+        `補建 worktree ${worktree.branch}`,
       );
     } catch (err) {
       // 重試仍然失敗：這次嘗試同樣沒有可驗證進展，餵進跟 member session 失敗完全相同的
@@ -1167,8 +1213,8 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
         evidenceChanged: false,
       };
       const transition = await applyMemberAttemptTransition(deps, action, workingRun, syntheticResult, task);
-      upsertTaskCheckpoint(
-        deps.db,
+      checkpointAndTrace(
+        deps,
         {
           taskId: action.taskId,
           workspaceId: action.workspaceId,
@@ -1181,7 +1227,7 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
           noProgressCount: transition.run.noProgressCount,
           ownerIntervened: transition.run.ownerIntervened,
         },
-        deps.now(),
+        `worktree 建立失敗：${(err as Error).message}`,
       );
       return 'no_change';
     }
@@ -1241,8 +1287,8 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
 
   const transition = await applyMemberAttemptTransition(deps, action, workingRun, result, task);
 
-  upsertTaskCheckpoint(
-    deps.db,
+  checkpointAndTrace(
+    deps,
     {
       taskId: action.taskId,
       workspaceId: action.workspaceId,
@@ -1255,7 +1301,7 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
       noProgressCount: transition.run.noProgressCount,
       ownerIntervened: transition.run.ownerIntervened,
     },
-    deps.now(),
+    `member session ${result.outcome}`,
   );
 
   return result.outcome === 'progressed' ? 'progressed' : 'no_change';
@@ -1308,23 +1354,13 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
 
   if (ownerResult.decision.action === 'reject') {
     const key = `reject:${action.taskId}:${reviewedHeadSha}`;
-    if (!getAction(deps.db, key)) {
-      beginAction(deps.db, { actionKey: key, taskId: action.taskId, kind: 'reject' }, deps.now());
-      try {
-        await deps.ownerClient.postCommentOnce(
-          action.taskId,
-          `【OWNER退回】${ownerResult.decision.rationale}\naction_key: ${key}`,
-          key,
-        );
-        const current = await deps.ownerClient.getTask(action.taskId);
-        if (current.status !== 'Doing') await deps.ownerClient.patchTaskField(action.taskId, 'status', 'Doing');
-        completeAction(deps.db, key, null, deps.now());
-      } catch (err) {
-        failAction(deps.db, key, (err as Error).message, deps.now());
-        throw err;
-      }
-    }
-    upsertTaskCheckpoint(deps.db, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'doing', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: run.headSha, evidenceFingerprint: run.evidenceFingerprint, noProgressCount: 0, ownerIntervened: false }, deps.now());
+    const rationale = ownerResult.decision.rationale;
+    await withAction(deps, key, 'reject', action.taskId, async () => {
+      await deps.ownerClient.postCommentOnce(action.taskId, `【OWNER退回】${rationale}\naction_key: ${key}`, key);
+      const current = await deps.ownerClient.getTask(action.taskId);
+      if (current.status !== 'Doing') await deps.ownerClient.patchTaskField(action.taskId, 'status', 'Doing');
+    });
+    checkpointAndTrace(deps, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'doing', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: run.headSha, evidenceFingerprint: run.evidenceFingerprint, noProgressCount: 0, ownerIntervened: false }, 'owner 退回，回到 doing');
     return 'progressed';
   }
 
@@ -1362,7 +1398,7 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
         now: deps.now(),
       });
       if (completion.kind === 'done') {
-        upsertTaskCheckpoint(deps.db, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'done', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: reviewedHeadSha, evidenceFingerprint: run.evidenceFingerprint, noProgressCount: 0, ownerIntervened: false }, deps.now());
+        checkpointAndTrace(deps, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'done', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: reviewedHeadSha, evidenceFingerprint: run.evidenceFingerprint, noProgressCount: 0, ownerIntervened: false }, `部署完成，deployRev ${deployResult.mergeSha}`);
         return 'progressed';
       }
       return 'no_change'; // comment_failed／patch_failed：下一個 tick 從 readback-first 續跑
@@ -1413,15 +1449,10 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
       });
       if (rollback.kind === 'rolled_back') {
         const key = rollback.notice.actionKey;
-        if (!getAction(deps.db, key)) {
-          beginAction(deps.db, { actionKey: key, taskId: action.taskId, kind: 'deployment_rollback_notice' }, deps.now());
-          try {
-            await deps.ownerClient.postCommentOnce(action.taskId, rollback.notice.content, key);
-            completeAction(deps.db, key, null, deps.now());
-          } catch (err) {
-            failAction(deps.db, key, (err as Error).message, deps.now());
-          }
-        }
+        const notice = rollback.notice;
+        await withAction(deps, key, 'deployment_rollback_notice', action.taskId, async () => {
+          await deps.ownerClient.postCommentOnce(action.taskId, notice.content, key);
+        }, 'swallow');
       } else if (rollback.kind === 'fatal') {
         persistFatalError(deps.db, rollback.fatal, deps.now());
       }
@@ -1458,19 +1489,12 @@ async function dispatchMainDiscussion(deps: ResolvedDeps, action: CoordinatorAct
   const outcome = decision.outcome ?? 'no_consensus';
   const marker = outcome === 'implement' ? '【結論】' : outcome === 'no_implementation' ? '【結論：不實作】' : '【未達共識】';
   const key = `main_discussion_conclusion:${action.taskId}`;
-  if (!getAction(deps.db, key)) {
-    beginAction(deps.db, { actionKey: key, taskId: action.taskId, kind: 'main_discussion_conclusion' }, deps.now());
-    try {
-      await deps.ownerClient.postCommentOnce(action.taskId, `${marker}\n${decision.rationale}\naction_key: ${key}`, key);
-      const current = await deps.ownerClient.getTask(action.taskId);
-      if (current.status !== 'Done') await deps.ownerClient.patchTaskField(action.taskId, 'status', 'Done');
-      completeAction(deps.db, key, null, deps.now());
-    } catch (err) {
-      failAction(deps.db, key, (err as Error).message, deps.now());
-      throw err;
-    }
-  }
-  upsertTaskCheckpoint(deps.db, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'done', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: run.headSha, evidenceFingerprint: run.evidenceFingerprint, noProgressCount: 0, ownerIntervened: false }, deps.now());
+  await withAction(deps, key, 'main_discussion_conclusion', action.taskId, async () => {
+    await deps.ownerClient.postCommentOnce(action.taskId, `${marker}\n${decision.rationale}\naction_key: ${key}`, key);
+    const current = await deps.ownerClient.getTask(action.taskId);
+    if (current.status !== 'Done') await deps.ownerClient.patchTaskField(action.taskId, 'status', 'Done');
+  });
+  checkpointAndTrace(deps, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'done', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: run.headSha, evidenceFingerprint: run.evidenceFingerprint, noProgressCount: 0, ownerIntervened: false }, `主討論收尾：${marker}`);
   return 'progressed';
 }
 

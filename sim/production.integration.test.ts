@@ -14,6 +14,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { runOnce, runStatus, describeCutoverDisposition } from './production';
+import type { TraceSink } from './trace';
+
+// 測試不寫真的 trace：sim-logs/trace 是要拿來查真實車隊行為的，不能被測試資料汙染。
+const silentTrace: TraceSink = () => {};
 import type { OwnerSessionRunner } from './production/agent';
 import type { MemberSessionRunner } from './production/agent';
 import type { IntegrationCommandRunner, AcceptanceCheckResult, SendDiscordMessage } from './production/coordinator';
@@ -339,6 +343,7 @@ async function testHappyPathTickLifecycle(): Promise<void> {
     const newId = () => `id-${++idCounter}`;
 
     const runOptions = {
+      traceSink: silentTrace,
       live: true,
       baseUrl,
       dbPath,
@@ -439,6 +444,7 @@ async function testStuckDoingRecoversAfterWorktreeFailure(): Promise<void> {
     };
 
     const baseOptions = {
+      traceSink: silentTrace,
       live: true as const,
       baseUrl,
       dbPath,
@@ -654,6 +660,7 @@ async function testSameTickDoesNotDoubleBookAssignee(): Promise<void> {
     });
 
     const result = await runOnce({
+      traceSink: silentTrace,
       live: true,
       baseUrl,
       dbPath,
@@ -829,6 +836,7 @@ async function testAssignMemberDoesNotCollideWithOwnerDispatch(): Promise<void> 
     });
 
     const result = await runOnce({
+      traceSink: silentTrace,
       live: true,
       baseUrl,
       dbPath,
@@ -923,7 +931,7 @@ async function testExitCodeCutoverPrerequisiteMissing(): Promise<void> {
   const { port, close } = await startFakeServer(handler);
   try {
     const baseUrl = `http://127.0.0.1:${port}`;
-    const commonOptions = { baseUrl, dbPath, repoRoot: '/nonexistent-not-used', now: () => new Date(), isServiceActive: async () => true };
+    const commonOptions = { traceSink: silentTrace, baseUrl, dbPath, repoRoot: '/nonexistent-not-used', now: () => new Date(), isServiceActive: async () => true };
 
     const dryRun = await runOnce({ ...commonOptions, live: false });
     assert.strictEqual(dryRun.exitCode, 2, `dry-run 應該回報 CutoverPrerequisiteMissing (exit 2)，實際 lines:\n${dryRun.lines.join('\n')}`);
@@ -965,6 +973,7 @@ async function testExitCodeDiscoveryUnavailable(): Promise<void> {
     });
     try {
       const result = await runOnce({
+      traceSink: silentTrace,
         live: false,
         baseUrl: `http://127.0.0.1:${port}`,
         dbPath,
@@ -999,6 +1008,7 @@ async function testExitCodeDiscoveryUnavailable(): Promise<void> {
     });
     try {
       const result = await runOnce({
+      traceSink: silentTrace,
         live: false,
         baseUrl: `http://127.0.0.1:${port}`,
         dbPath,
