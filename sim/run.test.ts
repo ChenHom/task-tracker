@@ -47,6 +47,7 @@ import {
   commitIfSessionSucceeded,
   commitMemberWork,
   createRunDir,
+  startRunTrace,
   assertAttachmentTargetWritable,
   disallowedReviewChecks,
   dirtyReviewChecks,
@@ -112,6 +113,12 @@ import {
   safeDiscussionEnvironment,
   SAFE_DISCUSSION_TOOLS,
 } from './run';
+import type { TraceRecord } from './trace';
+
+// 這個測試檔直接呼叫 run.ts 的函式，沒有進入點會設定 run_id；手動裝一個記憶體 sink，
+// 讓底下的既有測試順便驗證 trace 有沒有跟著送出。
+const tracedRecords: TraceRecord[] = [];
+startRunTrace('run-test', (r) => tracedRecords.push(r), 'run.test.ts');
 
 const source = readFileSync(join(__dirname, 'run.ts'), 'utf8');
 const ownerProbe = source.match(/function probeOwnerRunner\(\): Promise<boolean> \{[\s\S]*?\n\}/)?.[0];
@@ -2528,6 +2535,15 @@ assert.ok(
   assert.ok(!isStaleSocketError(refused), 'server 沒起來（ECONNREFUSED）重試也沒用，不得誤判');
   assert.ok(!isStaleSocketError(new TypeError('fetch failed')), '沒有 cause 不得爆炸也不得誤判');
   assert.ok(!isStaleSocketError(null), 'null 不得爆炸');
+}
+
+// commit.recorded：拒絕與成功兩種結果都要留下 trace（見 docs/sim-trace.md 階段 3）。
+// 上面的既有測試已經把兩種路徑都走過一遍，這裡只驗事件有沒有跟著送出。
+{
+  const commits = tracedRecords.filter((r) => r.event === 'commit.recorded');
+  assert.ok(commits.some((r) => r.outcome === 'ok' && r.evidence?.kind === 'git'), 'driver 代 commit 成功要送出帶 sha 的 commit.recorded');
+  assert.ok(commits.some((r) => r.outcome === 'refused' && r.evidence === null), '拒絕未允許檔案要送出 outcome=refused、evidence=null 的 commit.recorded');
+  assert.ok(tracedRecords.every((r) => r.run_id === 'run-test'), '每一筆 trace 都要帶進入點設定的 run_id');
 }
 
 runAsyncPolicyTests()

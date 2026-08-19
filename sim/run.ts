@@ -9,6 +9,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { createTracer, createFileSink, type Tracer, type TraceSink } from './trace';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import {
@@ -71,6 +72,34 @@ const LOG_DIR = join(ROOT, 'sim-logs'); // 產物一律留在 task-tracker 底�
 const NOTIFICATION_TELEMETRY_DIR = join(LOG_DIR, 'notification-preflight');
 const NOTIFICATION_TELEMETRY_WORKFLOW_VERSION = 'legacy-team-sweep-v1';
 const NOTIFICATION_TELEMETRY_CONFIGURATION_VERSION = 'notification-gate-v3-capability-profiles';
+
+// ── 結構化 trace（見 docs/sim-trace.md）─────────────────────────────
+// run.ts 的函式沒有共用的 deps bag，tracer 因此掛在模組層：進入點（sweep／main）各
+// 設定一次 run_id，runCli 收尾送 run.ended。未設定時所有 trace 呼叫都是 no-op——單元
+// 測試直接 import commitMemberWork 之類的函式時不會寫出任何檔案。
+let traceRun: { runId: string; sink: TraceSink } | null = null;
+const NO_TRACE: Tracer = () => {};
+function traceOf(over: { taskId?: string | null; actor?: string; model?: string | null; sessionId?: string | null; round?: number | null } = {}): Tracer {
+  if (!traceRun) return NO_TRACE;
+  return createTracer({
+    run_id: traceRun.runId,
+    session_id: over.sessionId ?? null,
+    task_id: over.taskId ?? null,
+    actor: over.actor ?? 'sim',
+    model: over.model ?? null,
+    round: over.round ?? null,
+  }, traceRun.sink);
+}
+export function startRunTrace(runId: string, sink: TraceSink, detail: string): void {
+  traceRun = { runId, sink };
+  traceOf()('run.started', { detail });
+}
+/** runCli 唯一呼叫；沒開始過（例如搶不到 run lock）就什麼都不送。 */
+export function endRunTrace(outcome: 'ok' | 'fail', detail: string): void {
+  if (!traceRun) return;
+  traceOf()('run.ended', { outcome, detail });
+  traceRun = null;
+}
 const SMOKE = process.argv.includes('--smoke');
 const FAST = process.argv.includes('--fast');
 const SWEEP = process.argv.includes('--sweep');
@@ -1873,7 +1902,7 @@ async function runActorSessionWithNotificationGate(input: {
 }): Promise<SessionResult | null> {
   const enabled = notificationGateEnabled();
   if (!enabled) console.log(`[${input.label}] notification gate 已停用，直接啟動一般 session`);
-  return runNotificationGateOrNormal(
+  const result = await runNotificationGateOrNormal(
     enabled,
     async () => {
       let cookie: string;
@@ -1895,6 +1924,10 @@ async function runActorSessionWithNotificationGate(input: {
     },
     input.normal,
   );
+  if (result === null) {
+    traceOf({ actor: input.label })('gate.skipped', { reason: 'notification_gate', detail: `${input.label} notification gate 未過，略過一般 session` });
+  }
+  return result;
 }
 
 export async function settleAllOrThrow(tasks: Promise<unknown>[]): Promise<void> {
@@ -2002,6 +2035,9 @@ export function parseReportedTokenTotal(output: string): number | null {
 function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opts: SessionOptions, retry: number): Promise<SessionResult> {
   const startedAt = new Date();
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${label}.log`);
+  // session_id = logFile 的 basename，把既有的純文字 transcript 與 trace 綁在一起。
+  const trace = traceOf({ actor: label, model: route.model, sessionId: basename(logFile) });
+  trace('session.started', { detail: `${route.runner}/${route.model} retry=${retry}` });
   const captureContent = opts.captureContent !== false;
   if (opts.runDir && captureContent) {
     const artifact = writePromptArtifact(opts.runDir, opts.promptLabel ?? label, prompt);
@@ -2036,6 +2072,11 @@ function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opt
         const tail = captureContent ? (stdout || '').trim().split('\n').slice(-2).join(' / ') : '內容未記錄';
         const why = timedOut ? `（逾時 ${Math.round(opts.timeoutMs / 60000)} 分被中止）` : err ? (captureContent ? `（異常: ${String(err).slice(0, 80)}）` : '（異常）') : '';
         console.log(`[${label}] 結束${why} — ${tail.slice(0, 200)}`);
+        trace('session.ended', {
+          outcome: err ? 'fail' : 'ok',
+          evidence: captureContent ? { kind: 'log', ref: logFile } : null,
+          detail: `${errorCategory}${why} — ${tail}`,
+        });
         resolve({
           timedOut,
           errored: !!err,
@@ -2558,6 +2599,7 @@ export function commitMemberWork(m: Member, round: number, model: string): boole
   const disallowed = memberWorktreeDisallowedPaths(status, wt(m));
   if (disallowed.length) {
     console.log(`[代commit] ${branch(m)} 拒絕未允許檔案：${disallowed.join('、')}`);
+    traceOf({ actor: m.name, model, round })('commit.recorded', { outcome: 'refused', evidence: null, detail: `${branch(m)} 拒絕未允許檔案：${disallowed.join('、')}` });
     return false;
   }
   git(['add', '-A', '--', ...memberWorktreePathspecs()], wt(m));
@@ -2572,6 +2614,7 @@ export function commitMemberWork(m: Member, round: number, model: string): boole
     .filter((path) => !isMemberWorktreeNoise(path));
   if (stagedDisallowed.length) {
     console.log(`[代commit] ${branch(m)} 拒絕未允許檔案：${stagedDisallowed.join('、')}`);
+    traceOf({ actor: m.name, model, round })('commit.recorded', { outcome: 'refused', evidence: null, detail: `${branch(m)} staged 後拒絕未允許檔案：${stagedDisallowed.join('、')}` });
     git(['reset', '--', ...stagedDisallowed], wt(m));
     return false;
   }
@@ -2580,6 +2623,7 @@ export function commitMemberWork(m: Member, round: number, model: string): boole
   git(['commit', '-m', `feat(${m.name}/${model}): r${round} 產出（driver 代 commit）`], wt(m));
   const hash = git(['log', '-1', '--format=%h'], wt(m));
   console.log(`[代commit] ${branch(m)} r${round} → ${hash}`);
+  traceOf({ actor: m.name, model, round })('commit.recorded', { outcome: 'ok', evidence: { kind: 'git', ref: hash }, detail: `${branch(m)} r${round} → ${hash}` });
   return true;
 }
 
@@ -2731,6 +2775,15 @@ async function verifyBranches(runDir: string, scenario: Scenario): Promise<Branc
     }
     writeFileSync(packetPath, formatReviewPacket(packet));
     console.log(`[CI預跑] ${branch(m)}: tsc ${checkLabel(packet.tsc)} / test ${checkLabel(packet.test)}（${ahead} commit）`);
+    const trace = traceOf({ actor: m.name });
+    for (const [kind, check] of [['tsc', packet.tsc], ['test', packet.test]] as const) {
+      trace('ci.checked', {
+        outcome: check.status === 'pass' ? 'ok' : check.status === 'skip' ? 'skip' : 'fail',
+        reason: 'branch_ci',
+        evidence: { kind, ref: check.outputPath },
+        detail: `${branch(m)} ${kind} ${check.status}（${ahead} commit）`,
+      });
+    }
     return packet;
   }));
 }
@@ -2779,6 +2832,8 @@ async function main(): Promise<void> {
   const since = new Date().toISOString();
   const { wsId, tag } = await bootstrap(scenario);
   const runDir = createRunDir(LOG_DIR, tag);
+  // 手動跑的完整場：一場一檔，方便整場一起看。
+  startRunTrace(tag, createFileSink(`${tag}.jsonl`), `sim ${scenario.key} ${tag}`);
   const promptArtifacts: PromptArtifact[] = [];
   // 先寫 discovery report；後續任何 session/commit/CI 例外時 sweep 仍找得到這個 workspace，收尾再覆寫完整內容。
   writeReport(runDir, buildSprintReport(wsId, since, tag, tag, scenario.key, promptArtifacts, [], []));
@@ -3084,6 +3139,12 @@ ${crossRepoRule(scenario)}
 
 async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   mkdirSync(LOG_DIR, { recursive: true });
+  // runDir 原本在函式中段才建；提到最前面是為了讓 run_id 在第一個事件之前就存在。
+  // sweep 本來就有識別碼（sweep-<stamp>-<role>），不必另發一個。
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${role}`);
+  // 定時觸發的路徑按日切檔：一天數十次 tick，一 tick 一檔會重演 sim-logs 那 8000 個小檔。
+  startRunTrace(basename(runDir), createFileSink(), `sweep:${role}`);
   const members = loadMembersFromUsers();
   const db = new DatabaseSync(join(ROOT, 'data/dev.db'));
   const boss = db.prepare('SELECT id, name FROM users WHERE email = ?').get(BOSS_EMAIL) as { id: string; name: string } | undefined;
@@ -3105,8 +3166,6 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   ensureCanonicalWorkspaceCandidates(wsScenario);
   ensureFixedSweepWorkspaceCandidates(wsScenario);
 
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
-  const runDir = createRunDir(LOG_DIR, `sweep-${stamp}-${role}`);
   const promptArtifacts: PromptArtifact[] = [];
   let notificationResults = new Map<string, NotificationSweepResult>();
   if (role !== 'owner' && notificationGateEnabled()) {
@@ -3353,7 +3412,9 @@ async function runCli(): Promise<void> {
   const lockPath = join(LOG_DIR, '.run.lock');
   try {
     await withRunLock(lockPath, () => SWEEP ? sweep(SWEEP_ROLE) : main());
+    endRunTrace('ok', SWEEP ? `sweep:${SWEEP_ROLE} 結束` : 'sim 結束');
   } catch (error) {
+    endRunTrace('fail', describeError(error));
     if (SWEEP && String(error).includes('正在執行中')) {
       console.log(`[sweep:${SWEEP_ROLE}] 另一個 sim 尚未結束，本 tick 跳過`);
       return;

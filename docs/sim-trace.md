@@ -1,6 +1,6 @@
 # sim 車隊結構化 trace 開發文件
 
-> 狀態：階段 1、2 已實作（2026-08-19），階段 3-4 未動。實作時修正了本文六處與程式不符的地方，見〈實作與設計的出入〉。查證日 2026-08-18。本文所有 `file:line` 均為撰寫當日實際存在的位置；實作前請重新確認行號未因其他 session 提交而位移。
+> 狀態：階段 1-3 已實作（2026-08-19），階段 4 未動。實作時修正了本文八處與程式不符的地方，見〈實作與設計的出入〉。查證日 2026-08-18。本文所有 `file:line` 均為撰寫當日實際存在的位置；實作前請重新確認行號未因其他 session 提交而位移。
 
 ## 決策摘要
 
@@ -83,7 +83,7 @@ JSONL，一行一事件。`run_id` 有**三種來源**，切檔策略隨之不�
 | 執行路徑 | 進入點 | 觸發方式 | `run_id` | 檔案 |
 | --- | --- | --- | --- | --- |
 | coordinator tick | `sim/production.ts` | `sim-coordinator.timer` | `tick_id` | `trace/<YYYY-MM-DD>.jsonl` |
-| **sweep 巡檢** | `sim/run.ts:3085` `sweep()` | `sim-sweep-owner/team.timer` | **需新發**（見下） | `trace/<YYYY-MM-DD>.jsonl` |
+| **sweep 巡檢** | `sim/run.ts` `sweep()` | `sim-sweep-owner/team.timer` | `runDir` 的 basename（`sweep-<stamp>-<role>`） | `trace/<YYYY-MM-DD>.jsonl` |
 | 一場完整 sim | `sim/run.ts:2774` `main()` | 手動 | sim tag | `trace/<run_id>.jsonl` |
 
 `sim/run.ts` 有兩種執行模式，在 `:3355` 分派：
@@ -92,7 +92,7 @@ JSONL，一行一事件。`run_id` 有**三種來源**，切檔策略隨之不�
 await withRunLock(lockPath, () => SWEEP ? sweep(SWEEP_ROLE) : main());
 ```
 
-**sweep 才是常態路徑**——systemd timer 每天觸發數十次，而 `main()` 是手動跑的完整場。sweep 目前沒有任何 run 識別碼，要新發一個（建議 `sweep-<role>-<ISO>`，在 `sweep()` 進入點產生）。階段 3 **先做 sweep**，`main()` 隨後。
+**sweep 才是常態路徑**——systemd timer 每天觸發數十次，而 `main()` 是手動跑的完整場。sweep 其實**早就有識別碼**（`createRunDir(LOG_DIR, `sweep-${stamp}-${role}`)`），不必另發；實作只是把那兩行從函式中段提到最前面，讓 `run_id` 早於第一個事件存在。
 
 切檔：定時觸發的兩條路徑按日切，否則 coordinator 每天約 72 個 tick（見 [current.md](tasks/current.md) 的 07-29 量測）加上 sweep，一年會生出幾萬個小檔，重演 `sim-logs/` 現有 8199 個 `.log` 的老路。`run_id` 留在欄位裡照樣可 `jq` 篩。手動跑的 `main()` 一場一檔。
 
@@ -321,12 +321,11 @@ async function withAction(deps, key, kind, taskId, fn) {
 | `sim/production.ts` | `runDiscordOutboxTick` 回傳的 outcome 迴圈 | `notify.sent` |
 | `sim/production.ts` | `completion.kind === 'done'` 分支（`completion.ts` 一個字都沒改） | `completion.confirmed` |
 | `sim/production/runner.ts` | `runAiSession` 內部，算出 `logFile` 之後、spawn 之前（**不是** runner 工廠層），tracer 由 module-level `setSessionTraceFactory` 注入 | `session.started` / `session.ended` |
-| `sim/run.ts` | `:3085` `sweep()` 起訖（**常態路徑，優先做**） | `run.started` / `run.ended` |
-| `sim/run.ts` | `:2774` `main()` 起訖 | `run.started` / `run.ended` |
-| `sim/run.ts` | `:2002` `runSessionAttempt` | `session.started` / `session.ended` |
-| `sim/run.ts` | `:2550` `commitMemberWork` | `commit.recorded` |
-| `sim/run.ts` | `:2680` `verifyBranches` | `ci.checked` |
-| `sim/run.ts` | `:1866` `runActorSessionWithNotificationGate` | `gate.skipped` |
+| `sim/run.ts` | `sweep()` 與 `main()` 各呼叫一次 `startRunTrace`；`run.ended` 由 `runCli` 的 try/catch 統一送 | `run.started` / `run.ended` |
+| `sim/run.ts` | `runSessionAttempt`，`logFile` 算出之後 | `session.started` / `session.ended` |
+| `sim/run.ts` | `commitMemberWork` 的三個結束點（1 成功 + 2 拒絕） | `commit.recorded` |
+| `sim/run.ts` | `verifyBranches` 每個 packet 送兩筆（tsc、test） | `ci.checked` |
+| `sim/run.ts` | `runActorSessionWithNotificationGate` 回傳 `null` 時 | `gate.skipped` |
 
 **`sim/run.ts` 沒有 `merge.integrated`**：該側的合併是 owner AI session 自己下 `git merge --no-ff`（prompt 在 `:2407`、`:3075`），程式端只有 `abortStaleMerge()`（`:1663`）。沒有程式化的 merge 呼叫可掛，不靠掃 git log 或解析 AI 輸出硬湊。
 
@@ -337,7 +336,7 @@ async function withAction(deps, key, kind, taskId, fn) {
 | 0 | 確認本文 14 個事件與出處無誤 | 人工過目（出處已於 2026-08-18 實查） |
 | 1 ✅ | `sim/trace.ts` + `assert` 自檢 | 2026-08-19 完成：`npm test` 全綠（`sim/trace.test.ts` 已納入 `package.json` 的 test 串） |
 | 2 ✅ | 包三個 wrapper，掛 `sim/production.ts`、`coordinator.ts`、`runner.ts` | 2026-08-19 完成：`production.integration.test.ts` 的 Todo→Done 端對端斷言——同一 `run_id`、10 種事件齊全、phase 轉移恰為 `∅→assigned→doing→review→done`、`ci.checked` 三種 `reason` 皆到齊且 evidence 非 null |
-| 3 | 掛 `sim/run.ts`：**先 `sweep()`（常態路徑）**，再 `main()` 與其餘四處 | 一次 sweep tick 的 trace 完整，`main()` 隨後 |
+| 3 ✅ | 掛 `sim/run.ts` 六處 | 2026-08-19 程式完成：`npm run typecheck` 過、`sim/run.test.ts` 新增斷言（成功與拒絕兩種 `commit.recorded` 都送出、`run_id` 一致）。**未實跑一次 sweep tick**——那要真的燒 AI 呼叫 |
 | 4 | 既有 `console.log` 改由 `formatTraceRecord` 產生同樣人話 | fixture 比對通過，見下 |
 
 階段 4 的驗證方式：準備一組固定的 `TraceRecord` fixture，斷言 `formatTraceRecord()` 的輸出與現行 `console.log` 模板逐字相同。
@@ -355,6 +354,8 @@ async function withAction(deps, key, kind, taskId, fn) {
 | `withAction` 錯誤處理 | 「目前 8 處剛好都 `throw err`」 | 兩處原本就吞掉 | `human_blocked_notice` 與 `deployment_rollback_notice` 的 catch 沒有 rethrow，wrapper 因此**現在就**需要 `onError: 'throw' \| 'swallow'`，不是日後才需要 |
 | `task.attempted` | 掛 `coordinator.ts` | 掛 `production.ts` | `recordMemberSessionAttempt` 是 coordinator.ts 的純函式，塞 trace 進去會破壞它的零 I/O 契約 |
 | `completion.confirmed` / `notify.sent` | 掛 `completion.ts` / `coordinator.ts` | 都掛 `production.ts` | 呼叫端本來就在 switch/迴圈裡拿得到結果，兩個檔案一個字都不用改 |
+| `sweep()` 的 run_id | 「目前沒有任何 run 識別碼，需新發」 | **本來就有** | `createRunDir(LOG_DIR, `sweep-<stamp>-<role>`)` 早就在，只是建在函式中段，提前兩行即可 |
+| `run.ts` 的 `run.ended` | 掛在 `sweep()` / `main()` 各自 | 統一由 `runCli` 送 | 兩個進入點都可能拋錯，收尾寫在共同的 try/catch 才不會漏；`endRunTrace` 沒開始過就 no-op |
 | session 事件的 tracer | 直接掛進 `runAiSession` | 需要 module-level 注入點 | runner 工廠在 CLI 層（`production.ts:1603`）就建好，那時 `tickId` 還不存在；`session_id` 又只有 `runAiSession` 內部算得出來。兩頭夾擊，`setSessionTraceFactory` 是唯一能同時保住 `run_id` 與 `session_id` 的做法 |
 
 另外，`RunDeployAcceptanceInput.trace` 刻意是**選填**：`sim/production.test.ts` 有 14 個 `runDeployAcceptance({...})` 呼叫點，為了一個測試根本不在意的欄位改 14 處不划算。正式呼叫端只有一個，`?.` 在程式碼裡看得見。
