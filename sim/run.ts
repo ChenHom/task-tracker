@@ -2725,9 +2725,10 @@ export function brainChecks(
   };
 }
 
-// owner 收尾前，driver 對每個 branch 獨立預跑驗證（機械工作交給 code，不佔 owner 的 LLM session）。
-// 在各自 worktree 跑（主 repo 尚未 merge），彼此獨立故平行。結果注入 ownerClosePrompt，owner 只做判斷與 merge。
-async function verifyBranches(runDir: string, scenario: Scenario): Promise<BranchReviewPacket[]> {
+// owner 收尾前，driver 對仍有 open task 的 branch 獨立預跑驗證（機械工作交給 code，不佔 owner 的 LLM session）。
+// 已結案 task 的 residual branch 不再重跑 CI；在各自 worktree 跑（主 repo 尚未 merge），彼此獨立故平行。
+// 結果注入 ownerClosePrompt，owner 只做判斷與 merge。
+async function verifyBranches(runDir: string, scenario: Scenario, tasks: readonly SweepAssignedTask[]): Promise<BranchReviewPacket[]> {
   const isBrain = scenario.repoRoot === BRAIN_ROOT;
   return Promise.all(RUN.members.map(async (m) => {
     const packetBase = branch(m).replace(/[^a-zA-Z0-9_-]+/g, '-');
@@ -2739,6 +2740,7 @@ async function verifyBranches(runDir: string, scenario: Scenario): Promise<Branc
       commits: [], changedFiles: [], disallowedFiles: [], diffstat: '',
       tsc: { status: 'skip', outputPath: tscPath }, test: { status: 'skip', outputPath: testPath }, packetPath,
     });
+    if (!memberHasReviewChanges(tasks, m)) return base(0);
     if (!existsSync(wt(m))) return base(0);
     validateMemberWorktree(m);
     const ahead = Number(git(['rev-list', '--count', `master..${branch(m)}`]));
@@ -2913,7 +2915,10 @@ async function main(): Promise<void> {
   }
 
   // 收尾 merge（GPT-5.6 Sol）＋ repair 迴圈（收尾退回的題重修至合格，上限 2 輪）
-  let verified = await verifyBranches(runDir, scenario);
+  const workspaceTasks = queryTasks(wsId);
+  let verified = RUN.members.some((member) => memberHasReviewChanges(workspaceTasks, member))
+    ? await verifyBranches(runDir, scenario, workspaceTasks)
+    : [];
   await runActorSessionWithNotificationGate({
     label: 'owner-收尾合併', actor: OWNER,
     getNotificationCookie: () => login(OWNER.email),
@@ -2928,7 +2933,10 @@ async function main(): Promise<void> {
     if (!toFix.length) break;
     console.log(`[repair] 第 ${repair} 輪重修：${toFix.map((m) => m.name).join('、')}`);
     await runRound(toFix, 3 + repair, 1, 5);
-    verified = await verifyBranches(runDir, scenario);
+    const repairTasks = queryTasks(wsId);
+    verified = RUN.members.some((member) => memberHasReviewChanges(repairTasks, member))
+      ? await verifyBranches(runDir, scenario, repairTasks)
+      : [];
     await runActorSessionWithNotificationGate({
       label: `owner-repair${repair}`, actor: OWNER,
       getNotificationCookie: () => login(OWNER.email),
@@ -3008,11 +3016,22 @@ function branchAhead(m: Member): number {
   } catch { return 0; }
 }
 
-function memberHasReviewChanges(m: Member): boolean {
-  if (branchAhead(m) > 0) return true;
+function taskCountsAsOpenReview(task: SweepAssignedTask): boolean {
+  return task.status === 'Todo' || task.status === 'Doing' || task.status === 'Review';
+}
+
+// 只有仍在 Todo/Doing/Review 的 assignee 才算活躍交付；Done/Archived 的 residual branch 不再拖 CI。
+export function shouldVerifyMemberBranch(tasks: readonly SweepAssignedTask[], memberId: string | undefined, hasBranchChanges: boolean): boolean {
+  return !!memberId
+    && hasBranchChanges
+    && tasks.some((task) => task.assignee_id === memberId && taskCountsAsOpenReview(task));
+}
+
+export function memberHasReviewChanges(tasks: readonly SweepAssignedTask[], m: Member): boolean {
+  if (branchAhead(m) > 0) return shouldVerifyMemberBranch(tasks, m.userId, true);
   if (!existsSync(wt(m))) return false;
   validateMemberWorktree(m);
-  return hasReviewChanges(0, memberWorktreeDirty(wt(m)));
+  return shouldVerifyMemberBranch(tasks, m.userId, hasReviewChanges(0, memberWorktreeDirty(wt(m))));
 }
 
 function validateMemberWorktree(m: Member): void {
@@ -3190,7 +3209,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     console.log('[notification-sweep] 已停用；略過 user02–user06 的 notification preflight');
   }
 
-  interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; ownerNeeded: boolean; createDiscussion: boolean; startedAt: string }
+  interface PendingWs { wsId: string; scenario: Scenario; tasks: SweepTask[]; work: SweepTask[]; ownerNeeded: boolean; createDiscussion: boolean; startedAt: string }
   const pendings: PendingWs[] = [];
   const lastCommenter = (taskId: string): string | undefined => (db
     .prepare('SELECT user_id FROM comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1')
@@ -3232,7 +3251,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       ownerNeeded = !!boss && discussions.some((d) => lastCommenter(d.task_id) === boss.id);
     }
     if (!work.length && !ownerNeeded) continue;
-    pendings.push({ wsId, scenario, work, ownerNeeded, createDiscussion, startedAt: info.startedAt });
+    pendings.push({ wsId, scenario, tasks, work, ownerNeeded, createDiscussion, startedAt: info.startedAt });
   }
   db.close();
 
@@ -3318,8 +3337,8 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         if (branchAhead(m) > 0 && !existsSync(wt(m))) ensureWorktree(m, p.scenario);
       }
     }
-    const anyReviewChanges = ownerBudget > 0 && sweepCandidateUsesRepoSlot(p.wsId) && RUN.members.some(memberHasReviewChanges);
-    const verified = (ownerBudget > 0 && anyReviewChanges) ? await verifyBranches(runDir, p.scenario) : [];
+    const anyReviewChanges = ownerBudget > 0 && sweepCandidateUsesRepoSlot(p.wsId) && RUN.members.some((member) => memberHasReviewChanges(p.tasks, member));
+    const verified = (ownerBudget > 0 && anyReviewChanges) ? await verifyBranches(runDir, p.scenario, p.tasks) : [];
 
     if (ownerBudget > 0) {
       const ownerLabel = `owner-巡檢-${p.wsId.slice(0, 8)}`;

@@ -79,6 +79,7 @@ import {
   ownerSweepPrompt,
   parseScenario,
   ROOT,
+  shouldVerifyMemberBranch,
   runMemberSession,
   scenarioFromStoredKey,
   selectAssignedMembers,
@@ -1689,6 +1690,29 @@ assert.strictEqual(hasReviewChanges(0, false), false);
 assert.strictEqual(allChecksPass(dirtyChecks.tsc, dirtyChecks.test), false);
 assert.strictEqual(dirtyChecks.tsc.status, 'fail');
 assert.match(readFileSync(dirtyTsc, 'utf8'), /不可視為工作佚失/);
+
+// 殘留 branch 只有在對應 task 仍是 open 時才值得重跑 CI；Done/Archived 不該再耗 owner 預跑。
+{
+  const memberId = 'user-id-residual';
+  assert.strictEqual(
+    shouldVerifyMemberBranch([
+      { status: 'Done', assignee_id: memberId },
+      { status: 'Archived', assignee_id: memberId },
+    ], memberId, true),
+    false,
+    '只剩 Done/Archived 時，殘留 ahead branch 不得再被當成需驗證的交付',
+  );
+  assert.strictEqual(
+    shouldVerifyMemberBranch([{ status: 'Review', assignee_id: memberId }], memberId, true),
+    true,
+    '仍在 Review 的 task 才能讓對應 branch 進入驗證',
+  );
+  assert.strictEqual(
+    shouldVerifyMemberBranch([{ status: 'Todo', assignee_id: null }], undefined, true),
+    false,
+    '沒有 assignee 時不得誤把 residual branch 視為可驗證交付',
+  );
+}
 
 const blockedChecks = disallowedReviewChecks(['.c1.json'], join(dirtyRoot, 'blocked-tsc.txt'), join(dirtyRoot, 'blocked-test.txt'));
 assert.strictEqual(blockedChecks.tsc.status, 'fail');
