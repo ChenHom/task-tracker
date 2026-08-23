@@ -3209,7 +3209,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     console.log('[notification-sweep] 已停用；略過 user02–user06 的 notification preflight');
   }
 
-  interface PendingWs { wsId: string; scenario: Scenario; work: SweepTask[]; ownerNeeded: boolean; createDiscussion: boolean; startedAt: string }
+  interface PendingWs { wsId: string; scenario: Scenario; tasks: SweepTask[]; work: SweepTask[]; ownerNeeded: boolean; createDiscussion: boolean; startedAt: string }
   const pendings: PendingWs[] = [];
   const lastCommenter = (taskId: string): string | undefined => (db
     .prepare('SELECT user_id FROM comments WHERE task_id = ? ORDER BY created_at DESC LIMIT 1')
@@ -3251,7 +3251,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
       ownerNeeded = !!boss && discussions.some((d) => lastCommenter(d.task_id) === boss.id);
     }
     if (!work.length && !ownerNeeded) continue;
-    pendings.push({ wsId, scenario, work, ownerNeeded, createDiscussion, startedAt: info.startedAt });
+    pendings.push({ wsId, scenario, tasks, work, ownerNeeded, createDiscussion, startedAt: info.startedAt });
   }
   db.close();
 
@@ -3337,8 +3337,8 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         if (branchAhead(m) > 0 && !existsSync(wt(m))) ensureWorktree(m, p.scenario);
       }
     }
-    const anyReviewChanges = ownerBudget > 0 && sweepCandidateUsesRepoSlot(p.wsId) && RUN.members.some((member) => memberHasReviewChanges(tasks, member));
-    const verified = (ownerBudget > 0 && anyReviewChanges) ? await verifyBranches(runDir, p.scenario, tasks) : [];
+    const anyReviewChanges = ownerBudget > 0 && sweepCandidateUsesRepoSlot(p.wsId) && RUN.members.some((member) => memberHasReviewChanges(p.tasks, member));
+    const verified = (ownerBudget > 0 && anyReviewChanges) ? await verifyBranches(runDir, p.scenario, p.tasks) : [];
 
     if (ownerBudget > 0) {
       const ownerLabel = `owner-巡檢-${p.wsId.slice(0, 8)}`;
