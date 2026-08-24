@@ -168,6 +168,22 @@ assert.ok(
   (source.match(/同一 task 已有你留過且狀況未變的 \[ESCALATE\]，不要重複留言/g)?.length ?? 0) >= 2,
   'member 與 owner sweep prompt 都必須含 ESCALATE 去重規則',
 );
+const memberPromptSource = source.slice(
+  source.indexOf('function memberPrompt'),
+  source.indexOf('function ownerOpenPrompt'),
+);
+assert.ok(
+  !memberPromptSource.includes('留言最多一句'),
+  'member prompt 在環境阻塞未變時必須維持靜默，不得允許占位留言',
+);
+const ownerMidPromptSource = source.slice(
+  source.indexOf('function ownerMidPrompt'),
+  source.indexOf('function ownerClosePrompt'),
+);
+assert.ok(
+  !ownerMidPromptSource.includes('阻塞未變'),
+  'owner mid prompt 在環境阻塞未變時不得要求重複留言',
+);
 assert.strictEqual(
   source.match(/ensureMainWorkspaceCandidate\(wsScenario\);\n\s*ensureCanonicalWorkspaceCandidates\(wsScenario\);/g)?.length,
   1,
