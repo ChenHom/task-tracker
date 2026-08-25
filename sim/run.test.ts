@@ -1332,13 +1332,13 @@ assert.deepStrictEqual(eligibleManagedRunners(partialResult).map((member) => mem
 
 assert.deepStrictEqual(
   buildRunnerInvocation(
-    { runner: 'agy', model: 'Gemini 3.5 Flash (High)' },
+    { runner: 'agy', model: 'Gemini 3.7 Flash (High)' },
     '前端 task prompt',
     { cwd: '/tmp/user06', logFile: '/tmp/user06.log' },
   ),
   {
     command: 'agy',
-    args: ['--print', '--model', 'Gemini 3.5 Flash (High)', '--mode', 'accept-edits', '前端 task prompt'],
+    args: ['--print', '--model', 'Gemini 3.7 Flash (High)', '--mode', 'accept-edits', '前端 task prompt'],
   },
   'agy runner 應使用 headless print + accept-edits',
 );
@@ -1497,8 +1497,8 @@ const user06 = members.find((member) => member.email === 'user06@test.local')!;
 const user02 = members.find((member) => member.email === 'user02@test.local')!;
 assert.deepStrictEqual(
   workSessionForMember(user06),
-  { route: { runner: 'claude', model: 'claude-sonnet-5' }, fallback: undefined },
-  'AGY 無副作用試行結束後，user06 一般工作必須恢復 Sonnet 5 且不得 fallback',
+  { route: { runner: 'agy', model: 'Gemini 3.7 Flash (High)' }, fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' } },
+  'user06 一般工作走 agy Gemini 3.7 Flash (High)，與其他成員同一條 route/fallback 流程',
 );
 assert.deepStrictEqual(
   workSessionForMember(user02),

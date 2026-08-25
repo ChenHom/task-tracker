@@ -176,7 +176,7 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 ## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex + Antigravity 混合車隊）
 
 - [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-06、join）→ spawn headless 子行程
-- [x] 歷史混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna；user06 notification preflight 曾使用 Codex gpt-5.4-mini，正常工作=Claude claude-sonnet-5（現行主工作區 safe discussion route 見 Phase 24）
+- [x] 歷史混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna；user06 notification preflight 曾使用 Codex gpt-5.4-mini、正常工作曾為 Claude claude-sonnet-5，現行=AGY Gemini 3.7 Flash (High)（2026-08-25，見下方 user06 路由統一）（現行主工作區 safe discussion route 見 Phase 24）
 - [x] 主題 Dogfooding：owner prompt 內嵌本專案真實技術債清單（ponytail: 註記）出題
 - [x] 全員 QA 規則：可重現的系統問題建 `[BUG]` task（重現步驟/預期 vs 實際/原始回應），owner 收尾 triage
 - [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
@@ -187,7 +187,7 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 - [x] scenario 啟用前驗證 Git top-level/master，commit 前再驗 worktree/branch；legacy `technical-debt` report 明確映射，未知 scenario fail closed
 - [x] `sim-logs/.run.lock` 序列化 manual/timer 流程並回收 dead-PID lock；平行 member 全部 settle 後才解鎖
 - [x] 每個既有自動 Owner／member session 先處理登入當下的未讀通知；主工作區需驗證新的非自我 mention 留言後才已讀，來源 403/404 會記錄並清除，其他失敗保留未讀並跳過該 actor 的一般工作（不含前端通知 UI 或 user09 runner）
-- [x] Owner runner probe 只影響 owner 預算；`team` 不做全域 probe，member 各自依 runner 執行。user06 的舊 notification preflight 使用 Codex gpt-5.4-mini 僅為歷史設定；現行主工作區 notification 改走 Phase 24 的 Claude safe discussion，正常工作使用 Claude claude-sonnet-5 且無 AGY fallback；2026-07-16 AGY 試行沒有產生副作用，僅保留為歷史證據
+- [x] Owner runner probe 只影響 owner 預算；`team` 不做全域 probe，member 各自依 runner 執行。user06 的舊 notification preflight 使用 Codex gpt-5.4-mini 僅為歷史設定；現行主工作區 notification 改走 Phase 24 的 Claude safe discussion。2026-08-25 起 user06 一般工作改為 AGY Gemini 3.7 Flash (High)＋AGY Claude Sonnet 4.6 (Thinking) fallback，並移除 `workRoute`/`notificationRoute` 兩個成員專屬覆寫欄位，六位成員共用同一條 route/fallback 流程；2026-07-16 AGY 試行沒有產生副作用，僅保留為歷史證據
 - [x] `sim/tsconfig.json` 納入 `npm test`，讓 sim harness 也受 strict TypeScript 檢查
 - [x] `docs/operations.md` 記錄手動模式、scenario、systemd owner/team timers、logs、lock 與權限邊界
 - [x] 跑完整端到端 `--fast` self-directed sprint（`sim-run-1783392991269`）

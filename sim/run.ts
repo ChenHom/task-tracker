@@ -132,8 +132,6 @@ export interface Member {
   model: string;
   profile: string; // 專長描述，注入 prompt 供成員自我認知與 owner 設計難度組合參考
   fallback?: ModelRoute;
-  workRoute?: ModelRoute;
-  notificationRoute?: ModelRoute;
   userId?: string;
   role?: string;
 }
@@ -144,8 +142,6 @@ interface MemberRunnerConfig {
   model: string;
   profile: string;
   fallback?: ModelRoute;
-  workRoute?: ModelRoute;
-  notificationRoute?: ModelRoute;
 }
 
 export interface PromptArtifact {
@@ -373,10 +369,8 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
     profile: '中小題穩定，擅長檔案 IO/防護類修補（曾完成 attachment symlink 硬化）' },
   { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.6-luna',
     profile: '中小題，動手前先查核現況避免重工' },
-  { email: 'user06@test.local', runner: 'agy', model: 'Gemini 3.5 Flash (High)',
+  { email: 'user06@test.local', runner: 'agy', model: 'Gemini 3.7 Flash (High)',
     fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' },
-    workRoute: { runner: 'claude', model: 'claude-sonnet-5' },
-    notificationRoute: { runner: 'codex', model: 'gpt-5.4-mini' },
     profile: '前端工程師，擅長原生 JS/CSS、UI 互動、響應式版面與瀏覽器驗證；動手前先檢查現有頁面、API 契約與設計風格，偏好最小範圍修改。會主動驗證登入、表單、錯誤提示、手機版與實際操作流程；遇到後端 API 或權限問題先記錄並回報，不擅自擴大修改後端；在意 API response、錯誤狀態與 loading 狀態變化。' },
 ];
 
@@ -727,8 +721,6 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
         model: config.model,
         profile: config.profile,
         fallback: config.fallback,
-        workRoute: config.workRoute,
-        notificationRoute: config.notificationRoute,
       };
     });
   } finally {
@@ -736,14 +728,9 @@ export function loadMembersFromUsers(databasePath = join(ROOT, 'data/dev.db')): 
   }
 }
 
-export function notificationRouteForMember(member: Pick<Member, 'runner' | 'model' | 'notificationRoute'>): ModelRoute {
-  return member.notificationRoute ?? { runner: member.runner, model: member.model };
-}
-
 export function workSessionForMember(
-  member: Pick<Member, 'runner' | 'model' | 'fallback' | 'workRoute'>,
+  member: Pick<Member, 'runner' | 'model' | 'fallback'>,
 ): { route: ModelRoute; fallback: ModelRoute | undefined } {
-  if (member.workRoute) return { route: member.workRoute, fallback: undefined };
   return { route: { runner: member.runner, model: member.model }, fallback: member.fallback };
 }
 
@@ -929,7 +916,7 @@ export function notificationGateEnabled(env: NodeJS.ProcessEnv = process.env): b
   return env.SIM_NOTIFICATION_GATE === '1';
 }
 
-export type NotificationSweepMember = Pick<Member, 'email' | 'name' | 'user' | 'runner' | 'model' | 'fallback' | 'notificationRoute'> & { profile?: string };
+export type NotificationSweepMember = Pick<Member, 'email' | 'name' | 'user' | 'runner' | 'model' | 'fallback'> & { profile?: string };
 
 export interface NotificationSweepResult {
   actor: string;
@@ -1561,7 +1548,7 @@ export async function runNotificationSweepForMember(
 ): Promise<NotificationSweepResult> {
   let cookie: string;
   const sleep = input.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-  const route = notificationRouteForMember(input.member);
+  const route = { runner: input.member.runner, model: input.member.model };
   const deploymentRevision = input.deploymentRevision ?? 'unknown';
   for (let attempt = 0; ; attempt++) {
     const startedAt = new Date();

@@ -1,3 +1,5 @@
+> **已取代／歷史紀錄（2026-08-25）**：user06 一般工作改為 AGY `Gemini 3.7 Flash (High)`，quota 滿時 fallback 到 AGY `Claude Sonnet 4.6 (Thinking)`；`workRoute`/`notificationRoute` 兩個成員專屬覆寫欄位已從 `sim/run.ts` 移除，六位成員共用同一條 route/fallback 流程（notification preflight 也走成員自己的 route）。以下內容保留為歷史記錄。
+
 # user06 Sonnet 5 路由恢復設計
 
 ## 目標
