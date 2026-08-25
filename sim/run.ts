@@ -1987,6 +1987,12 @@ export function isQuotaExhaustion(output: string): boolean {
   return /(quota|rate[ _-]?limit|usage limit|resource exhausted|too many requests|limit reached|exhausted)/i.test(output);
 }
 
+// agy headless 遇到需要人工確認的工具會 soft-deny、以 exit 0 收工，stdout 全空、
+// 只在 stderr 留一句 no output produced。不判成失敗的話，車隊會靜默空轉一整輪。
+export function sessionProducedNothing(errored: boolean, stdout: string, stderr: string): boolean {
+  return !errored && !stdout.trim() && /no output produced/i.test(stderr);
+}
+
 export function shouldFallbackToModel(result: SessionResult, hasFallback: boolean): boolean {
   return hasFallback && result.errored && !result.timedOut && result.quotaExhausted === true;
 }
@@ -2052,30 +2058,34 @@ function runSessionAttempt(label: string, route: ModelRoute, prompt: string, opt
         const e = err as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null;
         const timedOut = !!e && (e.killed === true || e.signal === 'SIGKILL');
         const output = `${stdout}\n${stderr}\n${err ? String(err) : ''}`;
+        const producedNothing = sessionProducedNothing(!!err, stdout, stderr);
+        const failed = !!err || producedNothing;
         const quotaExhausted = !!err && isQuotaExhaustion(output);
-        const errorCategory = err ? sessionErrorCategory(output, timedOut, quotaExhausted) : 'none';
+        const errorCategory = failed ? sessionErrorCategory(output, timedOut, quotaExhausted) : 'none';
         const endedAt = new Date();
         const tokenTotal = parseReportedTokenTotal(output);
-        const errNote = err ? `${String(err)}${timedOut ? ` [KILLED signal=${e?.signal} → 逾時 timeout=${Math.round(opts.timeoutMs / 60000)}分]` : ''}` : 'none';
+        const errNote = err
+          ? `${String(err)}${timedOut ? ` [KILLED signal=${e?.signal} → 逾時 timeout=${Math.round(opts.timeoutMs / 60000)}分]` : ''}`
+          : producedNothing ? 'runner 以 exit 0 結束但沒有任何輸出（工具權限被拒？）' : 'none';
         if (captureContent) writeFileSync(logFile, `PROMPT:\n${prompt}\n\nSTDOUT:\n${stdout}\n\nSTDERR:\n${stderr}\n\nERR:${errNote}\n`);
         const tail = captureContent ? (stdout || '').trim().split('\n').slice(-2).join(' / ') : '內容未記錄';
-        const why = timedOut ? `（逾時 ${Math.round(opts.timeoutMs / 60000)} 分被中止）` : err ? (captureContent ? `（異常: ${String(err).slice(0, 80)}）` : '（異常）') : '';
+        const why = timedOut ? `（逾時 ${Math.round(opts.timeoutMs / 60000)} 分被中止）` : err ? (captureContent ? `（異常: ${String(err).slice(0, 80)}）` : '（異常）') : producedNothing ? '（無輸出）' : '';
         trace('session.ended', {
-          outcome: err ? 'fail' : 'ok',
+          outcome: failed ? 'fail' : 'ok',
           evidence: captureContent ? { kind: 'log', ref: logFile } : null,
           // errorCategory 成功時是 'none'，印出來只會變成「none — …」的雜訊。
-          detail: `${err ? `${errorCategory}${why} — ` : ''}${tail}`,
+          detail: `${failed ? `${errorCategory}${why} — ` : ''}${tail}`,
         });
         resolve({
           timedOut,
-          errored: !!err,
+          errored: failed,
           quotaExhausted,
           errorCategory,
           tokenTotal,
           output: stdout.trim() || undefined,
           attempts: [{
             route: { ...route }, retry, started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(),
-            timedOut, errored: !!err, quotaExhausted, errorCategory, tokenTotal,
+            timedOut, errored: failed, quotaExhausted, errorCategory, tokenTotal,
           }],
         }); // 單一 session 失敗不中斷整場
       });

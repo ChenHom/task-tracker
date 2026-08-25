@@ -85,6 +85,7 @@ import {
   selectAssignedMembers,
   settleAllOrThrow,
   shouldFallbackToModel,
+  sessionProducedNothing,
   sweepCandidateUsesRepoSlot,
   sweepBudgets,
   syncWorktreeWithMaster,
@@ -1553,6 +1554,26 @@ assert.strictEqual(
   shouldFallbackToModel({ timedOut: true, errored: true, quotaExhausted: true }, true),
   false,
   'timeout 不可 fallback',
+);
+assert.strictEqual(
+  sessionProducedNothing(false, '', 'jetski: no output produced — a tool required the "command" permission'),
+  true,
+  'agy 工具權限被拒、exit 0 但零輸出，必須判成失敗而不是靜默成功',
+);
+assert.strictEqual(
+  sessionProducedNothing(false, '完成盤點，已留言', 'jetski: no output produced'),
+  false,
+  '有 stdout 就不算空轉',
+);
+assert.strictEqual(
+  sessionProducedNothing(true, '', 'boom'),
+  false,
+  '已經是 errored 的 session 由既有路徑處理，不重複判定',
+);
+assert.strictEqual(
+  sessionProducedNothing(false, '', ''),
+  false,
+  '單純沒有 stderr 訊息不可誤判為空轉',
 );
 
 const runRoot = mkdtempSync(join(tmpdir(), 'task-tracker-sim-run-'));
