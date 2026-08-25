@@ -1977,7 +1977,9 @@ export function buildRunnerInvocation(
   }
   return {
     command: 'agy',
-    args: ['--print', '--model', route.model, '--mode', 'accept-edits', prompt],
+    // --print 吃一個值當 prompt，所以 prompt 必須緊跟在它後面；把 --model 夾在
+    // --print 與 prompt 之間，agy 會把 '--model' 當成 prompt 並忽略真正的 prompt。
+    args: ['--model', route.model, '--mode', 'accept-edits', '--print', prompt],
   };
 }
 

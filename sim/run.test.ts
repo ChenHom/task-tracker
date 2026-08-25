@@ -1338,7 +1338,7 @@ assert.deepStrictEqual(
   ),
   {
     command: 'agy',
-    args: ['--print', '--model', 'Gemini 3.7 Flash (High)', '--mode', 'accept-edits', '前端 task prompt'],
+    args: ['--model', 'Gemini 3.7 Flash (High)', '--mode', 'accept-edits', '--print', '前端 task prompt'],
   },
   'agy runner 應使用 headless print + accept-edits',
 );
