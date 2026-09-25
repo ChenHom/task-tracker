@@ -365,7 +365,7 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
     profile: '細心，擅長小範圍 auth/安全類修補與補測試，適合範圍明確的小題' },
   { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.6-terra',
     profile: '主力工程師，可承接跨檔案/架構性大題（曾獨力完成 sim harness 四階段強化）' },
-  { email: 'user04@test.local', runner: 'codex', model: 'gpt-5.4-mini',
+  { email: 'user04@test.local', runner: 'codex', model: 'gpt-5.6-luna',
     profile: '中小題穩定，擅長檔案 IO/防護類修補（曾完成 attachment symlink 硬化）' },
   { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.6-luna',
     profile: '中小題，動手前先查核現況避免重工' },
@@ -1756,8 +1756,8 @@ export const SAFE_DISCUSSION_ROUTE: ModelRoute = { runner: 'claude', model: 'cla
 const SAFE_DISCUSSION_TIMEOUT = 12 * 60 * 1000;
 export const NOTIFICATION_TOOLS = SAFE_DISCUSSION_TOOLS;
 const OWNER_TOOLS = INTERNAL_OWNER_TOOLS;
-// owner 開場是生成型工作（發想＋開題），交給 Claude Sonnet 5；中場/收尾/repair 是審查判斷，改用 GPT-5.6 Sol
-const OWNER_OPEN_MODEL = 'claude-sonnet-5';
+// owner 開場是生成型工作（發想＋開題），交給 Claude Opus 5.5；中場/收尾/repair 是審查判斷，改用 GPT-5.6 Sol
+const OWNER_OPEN_MODEL = 'claude-opus-5-5';
 const OWNER_REVIEW_MODEL = 'gpt-5.6-sol';
 
 export function createRunDir(root: string, runId: string): string {

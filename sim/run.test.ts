@@ -1252,6 +1252,15 @@ assert.strictEqual(
   'claude-sonnet-5',
   '小美的工作與表態必須使用 Claude Sonnet 5',
 );
+assert.strictEqual(
+  members.find((member) => member.email === 'user04@test.local')?.model,
+  'gpt-5.6-luna',
+  '婷婷的工作必須使用 GPT-5.6 Luna',
+);
+assert.ok(
+  source.includes("const OWNER_OPEN_MODEL = 'claude-opus-5-5';"),
+  'Owner 開場與發想必須使用 Claude Opus 5.5',
+);
 
 async function runRosterTests(): Promise<void> {
 const rosterMembers: ManagedRosterMember[] = [

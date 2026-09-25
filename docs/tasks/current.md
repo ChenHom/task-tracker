@@ -176,7 +176,7 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 ## Phase 12 — AI 模擬使用者（sim harness，Claude + Codex + Antigravity 混合車隊）
 
 - [x] `sim/run.ts` driver：純 fetch bootstrap（建模擬 workspace、邀請 user02-06、join）→ spawn headless 子行程
-- [x] 歷史混合車隊：Owner 開場=Claude Sonnet 5、中場/收尾/repair=Codex gpt-5.6-sol；user02=Codex gpt-5.3-codex；user03=Codex gpt-5.6-terra；user04=Codex gpt-5.4-mini；user05=Codex gpt-5.6-luna；user06 notification preflight 曾使用 Codex gpt-5.4-mini、正常工作曾為 Claude claude-sonnet-5，現行=AGY Gemini 3.7 Flash (High)（2026-08-25，見下方 user06 路由統一）（現行主工作區 safe discussion route 見 Phase 24）
+- [x] 現行混合車隊：Owner 開場/發想=Claude Opus 5.5，中場/收尾/repair=Codex GPT-5.6 Sol；user02=Claude Sonnet 5（AGY Claude Sonnet 4.6 Thinking fallback）；user03=Codex GPT-5.6 Terra；user04=Codex GPT-5.6 Luna；user05=Codex GPT-5.6 Luna；user06=AGY Gemini 3.7 Flash High（AGY Claude Sonnet 4.6 Thinking fallback）。歷史路由與遷移紀錄保留於下方各階段說明。
 - [x] 主題 Dogfooding：owner prompt 內嵌本專案真實技術債清單（ponytail: 註記）出題
 - [x] 全員 QA 規則：可重現的系統問題建 `[BUG]` task（重現步驟/預期 vs 實際/原始回應），owner 收尾 triage
 - [x] `--smoke` 模式 + 結算統計（tasks/comments/event_store/[BUG] 清單，直接讀 dev.db）
