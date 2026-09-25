@@ -29,7 +29,9 @@ export async function updateQuotaFooter() {
     footerEl.textContent = '';
     providers.forEach((item, index) => {
       const isUnavailable = !!item.unavailable;
-      const providerName = formatName(item.provider);
+      const providerName = item.account && item.account !== 'main'
+        ? `${formatName(item.provider)} (${item.account})`
+        : formatName(item.provider);
       const summary = selectQuotaSummary(item);
       const valueText = isUnavailable || !summary
         ? 'N/A'

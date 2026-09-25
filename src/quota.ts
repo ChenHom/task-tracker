@@ -17,6 +17,7 @@ export interface QuotaWindow {
 
 export interface QuotaStatus {
   provider: QuotaProvider;
+  account: string;
   remaining: string | null;
   resetAt: string | null;
   source: string;
@@ -44,13 +45,29 @@ export async function getQuotaSnapshot(deps: QuotaDeps = {}): Promise<QuotaSnaps
   const parsed = await readAiQuotaSnapshot(stateFile);
   if (!parsed) return unavailableSnapshot(deps.now?.() ?? Date.now());
 
-  const providers = ['codex', 'claude'].map((provider) => (
-    mapProvider(provider as QuotaProvider, parsed.providers[provider] as JsonObject)
+  // ai-quota schema v2: each provider is an array of per-account snapshots.
+  const providers = ['codex', 'claude'].flatMap((provider) => (
+    (parsed.providers[provider] as JsonObject[]).map((raw) => mapProvider(provider as QuotaProvider, raw))
   ));
-  const rawAgy = asObject(parsed.providers.agy);
-  const agyValid = rawAgy && rawAgy.provider === 'agy' && typeof rawAgy.status === 'string' && asObject(rawAgy.windows);
-  providers.push(agyValid ? mapProvider('agy', rawAgy) : unavailableQuota('agy', 'ai-quota-agy-missing'));
+  const rawAgy = validAccounts('agy', parsed.providers.agy);
+  providers.push(...(rawAgy?.length
+    ? rawAgy.map((raw) => mapProvider('agy', raw))
+    : [unavailableQuota('agy', 'ai-quota-agy-missing')]));
   return { cachedAt: parsed.generatedAt, providers };
+}
+
+function validAccounts(provider: string, value: unknown): JsonObject[] | null {
+  if (!Array.isArray(value)) return null;
+  const accounts: JsonObject[] = [];
+  for (const entry of value) {
+    const item = asObject(entry);
+    if (!item || item.provider !== provider || typeof item.account !== 'string' || !item.account
+      || typeof item.status !== 'string' || !asObject(item.windows)) {
+      return null;
+    }
+    accounts.push(item);
+  }
+  return accounts;
 }
 
 async function readAiQuotaSnapshot(stateFile: string): Promise<{
@@ -60,12 +77,9 @@ async function readAiQuotaSnapshot(stateFile: string): Promise<{
   try {
     const root = asObject(JSON.parse(await readFile(stateFile, 'utf8')));
     const providers = asObject(root?.providers);
-    if (root?.schemaVersion !== 1 || typeof root.generatedAt !== 'string' || !providers) return null;
+    if (root?.schemaVersion !== 2 || typeof root.generatedAt !== 'string' || !providers) return null;
     for (const provider of ['codex', 'claude']) {
-      const item = asObject(providers[provider]);
-      if (!item || item.provider !== provider || typeof item.status !== 'string' || !asObject(item.windows)) {
-        return null;
-      }
+      if (!validAccounts(provider, providers[provider])?.length) return null;
     }
     return { generatedAt: root.generatedAt, providers };
   } catch {
@@ -83,6 +97,7 @@ function mapProvider(provider: QuotaProvider, raw: JsonObject): QuotaStatus {
 
   return {
     provider,
+    account: raw.account as string,
     remaining: selected?.remaining ?? null,
     resetAt: selected?.resetAt ?? null,
     source: typeof raw.source === 'string' ? raw.source : `${provider}-source-unknown`,
@@ -122,6 +137,7 @@ function unavailableSnapshot(timestamp: number): QuotaSnapshot {
 function unavailableQuota(provider: QuotaProvider, source: string): QuotaStatus {
   return {
     provider,
+    account: 'main',
     remaining: null,
     resetAt: null,
     source,

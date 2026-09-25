@@ -42,8 +42,8 @@ async function main(): Promise<void> {
   ]);
 
   const staleFixture = snapshotFixture();
-  staleFixture.providers.codex.status = 'stale';
-  staleFixture.providers.agy.status = 'stale';
+  staleFixture.providers.codex[0].status = 'stale';
+  staleFixture.providers.agy[0].status = 'stale';
   writeFileSync(stateFile, JSON.stringify(staleFixture));
   const stale = await getQuotaSnapshot({ stateFile });
   assert.strictEqual(stale.providers[0].remaining, '78%', 'stale 應保留最後成功資料');
@@ -67,6 +67,25 @@ async function main(): Promise<void> {
   assert.ok(missing.providers.every((provider) => provider.unavailable));
   assert.ok(missing.providers.every((provider) => provider.stale));
 
+  const twoClaude = snapshotFixture();
+  twoClaude.providers.claude.push(provider('claude', {
+    five_hour: { usedPercent: 60, remainingPercent: 40, resetsAt: null },
+    seven_day: null,
+  }, 'work'));
+  writeFileSync(stateFile, JSON.stringify(twoClaude));
+  const multi = await getQuotaSnapshot({ stateFile });
+  assert.deepStrictEqual(
+    multi.providers.map((p) => `${p.provider}:${p.account}`),
+    ['codex:main', 'claude:main', 'claude:work', 'agy:main'],
+    '多帳號應逐帳號攤平，順序照快照',
+  );
+  assert.strictEqual(multi.providers[2].remaining, '40%');
+
+  const v1Fixture = { ...snapshotFixture(), schemaVersion: 1 };
+  writeFileSync(stateFile, JSON.stringify(v1Fixture));
+  const v1 = await getQuotaSnapshot({ stateFile });
+  assert.ok(v1.providers.every((p) => p.unavailable), 'schema v1 不再支援');
+
   writeFileSync(stateFile, '{bad json');
   const malformed = await getQuotaSnapshot({ stateFile });
   assert.ok(malformed.providers.every((provider) => provider.unavailable));
@@ -76,31 +95,32 @@ async function main(): Promise<void> {
 
 function snapshotFixture() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: '2026-07-13T06:20:26.859Z',
     providers: {
-      codex: provider('codex', {
+      codex: [provider('codex', {
         five_hour: null,
         seven_day: { usedPercent: 22, remainingPercent: 78, resetsAt: '2026-07-19T19:00:07.000Z' },
-      }),
-      claude: provider('claude', {
+      })],
+      claude: [provider('claude', {
         five_hour: { usedPercent: 0, remainingPercent: 100, resetsAt: null },
         seven_day: { usedPercent: 86, remainingPercent: 14, resetsAt: '2026-07-14T23:00:00.207Z' },
-      }),
-      agy: {
+      })],
+      agy: [{
         ...provider('agy', {
           five_hour: { usedPercent: 36, remainingPercent: 64, resetsAt: '2026-07-13T23:59:59.000Z' },
           seven_day: null,
         }),
         source: 'daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels#model=gemini-3-flash-agent',
-      },
+      }],
     },
   };
 }
 
-function provider(providerName: 'codex' | 'claude' | 'agy', windows: Record<string, unknown>) {
+function provider(providerName: 'codex' | 'claude' | 'agy', windows: Record<string, unknown>, account = 'main') {
   return {
     provider: providerName,
+    account,
     status: 'ok',
     confidence: 'experimental',
     source: `${providerName}-source`,
