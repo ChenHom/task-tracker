@@ -331,6 +331,10 @@ Timer output is written to `sim-logs/sweep-owner-cron-*.log` and `sim-logs/sweep
 
 另外 owner 每個 tick 只收 2 個 workspace（`sweepBudgets()`，逾時 streak 會再往下砍），workspace 一多本來就要跑好幾輪才收得完。
 
+#### 登記外部 repo（transferOnly）
+
+新增一個外部 repo（只收轉入的 task，owner 不得自建 `[討論]`）：在 `sim/run.ts` 的 `SCENARIOS` 加一筆 `transferOnly: true` 並填 `repoRoot`/`checks`，同時在 `CANONICAL_WORKSPACE_BY_REPOROOT` 加對應的 `repoRoot -> workspaceId`。候選清單、成員自動 join、排序都自動生效，不需要另外登記。`checks.tsc`/`checks.test` 是 `[command, ...args]`，先在該 repo 開一個臨時 worktree 實測過（在 master 上會 pass、單指令不超過 `runCheck` 的 3 分鐘逾時）才能填；沒有 `checks` 就維持現行寫死的 `npx tsc --noEmit`／`npm test`。`sim-work/` 的 `.git/info/exclude` 由 `ensureSimWorkExcluded()` 在建 worktree 前自動補（不改外部 repo 自己的 `.gitignore`），不需要手動處理。
+
 ### Concurrency and recovery
 
 The driver holds `sim-logs/.run.lock` for the complete run. Manual runs and owner/team timers therefore cannot mutate the shared board or Git worktrees concurrently. A sweep that sees a live PID exits and lets the next timer retry; a lock whose PID no longer exists is recovered automatically. Do not delete a lock owned by a live process.

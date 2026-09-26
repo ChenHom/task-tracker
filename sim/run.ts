@@ -375,12 +375,19 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
 ];
 
 export const BRAIN_ROOT = '/home/hom/code/brain';
+// 外部 repo：只收轉入的 task（transferOnly），owner 不得在該 workspace 自建 [討論] 或開新題，
+// 但仍可 merge 綠燈 branch 回該 repo 的 master。新增一個 repo＝在 SCENARIOS 加一筆＋在
+// CANONICAL_WORKSPACE_BY_REPOROOT 加一筆，其餘（候選清單/成員自動 join/排序/node_modules symlink/
+// sim-work exclude）都是通用邏輯，不必額外登記。
+export const RSSHUB_ROOT = '/home/hom/services/RSSHub';
+export const HARNESS_ROOT = '/home/hom/code/harness';
 // 多個 session 各自 npm install/npx 時，預設 cache（~/.npm）在唯讀 HOME 的沙盒會 EROFS；
 // 固定指到一個可寫的共用暫存目錄，讓所有 session 的子行程都吃到（見 runSession 的 env 注入）。
 const NPM_CACHE_DIR = '/tmp/sim-npm-cache';
 
-// repoRoot：成員實作/CI/worktree 針對的 repo；self-directed/product-ideation 是本 task-tracker，brain 是獨立沙盒
-const SCENARIOS = {
+// repoRoot：成員實作/CI/worktree 針對的 repo；self-directed/product-ideation 是本 task-tracker，brain 是獨立沙盒，
+// rsshub/harness 是登記的外部 transferOnly repo（見上方說明）。
+const SCENARIOS: Record<ScenarioKey, Scenario> = {
   'self-directed': {
     key: 'self-directed',
     title: '自主 Sprint',
@@ -399,14 +406,39 @@ const SCENARIOS = {
     taskCreationMode: 'brain-explored',
     repoRoot: BRAIN_ROOT,
   },
-} as const;
+  'rsshub': {
+    key: 'rsshub',
+    title: 'RSSHub 轉入 Sprint',
+    taskCreationMode: 'transfer-only',
+    repoRoot: RSSHUB_ROOT,
+    transferOnly: true,
+    checks: {
+      tsc: ['pnpm', 'exec', 'oxlint', '--type-aware', '.'],
+      test: ['pnpm', 'exec', 'eslint', '.github', 'lib/utils'],
+    },
+    deployNote: 'merge 不會自動重啟 rsshub-ruanyf.service；需要 live 驗收時得自行重啟服務或請人工確認，不要假設 merge 後就已生效',
+  },
+  'harness': {
+    key: 'harness',
+    title: 'harness 轉入 Sprint',
+    taskCreationMode: 'transfer-only',
+    repoRoot: HARNESS_ROOT,
+    transferOnly: true,
+    checks: {
+      tsc: ['npm', 'run', 'typecheck'],
+      test: ['npm', 'test'],
+    },
+  },
+};
 
 // 跨 scenario 轉移用的「canonical 收件 workspace」：key 是絕對路徑的 repoRoot，
 // value 是該 repo 固定的收件 workspace id。純手動維護（比照 SCENARIOS 本身）；
-// 只有「其他 scenario 可能誤判、需要轉移過來」的 repo 才登記——目前只有 task-tracker 本體。
-// brain 是純沙盒，不是任何轉移目標，不登記。
+// 登記在這裡的 repo，候選清單、成員自動 join、排序、主工作區轉移目錄都會自動生效。
+// 目前登記：task-tracker 本體、rsshub、harness。brain 是純沙盒，不是任何轉移目標，不登記。
 export const CANONICAL_WORKSPACE_BY_REPOROOT: Record<string, string> = {
   [ROOT]: 'd9da9945-ce5f-400f-806e-1d75e95e313a',
+  [RSSHUB_ROOT]: 'cded05c6-f14e-470a-86bf-c63ecbf1df87',
+  [HARNESS_ROOT]: '85943994-22d5-4c95-b456-570f9d93ac65',
 };
 
 // 既有但沒有 report.json 的 workspace 若仍需由 legacy sweep 處理，另列在這裡。
@@ -670,8 +702,20 @@ function crossRepoRule(scenario: Scenario): string {
 - 不是（這題本來就屬於你現在的 repoRoot）：忽略這條規則，正常處理。`;
 }
 
-type ScenarioKey = keyof typeof SCENARIOS;
-type Scenario = (typeof SCENARIOS)[ScenarioKey];
+type ScenarioKey = 'self-directed' | 'product-ideation' | 'brain' | 'rsshub' | 'harness';
+
+interface Scenario {
+  key: ScenarioKey;
+  title: string;
+  taskCreationMode: string;
+  repoRoot: string;
+  // 外部 transferOnly repo：只收轉入的 task，owner 不得自建 [討論] 或開新題（見 SCENARIOS 上方說明）。
+  transferOnly?: true;
+  // 沒填就維持現行寫死的 npx tsc --noEmit / npm test（brain 場另有自己的 brainChecks，不受這個欄位影響）。
+  checks?: { tsc: string[]; test: string[] };
+  // 只有 ROOT 才有「merge 後自動部署」的固定文案；其他 repo 若有自己的部署/服務備註，填在這裡。
+  deployNote?: string;
+}
 
 interface RunContext {
   repoRoot: string;
@@ -751,7 +795,9 @@ export function parseScenario(argv: string[]): Scenario {
   if (index === -1) return SCENARIOS['self-directed'];
   const key = argv[index + 1] as ScenarioKey | undefined;
   if (!key || !(key in SCENARIOS)) throw new Error(`Unknown scenario: ${key ?? '(missing)'}`);
-  return SCENARIOS[key];
+  const scenario = SCENARIOS[key];
+  if (scenario.transferOnly) throw new Error(`scenario ${key} 只收轉入的 task，不能用 --scenario 開新 sprint（bootstrap 會新建 workspace）`);
+  return scenario;
 }
 
 export function scenarioFromStoredKey(key: string): Scenario | undefined {
@@ -1710,8 +1756,10 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
   for (const m of RUN.members) {
     if (existsSync(wt(m))) throw new Error(`${wt(m)} 已存在。清理：git worktree remove sim-work/${m.user} --force && git branch -D sim/${m.user} 2>/dev/null`);
     git(['worktree', 'add', wt(m), '-b', branch(m), 'master']);
-    // task-tracker 場：symlink 主 repo node_modules（測試現成）；brain 場各子專案自帶依賴，不 symlink
-    if (scenario.repoRoot === ROOT) symlinkSync(join(ROOT, 'node_modules'), join(wt(m), 'node_modules'));
+    // repoRoot 底下有現成 node_modules 就 symlink 進 worktree（測試現成）；brain 場各子專案自帶依賴，不 symlink
+    if (existsSync(join(scenario.repoRoot, 'node_modules'))) {
+      symlinkSync(join(scenario.repoRoot, 'node_modules'), join(wt(m), 'node_modules'));
+    }
   }
 
   const ownerCookie = await login(OWNER.email);
@@ -2303,12 +2351,17 @@ function memberPrompt(m: Member, wsId: string, round: number, scenario: Scenario
   // 甚至同一 repo 的兄弟目錄（sim-logs/）都可能落在該 session 實際允許寫入的範圍之外。
   const jar = join(wt(m), `.jar-${m.user}.txt`);
   const isBrain = scenario.repoRoot === BRAIN_ROOT;
+  const isRoot = scenario.repoRoot === ROOT;
   const workdirDesc = isBrain
     ? '你的工作目錄（已是 git worktree，branch ' + branch(m) + '）就是目前目錄，是團隊共用的主題專案沙盒 repo；task 會指明要動哪個子專案。'
-    : '你的工作目錄（已是 git worktree，branch ' + branch(m) + '）就是目前目錄，task-tracker 的完整原始碼在這裡。';
+    : isRoot
+    ? '你的工作目錄（已是 git worktree，branch ' + branch(m) + '）就是目前目錄，task-tracker 的完整原始碼在這裡。'
+    : `你的工作目錄（已是 git worktree，branch ${branch(m)}）就是目前目錄，是 ${scenario.repoRoot} 的原始碼；這個 workspace 只收轉入的實作 task，不是 task-tracker 本體。`;
   const doneDef = isBrain
     ? '- 完成的定義：task 驗收欄位寫的檢查通過（若子專案有 package.json/test script 就跑它；有 tsconfig 就 npx tsc --noEmit）；至少留一個可重跑的檢查'
-    : '- 完成的定義：npx tsc --noEmit 乾淨 + 跑「與你改動相關的測試檔」通過（例如改 auth 就 npx tsx src/auth.test.ts）。完整測試套件由團隊 CI 在你下線後統一跑，你不必自己跑整套 npm test（省時：本地快測、CI 全測）。不要對 localhost:3000 做 live 驗收；live 行為以合併部署後的 owner 巡檢為準，live 與你分支不一致不是你的阻塞，不要為此 [ESCALATE]';
+    : isRoot
+    ? '- 完成的定義：npx tsc --noEmit 乾淨 + 跑「與你改動相關的測試檔」通過（例如改 auth 就 npx tsx src/auth.test.ts）。完整測試套件由團隊 CI 在你下線後統一跑，你不必自己跑整套 npm test（省時：本地快測、CI 全測）。不要對 localhost:3000 做 live 驗收；live 行為以合併部署後的 owner 巡檢為準，live 與你分支不一致不是你的阻塞，不要為此 [ESCALATE]'
+    : `- 完成的定義：${scenario.checks ? `\`${scenario.checks.tsc.join(' ')}\` 與 \`${scenario.checks.test.join(' ')}\` 都通過` : 'task 驗收欄位寫的檢查通過'}。完整 CI 由團隊 driver 在你下線後統一跑。不要對這個 repo 的本機服務做 live 驗收；live 行為以合併後的 owner 巡檢為準，不要為此 [ESCALATE]`;
   return `你是「${m.name}」（${m.email}），團隊工程師。第 ${round} 次上線工作。你的專長：${m.profile}。
 你的 user_id：${m.userId}。workspace：${wsId}。
 ${workdirDesc}
@@ -2776,6 +2829,9 @@ async function verifyBranches(runDir: string, scenario: Scenario, tasks: readonl
     } else if (isBrain) {
       const checks = brainChecks(wt(m), packet.changedFiles, tscPath, testPath);
       packet.tsc = checks.tsc; packet.test = checks.test;
+    } else if (scenario.checks) {
+      packet.tsc = runCheck(wt(m), scenario.checks.tsc[0], scenario.checks.tsc.slice(1), tscPath);
+      packet.test = runCheck(wt(m), scenario.checks.test[0], scenario.checks.test.slice(1), testPath);
     } else {
       packet.tsc = runCheck(wt(m), 'npx', ['tsc', '--noEmit'], tscPath);
       packet.test = runCheck(wt(m), 'npm', ['test'], testPath);
@@ -3060,19 +3116,34 @@ export function pruneStaleWorktreeRegistration(repoRoot: string, worktreePath: s
   return true;
 }
 
+// 外部 repo 通常沒把 sim-work/ 加進 .gitignore；用 .git/info/exclude 補一筆（冪等、不改外部 repo 自己的
+// .gitignore）。ROOT/BRAIN_ROOT 已經在各自 .gitignore 忽略 sim-work/，check-ignore 已成立，這裡是 no-op。
+export function ensureSimWorkExcluded(repoRoot: string): void {
+  try {
+    execFileSync('git', ['check-ignore', '-q', 'sim-work'], { cwd: repoRoot });
+    return;
+  } catch { /* 尚未被忽略，往下補 info/exclude */ }
+  const excludePath = join(repoRoot, '.git', 'info', 'exclude');
+  const current = existsSync(excludePath) ? readFileSync(excludePath, 'utf8') : '';
+  if (current.split('\n').some((line) => line.trim() === 'sim-work/')) return;
+  const next = current && !current.endsWith('\n') ? `${current}\n` : current;
+  writeFileSync(excludePath, `${next}sim-work/\n`);
+}
+
 // 巡檢的 worktree 可能已被清掉：branch 還有未合併工作就掛回來；branch 已合併/不存在就從 master 重開
 function ensureWorktree(m: Member, scenario: Scenario): void {
   if (existsSync(wt(m))) {
     validateMemberWorktree(m);
     return;
   }
+  ensureSimWorkExcluded(scenario.repoRoot);
   pruneStaleWorktreeRegistration(RUN.repoRoot, wt(m));
   const hasBranch = !!git(['branch', '--list', branch(m)]);
   if (hasBranch && branchAhead(m) === 0) git(['branch', '-D', branch(m)]);
   if (hasBranch && branchAhead(m) > 0) git(['worktree', 'add', wt(m), branch(m)]);
   else git(['worktree', 'add', wt(m), '-b', branch(m), 'master']);
-  if (scenario.repoRoot === ROOT && !existsSync(join(wt(m), 'node_modules'))) {
-    symlinkSync(join(ROOT, 'node_modules'), join(wt(m), 'node_modules'));
+  if (!existsSync(join(wt(m), 'node_modules')) && existsSync(join(scenario.repoRoot, 'node_modules'))) {
+    symlinkSync(join(scenario.repoRoot, 'node_modules'), join(wt(m), 'node_modules'));
   }
   validateMemberWorktree(m);
 }
@@ -3132,6 +3203,20 @@ ${canonicalWorkspaceDirectory()}
     return `- ${m.name} / ${p.branch}: tsc ${checkLabel(p.tsc)}, test ${checkLabel(p.test)}, ${p.ahead} commits${p.dirty ? ' + 未提交 diff' : ''}, packet: ${p.packetPath}`;
   }).join('\n');
   const memberIds = RUN.members.map((m) => `- ${m.name}：user_id ${m.userId}`).join('\n');
+  const discussionStep = scenario.transferOnly
+    ? '這個 workspace 只收其他 workspace 轉入的實作 task：不得自建「[討論]」task、不得自己發想開新題目；只處理已轉入且已指派的實作 task。'
+    : `[討論] task（title 以「[討論]」開頭）——這是你與老闆（${bossName}，真人）的對話串：
+   - 不存在 → 建一個（title「[討論] 方向與下一步」，priority Low，不指派），留言 3-5 行提案接下來的方向，請老闆回覆
+   - 存在 → 讀留言。最新一則若是老闆說的且你還沒回應：先回覆他；他核准/指示的方向就開成具體 task 前，先套用上方跨 repo 判斷規則決定要在哪個 workspace 開，並由 Owner 依 eligible profile/負載直接填 assignee
+   - [討論] task 永遠保持 Todo，不要推進狀態`;
+  const integrationCmd = scenario.repoRoot === BRAIN_ROOT
+    ? '被改子專案各自的 tsc/test'
+    : scenario.checks
+    ? `${scenario.checks.tsc.join(' ')} && ${scenario.checks.test.join(' ')}`
+    : 'npx tsc --noEmit && npm test';
+  const deployNote = scenario.repoRoot === ROOT
+    ? 'merge 後 master 會自動部署；需要 live 驗收時，等待自動部署完成（health rev 與 master 一致）再做 live 驗收，可用 GET /api/health 的 rev 欄位確認；rev 長時間不一致才留一次 [ESCALATE]'
+    : scenario.deployNote ?? '';
   return `你是「${OWNER.name}」（${OWNER.email}），Owner。這是定時（每 30 分）的「巡檢」session：把看板收乾淨、回應老闆、讓團隊持續前進。
 workspace：${wsId}。目前目錄是主 repo（master，${RUN.repoRoot}）。
 成員 user_id 對照：
@@ -3142,10 +3227,7 @@ ${API_RULES(jar)}
 巡檢流程（⚠️ 你有 ${timeoutMinutes} 分鐘硬時限，優先序：老闆回覆 > 綠燈合併 > 紅燈退回 > 催辦。時間不夠就少做，下次巡檢還會再來）：
 1. GET ${BASE}/api/workspaces/${wsId}/tasks 全覽
 ${crossRepoRule(scenario)}
-2. [討論] task（title 以「[討論]」開頭）——這是你與老闆（${bossName}，真人）的對話串：
-   - 不存在 → 建一個（title「[討論] 方向與下一步」，priority Low，不指派），留言 3-5 行提案接下來的方向，請老闆回覆
-   - 存在 → 讀留言。最新一則若是老闆說的且你還沒回應：先回覆他；他核准/指示的方向就開成具體 task 前，先套用上方跨 repo 判斷規則決定要在哪個 workspace 開，並由 Owner 依 eligible profile/負載直接填 assignee
-   - [討論] task 永遠保持 Todo，不要推進狀態
+2. ${discussionStep}
 3. status=Review 的 task 對照 CI 摘要：
    - CI 全 PASS → git merge --no-ff <branch> -m "merge: <task 標題>" → 留言（附 merge hash）→ PATCH {"status":"Done"}
      ⚠️ 遇衝突「絕對不要手動解」（上一場 owner 就是手動解衝突逾時被強制中止）：git merge --abort → 留言列出衝突檔案、請該成員 merge master → PATCH {"status":"Doing"}
@@ -3153,7 +3235,7 @@ ${crossRepoRule(scenario)}
    - CI 有 FAIL → 留言具體問題（引檔案/行為）→ PATCH {"status":"Doing"}
    - CI 顯示無未合併 commit（工作佚失或已進 master）→ 用 git log 查 master 是否已含該修改：已含→留言說明並 PATCH Done；未含→留言「工作佚失需重做」→ PATCH {"status":"Doing"}，保留原 assignee 等待 Owner 後續決定
 4. status=Doing 沒動靜的：催辦留言。無 assignee Todo 的實作 task：依 eligible profile/負載 PATCH assignee，留下「【OWNER派工】」（負責人、專長理由、下一個可驗收成果）；沒有 eligible runner 才留「[ESCALATE]」，不等待 member 自行認領；同一 task 已有你留過且狀況未變的 [ESCALATE]，不要重複留言。⚠️ 例外：若沒動靜是因為「需要切換 scenario／repo 才能推進」的環境阻塞（非 code 問題）：先檢查是否已用 [CROSS-REPO] 轉移過——沒轉移過，依上方跨 repo 判斷規則轉移；已轉移過、且上一輪已有相同結論、環境沒有變化，才可以跳過
-5. 有 merge 的話收尾跑一次整合驗證（${scenario.repoRoot === BRAIN_ROOT ? '被改子專案各自的 tsc/test' : 'npx tsc --noEmit && npm test'}）；失敗→git reset --hard 退回該 merge＋留言退回該 task。merge 後 master 會自動部署；需要 live 驗收時，等待自動部署完成（health rev 與 master 一致）再做 live 驗收，可用 GET /api/health 的 rev 欄位確認；rev 長時間不一致才留一次 [ESCALATE]
+5. 有 merge 的話收尾跑一次整合驗證（${integrationCmd}）；失敗→git reset --hard 退回該 merge＋留言退回該 task。${deployNote}
 6. 結束輸出 3 行內總結（合了幾件、退了幾件、老闆有無新指示）`;
 }
 

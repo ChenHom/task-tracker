@@ -15,6 +15,8 @@ assert.strictEqual(INTERNAL_OWNER_PROFILE.kind, 'ownerInternal');
 assert.strictEqual(INTERNAL_MEMBER_PROFILE.kind, 'memberInternal');
 assert.ok(INTERNAL_OWNER_PROFILE.tools.includes('Bash(curl:*)'));
 assert.ok(INTERNAL_MEMBER_PROFILE.tools.includes('Bash(git status:*)'));
+assert.ok(INTERNAL_OWNER_PROFILE.tools.includes('Bash(pnpm:*)'), '外部 pnpm repo（如 rsshub）需要 owner 能跑 pnpm');
+assert.ok(INTERNAL_MEMBER_PROFILE.tools.includes('Bash(pnpm:*)'), '外部 pnpm repo（如 rsshub）需要 member 能跑 pnpm');
 assert.throws(
   () => assertCapabilityPath(INTERNAL_MEMBER_PROFILE, '/home/hom/code/other-repo/file.ts'),
   /capability path/,

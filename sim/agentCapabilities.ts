@@ -17,8 +17,8 @@ export const SAFE_DISCUSSION_PROFILE: CapabilityProfile = {
   repoRoot: null,
 };
 
-export const INTERNAL_OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge:*),Bash(git add:*),Bash(git commit:*),Read,Write,Edit,Glob,Grep';
-export const INTERNAL_MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(git status:*),Bash(git diff:*),Bash(git merge:*),Bash(git add:*),Bash(git commit:*),Read,Write,Edit,Glob,Grep';
+export const INTERNAL_OWNER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(pnpm:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge:*),Bash(git add:*),Bash(git commit:*),Read,Write,Edit,Glob,Grep';
+export const INTERNAL_MEMBER_TOOLS = 'Bash(curl:*),Bash(npx:*),Bash(npm:*),Bash(pnpm:*),Bash(git status:*),Bash(git diff:*),Bash(git merge:*),Bash(git add:*),Bash(git commit:*),Read,Write,Edit,Glob,Grep';
 
 export const INTERNAL_OWNER_PROFILE: CapabilityProfile = {
   kind: 'ownerInternal',

@@ -55,6 +55,7 @@ import {
   ensureCanonicalWorkspaceCandidates,
   ensureFixedSweepWorkspaceCandidates,
   ensureMainWorkspaceCandidate,
+  ensureSimWorkExcluded,
   eligibleManagedRunners,
   formatReportMarkdown,
   formatReviewPacket,
@@ -79,6 +80,8 @@ import {
   ownerSweepPrompt,
   parseScenario,
   ROOT,
+  RSSHUB_ROOT,
+  HARNESS_ROOT,
   shouldVerifyMemberBranch,
   runMemberSession,
   scenarioFromStoredKey,
@@ -1809,13 +1812,43 @@ assert.strictEqual(scenarioFromStoredKey('technical-debt')?.key, 'self-directed'
 assert.strictEqual(scenarioFromStoredKey('brain')?.key, 'brain');
 assert.strictEqual(scenarioFromStoredKey('missing'), undefined);
 
+// 登記外部 repo：transferOnly 只收轉入的 task，不能用 --scenario 開新 sprint（那是 bootstrap 新建 workspace）。
+assert.throws(
+  () => parseScenario(['node', 'run.ts', '--scenario', 'rsshub']),
+  /只收轉入的 task/,
+  'rsshub 是 transferOnly，--scenario 必須拒絕',
+);
+assert.throws(
+  () => parseScenario(['node', 'run.ts', '--scenario', 'harness']),
+  /只收轉入的 task/,
+  'harness 是 transferOnly，--scenario 必須拒絕',
+);
+// sweep 仍要能用既有 report.json 的 key 重建 scenario——canonical workspace 巡檢就是靠這個運作。
+const rsshubScenario = scenarioFromStoredKey('rsshub');
+const harnessScenario = scenarioFromStoredKey('harness');
+assert.strictEqual(rsshubScenario?.repoRoot, RSSHUB_ROOT);
+assert.strictEqual(rsshubScenario?.transferOnly, true);
+assert.deepStrictEqual(rsshubScenario?.checks, {
+  tsc: ['pnpm', 'exec', 'oxlint', '--type-aware', '.'],
+  test: ['pnpm', 'exec', 'eslint', '.github', 'lib/utils'],
+});
+assert.strictEqual(harnessScenario?.repoRoot, HARNESS_ROOT);
+assert.strictEqual(harnessScenario?.transferOnly, true);
+assert.deepStrictEqual(harnessScenario?.checks, { tsc: ['npm', 'run', 'typecheck'], test: ['npm', 'test'] });
+
 const EXPECTED_ROOT_WORKSPACE_ID = 'd9da9945-ce5f-400f-806e-1d75e95e313a';
+const EXPECTED_RSSHUB_WORKSPACE_ID = 'cded05c6-f14e-470a-86bf-c63ecbf1df87';
+const EXPECTED_HARNESS_WORKSPACE_ID = '85943994-22d5-4c95-b456-570f9d93ac65';
 assert.strictEqual(canonicalWorkspaceForRepoRoot(ROOT), EXPECTED_ROOT_WORKSPACE_ID);
+assert.strictEqual(canonicalWorkspaceForRepoRoot(RSSHUB_ROOT), EXPECTED_RSSHUB_WORKSPACE_ID);
+assert.strictEqual(canonicalWorkspaceForRepoRoot(HARNESS_ROOT), EXPECTED_HARNESS_WORKSPACE_ID);
 assert.strictEqual(canonicalWorkspaceForRepoRoot(BRAIN_ROOT), undefined);
 
 const canonicalCandidates = new Map<string, { key: string; startedAt: string }>();
 ensureCanonicalWorkspaceCandidates(canonicalCandidates);
 assert.ok(canonicalCandidates.has(EXPECTED_ROOT_WORKSPACE_ID));
+assert.ok(canonicalCandidates.has(EXPECTED_RSSHUB_WORKSPACE_ID), '登記外部 repo 後候選清單必須自動含 rsshub');
+assert.ok(canonicalCandidates.has(EXPECTED_HARNESS_WORKSPACE_ID), '登記外部 repo 後候選清單必須自動含 harness');
 
 const FIXED_BASELINE_WORKSPACE_ID = 'b2637f07-44b3-49b0-b2c4-4da4e19cd1ac';
 assert.strictEqual(FIXED_SWEEP_WORKSPACE_SCENARIOS[FIXED_BASELINE_WORKSPACE_ID], 'self-directed');
@@ -2497,6 +2530,28 @@ async function runAsyncPolicyTests(): Promise<void> {
   assert.strictEqual(syncWorktreeWithMaster(join(repo, 'wt')), 'conflict-aborted', '衝突應 abort 回報');
   assert.strictEqual(g(['status', '--porcelain'], join(repo, 'wt')), '', 'abort 後 worktree 應乾淨');
 }
+
+// ── 登記外部 repo：ensureSimWorkExcluded 冪等補 .git/info/exclude（真 git 暫存 repo）──
+// 注意：git check-ignore 對 trailing-slash pattern（sim-work/）只在該路徑實際存在時才生效，
+// 所以第一輪（目錄還沒建）靠檔案內容比對冪等；目錄建好後再驗證 check-ignore 真的吃得到規則。
+{
+  const repo = mkdtempSync(join(tmpdir(), 'sim-work-exclude-'));
+  execFileSync('git', ['init', '-b', 'master'], { cwd: repo });
+  const excludePath = join(repo, '.git', 'info', 'exclude');
+  assert.ok(!readFileSync(excludePath, 'utf8').includes('sim-work/'), '新 repo 一開始不應該已經排除 sim-work');
+  ensureSimWorkExcluded(repo);
+  const afterFirst = readFileSync(excludePath, 'utf8');
+  assert.ok(afterFirst.includes('sim-work/'), '呼叫後必須把 sim-work/ 補進 info/exclude');
+  ensureSimWorkExcluded(repo); // 目錄還不存在，check-ignore 仍不成立；必須靠內容比對避免重複追加
+  assert.strictEqual(readFileSync(excludePath, 'utf8'), afterFirst, '重複呼叫不得再次追加');
+  mkdirSync(join(repo, 'sim-work'));
+  assert.doesNotThrow(
+    () => execFileSync('git', ['check-ignore', '-q', 'sim-work'], { cwd: repo }),
+    'info/exclude 補的規則對實際存在的 sim-work 目錄必須生效',
+  );
+  ensureSimWorkExcluded(repo); // 目錄存在後 check-ignore 已成立，走 no-op 分支
+  assert.strictEqual(readFileSync(excludePath, 'utf8'), afterFirst, 'check-ignore 成立後的 no-op 分支也不得改動內容');
+}
 assert.ok(
   source.includes('worktree 同步 master'),
   'sweep 派工前必須呼叫 syncWorktreeWithMaster 並記錄結果',
@@ -2580,6 +2635,47 @@ assert.ok(
     }
   }
 }
+
+// ── 登記外部 repo：transferOnly workspace 的 owner sweep prompt 不得自建 [討論] ────
+{
+  const rsshubPrompt = ownerSweepPrompt('some-rsshub-ws', scenarioFromStoredKey('rsshub')!, [], '老闆', 20);
+  assert.ok(
+    !rsshubPrompt.includes('不存在 → 建一個（title「[討論] 方向與下一步」'),
+    'transferOnly workspace 不得保留「沒有 [討論] 就自建」的路徑',
+  );
+  assert.ok(
+    rsshubPrompt.includes('不得自建「[討論]」task'),
+    'transferOnly workspace 的 owner prompt 必須明文禁止自己開題',
+  );
+  assert.ok(
+    rsshubPrompt.includes('pnpm exec oxlint --type-aware . && pnpm exec eslint .github lib/utils'),
+    '整合驗證必須用 scenario.checks 組出的指令，不是寫死的 npx tsc --noEmit && npm test',
+  );
+  assert.ok(
+    rsshubPrompt.includes('merge 不會自動重啟 rsshub-ruanyf.service'),
+    'rsshub 收尾必須講清楚 merge 不會自動重啟服務',
+  );
+  assert.ok(
+    !rsshubPrompt.includes('merge 後 master 會自動部署'),
+    '非 ROOT scenario 不得沿用 ROOT 專屬的自動部署文案',
+  );
+
+  const harnessPrompt = ownerSweepPrompt('some-harness-ws', scenarioFromStoredKey('harness')!, [], '老闆', 20);
+  assert.ok(!harnessPrompt.includes('不存在 → 建一個（title「[討論] 方向與下一步」'));
+  assert.ok(harnessPrompt.includes('不得自建「[討論]」task'));
+  assert.ok(harnessPrompt.includes('npm run typecheck && npm test'));
+  assert.ok(!harnessPrompt.includes('merge 後 master 會自動部署'));
+  assert.ok(!harnessPrompt.includes('rsshub-ruanyf.service'), 'harness 沒有登記 deployNote，不應沿用 rsshub 的文案');
+
+  // ROOT/product-ideation 等既有 scenario 不受影響：仍保留原本可自建 [討論] 的流程與自動部署文案。
+  const rootPrompt = ownerSweepPrompt('some-root-ws', parseScenario(['node', 'run.ts']), [], '老闆', 20);
+  assert.ok(rootPrompt.includes('不存在 → 建一個（title「[討論] 方向與下一步」'));
+  assert.ok(rootPrompt.includes('merge 後 master 會自動部署'));
+}
+assert.ok(
+  source.includes('packet.tsc = runCheck(wt(m), scenario.checks.tsc[0], scenario.checks.tsc.slice(1), tscPath);'),
+  'verifyBranches 有 scenario.checks 時必須優先用它，而不是寫死的 npx tsc --noEmit',
+);
 
 // describeError：fetch 失敗的 errno 只存在於 cause，不印出來就等於沒有診斷資料。
 {
