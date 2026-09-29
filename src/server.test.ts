@@ -191,6 +191,28 @@ void (async () => {
     await handle(request as never, response as never);
     return { status, json: raw ? JSON.parse(raw) : null };
   };
+
+  const { createTask, registerTaskProjections } = await import('./task');
+  registerTaskProjections();
+  const patchTaskId = createTask('authz-member', wsA, { title: 'Patch assignee' }, db);
+
+  // PATCH 只允許一個已知欄位：正確的 assignee 應成功，未知欄位應回明確 validation error。
+  const assigneePatch = await call('PATCH', `/api/tasks/${patchTaskId}`, {
+    cookie: authzCookie.member,
+    body: { assignee: 'authz-member' },
+  });
+  assert.strictEqual(assigneePatch.status, 200, '單欄 assignee PATCH 應成功');
+  assert.strictEqual(
+    (await call('PATCH', `/api/tasks/${patchTaskId}`, { cookie: authzCookie.member, body: { assignee_id: 'authz-member' } })).status,
+    400,
+    '未知 assignee_id 欄位應回 400',
+  );
+  const unsupportedPatch = await call('PATCH', `/api/tasks/${patchTaskId}`, {
+    cookie: authzCookie.member,
+    body: { assigneeId: 'authz-member' },
+  });
+  assert.strictEqual((unsupportedPatch.json as { error: string }).error, '不支援的 PATCH 欄位', '未知欄位應回明確錯誤');
+
   // attachment 上傳走 raw bytes（非 JSON），需獨立的 helper。
   const uploadAttachment = async (cookie: string | undefined, taskId: string, filename: string, contentType: string, data: Buffer) => {
     let status = 0;
