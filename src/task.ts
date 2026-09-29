@@ -368,6 +368,7 @@ export function deleteTask(actorId: string, taskId: string, database = db): void
 const PATCH_FIELDS = ['title', 'description', 'status', 'priority', 'assignee', 'dueAt'] as const;
 export function applyTaskPatch(actorId: string, taskId: string, body: Record<string, unknown>, database = db): void {
   const keys = PATCH_FIELDS.filter((k) => k in body);
+  if (keys.length === 0) throw new CommandError('不支援的 PATCH 欄位');
   if (keys.length !== 1) throw new CommandError('PATCH 一次只能改一個欄位');
   const workspaceId = getTaskWorkspaceId(taskId, database);
   if (workspaceId && getMemberRole(workspaceId, actorId, database) === 'Commenter' && !['title', 'description'].includes(keys[0])) {
