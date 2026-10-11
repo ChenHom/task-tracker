@@ -92,6 +92,7 @@ Goal 的 target repo 從 Project 取得。Project target repo 在 active Goal �
 既有 user01–user06 的 AI 身分轉成正式 Agent resource，並連回現有 `user_id`。必要資料：
 
 - 名稱、角色與 Capability Profile
+- `role: owner | member`
 - primary adapter／model
 - fallback adapter／model
 - 可存取 Workspace／repo
@@ -99,6 +100,8 @@ Goal 的 target repo 從 Project 取得。Project target repo 在 active Goal �
 - 最近 Run、目前 Goal／Task 與累積 token
 
 user09 是人類 Admin，不建立 Agent resource。第一版 UI 只允許暫停、恢復及修改既有 route，不提供新增／刪除 Agent。
+
+第一版固定一位 `role = owner` 的 Owner Agent（user01），Goal 建立時寫入 `owner_agent_id`。Owner Agent 不等於 Workspace 的 Owner 成員角色：Workspace 只由人類建立，建立者自動成為 Workspace Owner，因此不得用 Workspace membership 推導 Owner Agent。
 
 ### Participation 與 Contribution
 
@@ -119,8 +122,14 @@ pending -> running -> succeeded
 Heartbeat 的冪等鍵為：
 
 ```text
-goal_id + phase + agent_id + revision
+goal_id + phase + agent_id + revision + trigger_ref
 ```
+
+`trigger_ref` 區分喚醒來源，避免合法的多次喚醒被去重吞掉：
+
+- 階段推進：固定為 `phase`。
+- `@Owner` 留言：該留言的 `comment_id`；每則留言最多一次，編輯同一則留言不再觸發。
+- 定期巡檢：`patrol:<巡檢時段>`。
 
 每次 primary 或 fallback 是獨立 Run，並關聯同一 heartbeat。Run 至少保存：
 
@@ -134,7 +143,7 @@ goal_id + phase + agent_id + revision
 - started／ended timestamps
 - outcome、error category 與 evidence reference
 
-缺少 usage 不得寫成零。啟動後無法判定結果時寫 `unknown/uncertain`，交由 reconciliation 處理。
+缺少 usage 不得寫成零。啟動後無法判定結果時寫 `uncertain`，交由 reconciliation 處理。
 
 ## Goal 狀態機
 
@@ -150,7 +159,27 @@ Queued -> Discussing -> Executing -> Verifying -> Done
 - `Blocked`：Owner 與 fallback 無法繼續，需要人工處理。
 - `Cancelled`：人類終止，不再產生 heartbeat。
 
-`Discussing` 使用 `owner_scoping -> round_1 -> round_2 -> owner_synthesis` 子階段，不增加更多頂層狀態。
+`Discussing` 使用 `owner_scoping -> round_1 -> round_2 -> awaiting_lease -> owner_synthesis` 子階段，不增加更多頂層狀態。
+
+終態為 `Done` 與 `Cancelled`。本文件所稱「active Goal」一律指非終態 Goal，包含 Queued、Discussing、Executing、Verifying、Paused 與 Blocked。
+
+例外轉移：
+
+| 從 | 到 | 條件 |
+|---|---|---|
+| Paused | 暫停前狀態 | 人工恢復或插隊的人類 Goal 結束；暫停前狀態由 event 歷史取得 |
+| Blocked | 卡住前狀態，revision + 1 | 人類處理並記錄實質變更 |
+| Verifying | Discussing／`owner_synthesis`，revision + 1 | 驗收失敗，自動重試上限 1 次；人工解除 Blocked 後重新計算 |
+| Verifying | Blocked | 自動重試後仍驗收失敗 |
+| 任一非終態 | Cancelled | 人類終止 |
+
+Repo execution lease：
+
+- 離開 `awaiting_lease`、進入 `owner_synthesis` 時取得。
+- `owner_synthesis`、Executing、Verifying 期間持有，驗收失敗回 `owner_synthesis` 重試時不釋放。
+- 已持有 lease 的 Goal 進入 Blocked 時繼續持有，直到人類恢復或 Cancelled，避免其他 Goal 在未完成的 repo 狀態上執行。
+- 進入 Done 或 Cancelled 時釋放。
+- 只在沒有未合併 worktree、進行中 merge 或部署的安全 checkpoint 進入 Paused，進入時釋放；恢復時若暫停前狀態需要 lease 而 lease 被占用，維持 Paused 直到取得。
 
 ## 建立與選人
 
@@ -158,7 +187,7 @@ Queued -> Discussing -> Executing -> Verifying -> Done
 
 Owner discovery 先尋找既有 Project；只有確實沒有合適 Project 時才在同一 Workspace 建立 Project。Owner 不得建立 Workspace。child Goal 預設沿用父 Goal 的 Project。
 
-系統先排除 paused/error Agent、無 Workspace／repo 權限者、Capability 完全不符者及已有不可並行工作的 Agent。Owner 再從合格名單選擇 1–5 位，保存選擇理由與分工。
+系統先排除 paused/error Agent、無 Workspace／repo 權限者、Capability 完全不符者及已有不可並行工作的 Agent。Owner Agent 本身不列入參與者候選。Owner 再從合格名單選擇 1–5 位，保存選擇理由與分工。
 
 ## 兩輪協作
 
@@ -170,6 +199,8 @@ Owner 讀取 Goal、成功條件、Workspace 與 Project target repo，選人並
 
 每位入選 Agent 只看到 Goal、自己的題目、允許資料與輸出契約，不能看到其他 Agent 的本輪輸出。全部完成或明確失敗後封存 round 1 集合。
 
+Round 1 沒有任何有效 Contribution 時，Owner 進行一次 reconciliation，改變人選或分析面向並增加 revision 後重跑；仍沒有有效 Contribution 時，Goal 進入 `Blocked`。
+
 ### Round 2：交叉審查
 
 每位 Agent 看到 round 1 的結構化摘要、來源與衝突觀點，輸出限於：
@@ -180,9 +211,11 @@ Owner 讀取 Goal、成功條件、Workspace 與 Project target repo，選人並
 
 只回覆「收到」「了解」或重述內容不算有效 Contribution。
 
+Round 1 有效 Contribution 少於 2 份時，沒有可交叉審查的對象，跳過 round 2 並記錄 `round_2: skipped (insufficient_peers)`，直接進入 `awaiting_lease`。
+
 ### Owner synthesis
 
-Owner 產生最終判斷、採納／拒絕理由、實作 Task、依賴、修改範圍、驗收條件、不確定性與 rollback 條件。同一 transaction 建立 Task、寫入 `goal_id` 並指派實作 Agent，Goal 進入 `Executing`。
+Owner 取得 repo execution lease 後才開始 synthesis，以取得 lease 當下的 repo 狀態為準。Owner 產生最終判斷、採納／拒絕理由、實作 Task、依賴、修改範圍、驗收條件、不確定性與 rollback 條件。同一 transaction 建立 Task、寫入 `goal_id` 並指派實作 Agent，Goal 進入 `Executing`。
 
 ## user09 與一般留言
 
@@ -308,11 +341,11 @@ Owner discovery timer 每 12 小時觸發一次。Timer 先機械檢查：
 
 同一 Workspace 同時最多一個 Owner 自建的 active Goal。人類 Goal 優先：尚未啟動的自治 Goal 回到 Queued；執行中的自治 Goal 在下一個安全 checkpoint 進入 Paused，不中止正在寫入的 transaction 或 worktree 操作。
 
-同一 target repo 同時最多一個 Goal 可處於 `Executing` 或 `Verifying`，不論 Goal 由人類或 Owner 建立。其他 Goal 可完成討論，但在取得 repo execution lease 前停在 synthesis 後的等待點；人類 Goal 只取得下一個安全 checkpoint 的優先權，不強制中斷進行中的寫入、merge 或部署。
+同一 target repo 同時最多一個 Goal 持有 repo execution lease，不論 Goal 由人類或 Owner 建立。其他 Goal 可完成 round 1／round 2，但在取得 lease 前停在 `awaiting_lease`，不建立 Task；人類 Goal 只取得下一個安全 checkpoint 的優先權，不強制中斷進行中的寫入、merge 或部署。
 
 `goal.completed` 立即觸發一次 follow-up evaluation。Owner 只能選擇：結束、保存候選，或建立一個 child Goal。Child 必須有 `parent_goal_id`、增量證據、不同成功條件及另開 Goal 的理由；相同 Workspace、Project、成功條件與證據指紋不得重複建立。
 
-Blocked、Cancelled 或驗收失敗的 Goal 不觸發持續自治。
+Blocked、Cancelled 或驗收失敗重試中的 Goal 不觸發持續自治。
 
 ## Workspace、Project 與資料夾生命週期
 
@@ -340,7 +373,7 @@ Workspace 頁預設只顯示 active 項目，提供「顯示已封存」切換�
 
 Project 是 Goal 的長期容器。Owner 可以在既有 Workspace 建 Project，但建立前先比對現有 Project 的名稱、描述與 target repo，避免重複。
 
-Project 完成某個 Goal 後仍保持 active，可承載後續 Goal。只有沒有 active Goal、沒有未完成 Task、沒有未處理執行資源時才可封存。Archived Project 預設從 selector 隱藏，但歷史 Goal／Task 仍顯示原 Project。
+Project 完成某個 Goal 後仍保持 active，可承載後續 Goal。只有沒有 active Goal、沒有未完成 Task、沒有 dirty、未合併或 `cleanup_blocked` 的登記 worktree 時才可封存。Archived Project 預設從 selector 隱藏，但歷史 Goal／Task 仍顯示原 Project。
 
 ### Worktree／資料夾
 
@@ -433,7 +466,7 @@ Live smoke 不納入預設 `npm test`，必須取得明確 AI／timer 授權。
 1. 強化 Project schema、後端守門、Task 關聯與 selector／管理 UI。
 2. 建立 Goal、Agent、Participation、Contribution、Heartbeat、Run 資料模型與只讀 API。
 3. 統一 Claude／Codex／AGY adapter lifecycle、preflight、estimate 與 fixture tests。
-4. 交付人工 Goal 與兩輪討論，暫不建立實作 Task。
+4. 交付人工 Goal 與兩輪討論，暫不建立實作 Task；此階段經 API 建立 Goal，Goals UI 於第 6 階段交付。
 5. 接上既有全自動 worktree、CI、merge、deploy 與 readback。
 6. 交付 Goals／Agents UI。
 7. 啟用 Goal 完成後的 follow-up evaluation 與單一 child Goal。
