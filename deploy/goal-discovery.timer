@@ -1,0 +1,10 @@
+[Unit]
+Description=Task Tracker Goal discovery every 12 hours
+
+[Timer]
+OnCalendar=*-*-* 00,12:00:00 Asia/Taipei
+Persistent=false
+Unit=goal-discovery.service
+
+[Install]
+WantedBy=timers.target

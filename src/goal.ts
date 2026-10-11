@@ -295,6 +295,12 @@ export function completeGoal(actorId: string, goalId: string, evidenceRefs: unkn
     }
     database.prepare('DELETE FROM repo_leases WHERE goal_id = ?').run(goalId);
     appendEventInTransaction('Goal', goalId, version, 'goal.completed', { evidenceRefs }, meta(actorId), database);
+    const now = new Date().toISOString();
+    database.prepare(
+      `INSERT OR IGNORE INTO goal_heartbeats
+         (heartbeat_id, scope_id, goal_id, phase, agent_id, revision, trigger_ref, status, created_at, updated_at)
+       VALUES (?, ?, ?, 'followup', ?, ?, ?, 'pending', ?, ?)`,
+    ).run(randomUUID(), goalId, goalId, getGoal(goalId, database)?.owner_agent_id ?? actorId, state.revision, `followup:${goalId}`, now, now);
   });
 }
 

@@ -12,6 +12,7 @@
     "seed": "tsx src/seed.ts",
     "sim": "tsx sim/run.ts",
     "sim:production": "tsx sim/production.ts",
+    "goal:patrol": "tsx sim/goalPatrol.ts",
     "lint": "eslint public/js"
   },
   "devDependencies": {

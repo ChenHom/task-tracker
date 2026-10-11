@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
 import { getAgent, listWorkspaceAgents } from './agent';
@@ -6,6 +6,8 @@ import { appendEventInTransaction, CommandError, ConflictError } from './eventSt
 import { buildMetadata as meta } from './requestContext';
 import {
   acquireRepoLease, blockGoal, getGoal, reconcileGoalDiscussion, setDiscussionPhase,
+  completeGoal, reviseGoal, startVerification,
+  createGoal,
 } from './goal';
 import {
   addContribution, addParticipation, enqueueHeartbeat, finishRun, getRun,
@@ -143,8 +145,9 @@ export async function advanceGoalDiscussion(goalId: string, deps: GoalDiscussion
 
 export function storeGoalSynthesis(goalId: string, output: SynthesisOutput, database = db): void {
   const goal = getGoal(goalId, database);
-  if (!goal || goal.status !== 'Discussing' || goal.discussion_phase !== 'awaiting_lease') throw new CommandError('Goal 尚未等待 lease');
-  acquireRepoLease(goal.owner_agent_id, goalId, database);
+  if (!goal || goal.status !== 'Discussing' || (goal.discussion_phase !== 'awaiting_lease' && goal.discussion_phase !== 'owner_synthesis')) throw new CommandError('Goal 尚未等待 lease');
+  if (goal.discussion_phase === 'awaiting_lease') acquireRepoLease(goal.owner_agent_id, goalId, database);
+  else if (!database.prepare('SELECT 1 FROM repo_leases WHERE goal_id = ?').get(goalId)) throw new CommandError('Goal 未持有 repo lease');
   try {
     database.prepare(
       `INSERT INTO goal_syntheses (goal_id, revision, summary, task_plans_json, evidence_json, created_at)
@@ -196,4 +199,57 @@ export function materializeGoalTasks(ownerAgentId: string, goalId: string, datab
     database.exec('ROLLBACK');
     throw error;
   }
+}
+
+export function verifyGoalDelivery(ownerAgentId: string, goalId: string, input: {
+  passed: boolean; evidenceRefs: string[]; deployment: 'verified' | 'not_required' | 'missing';
+}, database = db): 'done' | 'retry' | 'blocked' {
+  let goal = getGoal(goalId, database);
+  if (!goal) throw new CommandError('goal 不存在');
+  if (goal.status === 'Executing') startVerification(ownerAgentId, goalId, database);
+  goal = getGoal(goalId, database)!;
+  if (goal.status !== 'Verifying') throw new CommandError('Goal 不在 Verifying');
+  const tasks = database.prepare('SELECT status FROM tasks_read_model WHERE goal_id = ?').all(goalId) as unknown as Array<{ status: string }>;
+  if (tasks.length === 0 || tasks.some((task) => task.status !== 'Done')) throw new CommandError('Goal 仍有未完成 Task');
+  if (input.deployment === 'missing') throw new CommandError('Goal 缺少 deployment/readback 證據');
+  if (!Array.isArray(input.evidenceRefs) || input.evidenceRefs.length === 0) throw new CommandError('Goal 驗收缺少 evidence');
+  database.prepare(
+    `INSERT INTO goal_verifications (goal_id, revision, passed, evidence_json, created_at)
+     VALUES (?, ?, ?, ?, ?) ON CONFLICT(goal_id, revision) DO NOTHING`,
+  ).run(goalId, goal.revision, input.passed ? 1 : 0, JSON.stringify(input.evidenceRefs), new Date().toISOString());
+  if (input.passed) {
+    completeGoal(ownerAgentId, goalId, input.evidenceRefs, database);
+    return 'done';
+  }
+  const failures = (database.prepare('SELECT COUNT(*) AS count FROM goal_verifications WHERE goal_id = ? AND passed = 0').get(goalId) as { count: number }).count;
+  if (failures >= 2) {
+    blockGoal(ownerAgentId, goalId, '第二次驗收仍失敗', database);
+    return 'blocked';
+  }
+  reviseGoal(ownerAgentId, goalId, goal.success_criteria, database);
+  return 'retry';
+}
+
+export function createFollowupGoal(ownerAgentId: string, parentGoalId: string, input: {
+  objective: string; successCriteria: string; reason: string; evidenceRefs: string[];
+}, database = db): string {
+  const parent = getGoal(parentGoalId, database);
+  if (!parent || parent.status !== 'Done') throw new CommandError('只有 Done Goal 可建立 follow-up');
+  const successCriteria = clean(input.successCriteria, 'successCriteria');
+  if (successCriteria === parent.success_criteria) throw new CommandError('follow-up 必須使用不同成功條件');
+  clean(input.reason, 'reason');
+  if (!Array.isArray(input.evidenceRefs) || input.evidenceRefs.length === 0) throw new CommandError('follow-up 必須有增量證據');
+  const fingerprint = createHash('sha256').update(JSON.stringify([...input.evidenceRefs].sort())).digest('hex');
+  if (database.prepare(
+    'SELECT 1 FROM goal_followups WHERE parent_goal_id = ? AND success_criteria = ? AND evidence_fingerprint = ?',
+  ).get(parentGoalId, successCriteria, fingerprint)) throw new ConflictError('相同 follow-up 已存在');
+  const childGoalId = createGoal(ownerAgentId, {
+    workspaceId: parent.workspace_id, projectId: parent.project_id, parentGoalId,
+    source: 'followup', objective: clean(input.objective, 'objective'), successCriteria, ownerAgentId,
+  }, database);
+  database.prepare(
+    `INSERT INTO goal_followups (parent_goal_id, success_criteria, evidence_fingerprint, child_goal_id, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(parentGoalId, successCriteria, fingerprint, childGoalId, new Date().toISOString());
+  return childGoalId;
 }

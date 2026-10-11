@@ -1,0 +1,7 @@
+[Unit]
+Description=Task Tracker Goal discovery patrol
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/hom/code/task-tracker
+ExecStart=/usr/bin/npm run goal:patrol -- --once

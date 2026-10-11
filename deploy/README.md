@@ -54,3 +54,17 @@ Disable: `systemctl --user disable --now sim-autodeploy.path`
 Logs/state: `~/.local/state/sim-autodeploy/deploy.log`, `deployed_rev`; `journalctl --user -u sim-autodeploy.service`
 
 See `docs/operations.md` for verification and troubleshooting.
+
+## Goal discovery timer（預設停用）
+
+`goal-discovery.timer` 每 12 小時建立一次機械巡檢 heartbeat。安裝單元不代表啟用；先設定
+`GOAL_PATROL_WORKSPACE_ID`，並以 `systemd-analyze verify` 與手動 dry-run 確認。`--once`
+不呼叫模型、不建立 Workspace。
+
+```bash
+install -D -m644 deploy/goal-discovery.service deploy/goal-discovery.timer -t ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemd-analyze verify deploy/goal-discovery.service deploy/goal-discovery.timer
+```
+
+需另經人工核准才可執行 `systemctl --user enable --now goal-discovery.timer`。

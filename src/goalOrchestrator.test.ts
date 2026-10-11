@@ -4,7 +4,7 @@ import { getUserIdByEmail } from './auth';
 import { resetProjections } from './eventStore';
 import { cancelGoal, createGoal, getGoal, registerGoalProjections, startDiscussion } from './goal';
 import {
-  advanceGoalDiscussion, getGoalSynthesis, materializeGoalTasks, selectGoalParticipants, storeGoalSynthesis,
+  advanceGoalDiscussion, createFollowupGoal, getGoalSynthesis, materializeGoalTasks, selectGoalParticipants, storeGoalSynthesis, verifyGoalDelivery,
   type DiscussionOutput,
 } from './goalOrchestrator';
 import { runMigrations } from './schema';
@@ -59,13 +59,30 @@ async function main(): Promise<void> {
   assert.deepStrictEqual({ ...db.prepare('SELECT project_id, goal_id, assignee_id FROM tasks_read_model WHERE task_id = ?').get(taskIds[0]) },
     { project_id: 'p', goal_id: normal, assignee_id: a2 });
   assert.strictEqual(getGoal(normal, db)?.status, 'Executing');
-  cancelGoal('human', normal, db);
+  db.prepare("UPDATE tasks_read_model SET status = 'Done' WHERE goal_id = ?").run(normal);
+  assert.strictEqual(verifyGoalDelivery(owner, normal, { passed: true, evidenceRefs: ['health:200'], deployment: 'not_required' }, db), 'done');
+  assert.strictEqual(getGoal(normal, db)?.status, 'Done');
+  assert.strictEqual((db.prepare("SELECT COUNT(*) AS n FROM goal_heartbeats WHERE goal_id = ? AND phase = 'followup'").get(normal) as { n: number }).n, 1);
+  assert.throws(() => createFollowupGoal(owner, normal, { objective: 'same', successCriteria: 'passes', reason: 'x', evidenceRefs: ['new'] }, db), /不同成功條件/);
+  const child = createFollowupGoal(owner, normal, { objective: 'follow', successCriteria: 'new pass', reason: 'new evidence', evidenceRefs: ['commit:new'] }, db);
+  assert.strictEqual(getGoal(child, db)?.parent_goal_id, normal);
+  assert.throws(() => createFollowupGoal(owner, normal, { objective: 'follow', successCriteria: 'new pass', reason: 'again', evidenceRefs: ['commit:new'] }, db), /已存在/);
+  cancelGoal(owner, child, db);
 
   const solo = makeGoal('solo');
   selectGoalParticipants(owner, solo, [{ agentId: a2, reason: 'API', assignment: 'review', selectedLoad: 0 }], db);
   assert.strictEqual(await advanceGoalDiscussion(solo, deps), 'awaiting_lease');
   assert.deepStrictEqual({ ...db.prepare("SELECT status, reason FROM goal_rounds WHERE goal_id = ? AND round = 'round_2'").get(solo) },
     { status: 'skipped', reason: 'insufficient_peers' });
+  const soloPlan = { summary: 'solo', taskPlans: [{ title: 'T', description: 'D', assigneeId: a2, acceptanceCriteria: 'pass', rollbackCondition: 'fail' }], evidenceRefs: ['x'] };
+  storeGoalSynthesis(solo, soloPlan, db); materializeGoalTasks(owner, solo, db);
+  db.prepare("UPDATE tasks_read_model SET status = 'Done' WHERE goal_id = ?").run(solo);
+  assert.strictEqual(verifyGoalDelivery(owner, solo, { passed: false, evidenceRefs: ['fail:1'], deployment: 'not_required' }, db), 'retry');
+  assert.strictEqual(getGoal(solo, db)?.discussion_phase, 'owner_synthesis');
+  storeGoalSynthesis(solo, soloPlan, db); materializeGoalTasks(owner, solo, db);
+  db.prepare("UPDATE tasks_read_model SET status = 'Done' WHERE goal_id = ?").run(solo);
+  assert.strictEqual(verifyGoalDelivery(owner, solo, { passed: false, evidenceRefs: ['fail:2'], deployment: 'not_required' }, db), 'blocked');
+  assert.strictEqual(getGoal(solo, db)?.status, 'Blocked');
   cancelGoal('human', solo, db);
 
   const failed = makeGoal('failed');

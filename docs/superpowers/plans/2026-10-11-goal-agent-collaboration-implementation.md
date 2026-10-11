@@ -386,19 +386,19 @@ git commit -m "feat: add goal and agent management views"
 - Modify: `deploy/README.md`
 - Modify: `package.json`
 
-- [ ] **Step 1: Write failing verification/follow-up tests**
+- [x] **Step 1: Write failing verification/follow-up tests**
 
 Assert all required Tasks and deployment/readback evidence are required before Done; `deployment_not_required` is explicit. First verification failure returns to synthesis with revision+1 while retaining lease; second becomes Blocked. `goal.completed` creates one follow-up heartbeat, and a child requires changed criteria plus a distinct evidence fingerprint.
 
-- [ ] **Step 2: Write failing patrol skip tests**
+- [x] **Step 2: Write failing patrol skip tests**
 
 With fake clocks, assert a stable 12-hour `trigger_ref`, no model call when a discovery is running, an autonomous Goal is active, a human Goal is executing, or evidence fingerprint is unchanged. Assert at most one active Owner-created Goal per Workspace.
 
-- [ ] **Step 3: Implement verification and patrol entry point**
+- [x] **Step 3: Implement verification and patrol entry point**
 
 `sim/goalPatrol.ts` defaults to read-only dry-run. `--once` persists the patrol heartbeat but still uses injected/fake runner in tests. It must never create Workspace and must reuse/match a Project before creating one.
 
-- [ ] **Step 4: Add disabled systemd units**
+- [x] **Step 4: Add disabled systemd units**
 
 Timer contract:
 
@@ -411,7 +411,7 @@ Unit=goal-discovery.service
 
 Document install and manual verification, but do not run `systemctl enable`, `start`, or any live Goal/AI command.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 npx tsx sim/goalPatrol.test.ts

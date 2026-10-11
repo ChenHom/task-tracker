@@ -1,0 +1,25 @@
+import assert from 'node:assert';
+import { DatabaseSync } from 'node:sqlite';
+import { getUserIdByEmail } from '../src/auth';
+import { resetProjections } from '../src/eventStore';
+import { cancelGoal, createGoal, registerGoalProjections, startDiscussion, setDiscussionPhase, acquireRepoLease, startExecution } from '../src/goal';
+import { runMigrations } from '../src/schema';
+import { seedUsers } from '../src/seed';
+import { evidenceFingerprint, patrolSlot, runGoalPatrol } from './goalPatrol';
+
+const db = new DatabaseSync(':memory:'); runMigrations(db); resetProjections(); registerGoalProjections(); seedUsers(db);
+const owner = getUserIdByEmail('user01@test.local', db)!;
+db.prepare("INSERT INTO workspaces_read_model VALUES ('ws', 'W', 'active', 't', NULL)").run();
+db.prepare("INSERT INTO projects_read_model (project_id, workspace_id, name, status, target_repo, created_at, updated_at) VALUES ('p','ws','P','active','/repo','t','t')").run();
+assert.strictEqual(patrolSlot(new Date('2026-10-11T11:59:00Z')), '2026-10-11T00:00Z');
+const fingerprint = evidenceFingerprint(['commit:a']);
+assert.strictEqual(runGoalPatrol({ workspaceId: 'ws', evidenceFingerprint: fingerprint, now: new Date('2026-10-11T00:00:00Z'), database: db }).status, 'eligible');
+db.prepare("UPDATE goal_heartbeats SET status = 'succeeded'").run();
+assert.strictEqual(runGoalPatrol({ workspaceId: 'ws', evidenceFingerprint: fingerprint, now: new Date('2026-10-11T12:00:00Z'), database: db }).reason, 'evidence_unchanged');
+const auto = createGoal(owner, { workspaceId: 'ws', projectId: 'p', source: 'owner_discovery', objective: 'auto', successCriteria: 'done', ownerAgentId: owner }, db);
+assert.strictEqual(runGoalPatrol({ workspaceId: 'ws', evidenceFingerprint: evidenceFingerprint(['commit:b']), now: new Date('2026-10-12T00:00:00Z'), database: db }).reason, 'active_autonomous_goal');
+cancelGoal(owner, auto, db);
+const human = createGoal('human', { workspaceId: 'ws', projectId: 'p', objective: 'human', successCriteria: 'done', ownerAgentId: owner }, db);
+startDiscussion(owner, human, db); setDiscussionPhase(owner, human, 'round_1', db); setDiscussionPhase(owner, human, 'awaiting_lease', db); acquireRepoLease(owner, human, db); startExecution(owner, human, db);
+assert.strictEqual(runGoalPatrol({ workspaceId: 'ws', evidenceFingerprint: evidenceFingerprint(['commit:c']), now: new Date('2026-10-12T12:00:00Z'), database: db }).reason, 'human_goal_executing');
+console.log('goalPatrol.test.ts OK');

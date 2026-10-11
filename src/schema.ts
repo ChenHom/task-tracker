@@ -252,6 +252,30 @@ export function runMigrations(db: DatabaseSync): void {
       PRIMARY KEY (goal_id, revision)
     );
 
+    CREATE TABLE IF NOT EXISTS goal_verifications (
+      goal_id       TEXT NOT NULL,
+      revision      INTEGER NOT NULL,
+      passed        INTEGER NOT NULL,
+      evidence_json TEXT NOT NULL,
+      created_at    TEXT NOT NULL,
+      PRIMARY KEY (goal_id, revision)
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_followups (
+      parent_goal_id      TEXT NOT NULL,
+      success_criteria    TEXT NOT NULL,
+      evidence_fingerprint TEXT NOT NULL,
+      child_goal_id       TEXT NOT NULL,
+      created_at          TEXT NOT NULL,
+      UNIQUE (parent_goal_id, success_criteria, evidence_fingerprint)
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_patrol_evidence (
+      workspace_id TEXT PRIMARY KEY,
+      fingerprint  TEXT NOT NULL,
+      checked_at   TEXT NOT NULL
+    );
+
     -- Comment：任務留言，同樣傳統 CRUD（不走 ES）。權限經 task → workspace 查；user_id 為留言作者。
     CREATE TABLE IF NOT EXISTS comments (
       comment_id TEXT PRIMARY KEY,
