@@ -1241,19 +1241,19 @@ const members = loadMembersFromUsers(dbPath);
 assert.deepStrictEqual(
   members.map((member) => ({ email: member.email, name: member.name, user: member.user, runner: member.runner })),
   [
-    { email: 'user02@test.local', name: '小美', user: 'user02', runner: 'claude' },
+    { email: 'user02@test.local', name: '小美', user: 'user02', runner: 'codex' },
     { email: 'user03@test.local', name: '阿凱', user: 'user03', runner: 'codex' },
     { email: 'user04@test.local', name: '婷婷', user: 'user04', runner: 'codex' },
     { email: 'user05@test.local', name: '大熊', user: 'user05', runner: 'codex' },
-    { email: 'user06@test.local', name: '小芸', user: 'user06', runner: 'agy' },
+    { email: 'user06@test.local', name: '小芸', user: 'user06', runner: 'codex' },
   ],
   'sim members 應從 users 表讀取 email/name，runner 設定仍由 sim 保留',
 );
 assert.ok(members.every((member) => member.profile.trim().length > 0), '每個 member 都應有 profile 供認領/難度組合參考');
 assert.strictEqual(
   members.find((member) => member.email === 'user02@test.local')?.model,
-  'claude-sonnet-5',
-  '小美的工作與表態必須使用 Claude Sonnet 5',
+  'gpt-5.6-sol',
+  '小美的工作必須使用 GPT-5.6 Sol',
 );
 assert.strictEqual(
   members.find((member) => member.email === 'user04@test.local')?.model,
@@ -1261,8 +1261,9 @@ assert.strictEqual(
   '婷婷的工作必須使用 GPT-5.6 Luna',
 );
 assert.ok(
-  source.includes("const OWNER_OPEN_MODEL = 'claude-opus-5-5';"),
-  'Owner 開場與發想必須使用 Claude Opus 5.5',
+  source.includes("const OWNER_ROUTE: ModelRoute = { runner: 'claude', model: 'claude-sonnet-5-5' };")
+    && source.includes("const OWNER_FALLBACK: ModelRoute = { runner: 'codex', model: 'gpt-5.6-sol' };"),
+  'Owner 所有情境必須使用 Claude Sonnet 5.5，額度滿時 fallback 到 GPT-5.6 Sol',
 );
 
 async function runRosterTests(): Promise<void> {
@@ -1510,13 +1511,13 @@ const user06 = members.find((member) => member.email === 'user06@test.local')!;
 const user02 = members.find((member) => member.email === 'user02@test.local')!;
 assert.deepStrictEqual(
   workSessionForMember(user06),
-  { route: { runner: 'agy', model: 'Gemini 3.7 Flash (High)' }, fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' } },
-  'user06 一般工作走 agy Gemini 3.7 Flash (High)，與其他成員同一條 route/fallback 流程',
+  { route: { runner: 'codex', model: 'gpt-5.6-sol' }, fallback: undefined },
+  'user06 一般工作走 codex GPT-5.6 Sol，與其他成員同一條 route/fallback 流程',
 );
 assert.deepStrictEqual(
   workSessionForMember(user02),
-  { route: { runner: 'claude', model: 'claude-sonnet-5' }, fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' } },
-  'user02 一般工作必須由 Claude 產生並保留 fallback',
+  { route: { runner: 'codex', model: 'gpt-5.6-sol' }, fallback: undefined },
+  'user02 一般工作走 codex GPT-5.6 Sol，無 fallback',
 );
 const normalWorkSessions = source.match(
   /normal: \(\) => runSession\([\s\S]{0,160}?workSession\.route\.runner[\s\S]{0,160}?workSession\.route\.model[\s\S]{0,800}?fallback: workSession\.fallback/g,

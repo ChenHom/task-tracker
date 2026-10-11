@@ -360,8 +360,7 @@ export interface SprintReport {
 
 const OWNER = { email: 'user01@test.local', name: '阿哲（Tech Lead / Owner）' };
 const MEMBER_RUNNERS: MemberRunnerConfig[] = [
-  { email: 'user02@test.local', runner: 'claude', model: 'claude-sonnet-5',
-    fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' },
+  { email: 'user02@test.local', runner: 'codex', model: 'gpt-5.6-sol',
     profile: '細心，擅長小範圍 auth/安全類修補與補測試，適合範圍明確的小題' },
   { email: 'user03@test.local', runner: 'codex', model: 'gpt-5.6-terra',
     profile: '主力工程師，可承接跨檔案/架構性大題（曾獨力完成 sim harness 四階段強化）' },
@@ -369,8 +368,7 @@ const MEMBER_RUNNERS: MemberRunnerConfig[] = [
     profile: '中小題穩定，擅長檔案 IO/防護類修補（曾完成 attachment symlink 硬化）' },
   { email: 'user05@test.local', runner: 'codex', model: 'gpt-5.6-luna',
     profile: '中小題，動手前先查核現況避免重工' },
-  { email: 'user06@test.local', runner: 'agy', model: 'Gemini 3.7 Flash (High)',
-    fallback: { runner: 'agy', model: 'Claude Sonnet 4.6 (Thinking)' },
+  { email: 'user06@test.local', runner: 'codex', model: 'gpt-5.6-sol',
     profile: '前端工程師，擅長原生 JS/CSS、UI 互動、響應式版面與瀏覽器驗證；動手前先檢查現有頁面、API 契約與設計風格，偏好最小範圍修改。會主動驗證登入、表單、錯誤提示、手機版與實際操作流程；遇到後端 API 或權限問題先記錄並回報，不擅自擴大修改後端；在意 API response、錯誤狀態與 loading 狀態變化。' },
 ];
 
@@ -1803,10 +1801,11 @@ export const ATTACHMENT_DISCUSSION_TOOLS = 'Read';
 export const SAFE_DISCUSSION_ROUTE: ModelRoute = { runner: 'claude', model: 'claude-sonnet-5' };
 const SAFE_DISCUSSION_TIMEOUT = 12 * 60 * 1000;
 export const NOTIFICATION_TOOLS = SAFE_DISCUSSION_TOOLS;
-const OWNER_TOOLS = INTERNAL_OWNER_TOOLS;
-// owner 開場是生成型工作（發想＋開題），交給 Claude Opus 5.5；中場/收尾/repair 是審查判斷，改用 GPT-5.6 Sol
-const OWNER_OPEN_MODEL = 'claude-opus-5-5';
-const OWNER_REVIEW_MODEL = 'gpt-5.6-sol';
+// owner prompt 會要求整合驗證失敗時 git reset --hard 回 merge 前、cd 進子專案跑測試、輪詢部署；codex sandbox 原本都能跑，Claude 需明列
+const OWNER_TOOLS = `${INTERNAL_OWNER_TOOLS},Bash(git reset --hard:*),Bash(git rev-parse:*),Bash(cd:*),Bash(sleep:*)`;
+// owner 所有情境（開場/中場/收尾/repair/巡檢）走 Claude Sonnet 5.5；Claude 額度滿時 runSession 自動切 codex GPT-5.6 Sol
+const OWNER_ROUTE: ModelRoute = { runner: 'claude', model: 'claude-sonnet-5-5' };
+const OWNER_FALLBACK: ModelRoute = { runner: 'codex', model: 'gpt-5.6-sol' };
 
 export function createRunDir(root: string, runId: string): string {
   const dir = join(root, runId);
@@ -2901,7 +2900,7 @@ async function main(): Promise<void> {
   writeReport(runDir, buildSprintReport(wsId, since, tag, tag, scenario.key, promptArtifacts, [], []));
 
   const memberOpts = (m: Member) => ({ cwd: wt(m), tools: MEMBER_TOOLS, timeoutMs: MEMBER_TIMEOUT, runDir, promptArtifacts, fallback: m.fallback });
-  const ownerOpts = { cwd: RUN.repoRoot, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT, runDir, promptArtifacts };
+  const ownerOpts = { cwd: RUN.repoRoot, tools: OWNER_TOOLS, timeoutMs: OWNER_TIMEOUT, runDir, promptArtifacts, fallback: OWNER_FALLBACK };
 
   // 一個 member session：只有正常結束才由 driver 提交；失敗 diff 留在 worktree 供人工檢查/下輪續作。
   const memberSession = async (m: Member, round: number) => {
@@ -2929,7 +2928,7 @@ async function main(): Promise<void> {
     getNotificationCookie: () => login(OWNER.email),
     runDiscussion: runInternalOwnerDiscussionSession,
     discussionMode: 'internal',
-    normal: () => runSession('owner-開場', 'claude', OWNER_OPEN_MODEL, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' }),
+    normal: () => runSession('owner-開場', OWNER_ROUTE.runner, OWNER_ROUTE.model, ownerOpenPrompt(wsId, scenario, material), { ...ownerOpts, promptLabel: 'owner-open' }),
   });
   if (!ownerOpen || ownerOpen.errored || ownerOpen.timedOut) {
     try { printStats(runDir, wsId, since, tag, scenario.key, promptArtifacts, []); }
@@ -2960,7 +2959,7 @@ async function main(): Promise<void> {
       getNotificationCookie: () => login(OWNER.email),
       runDiscussion: runInternalOwnerDiscussionSession,
       discussionMode: 'internal',
-      normal: () => runSession('owner-中場審查', 'codex', OWNER_REVIEW_MODEL, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' }),
+      normal: () => runSession('owner-中場審查', OWNER_ROUTE.runner, OWNER_ROUTE.model, ownerMidPrompt(wsId, scenario), { ...ownerOpts, promptLabel: 'owner-mid' }),
     });
     for (let r = 2; r <= 3; r++) {
       const active = membersToRun(wsId);
@@ -2979,7 +2978,7 @@ async function main(): Promise<void> {
     getNotificationCookie: () => login(OWNER.email),
     runDiscussion: runInternalOwnerDiscussionSession,
     discussionMode: 'internal',
-    normal: () => runSession('owner-收尾合併', 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' }),
+    normal: () => runSession('owner-收尾合併', OWNER_ROUTE.runner, OWNER_ROUTE.model, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: 'owner-close' }),
   });
   abortStaleMerge();
 
@@ -2997,7 +2996,7 @@ async function main(): Promise<void> {
       getNotificationCookie: () => login(OWNER.email),
       runDiscussion: runInternalOwnerDiscussionSession,
       discussionMode: 'internal',
-      normal: () => runSession(`owner-repair${repair}`, 'codex', OWNER_REVIEW_MODEL, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` }),
+      normal: () => runSession(`owner-repair${repair}`, OWNER_ROUTE.runner, OWNER_ROUTE.model, ownerClosePrompt(wsId, tag, verified, scenario), { ...ownerOpts, promptLabel: `owner-repair${repair}` }),
     });
     abortStaleMerge();
   }
@@ -3051,17 +3050,16 @@ export function workspaceFitsSweepBudget(
   );
 }
 
-function probeOwnerRunner(): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = execFile('codex', ['exec', '--ephemeral', '--skip-git-repo-check', '-C', ROOT,
-      '-s', 'read-only', '-m', OWNER_REVIEW_MODEL, '回覆OK兩字即可'],
-      { timeout: 90 * 1000, killSignal: 'SIGKILL' },
-      (error, stdout, stderr) => {
-        const output = `${stdout ?? ''}${stderr ?? ''}`;
-        resolve(!error && !/session limit|rate limit|quota/i.test(output));
-      });
-    child.stdin?.end(); // codex 會等待 piped stdin 的 EOF
+// primary（Claude）或 fallback（codex）任一可用就跑 owner；primary 額度滿時 runSession 會自動切 fallback
+async function probeOwnerRunner(): Promise<boolean> {
+  const probe = (command: string, args: string[]) => new Promise<boolean>((resolve) => {
+    const child = execFile(command, args, { timeout: 90 * 1000, killSignal: 'SIGKILL' },
+      (error, stdout, stderr) => resolve(!error && !isQuotaExhaustion(`${stdout ?? ''}${stderr ?? ''}`)));
+    child.stdin?.end(); // 關閉 piped stdin，避免 CLI 等待 EOF 而逾時
   });
+  return await probe('claude', ['-p', '回覆OK兩字即可', '--model', OWNER_ROUTE.model])
+    || probe('codex', ['exec', '--ephemeral', '--skip-git-repo-check', '-C', ROOT,
+      '-s', 'read-only', '-m', OWNER_FALLBACK.model, '回覆OK兩字即可']);
 }
 
 function branchAhead(m: Member): number {
@@ -3347,7 +3345,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
   const ownerTimeoutMs = Math.min(SWEEP_OWNER_TIMEOUT + ownerState.streak * 6 * 60 * 1000, 30 * 60 * 1000);
   // team tick 不先探 owner runner；每個 member session 自己隔離失敗。owner/both 只用 probe 決定是否略過 owner。
   const ownerRunnerAvailable = role === 'team' ? true : await probeOwnerRunner();
-  if (!ownerRunnerAvailable) console.log(`[sweep:${role}] Codex owner runner 不可用，本 tick 略過 owner；member 預算不受影響`);
+  if (!ownerRunnerAvailable) console.log(`[sweep:${role}] owner runner（Claude 與 codex fallback）皆不可用，本 tick 略過 owner；member 預算不受影響`);
   // 預算按 role：owner tick 只跑 owner session、team tick 只跑成員 session（both=手動全掃）。做不完留給下個 tick，自癒
   const budgets = sweepBudgets(role, ownerState.streak, ownerRunnerAvailable);
   let ownerBudget = budgets.owner;
@@ -3429,6 +3427,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         timeoutMs: ownerTimeoutMs,
         runDir,
         promptArtifacts,
+        fallback: OWNER_FALLBACK,
       };
       const r = await runActorSessionWithNotificationGate({
         label: ownerLabel,
@@ -3436,7 +3435,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
         getNotificationCookie: () => Promise.resolve(ownerCookie),
         runDiscussion: runInternalOwnerDiscussionSession,
         discussionMode: 'internal',
-        normal: () => runSession(ownerLabel, 'codex', OWNER_REVIEW_MODEL,
+        normal: () => runSession(ownerLabel, OWNER_ROUTE.runner, OWNER_ROUTE.model,
           ownerSweepPrompt(p.wsId, p.scenario, verified, boss?.name ?? '老闆', Math.round(ownerTimeoutMs / 60000), p.createDiscussion),
           { ...ownerSessionOptions, promptLabel: `owner-sweep-${p.wsId.slice(0, 8)}` }),
       });
