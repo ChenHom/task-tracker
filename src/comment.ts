@@ -3,6 +3,7 @@ import { db } from './db';
 import { CommandError } from './eventStore';
 import { getTaskWorkspaceId } from './task';
 import { emitMentionNotifications } from './notification';
+import { enqueueHeartbeat } from './goalRun';
 
 // Comment 不走 Event Sourcing（DESIGN 指定）：傳統 CRUD 直接讀寫 comments。
 // 權限分兩層，都在 server 層做：workspace 角色（requirePermission）+ ownership（只能改/刪自己的留言）。
@@ -45,6 +46,18 @@ export function createComment(
       createdAt,
     );
     emitMentionNotifications(userId, taskId, id, clean, database);
+    const linked = database.prepare(
+      `SELECT t.goal_id, g.revision, g.owner_agent_id
+         FROM tasks_read_model t JOIN goals_read_model g ON g.goal_id = t.goal_id
+        WHERE t.task_id = ?`,
+    ).get(taskId) as { goal_id: string; revision: number; owner_agent_id: string } | undefined;
+    const authorIsAgent = database.prepare('SELECT 1 FROM agents WHERE user_id = ?').get(userId);
+    if (linked && !authorIsAgent && /@Owner(?=$|[\s.,，。！？!?;；:：)\]}>])/iu.test(clean)) {
+      enqueueHeartbeat({
+        scopeId: linked.goal_id, goalId: linked.goal_id, phase: 'owner_comment',
+        agentId: linked.owner_agent_id, revision: linked.revision, triggerRef: id,
+      }, database);
+    }
     database.exec('COMMIT');
     return id;
   } catch (error) {

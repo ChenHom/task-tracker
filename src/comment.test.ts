@@ -53,6 +53,24 @@ assert.strictEqual(
   't2',
   '既有一般留言流程仍可使用同一 API',
 );
+
+// 只有 human 對 Goal Task 的明確 @Owner 會建立一次 heartbeat；編輯不重送。
+db.prepare(`INSERT INTO goals_read_model
+  (goal_id, workspace_id, project_id, source, objective, success_criteria, status, revision,
+   created_by, owner_agent_id, evidence_refs_json, version, created_at, updated_at)
+  VALUES ('g1', 'ws-1', 'p1', 'human', 'x', 'y', 'Executing', 1, 'alice', 'owner-a', '[]', 1, 't', 't')`).run();
+db.prepare(`INSERT INTO agents
+  (agent_id, user_id, email, name, role, skill_profile_json, primary_adapter, primary_model, status, created_at, updated_at)
+  VALUES ('owner-a', 'agent-user', 'owner@test', 'Owner', 'owner', '{}', 'claude', 'm', 'active', 't', 't')`).run();
+db.prepare("UPDATE tasks_read_model SET goal_id = 'g1' WHERE task_id = 't1'").run();
+const ownerMention = createComment('t1', 'alice', '請 @Owner 判斷', db);
+const ownerHeartbeatCount = () => (db.prepare("SELECT COUNT(*) AS n FROM goal_heartbeats WHERE phase = 'owner_comment'").get() as { n: number }).n;
+assert.strictEqual(ownerHeartbeatCount(), 1);
+updateComment(ownerMention, '請 @Owner 再判斷', db);
+assert.strictEqual(ownerHeartbeatCount(), 1, '編輯不可再次喚醒');
+createComment('t1', 'alice', '沒有 mention，只供已啟動 Agent 讀取', db);
+createComment('t1', 'agent-user', '@Owner Agent 自己的留言', db);
+assert.strictEqual(ownerHeartbeatCount(), 1);
 assert.strictEqual(
   listComments('t2', db).find((row) => row.comment_id === fixedCommentId)?.created_at,
   '2026-07-14T09:00:00.000Z',

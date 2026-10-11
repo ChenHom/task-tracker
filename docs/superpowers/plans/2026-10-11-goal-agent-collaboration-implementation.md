@@ -255,23 +255,23 @@ git commit -m "feat: persist agents and goal runs"
 - Modify: `src/test.ts`
 - Modify: `sim/tsconfig.json`
 
-- [ ] **Step 1: Write failing deterministic orchestration tests with a fake discussion runner**
+- [x] **Step 1: Write failing deterministic orchestration tests with a fake discussion runner**
 
-Cover Owner selection of 1–5 eligible members, independent round-1 packets, round-2 only with at least two valid Contributions, `insufficient_peers`, one reconciliation then Blocked, and synthesis waiting for lease before Task creation.
+Cover Owner selection of 1–5 eligible members, independent round-1 packets, round-2 only with at least two valid Contributions, `insufficient_peers`, one reconciliation then Blocked, and synthesis waiting for lease. This phase persists immutable synthesis but intentionally creates no Task, matching design phase 4.
 
-- [ ] **Step 2: Implement bounded context and Contribution parser**
+- [x] **Step 2: Implement bounded context and Contribution parser**
 
 Reuse NFC/control/credential/private-address sanitizers from `notificationSecurity.ts`; add a repo context builder that accepts only realpaths under Project target repo and returns references plus bounded text. `runSafeDiscussion` must accept only Claude and construct an empty cwd/filtered environment invocation with no cookie, shell, Git-write or board mutation tools.
 
-- [ ] **Step 3: Implement orchestration checkpoints**
+- [x] **Step 3: Implement orchestration checkpoints**
 
-`advanceGoalDiscussion(goalId, deps)` claims one pending heartbeat, records a pending Run with estimate/quota, invokes the fake/safe runner, validates Contribution, then closes the Run. Owner synthesis acquires lease first and creates Goal-linked Tasks in one SQLite transaction. A crash retry must return existing Contributions/Tasks by deterministic key.
+`advanceGoalDiscussion(goalId, deps)` claims one pending heartbeat, records a pending Run with estimate/quota, invokes the fake/safe runner, validates Contribution, then closes the Run. Owner synthesis acquires lease first and stores one immutable synthesis per Goal revision. A crash retry must return existing Contributions/synthesis by deterministic key. Task 5 consumes that synthesis and creates all Goal-linked Tasks in one SQLite transaction when `task.goal_id` becomes available.
 
-- [ ] **Step 4: Add comment mention trigger tests**
+- [x] **Step 4: Add comment mention trigger tests**
 
 Only an exact `@Owner` mention from a human comment creates one heartbeat keyed by `comment_id`; editing it does not create another. No mention creates none. Already-running Agents may receive the comment only through the next context build; user09 is never parsed as Agent output.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 npx tsx src/goalOrchestrator.test.ts
@@ -315,7 +315,7 @@ Use a temporary registered repo with per-repo `checks` and `deployment_not_requi
 
 - [ ] **Step 4: Implement the smallest production integration**
 
-Replace `ALLOWED_WORKSPACE_IDS` at the Goal path with a Project repository registry read; keep legacy allowlist behavior for legacy Tasks. Add `goal_id` to Task projection/query and use it only as a gate around existing production actions. Continue using `action_log` for Task execution idempotency; do not duplicate it in heartbeat tables.
+Replace `ALLOWED_WORKSPACE_IDS` at the Goal path with a Project repository registry read; keep legacy allowlist behavior for legacy Tasks. Add `goal_id` to Task event/projection/query, atomically materialize the Task plans from the stored synthesis, and use Goal state as a gate around existing production actions. Continue using `action_log` for Task execution idempotency; do not duplicate it in heartbeat tables.
 
 Register Goal worktrees when production first creates them and extend `archiveProject` to reject dirty or unmerged registered worktrees. This is the first phase where such records exist, so no earlier migration needs a speculative worktree abstraction.
 

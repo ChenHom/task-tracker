@@ -482,6 +482,7 @@ export interface TaskRow {
   workspace_id: string;
   creator_id: string | null;
   project_id: string | null;
+  goal_id: string | null;
   title: string;
   description: string;
   status: TaskStatus;

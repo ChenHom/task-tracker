@@ -148,6 +148,8 @@ function reduce(state: GoalState, event: StoredEvent): GoalState {
         phase: (payload.phase as DiscussionPhase | null) ?? null,
         revision: Number(payload.revision),
       };
+    case 'goal.discussion_reconciled':
+      return { ...state, status: 'Discussing', phase: 'owner_scoping', revision: Number(payload.revision) };
     default:
       return state;
   }
@@ -361,6 +363,16 @@ export function reviseGoal(actorId: string, goalId: string, successCriteria: unk
   }, meta(actorId), database);
 }
 
+export function reconcileGoalDiscussion(actorId: string, goalId: string, database = db): void {
+  const { state, version } = requireGoal(goalId, database);
+  if (state.status !== 'Discussing' || state.phase !== 'round_1') {
+    throw new CommandError('只有 round_1 可進行 reconciliation');
+  }
+  appendEvent('Goal', goalId, version, 'goal.discussion_reconciled', {
+    revision: state.revision + 1,
+  }, meta(actorId), database);
+}
+
 export function getGoal(goalId: string, database = db): GoalRow | null {
   return (database.prepare('SELECT * FROM goals_read_model WHERE goal_id = ?').get(goalId) as GoalRow | undefined) ?? null;
 }
@@ -457,4 +469,8 @@ export function registerGoalProjections(): void {
       discussion_phase: payload.phase, revision: payload.revision,
     });
   });
+  registerProjection('goal.discussion_reconciled', (event, database) => update(event, database, {
+    status: 'Discussing', discussion_phase: 'owner_scoping',
+    revision: (event.payload as { revision: number }).revision,
+  }));
 }

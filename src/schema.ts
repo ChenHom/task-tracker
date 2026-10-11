@@ -69,6 +69,7 @@ export function runMigrations(db: DatabaseSync): void {
       task_id     TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
       project_id  TEXT,
+      goal_id     TEXT,
       title       TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       status      TEXT NOT NULL,
@@ -213,6 +214,34 @@ export function runMigrations(db: DatabaseSync): void {
       UNIQUE (goal_id, revision, round, agent_id)
     );
 
+    CREATE TABLE IF NOT EXISTS goal_rounds (
+      goal_id    TEXT NOT NULL,
+      revision   INTEGER NOT NULL,
+      round      TEXT NOT NULL,
+      status     TEXT NOT NULL,
+      reason     TEXT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (goal_id, revision, round)
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_reconciliations (
+      goal_id    TEXT NOT NULL,
+      revision   INTEGER NOT NULL,
+      reason     TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (goal_id, revision)
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_syntheses (
+      goal_id       TEXT NOT NULL,
+      revision      INTEGER NOT NULL,
+      summary       TEXT NOT NULL,
+      task_plans_json TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      created_at    TEXT NOT NULL,
+      PRIMARY KEY (goal_id, revision)
+    );
+
     -- Comment：任務留言，同樣傳統 CRUD（不走 ES）。權限經 task → workspace 查；user_id 為留言作者。
     CREATE TABLE IF NOT EXISTS comments (
       comment_id TEXT PRIMARY KEY,
@@ -264,6 +293,12 @@ export function runMigrations(db: DatabaseSync): void {
 
   try {
     db.prepare('ALTER TABLE tasks_read_model ADD COLUMN done_at TEXT').run();
+  } catch {
+    // 忽略如果欄位已存在
+  }
+
+  try {
+    db.prepare('ALTER TABLE tasks_read_model ADD COLUMN goal_id TEXT').run();
   } catch {
     // 忽略如果欄位已存在
   }
