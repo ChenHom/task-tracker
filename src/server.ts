@@ -47,7 +47,15 @@ import {
   registerTaskProjections,
   type CreateTaskInput,
 } from './task';
-import { createProject, listProjects, renameProject, deleteProject, getProjectWorkspaceId } from './project';
+import {
+  archiveProject,
+  createProject,
+  deleteProject,
+  getProjectWorkspaceId,
+  listProjects,
+  updateProject,
+  type ProjectInput,
+} from './project';
 import { createComment, listComments, updateComment, getCommentContext } from './comment';
 import { registerNotificationProjections, listNotifications, listNotificationsPage, markNotificationRead } from './notification';
 import { createAttachment, listAttachments, readAttachment, deleteAttachment, getAttachmentContext, attachmentMaxBytes, contentDispositionHeader } from './attachment';
@@ -654,9 +662,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     if (req.method === 'POST') {
       const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
       if (!userId) return;
-      const body = (await readJson(req).catch(() => null)) as { name?: unknown } | null;
+      const body = (await readJson(req).catch(() => null)) as ProjectInput | null;
       try {
-        const id = createProject(workspaceId, body?.name);
+        const id = createProject(workspaceId, body ?? {});
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id }));
       } catch (e) {
@@ -664,6 +672,27 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       }
       return;
     }
+  }
+
+  const projectArchiveMatch = req.url?.match(/^\/api\/projects\/([^/?]+)\/archive$/);
+  if (projectArchiveMatch && req.method === 'POST') {
+    const projectId = projectArchiveMatch[1];
+    const workspaceId = getProjectWorkspaceId(projectId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'project 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
+    if (!userId) return;
+    try {
+      archiveProject(projectId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
   }
 
   // 單一 project 操作：先查資源歸屬的 workspace 再驗權限（資源同 workspace 檢查）。
@@ -682,8 +711,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       if (req.method === 'DELETE') {
         deleteProject(projectId);
       } else {
-        const body = (await readJson(req).catch(() => null)) as { name?: unknown } | null;
-        renameProject(projectId, body?.name);
+        const body = (await readJson(req).catch(() => null)) as ProjectInput | null;
+        updateProject(projectId, body ?? {});
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));

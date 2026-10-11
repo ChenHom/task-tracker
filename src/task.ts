@@ -11,6 +11,7 @@ import {
   resolveMainDiscussionConclusion,
   type MainDiscussionConcludedPayload,
 } from './mainDiscussion';
+import { requireActiveProject } from './project';
 
 // ── 值域 ───────────────────────────────────────────────────────────
 const ACTIVE_STATUSES = ['Todo', 'Doing', 'Review', 'Done'] as const;
@@ -180,7 +181,9 @@ export function createTask(actorId: string, workspaceId: string, input: CreateTa
   const assigneeId = useDefaults ? null : validateAssignee(input.assignee);
   if (assigneeId) requireActiveAssignee(workspaceId, assigneeId, database);
   const dueAt = useDefaults ? null : validateDueAt(input.dueAt);
-  const projectId = useDefaults ? null : input.projectId == null ? null : String(input.projectId); // Project 是 Phase 6，先允許 null
+  const projectId = useDefaults || input.projectId == null
+    ? null
+    : requireActiveProject(workspaceId, input.projectId, database);
   const id = randomUUID();
   appendEvent(
     'Task',
@@ -304,6 +307,13 @@ export function changeTaskDueDate(actorId: string, taskId: string, dueAt: unknow
   appendEvent('Task', taskId, version, 'task.due_date_changed', { dueAt: clean }, meta(actorId), database);
 }
 
+export function changeTaskProject(actorId: string, taskId: string, projectId: unknown, database = db): void {
+  const { version } = loadEditableTask(taskId, database);
+  const task = getTask(taskId, database)!;
+  const clean = projectId == null ? null : requireActiveProject(task.workspace_id, projectId, database);
+  appendEvent('Task', taskId, version, 'task.project_changed', { projectId: clean }, meta(actorId), database);
+}
+
 export function moveTask(actorId: string, taskId: string, targetWorkspaceId: string, database = db): MoveTaskResult {
   const task = getTask(taskId, database);
   if (!task) throw new CommandError('task 不存在');
@@ -365,7 +375,7 @@ export function deleteTask(actorId: string, taskId: string, database = db): void
 }
 
 // HTTP PATCH 分派：一次只改一個欄位（避免多欄位逐一 append 的部分成功語意）。
-const PATCH_FIELDS = ['title', 'description', 'status', 'priority', 'assignee', 'dueAt'] as const;
+const PATCH_FIELDS = ['title', 'description', 'status', 'priority', 'assignee', 'dueAt', 'projectId'] as const;
 export function applyTaskPatch(actorId: string, taskId: string, body: Record<string, unknown>, database = db): void {
   const keys = PATCH_FIELDS.filter((k) => k in body);
   if (keys.length === 0) throw new CommandError('不支援的 PATCH 欄位');
@@ -381,6 +391,7 @@ export function applyTaskPatch(actorId: string, taskId: string, body: Record<str
     case 'priority': return changeTaskPriority(actorId, taskId, body.priority, database);
     case 'assignee': return changeTaskAssignee(actorId, taskId, body.assignee, database);
     case 'dueAt': return changeTaskDueDate(actorId, taskId, body.dueAt, database);
+    case 'projectId': return changeTaskProject(actorId, taskId, body.projectId, database);
   }
 }
 
@@ -434,6 +445,7 @@ export function registerTaskProjections(): void {
   registerProjection('task.priority_changed', (e, database) => setCol('priority')(e, database, (e.payload as { priority: string }).priority));
   registerProjection('task.assignee_changed', (e, database) => setCol('assignee_id')(e, database, (e.payload as { assigneeId: string | null }).assigneeId));
   registerProjection('task.due_date_changed', (e, database) => setCol('due_at')(e, database, (e.payload as { dueAt: string | null }).dueAt));
+  registerProjection('task.project_changed', (e, database) => setCol('project_id')(e, database, (e.payload as { projectId: string | null }).projectId));
   registerProjection('task.moved', (e, database) => {
     const p = e.payload as { toWorkspaceId: string };
     database

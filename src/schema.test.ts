@@ -41,4 +41,21 @@ assert.strictEqual(
   'migration 必須丟棄既有資料庫殘留的 main_discussion_windows',
 );
 
+const legacy = new DatabaseSync(':memory:');
+legacy.exec(`
+  CREATE TABLE projects_read_model (
+    project_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name TEXT NOT NULL
+  );
+  INSERT INTO projects_read_model (project_id, workspace_id, name) VALUES ('legacy-project', 'legacy-ws', 'Legacy');
+`);
+runMigrations(legacy);
+const migratedProject = legacy.prepare('SELECT * FROM projects_read_model WHERE project_id = ?').get('legacy-project') as Record<string, unknown>;
+assert.strictEqual(migratedProject.description, '', 'legacy Project description 應回填空字串');
+assert.strictEqual(migratedProject.status, 'active', 'legacy Project 應保持 active');
+assert.strictEqual(migratedProject.target_repo, null, 'legacy Project 不可猜測 target repo');
+assert.ok(migratedProject.created_at, 'legacy Project 應回填 created_at');
+assert.ok(migratedProject.updated_at, 'legacy Project 應回填 updated_at');
+
 console.log('schema.test.ts OK');

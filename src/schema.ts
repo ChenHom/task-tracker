@@ -84,7 +84,12 @@ export function runMigrations(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS projects_read_model (
       project_id   TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
-      name         TEXT NOT NULL
+      name         TEXT NOT NULL,
+      description  TEXT NOT NULL DEFAULT '',
+      status       TEXT NOT NULL DEFAULT 'active',
+      target_repo  TEXT,
+      created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     -- Comment：任務留言，同樣傳統 CRUD（不走 ES）。權限經 task → workspace 查；user_id 為留言作者。
@@ -180,6 +185,27 @@ export function runMigrations(db: DatabaseSync): void {
   } catch {
     // 忽略如果欄位已存在
   }
+
+  for (const sql of [
+    "ALTER TABLE projects_read_model ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE projects_read_model ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+    'ALTER TABLE projects_read_model ADD COLUMN target_repo TEXT',
+    'ALTER TABLE projects_read_model ADD COLUMN created_at TEXT',
+    'ALTER TABLE projects_read_model ADD COLUMN updated_at TEXT',
+  ]) {
+    try {
+      db.prepare(sql).run();
+    } catch {
+      // 冪等 migration：欄位已存在時略過。
+    }
+  }
+  db.prepare(
+    `UPDATE projects_read_model
+        SET description = COALESCE(description, ''),
+            status = COALESCE(status, 'active'),
+            created_at = COALESCE(created_at, datetime('now')),
+            updated_at = COALESCE(updated_at, created_at, datetime('now'))`,
+  ).run();
 
   // 主討論等待窗口已移除（討論不再有期限閘門），既有資料庫留著的舊表直接丟棄。
   db.exec('DROP TABLE IF EXISTS main_discussion_windows');

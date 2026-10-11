@@ -45,7 +45,7 @@
 - Modify: `src/server.ts`
 - Modify: `src/server.test.ts`
 
-- [ ] **Step 1: Write failing Project migration and domain tests**
+- [x] **Step 1: Write failing Project migration and domain tests**
 
 Add assertions that an existing Project row migrates to `description=''`, `status='active'`, `target_repo=null`, and non-empty timestamps. Add tests using an injected registry:
 
@@ -65,13 +65,13 @@ assert.throws(() => createProject('ws-1', { name: 'Bad', targetRepo: '/tmp/nope'
 assert.throws(() => archiveProject(id, db), /未完成 task|active Goal|worktree/);
 ```
 
-- [ ] **Step 2: Run the Project test and observe the missing object API**
+- [x] **Step 2: Run the Project test and observe the missing object API**
 
 Run: `npx tsx src/project.test.ts`
 
 Expected: FAIL because `createProject` still accepts only a name and the new columns/functions do not exist.
 
-- [ ] **Step 3: Implement the minimal Project migration and commands**
+- [x] **Step 3: Implement the minimal Project migration and commands**
 
 Add columns idempotently, keep legacy `target_repo=null`, and expose:
 
@@ -88,7 +88,7 @@ export function requireActiveProject(workspaceId: string, projectId: unknown, da
 
 `src/repoRegistry.ts` reads `TASK_TRACKER_REPO_REGISTRY_PATH` only when first requested. The JSON is an object keyed by canonical realpath with `{ "checks": ["npm test"], "deployment": "task-tracker" | "not_required" }`; reject missing files, relative paths, duplicate realpaths, empty checks, unsupported commands and paths that do not exist. Tests pass an in-memory registry so they never depend on host configuration.
 
-- [ ] **Step 4: Write failing Task Project tests**
+- [x] **Step 4: Write failing Task Project tests**
 
 ```ts
 assert.throws(() => createTask('u1', 'ws-1', { title: 'x', projectId: 'other-project' }, db), /同一 workspace/);
@@ -100,7 +100,7 @@ assert.strictEqual(getTask(taskId, db)?.project_id, null);
 
 Also assert `applyTaskPatch(..., { projectId })` is one-field-only and a Workspace move clears Project.
 
-- [ ] **Step 5: Run Task tests red, implement `task.project_changed`, then run green**
+- [x] **Step 5: Run Task tests red, implement `task.project_changed`, then run green**
 
 Run red: `npx tsx src/task.test.ts`
 
@@ -114,11 +114,11 @@ npx tsx src/task.test.ts
 npx tsc --noEmit
 ```
 
-- [ ] **Step 6: Update HTTP tests and routes**
+- [x] **Step 6: Update HTTP tests and routes**
 
 Test `POST /api/workspaces/:id/projects` with the object input, `PATCH /api/projects/:id` one field at a time, `POST /api/projects/:id/archive`, and Task `projectId` PATCH. Expect 400 for unregistered/cross-Workspace/archived Project and 403 at existing permission boundaries. Implement only those routes and keep DELETE compatibility unchanged.
 
-- [ ] **Step 7: Run focused server tests and commit**
+- [x] **Step 7: Run focused server tests and commit**
 
 ```bash
 npx tsx src/server.test.ts

@@ -13,6 +13,7 @@ import './mainWorkspace.test';
 import './mainDiscussion.test';
 import './task.test';
 import './project.test';
+import './repoRegistry.test';
 import './comment.test';
 import './notification.test';
 import './attachment.test';

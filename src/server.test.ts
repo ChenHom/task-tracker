@@ -1,12 +1,19 @@
 import assert from 'node:assert';
 import { clientIp } from './clientIp';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
 const dataDir = mkdtempSync(join(tmpdir(), 'task-tracker-server-test-'));
 process.env.TASK_TRACKER_DATA_DIR = dataDir;
+const registeredRepo = join(dataDir, 'registered-repo');
+mkdirSync(registeredRepo);
+const repoRegistryPath = join(dataDir, 'repos.json');
+writeFileSync(repoRegistryPath, JSON.stringify({
+  [registeredRepo]: { checks: ['npm test'], deployment: 'not_required' },
+}));
+process.env.TASK_TRACKER_REPO_REGISTRY_PATH = repoRegistryPath;
 
 const socketIp = '203.0.113.10';
 
@@ -212,6 +219,43 @@ void (async () => {
     body: { assigneeId: 'authz-member' },
   });
   assert.strictEqual((unsupportedPatch.json as { error: string }).error, '不支援的 PATCH 欄位', '未知欄位應回明確錯誤');
+
+  // Project：正式欄位、單欄 PATCH、Task 關聯與封存守門。
+  const createdProject = await call('POST', `/api/workspaces/${wsA}/projects`, {
+    cookie: authzCookie.member,
+    body: { name: 'API Project', description: 'HTTP coverage', targetRepo: registeredRepo },
+  });
+  assert.strictEqual(createdProject.status, 201, 'Member 應可建立登記 repo 的 Project');
+  const projectId = (createdProject.json as { id: string }).id;
+  assert.strictEqual(
+    (await call('PATCH', `/api/projects/${projectId}`, { cookie: authzCookie.member, body: { description: 'Updated' } })).status,
+    200,
+    'Project 單欄 PATCH 應成功',
+  );
+  assert.strictEqual(
+    (await call('PATCH', `/api/tasks/${patchTaskId}`, { cookie: authzCookie.member, body: { projectId } })).status,
+    200,
+    'Task 應可指向同 Workspace active Project',
+  );
+  assert.strictEqual(
+    (await call('POST', `/api/projects/${projectId}/archive`, { cookie: authzCookie.member })).status,
+    400,
+    'Project 有未完成 Task 時不可封存',
+  );
+  db.prepare("UPDATE tasks_read_model SET status = 'Done' WHERE task_id = ?").run(patchTaskId);
+  assert.strictEqual(
+    (await call('POST', `/api/projects/${projectId}/archive`, { cookie: authzCookie.member })).status,
+    200,
+    'Project 沒有未完成 Task 時可封存',
+  );
+  assert.strictEqual(
+    (await call('POST', `/api/workspaces/${wsA}/projects`, {
+      cookie: authzCookie.member,
+      body: { name: 'Unknown Repo', targetRepo: join(dataDir, 'not-registered') },
+    })).status,
+    400,
+    '未登記 repo 必須在 HTTP trust boundary 被拒絕',
+  );
 
   // attachment 上傳走 raw bytes（非 JSON），需獨立的 helper。
   const uploadAttachment = async (cookie: string | undefined, taskId: string, filename: string, contentType: string, data: Buffer) => {

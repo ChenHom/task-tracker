@@ -12,6 +12,7 @@ import {
   changeTaskAssignee,
   changeTaskDueDate,
   changeTaskDescription,
+  changeTaskProject,
   archiveTask,
   deleteTask,
   applyTaskPatch,
@@ -248,6 +249,8 @@ assert.strictEqual(t3?.title, 'Patched', 'getTask 返回最新資料');
 assert.strictEqual(getTask('nonexistent', db), null, 'getTask 不存在的 id 返回 null');
 
 // ── moveTask：成功搬移會更新 workspace_id、清空 project_id，且 route 之後會跟著新 workspace 走 ──
+db.prepare('INSERT INTO projects_read_model (project_id, workspace_id, name) VALUES (?, ?, ?)')
+  .run('proj-1', MOVE_SOURCE_WS, 'Move source project');
 const moveId = createTask('mover', MOVE_SOURCE_WS, { title: 'Move me', projectId: 'proj-1' }, db);
 const moveResult = moveTask('mover', moveId, MOVE_TARGET_WS, db);
 assert.deepStrictEqual(moveResult, { invitedAssignee: false });
@@ -642,6 +645,43 @@ assert.throws(
   () => applyTaskPatch('main-user', commenterCreatedTaskId, { status: 'Doing' }, db),
   { name: 'CommandError' },
   'Commenter 不能修改 status',
+);
+
+// ── Project trust boundary：建立與 PATCH 都只能指向同 Workspace active Project ──
+db.prepare(
+  `INSERT INTO projects_read_model
+     (project_id, workspace_id, name, description, status, target_repo, created_at, updated_at)
+   VALUES (?, ?, ?, '', ?, NULL, ?, ?)`,
+).run('project-active', WS, 'Active', 'active', 't', 't');
+db.prepare(
+  `INSERT INTO projects_read_model
+     (project_id, workspace_id, name, description, status, target_repo, created_at, updated_at)
+   VALUES (?, ?, ?, '', ?, NULL, ?, ?)`,
+).run('project-other', 'ws-other', 'Other', 'active', 't', 't');
+db.prepare(
+  `INSERT INTO projects_read_model
+     (project_id, workspace_id, name, description, status, target_repo, created_at, updated_at)
+   VALUES (?, ?, ?, '', ?, NULL, ?, ?)`,
+).run('project-archived', WS, 'Archived', 'archived', 't', 't');
+
+assert.throws(
+  () => createTask('u1', WS, { title: 'Cross workspace', projectId: 'project-other' }, db),
+  /同一 workspace/,
+);
+assert.throws(
+  () => createTask('u1', WS, { title: 'Archived project', projectId: 'project-archived' }, db),
+  /project 已封存/,
+);
+const projectTaskId = createTask('u1', WS, { title: 'Project task', projectId: 'project-active' }, db);
+assert.strictEqual(getTask(projectTaskId, db)?.project_id, 'project-active');
+changeTaskProject('u1', projectTaskId, null, db);
+assert.strictEqual(getTask(projectTaskId, db)?.project_id, null);
+applyTaskPatch('u1', projectTaskId, { projectId: 'project-active' }, db);
+assert.strictEqual(getTask(projectTaskId, db)?.project_id, 'project-active');
+assert.strictEqual(loadEvents(projectTaskId, db).at(-1)?.event_type, 'task.project_changed');
+assert.throws(
+  () => applyTaskPatch('u1', projectTaskId, { projectId: 'project-active', priority: 'High' }, db),
+  /一次只能改一個欄位/,
 );
 
 console.log('task.test.ts OK');
