@@ -9,6 +9,7 @@ import {
   getProject,
   getProjectWorkspaceId,
   listProjects,
+  registerGoalWorktree,
   updateProject,
 } from './project';
 import { createTask, listTasks, registerTaskProjections } from './task';
@@ -92,5 +93,15 @@ db.prepare("UPDATE tasks_read_model SET status = 'Done' WHERE task_id = ?").run(
 archiveProject(archiveId, db);
 assert.strictEqual(getProject(archiveId, db)?.status, 'archived');
 assert.throws(() => createTask('u1', 'ws-1', { title: 'No new task', projectId: archiveId }, db), /project 已封存/);
+
+const worktreeProject = createProject('ws-1', { name: 'Worktree', targetRepo: '/srv/app' }, db, repos);
+db.prepare(`INSERT INTO goals_read_model
+  (goal_id, workspace_id, project_id, source, objective, success_criteria, status, revision,
+   created_by, owner_agent_id, evidence_refs_json, version, created_at, updated_at)
+  VALUES ('worktree-goal', 'ws-1', ?, 'human', 'x', 'y', 'Done', 1, 'u1', 'owner', '[]', 1, 't', 't')`).run(worktreeProject);
+registerGoalWorktree('worktree-goal', '/srv/app', '/srv/app/.worktrees/g', db);
+assert.throws(() => archiveProject(worktreeProject, db), /dirty 或未合併 worktree/);
+db.prepare("UPDATE goal_worktrees SET unmerged = 0 WHERE goal_id = 'worktree-goal'").run();
+archiveProject(worktreeProject, db);
 
 console.log('project.test.ts OK');

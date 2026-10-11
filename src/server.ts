@@ -51,6 +51,7 @@ import {
   archiveProject,
   createProject,
   deleteProject,
+  getProject,
   getProjectWorkspaceId,
   listProjects,
   updateProject,
@@ -711,7 +712,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 
   // 單一 project 操作：先查資源歸屬的 workspace 再驗權限（資源同 workspace 檢查）。
   const projectMatch = req.url?.match(/^\/api\/projects\/([^/?]+)$/);
-  if (projectMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+  if (projectMatch && (req.method === 'GET' || req.method === 'PATCH' || req.method === 'DELETE')) {
     const projectId = projectMatch[1];
     const workspaceId = getProjectWorkspaceId(projectId);
     if (!workspaceId) {
@@ -719,10 +720,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       res.end(JSON.stringify({ error: 'project 不存在' }));
       return;
     }
-    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
+    const userId = requirePermission(req, res, workspaceId, req.method === 'GET' ? ACCESS_ROLE.read : ACCESS_ROLE.writeProject);
     if (!userId) return;
     try {
-      if (req.method === 'DELETE') {
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getProject(projectId)));
+        return;
+      } else if (req.method === 'DELETE') {
         deleteProject(projectId);
       } else {
         const body = (await readJson(req).catch(() => null)) as ProjectInput | null;

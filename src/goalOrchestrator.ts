@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
 import { getAgent, listWorkspaceAgents } from './agent';
-import { CommandError, ConflictError } from './eventStore';
+import { appendEventInTransaction, CommandError, ConflictError } from './eventStore';
+import { buildMetadata as meta } from './requestContext';
 import {
   acquireRepoLease, blockGoal, getGoal, reconcileGoalDiscussion, setDiscussionPhase,
 } from './goal';
@@ -156,4 +158,42 @@ export function storeGoalSynthesis(goalId: string, output: SynthesisOutput, data
 
 export function getGoalSynthesis(goalId: string, revision: number, database = db): Record<string, unknown> | null {
   return (database.prepare('SELECT * FROM goal_syntheses WHERE goal_id = ? AND revision = ?').get(goalId, revision) as Record<string, unknown> | undefined) ?? null;
+}
+
+export function materializeGoalTasks(ownerAgentId: string, goalId: string, database = db): string[] {
+  const goal = getGoal(goalId, database);
+  if (!goal || goal.owner_agent_id !== ownerAgentId || goal.status !== 'Discussing' || goal.discussion_phase !== 'owner_synthesis') {
+    throw new CommandError('Goal 尚未完成 synthesis');
+  }
+  const synthesis = getGoalSynthesis(goalId, goal.revision, database);
+  if (!synthesis) throw new CommandError('Goal synthesis 不存在');
+  if (!database.prepare('SELECT 1 FROM repo_leases WHERE goal_id = ?').get(goalId)) throw new CommandError('Goal 未持有 repo lease');
+  const plans = JSON.parse(String(synthesis.task_plans_json)) as SynthesisOutput['taskPlans'];
+  if (!Array.isArray(plans) || plans.length === 0) throw new CommandError('synthesis 必須包含 Task');
+  const ids: string[] = [];
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    for (const plan of plans) {
+      const title = clean(plan.title, 'Task title');
+      const description = clean(plan.description, 'Task description');
+      const assigneeId = clean(plan.assigneeId, 'Task assignee');
+      if (title.length > 200 || description.length > 5000) throw new CommandError('Task 內容過長');
+      if (!database.prepare('SELECT 1 FROM workspace_members_read_model WHERE workspace_id = ? AND user_id = ?').get(goal.workspace_id, assigneeId)) {
+        throw new CommandError('Task assignee 必須是 Workspace member');
+      }
+      const taskId = randomUUID();
+      appendEventInTransaction('Task', taskId, 0, 'task.created', {
+        workspaceId: goal.workspace_id, projectId: goal.project_id, goalId,
+        title, description: `${description}\n\n驗收：${clean(plan.acceptanceCriteria, 'acceptanceCriteria')}\nRollback：${clean(plan.rollbackCondition, 'rollbackCondition')}`,
+        status: 'Todo', priority: 'Medium', assigneeId, dueAt: null,
+      }, meta(ownerAgentId), database);
+      ids.push(taskId);
+    }
+    appendEventInTransaction('Goal', goalId, goal.version, 'goal.execution_started', {}, meta(ownerAgentId), database);
+    database.exec('COMMIT');
+    return ids;
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
 }

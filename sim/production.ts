@@ -17,6 +17,7 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { loadRepoRegistry } from '../src/repoRegistry';
 
 import {
   openCoordinatorState,
@@ -216,6 +217,7 @@ export interface GatherSnapshotDeps {
   ownerClient: TaskTrackerClient;
   user09Client: TaskTrackerClient;
   repoRoot: string;
+  taskChecks?: Map<string, string[]>;
 }
 
 export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<CoordinatorSnapshot> {
@@ -224,6 +226,17 @@ export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<Coordina
     deps.ownerClient.listWorkspaceTasks(CANONICAL_WORKSPACE_ID),
   ]);
   const tasks = [...mainTasks, ...canonicalTasks];
+  const registry = loadRepoRegistry();
+  for (const task of tasks) {
+    if (!task.goalId || !task.projectId) continue;
+    const project = await deps.ownerClient.getProject(task.projectId);
+    const config = project.targetRepo ? registry.get(project.targetRepo) : undefined;
+    if (!config) throw new Error(`Goal Task ${task.taskId} 的 Project repo 未登記`);
+    task.targetRepo = config.targetRepo;
+    task.verificationChecks = config.checks;
+    task.deployment = config.deployment;
+    deps.taskChecks?.set(task.taskId, config.checks);
+  }
 
   const taskRuns: Record<string, TaskRun | undefined> = {};
   for (const t of tasks) {
@@ -680,6 +693,7 @@ interface ResolvedDeps {
   sleep?: (ms: number) => Promise<void>;
   /** 取得綁好本 tick base 的 tracer；taskId 省略即 tick 層級事件。見 docs/sim-trace.md。 */
   tracer: (taskId?: string | null) => Tracer;
+  taskChecks: Map<string, string[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -765,6 +779,7 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
       return { exitCode: 3, tickId, lines };
     }
 
+    const taskChecks = new Map<string, string[]>();
     const deps: ResolvedDeps = {
       db,
       ownerClient: discovery.ownerClient,
@@ -777,8 +792,14 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
       runVerificationCommand: options.runVerificationCommand ?? execAllowlistedCommand,
       runIntegrationCommand: options.runIntegrationCommand ?? execAllowlistedCommand,
       runBranchCi: options.runBranchCi ?? (async (_taskId, worktreePath) => {
-        const result = await execAllowlistedCommand('npm test', worktreePath);
-        return { passed: result.exitCode === 0, detail: result.output.slice(-2000) };
+        const checks = taskChecks.get(_taskId) ?? ['npm test'];
+        const details: string[] = [];
+        for (const command of checks) {
+          const result = await execAllowlistedCommand(command, worktreePath);
+          details.push(result.output.slice(-2000));
+          if (result.exitCode !== 0) return { passed: false, detail: details.join('\n') };
+        }
+        return { passed: true, detail: details.join('\n') };
       }),
       runTaskSpecificAcceptance:
         options.runTaskSpecificAcceptance ?? (async () => ({ passed: true, detail: 'no task-specific acceptance defined (see Task 9/10)' })),
@@ -790,6 +811,7 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
       newId: options.newId ?? randomUUID,
       sleep: options.sleep,
       tracer,
+      taskChecks,
     };
 
     const snapshot = await gatherSnapshot(deps);

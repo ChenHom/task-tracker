@@ -401,6 +401,7 @@ export function registerTaskProjections(): void {
     const p = e.payload as {
       workspaceId: string;
       projectId: string | null;
+      goalId?: string | null;
       title: string;
       description: string;
       status: string;
@@ -411,10 +412,10 @@ export function registerTaskProjections(): void {
     database
       .prepare(
         `INSERT INTO tasks_read_model
-         (task_id, workspace_id, project_id, title, description, status, priority, assignee_id, due_at, done_at, version, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+         (task_id, workspace_id, project_id, goal_id, title, description, status, priority, assignee_id, due_at, done_at, version, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       )
-      .run(e.aggregate_id, p.workspaceId, p.projectId, p.title, p.description, p.status, p.priority, p.assigneeId, p.dueAt, e.aggregate_version, e.occurred_at);
+      .run(e.aggregate_id, p.workspaceId, p.projectId, p.goalId ?? null, p.title, p.description, p.status, p.priority, p.assigneeId, p.dueAt, e.aggregate_version, e.occurred_at);
   });
 
   const setCol = (col: string) => (e: StoredEvent, database: DatabaseSync, value: unknown) => {

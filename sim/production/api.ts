@@ -68,6 +68,8 @@ interface WireTaskRow {
   due_at: string | null;
   version: number;
   updated_at: string | null;
+  goal_id?: string | null;
+  project_id?: string | null;
 }
 
 function mapTask(row: WireTaskRow): TaskSnapshot {
@@ -80,6 +82,8 @@ function mapTask(row: WireTaskRow): TaskSnapshot {
     dueAt: row.due_at,
     updatedAt: row.updated_at,
     version: row.version,
+    goalId: row.goal_id ?? null,
+    projectId: row.project_id ?? null,
   };
 }
 
@@ -328,7 +332,21 @@ export class TaskTrackerClient {
   async listWorkspaceTasks(workspaceId: string): Promise<TaskSnapshot[]> {
     const res = await this.safeRequest('GET', `/api/workspaces/${encodeURIComponent(workspaceId)}/tasks`);
     if (res.status !== 200) throw new Error(`listWorkspaceTasks failed: HTTP ${res.status} ${res.body}`);
-    return (JSON.parse(res.body) as WireTaskRow[]).map(mapTask);
+    const tasks = (JSON.parse(res.body) as WireTaskRow[]).map(mapTask);
+    await Promise.all(tasks.map(async (task) => {
+      if (!task.goalId) return;
+      const goal = await this.safeRequest('GET', `/api/goals/${encodeURIComponent(task.goalId)}`);
+      if (goal.status !== 200) throw new Error(`getGoal failed: HTTP ${goal.status} ${goal.body}`);
+      task.goalStatus = (JSON.parse(goal.body) as { status: string }).status;
+    }));
+    return tasks;
+  }
+
+  async getProject(projectId: string): Promise<{ projectId: string; targetRepo: string | null }> {
+    const res = await this.safeRequest('GET', `/api/projects/${encodeURIComponent(projectId)}`);
+    if (res.status !== 200) throw new Error(`getProject failed: HTTP ${res.status} ${res.body}`);
+    const row = JSON.parse(res.body) as { project_id: string; target_repo: string | null };
+    return { projectId: row.project_id, targetRepo: row.target_repo };
   }
 
   async listComments(taskId: string): Promise<CommentSnapshot[]> {

@@ -603,6 +603,9 @@ function makeTask(
     dueAt: overrides.dueAt ?? null,
     updatedAt: overrides.updatedAt ?? '2026-07-22T00:00:00.000Z',
     version: overrides.version ?? 1,
+    goalId: overrides.goalId ?? null,
+    goalStatus: overrides.goalStatus ?? null,
+    projectId: overrides.projectId ?? null,
   };
 }
 
@@ -838,6 +841,11 @@ function validPrerequisiteEvidence(): PrerequisiteEvidence {
 
   const actions = selectCoordinatorActions(snapshot, NOW);
   const taskIdsInActions = new Set(actions.map((a) => a.taskId));
+
+  const goalQueued = makeTask({ taskId: 'goal-queued', workspaceId: CANONICAL_WORKSPACE_ID, status: 'Todo', goalId: 'g1', goalStatus: 'Discussing' });
+  const goalExecuting = makeTask({ taskId: 'goal-executing', workspaceId: CANONICAL_WORKSPACE_ID, status: 'Todo', goalId: 'g2', goalStatus: 'Executing' });
+  assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [goalQueued] }), NOW).length, 0, '非 Executing Goal 的 Task 必須跳過');
+  assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [goalExecuting] }), NOW)[0]?.taskId, 'goal-executing');
 
   // 只會發現兩個已鎖定的 workspace UUID：第三個 workspace 的 task 必須完全不出現。
   assert.strictEqual(taskIdsInActions.has(thirdWorkspaceTask.taskId), false, '不在允許清單內的 workspace 必須被忽略');

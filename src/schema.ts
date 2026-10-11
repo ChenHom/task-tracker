@@ -128,6 +128,16 @@ export function runMigrations(db: DatabaseSync): void {
       acquired_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS goal_worktrees (
+      worktree_path TEXT PRIMARY KEY,
+      goal_id       TEXT NOT NULL,
+      target_repo   TEXT NOT NULL,
+      dirty         INTEGER NOT NULL DEFAULT 0,
+      unmerged      INTEGER NOT NULL DEFAULT 1,
+      created_at    TEXT NOT NULL,
+      updated_at    TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS agents (
       agent_id              TEXT PRIMARY KEY,
       user_id               TEXT NOT NULL UNIQUE,

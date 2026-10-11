@@ -4,15 +4,16 @@ import { getUserIdByEmail } from './auth';
 import { resetProjections } from './eventStore';
 import { cancelGoal, createGoal, getGoal, registerGoalProjections, startDiscussion } from './goal';
 import {
-  advanceGoalDiscussion, getGoalSynthesis, selectGoalParticipants, storeGoalSynthesis,
+  advanceGoalDiscussion, getGoalSynthesis, materializeGoalTasks, selectGoalParticipants, storeGoalSynthesis,
   type DiscussionOutput,
 } from './goalOrchestrator';
 import { runMigrations } from './schema';
 import { seedUsers } from './seed';
+import { registerTaskProjections } from './task';
 
 async function main(): Promise<void> {
   const db = new DatabaseSync(':memory:');
-  runMigrations(db); resetProjections(); registerGoalProjections(); seedUsers(db);
+  runMigrations(db); resetProjections(); registerGoalProjections(); registerTaskProjections(); seedUsers(db);
   const owner = getUserIdByEmail('user01@test.local', db)!;
   const a2 = getUserIdByEmail('user02@test.local', db)!;
   const a3 = getUserIdByEmail('user03@test.local', db)!;
@@ -53,6 +54,11 @@ async function main(): Promise<void> {
   }, db);
   assert.ok(getGoalSynthesis(normal, 1, db));
   assert.throws(() => storeGoalSynthesis(normal, { summary: 'duplicate', taskPlans: [], evidenceRefs: [] }, db), /等待 lease|已存在/);
+  const taskIds = materializeGoalTasks(owner, normal, db);
+  assert.strictEqual(taskIds.length, 1);
+  assert.deepStrictEqual({ ...db.prepare('SELECT project_id, goal_id, assignee_id FROM tasks_read_model WHERE task_id = ?').get(taskIds[0]) },
+    { project_id: 'p', goal_id: normal, assignee_id: a2 });
+  assert.strictEqual(getGoal(normal, db)?.status, 'Executing');
   cancelGoal('human', normal, db);
 
   const solo = makeGoal('solo');

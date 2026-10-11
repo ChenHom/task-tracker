@@ -3162,7 +3162,14 @@ export function syncWorktreeWithMaster(dir: string): 'merged' | 'up-to-date' | '
   }
 }
 
-interface SweepTask extends SweepAssignedTask { task_id: string; title: string }
+interface SweepTask extends SweepAssignedTask { task_id: string; title: string; project_id?: string | null; goal_id?: string | null }
+
+export function legacyTaskAllowed(
+  task: { project_id?: string | null; goal_id?: string | null },
+  activeGoalProjectIds: ReadonlySet<string>,
+): boolean {
+  return !task.goal_id && (!task.project_id || !activeGoalProjectIds.has(task.project_id));
+}
 
 export function ownerSweepPrompt(wsId: string, scenario: Scenario, verified: BranchReviewPacket[], bossName: string, timeoutMinutes: number, createDiscussion = false): string {
   const jar = join(RUN.repoRoot, '.jar-owner-sweep.txt');
@@ -3301,8 +3308,21 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     }
     const ws = db.prepare('SELECT status FROM workspaces_read_model WHERE workspace_id = ?').get(wsId) as { status: string } | undefined;
     if (!ws || ws.status !== 'active') continue;
+    const repoLeased = db.prepare(
+      `SELECT 1 FROM repo_leases l JOIN projects_read_model p ON p.target_repo = l.target_repo
+        WHERE p.workspace_id = ? AND p.target_repo = ? LIMIT 1`,
+    ).get(wsId, scenario.repoRoot);
+    if (repoLeased) {
+      console.log(`[sweep:${role}] workspace ${wsId.slice(0, 8)} 的 repo 已由 Goal lease 持有，略過 legacy sweep`);
+      continue;
+    }
+    const activeGoalProjectIds = new Set((db.prepare(
+      `SELECT DISTINCT project_id FROM goals_read_model
+        WHERE workspace_id = ? AND status NOT IN ('Done', 'Cancelled')`,
+    ).all(wsId) as unknown as Array<{ project_id: string }>).map((row) => row.project_id));
     const statusFilter = wsId === MAIN_WORKSPACE_ID ? "status = 'Todo'" : "status IN ('Todo','Doing','Review')";
-    const tasks = db.prepare(`SELECT task_id, title, status, assignee_id FROM tasks_read_model WHERE workspace_id = ? AND ${statusFilter}`).all(wsId) as unknown as SweepTask[];
+    const tasks = (db.prepare(`SELECT task_id, title, status, assignee_id, project_id, goal_id FROM tasks_read_model WHERE workspace_id = ? AND ${statusFilter}`).all(wsId) as unknown as SweepTask[])
+      .filter((task) => legacyTaskAllowed(task, activeGoalProjectIds));
     const discussions = tasks.filter((t) => t.title.startsWith(MAIN_DISCUSSION_PREFIX));
     const work = tasks.filter(isSweepWorkTask);
     // 主工作區改成「有變化才開 session」。舊條件是「有討論處於 Todo」，但 statusFilter 本來就

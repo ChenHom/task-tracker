@@ -63,6 +63,7 @@ import {
   hasNonDependencyWorktreeChanges,
   isSweepWorkTask,
   isManagedRosterWorkspace,
+  legacyTaskAllowed,
   FIXED_SWEEP_WORKSPACE_SCENARIOS,
   loadMembersFromUsers,
   mainDiscussionMissingOwnerThought,
@@ -118,6 +119,10 @@ import {
   safeDiscussionEnvironment,
   SAFE_DISCUSSION_TOOLS,
 } from './run';
+
+assert.strictEqual(legacyTaskAllowed({ project_id: 'p', goal_id: null }, new Set(['p'])), false, 'active Goal Project 不可進 legacy sweep');
+assert.strictEqual(legacyTaskAllowed({ project_id: 'p', goal_id: 'g' }, new Set()), false, 'Goal Task 永遠不由 legacy sweep 執行');
+assert.strictEqual(legacyTaskAllowed({ project_id: 'other', goal_id: null }, new Set(['p'])), true);
 import type { TraceRecord } from './trace';
 
 // 這個測試檔直接呼叫 run.ts 的函式，沒有進入點會設定 run_id；手動裝一個記憶體 sink，

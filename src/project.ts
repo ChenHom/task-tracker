@@ -142,8 +142,27 @@ export function archiveProject(projectId: string, database = db): void {
       WHERE project_id = ? AND status NOT IN ('Done', 'Cancelled') LIMIT 1`,
   ).get(projectId);
   if (activeGoal) throw new CommandError('project 仍有 active Goal，不可封存');
+  const unsafeWorktree = database.prepare(
+    `SELECT 1 FROM goal_worktrees w JOIN goals_read_model g ON g.goal_id = w.goal_id
+      WHERE g.project_id = ? AND (w.dirty = 1 OR w.unmerged = 1) LIMIT 1`,
+  ).get(projectId);
+  if (unsafeWorktree) throw new CommandError('project 仍有 dirty 或未合併 worktree，不可封存');
   database.prepare("UPDATE projects_read_model SET status = 'archived', updated_at = ? WHERE project_id = ?")
     .run(new Date().toISOString(), projectId);
+}
+
+export function registerGoalWorktree(goalId: string, targetRepo: string, worktreePath: string, database = db): void {
+  const goal = database.prepare(
+    `SELECT g.goal_id FROM goals_read_model g JOIN projects_read_model p ON p.project_id = g.project_id
+      WHERE g.goal_id = ? AND p.target_repo = ?`,
+  ).get(goalId, targetRepo);
+  if (!goal || !worktreePath.trim()) throw new CommandError('Goal worktree 關聯不合法');
+  const now = new Date().toISOString();
+  database.prepare(
+    `INSERT INTO goal_worktrees (worktree_path, goal_id, target_repo, dirty, unmerged, created_at, updated_at)
+     VALUES (?, ?, ?, 0, 1, ?, ?)
+     ON CONFLICT(worktree_path) DO UPDATE SET updated_at = excluded.updated_at`,
+  ).run(worktreePath, goalId, targetRepo, now, now);
 }
 
 // 遷移相容 API；新 UI 不呼叫 hard delete。

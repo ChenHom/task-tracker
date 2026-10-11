@@ -293,11 +293,11 @@ git commit -m "feat: orchestrate goal discussions"
 - Modify: `sim/production.test.ts`
 - Modify: `sim/production.ts`
 
-- [ ] **Step 1: Write failing adapter contract fixtures**
+- [x] **Step 1: Write failing adapter contract fixtures**
 
 For Claude, Codex and AGY assert `preflight -> estimate -> persist -> invoke -> normalize -> verify -> actual usage`. AGY must build `agy --print --model <model> --mode accept-edits <prompt>`, keep the prompt last, and classify exit 0 + empty stdout + `no output produced` as `permission`. An uncertain side effect must not invoke fallback; zero-side-effect startup/quota/preflight failure may invoke exactly one fallback.
 
-- [ ] **Step 2: Implement the common adapter boundary without changing CLI-specific arguments**
+- [x] **Step 2: Implement the common adapter boundary without changing CLI-specific arguments**
 
 ```ts
 export interface AgentAdapter {
@@ -309,17 +309,17 @@ export interface AgentAdapter {
 
 Move existing runner invocation and soft-denial classification behind this interface; do not add a dependency or `--dangerously-skip-permissions`.
 
-- [ ] **Step 3: Write failing Project registry and Goal gate tests for production**
+- [x] **Step 3: Write failing Project registry and Goal gate tests for production**
 
 Use a temporary registered repo with per-repo `checks` and `deployment_not_required`. Assert the coordinator ignores a Goal Task unless its Goal is `Executing`, uses configured checks instead of hard-coded `npm test`, and legacy sweep refuses to create/merge in an active-Goal Project or leased repo.
 
-- [ ] **Step 4: Implement the smallest production integration**
+- [x] **Step 4: Implement the smallest production integration**
 
 Replace `ALLOWED_WORKSPACE_IDS` at the Goal path with a Project repository registry read; keep legacy allowlist behavior for legacy Tasks. Add `goal_id` to Task event/projection/query, atomically materialize the Task plans from the stored synthesis, and use Goal state as a gate around existing production actions. Continue using `action_log` for Task execution idempotency; do not duplicate it in heartbeat tables.
 
 Register Goal worktrees when production first creates them and extend `archiveProject` to reject dirty or unmerged registered worktrees. This is the first phase where such records exist, so no earlier migration needs a speculative worktree abstraction.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 npx tsx sim/goalAdapters.test.ts

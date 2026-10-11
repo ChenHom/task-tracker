@@ -38,6 +38,12 @@ export interface TaskSnapshot {
   dueAt: string | null;
   updatedAt: string | null;
   version: number;
+  goalId?: string | null;
+  goalStatus?: string | null;
+  projectId?: string | null;
+  targetRepo?: string | null;
+  verificationChecks?: string[];
+  deployment?: 'task-tracker' | 'not_required' | null;
 }
 
 export interface CommentSnapshot {
@@ -427,6 +433,10 @@ function isBlockedTask(taskId: string, snapshot: CoordinatorSnapshot): boolean {
 // ---------------------------------------------------------------------------
 
 export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Date): CoordinatorAction[] {
+  snapshot = {
+    ...snapshot,
+    tasks: snapshot.tasks.filter((task) => !task.goalId || task.goalStatus === 'Executing'),
+  };
   const tasksById = new Map(snapshot.tasks.map((t) => [t.taskId, t] as const));
   const reservedAssignees = new Set<string>();
   const actions: CoordinatorAction[] = [];
