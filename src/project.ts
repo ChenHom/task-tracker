@@ -104,6 +104,12 @@ export function updateProject(
         .run(validateDescription(patch.description), now, projectId);
       return;
     case 'targetRepo':
+      if (database.prepare(
+        `SELECT 1 FROM goals_read_model
+          WHERE project_id = ? AND status NOT IN ('Done', 'Cancelled') LIMIT 1`,
+      ).get(projectId)) {
+        throw new CommandError('Project 有 active Goal，不可修改 target repo');
+      }
       database.prepare('UPDATE projects_read_model SET target_repo = ?, updated_at = ? WHERE project_id = ?')
         .run(validateTargetRepo(patch.targetRepo, repos), now, projectId);
   }
@@ -131,6 +137,11 @@ export function archiveProject(projectId: string, database = db): void {
       WHERE project_id = ? AND status IN ('Todo', 'Doing', 'Review') LIMIT 1`,
   ).get(projectId);
   if (unfinished) throw new CommandError('project 仍有未完成 task，不可封存');
+  const activeGoal = database.prepare(
+    `SELECT 1 FROM goals_read_model
+      WHERE project_id = ? AND status NOT IN ('Done', 'Cancelled') LIMIT 1`,
+  ).get(projectId);
+  if (activeGoal) throw new CommandError('project 仍有 active Goal，不可封存');
   database.prepare("UPDATE projects_read_model SET status = 'archived', updated_at = ? WHERE project_id = ?")
     .run(new Date().toISOString(), projectId);
 }

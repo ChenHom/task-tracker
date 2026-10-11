@@ -92,6 +92,41 @@ export function runMigrations(db: DatabaseSync): void {
       updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS goals_read_model (
+      goal_id               TEXT PRIMARY KEY,
+      workspace_id          TEXT NOT NULL,
+      project_id            TEXT NOT NULL,
+      parent_goal_id        TEXT,
+      source                TEXT NOT NULL,
+      objective             TEXT NOT NULL,
+      success_criteria      TEXT NOT NULL,
+      status                TEXT NOT NULL,
+      discussion_phase      TEXT,
+      revision              INTEGER NOT NULL,
+      created_by            TEXT NOT NULL,
+      owner_agent_id        TEXT NOT NULL,
+      paused_from_status    TEXT,
+      paused_from_phase     TEXT,
+      blocked_from_status   TEXT,
+      blocked_from_phase    TEXT,
+      evidence_refs_json    TEXT NOT NULL DEFAULT '[]',
+      version               INTEGER NOT NULL,
+      created_at            TEXT NOT NULL,
+      updated_at            TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS goals_workspace_idx ON goals_read_model (workspace_id, created_at, goal_id);
+    CREATE INDEX IF NOT EXISTS goals_project_idx ON goals_read_model (project_id, created_at, goal_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS goals_one_active_autonomous_per_workspace
+      ON goals_read_model (workspace_id)
+      WHERE source <> 'human' AND status NOT IN ('Done', 'Cancelled');
+
+    CREATE TABLE IF NOT EXISTS repo_leases (
+      target_repo TEXT PRIMARY KEY,
+      goal_id     TEXT NOT NULL UNIQUE,
+      acquired_at TEXT NOT NULL
+    );
+
     -- Comment：任務留言，同樣傳統 CRUD（不走 ES）。權限經 task → workspace 查；user_id 為留言作者。
     CREATE TABLE IF NOT EXISTS comments (
       comment_id TEXT PRIMARY KEY,

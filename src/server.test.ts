@@ -196,11 +196,17 @@ void (async () => {
     });
     const response = { writeHead: (code: number) => { status = code; }, end: (chunk?: unknown) => { raw = String(chunk ?? ''); } };
     await handle(request as never, response as never);
-    return { status, json: raw ? JSON.parse(raw) : null };
+    let json: unknown = null;
+    if (raw) {
+      try { json = JSON.parse(raw); } catch { json = raw; }
+    }
+    return { status, json };
   };
 
   const { createTask, registerTaskProjections } = await import('./task');
+  const { registerGoalProjections } = await import('./goal');
   registerTaskProjections();
+  registerGoalProjections();
   const patchTaskId = createTask('authz-member', wsA, { title: 'Patch assignee' }, db);
 
   // PATCH 只允許一個已知欄位：正確的 assignee 應成功，未知欄位應回明確 validation error。
@@ -256,6 +262,31 @@ void (async () => {
     400,
     '未登記 repo 必須在 HTTP trust boundary 被拒絕',
   );
+
+  const goalProjectResponse = await call('POST', `/api/workspaces/${wsA}/projects`, {
+    cookie: authzCookie.member,
+    body: { name: 'Goal Project', targetRepo: registeredRepo },
+  });
+  const goalProjectId = (goalProjectResponse.json as { id: string }).id;
+  const createdGoal = await call('POST', `/api/workspaces/${wsA}/goals`, {
+    cookie: authzCookie.member,
+    body: {
+      projectId: goalProjectId,
+      source: 'owner_discovery',
+      objective: 'Ship API',
+      successCriteria: 'HTTP 200',
+    },
+  });
+  assert.strictEqual(createdGoal.status, 201, 'Member 應可建立人工 Goal');
+  const goalId = (createdGoal.json as { id: string }).id;
+  const goalList = await call('GET', `/api/workspaces/${wsA}/goals`, { cookie: authzCookie.member });
+  assert.strictEqual(goalList.status, 200);
+  assert.strictEqual((goalList.json as Array<{ source: string }>)[0].source, 'human', 'HTTP 建立一律是 human source');
+  assert.strictEqual((await call('GET', `/api/goals/${goalId}`, { cookie: authzCookie.outsider })).status, 403);
+  assert.strictEqual((await call('POST', `/api/goals/${goalId}/start`, { cookie: authzCookie.member })).status, 200);
+  assert.strictEqual((await call('POST', `/api/goals/${goalId}/pause`, { cookie: authzCookie.member })).status, 200);
+  assert.strictEqual((await call('POST', `/api/goals/${goalId}/resume`, { cookie: authzCookie.member })).status, 200);
+  assert.strictEqual((await call('POST', `/api/goals/${goalId}/cancel`, { cookie: authzCookie.member })).status, 200);
 
   // attachment 上傳走 raw bytes（非 JSON），需獨立的 helper。
   const uploadAttachment = async (cookie: string | undefined, taskId: string, filename: string, contentType: string, data: Buffer) => {

@@ -65,6 +65,18 @@ import { createRateLimiter } from './rateLimit';
 import { clientIp } from './clientIp';
 import { syncMainWorkspace, syncMainWorkspaceUser } from './mainWorkspace';
 import { getQuotaSnapshot } from './quota';
+import {
+  cancelGoal,
+  createGoal,
+  getGoal,
+  getGoalWorkspaceId,
+  listGoals,
+  pauseGoal,
+  registerGoalProjections,
+  resumeGoal,
+  startDiscussion,
+} from './goal';
+import { MAIN_OWNER_EMAIL } from './mainWorkspacePolicy';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
@@ -722,6 +734,82 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  // ── Goal API（event sourced；人工 HTTP 建立固定 source=human）──────
+  const wsGoalsMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/goals$/);
+  if (wsGoalsMatch) {
+    const workspaceId = wsGoalsMatch[1];
+    if (req.method === 'GET') {
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
+      if (!userId) return;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(listGoals(workspaceId)));
+      return;
+    }
+    if (req.method === 'POST') {
+      const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
+      if (!userId) return;
+      const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
+      try {
+        const ownerAgentId = getUserIdByEmail(MAIN_OWNER_EMAIL);
+        if (!ownerAgentId) throw new CommandError('Owner Agent 尚未建立');
+        const id = createGoal(userId, {
+          workspaceId,
+          projectId: body?.projectId,
+          parentGoalId: body?.parentGoalId,
+          source: 'human',
+          objective: body?.objective,
+          successCriteria: body?.successCriteria,
+          ownerAgentId,
+        });
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id }));
+      } catch (e) {
+        sendCommandError(res, e);
+      }
+      return;
+    }
+  }
+
+  const goalMatch = req.url?.match(/^\/api\/goals\/([^/?]+)$/);
+  if (goalMatch && req.method === 'GET') {
+    const goalId = goalMatch[1];
+    const workspaceId = getGoalWorkspaceId(goalId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'goal 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
+    if (!userId) return;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(getGoal(goalId)));
+    return;
+  }
+
+  const goalActionMatch = req.url?.match(/^\/api\/goals\/([^/?]+)\/(start|pause|resume|cancel)$/);
+  if (goalActionMatch && req.method === 'POST') {
+    const [, goalId, action] = goalActionMatch;
+    const workspaceId = getGoalWorkspaceId(goalId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'goal 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
+    if (!userId) return;
+    try {
+      if (action === 'start') startDiscussion(userId, goalId);
+      if (action === 'pause') pauseGoal(userId, goalId, false);
+      if (action === 'resume') resumeGoal(userId, goalId);
+      if (action === 'cancel') cancelGoal(userId, goalId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
   // ── Comment API（傳統 CRUD，不走 ES；權限經 task → workspace）────
   const taskCommentsMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)\/comments$/);
   if (taskCommentsMatch) {
@@ -954,6 +1042,7 @@ if (require.main === module) {
   registerMemberProjections();
   registerTaskProjections();
   registerNotificationProjections();
+  registerGoalProjections();
   cleanupExpiredSessions();
   process.on('SIGHUP', () => {
     cleanupExpiredSessions();

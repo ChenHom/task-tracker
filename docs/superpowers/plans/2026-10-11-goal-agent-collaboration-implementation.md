@@ -137,7 +137,7 @@ git commit -m "feat: strengthen project ownership"
 - Modify: `src/server.ts`
 - Modify: `src/server.test.ts`
 
-- [ ] **Step 1: Write the failing Goal state-machine tests**
+- [x] **Step 1: Write the failing Goal state-machine tests**
 
 Define fixtures for `Queued -> Discussing -> Executing -> Verifying -> Done`, cancellation, blocked lease retention, safe pause lease release, resumption through `awaiting_lease`, revision increment, and Project one-to-many history:
 
@@ -154,7 +154,7 @@ cancelGoal('human-1', first, db);
 acquireRepoLease('owner-agent', second, db);
 ```
 
-- [ ] **Step 2: Run red and implement event-sourced Goal**
+- [x] **Step 2: Run red and implement event-sourced Goal**
 
 Run: `npx tsx src/goal.test.ts`
 
@@ -181,11 +181,11 @@ Use a transaction for lease acquisition plus phase transition. Only `Done`, `Can
 
 Extend `archiveProject` in this same red/green cycle to reject any non-terminal Goal. The earlier unfinished-Task guard remains unchanged.
 
-- [ ] **Step 3: Add permission-checked Goal API tests and routes**
+- [x] **Step 3: Add permission-checked Goal API tests and routes**
 
 Cover list/create/detail and one-action endpoints `/start`, `/pause`, `/resume`, `/cancel`. Require an active Project with a registered target repo. Reject Owner-Agent Workspace creation by never adding such a route.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 npx tsx src/goal.test.ts
