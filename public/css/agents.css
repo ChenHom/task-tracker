@@ -1,0 +1,1 @@
+.agent-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem}.agent-card{display:grid;gap:.6rem}.agent-route{display:grid;grid-template-columns:1fr 1.5fr;gap:.4rem}

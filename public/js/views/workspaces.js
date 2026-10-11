@@ -28,6 +28,7 @@ export const WorkspacesView = {
       </div>
 
       <h2 class="red-pen-underline ws-list-header">我的工作區列表</h2>
+      <label class="archive-toggle"><input type="checkbox" id="show-archived-workspaces"> 顯示已封存</label>
       <div id="ws-list-container" class="ws-list-grid">
         <!-- 卡片列表動態載入 -->
       </div>
@@ -50,7 +51,9 @@ export const WorkspacesView = {
       list.textContent = '';
       if (pagination) pagination.textContent = '';
 
-      if (workspacesData.length === 0) {
+      const showArchived = document.getElementById('show-archived-workspaces')?.checked;
+      const visibleData = workspacesData.filter(row => (row.status || '').toLowerCase() === 'active' || showArchived);
+      if (visibleData.length === 0) {
         list.appendChild(el('p', { class: 'muted ws-empty-text' }, '（尚無 workspace，請於上方建立新工作區）'));
         return;
       }
@@ -58,7 +61,7 @@ export const WorkspacesView = {
       // Calculate pagination indices
       const startIndex = (currentPage - 1) * itemsPerPage;
       const endIndex = Math.min(startIndex + itemsPerPage, workspacesData.length);
-      const pageItems = workspacesData.slice(startIndex, endIndex);
+      const pageItems = visibleData.slice(startIndex, Math.min(startIndex + itemsPerPage, visibleData.length));
 
       for (const row of pageItems) {
         const statusLower = row.status ? row.status.toLowerCase() : '';
@@ -208,7 +211,7 @@ export const WorkspacesView = {
       }
 
       // Render pagination controls if total items exceed itemsPerPage
-      const totalPages = Math.ceil(workspacesData.length / itemsPerPage);
+      const totalPages = Math.ceil(visibleData.length / itemsPerPage);
       if (totalPages > 1) {
         // Prev button
         const prevBtn = el('button', { class: 'pagination-btn', type: 'button' }, '上一頁');
@@ -280,6 +283,7 @@ export const WorkspacesView = {
         showError('ws-error', err);
       }
     });
+    document.getElementById('show-archived-workspaces')?.addEventListener('change', () => { currentPage = 1; renderPage(); });
 
     load();
   }

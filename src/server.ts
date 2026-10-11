@@ -78,7 +78,7 @@ import {
   startDiscussion,
 } from './goal';
 import { MAIN_OWNER_EMAIL } from './mainWorkspacePolicy';
-import { getAgent, listWorkspaceAgents, syncAgents, updateAgent } from './agent';
+import { getAgent, listWorkspaceAgents, listWorkspaceAgentSummaries, syncAgents, updateAgent } from './agent';
 import { listContributions, listGoalRuns, listHeartbeats, listParticipations } from './goalRun';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
@@ -811,6 +811,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       runs: listGoalRuns(goalId),
       participations: listParticipations(goalId, goal.revision),
       contributions: listContributions(goalId, goal.revision),
+      tasks: listTasks(workspaceId).filter((task) => task.goal_id === goalId),
+      tokenTotals: listGoalRuns(goalId).reduce((totals, run) => ({
+        input: totals.input + (run.actual_input_tokens ?? run.estimated_input_tokens),
+        output: totals.output + (run.actual_output_tokens ?? run.estimated_output_tokens),
+      }), { input: 0, output: 0 }),
     }));
     return;
   }
@@ -845,7 +850,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
     if (!userId) return;
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(listWorkspaceAgents(workspaceId)));
+    res.end(JSON.stringify(listWorkspaceAgentSummaries(workspaceId)));
     return;
   }
 

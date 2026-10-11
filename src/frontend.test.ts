@@ -431,6 +431,9 @@ async function runTests() {
   const kanbanSource = readFileSync(join(__dirname, '../public/js/views/kanban.js'), 'utf8');
   const membersSource = readFileSync(join(__dirname, '../public/js/views/members.js'), 'utf8');
   const taskDetailSource = readFileSync(join(__dirname, '../public/js/views/task-detail.js'), 'utf8');
+  const goalsSource = readFileSync(join(__dirname, '../public/js/views/goals.js'), 'utf8');
+  const agentsSource = readFileSync(join(__dirname, '../public/js/views/agents.js'), 'utf8');
+  const routesSource = readFileSync(join(__dirname, '../public/js/routes.js'), 'utf8');
   const kanbanCssSource = readFileSync(join(__dirname, '../public/css/kanban.css'), 'utf8');
   const taskDetailCssSource = readFileSync(join(__dirname, '../public/css/task-detail.css'), 'utf8');
 
@@ -986,6 +989,14 @@ async function runTests() {
   assert.match(stateSource, /ROLE_RANK[\s\S]*Commenter:\s*1[\s\S]*MAIN_WORKSPACE_ID[\s\S]*MAIN_OWNER_EMAIL[\s\S]*MAIN_POLICY_TITLE/);
   assert.match(stateSource, /MAIN_DISCUSSION_DESCRIPTION_TEMPLATE/);
   assert.match(kanbanSource, /main-workspace-policy/);
+  assert.match(kanbanSource, /<dialog id="project-dialog"[\s\S]*project-target-repo[\s\S]*project-archive-selected/);
+  assert.doesNotMatch(kanbanSource, /prompt\(['"]請輸入新專案名稱/);
+  assert.match(taskDetailSource, /aria-label['"]?:\s*['"]Task Project['"][\s\S]*projectId/);
+  assert.match(routesSource, /registerRoute\(['"]goals['"],[\s\S]*registerRoute\(['"]agents['"]/);
+  assert.match(goalsSource, /successCriteria/);
+  assert.match(goalsSource, /activity[\s\S]*participations[\s\S]*runs[\s\S]*contributions/);
+  assert.match(agentsSource, /primary_adapter[\s\S]*fallback_adapter/);
+  assert.match(agentsSource, /user09@test\.local/);
   assert.match(kanbanSource, /canCreateTask[\s\S]*canManageTask/);
   assert.match(kanbanSource, /MAIN_POLICY_TITLE[\s\S]*\.sort\(/);
   assert.match(kanbanSource, /const\s+renderWorkspaceId\s*=\s*state\.workspaceId[\s\S]*let\s+loadGeneration\s*=\s*0[\s\S]*async\s+function\s+loadAllData\(\)\s*\{\s*if\s*\(state\.workspaceId\s*!==\s*renderWorkspaceId\)\s*return;[\s\S]*encodeURIComponent\(renderWorkspaceId\)[\s\S]*generation\s*!==\s*loadGeneration[\s\S]*state\.workspaceId\s*!==\s*renderWorkspaceId/);
@@ -1114,9 +1125,8 @@ async function runTests() {
     };
     collectCards(wsListContainer);
 
-    assert.strictEqual(cards.length, 2, 'Should render 2 workspace cards');
+    assert.strictEqual(cards.length, 1, 'Archived workspace should be hidden by default');
     assert.strictEqual(cards[0]['data-short-id'], '::11111111', 'First workspace card should have short ID ::11111111');
-    assert.strictEqual(cards[1]['data-short-id'], '::88888888', 'Second workspace card should have short ID ::88888888');
 
     // Test clicking the ID pseudo-element to open popup
     cards[0].getBoundingClientRect = () => ({

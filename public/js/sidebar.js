@@ -38,8 +38,8 @@ export function renderWorkspaceSwitcher() {
   select.appendChild(defaultOpt);
 
   for (const w of state.globalWorkspaces) {
-    // 排除已刪除的工作區
-    if (w.status === 'deleted') continue;
+    // 主導覽只保留 active Workspace；歷史項目仍可從管理頁切換查看。
+    if ((w.status || '').toLowerCase() !== 'active') continue;
     const opt = el('option', { value: w.workspace_id }, w.name);
     if (w.workspace_id === state.workspaceId) opt.selected = true;
     select.appendChild(opt);

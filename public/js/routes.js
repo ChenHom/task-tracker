@@ -16,6 +16,8 @@ import { MembersView } from './views/members.js';
 import { SearchView } from './views/search.js';
 import { AuditView } from './views/audit.js';
 import { NotificationsView } from './views/notifications.js';
+import { GoalsView } from './views/goals.js';
+import { AgentsView } from './views/agents.js';
 
 // Register prefixes to target View controller instances
 registerRoute('login', LoginView);
@@ -28,3 +30,5 @@ registerRoute('members', MembersView);
 registerRoute('search', SearchView);
 registerRoute('audit', AuditView);
 registerRoute('notifications', NotificationsView);
+registerRoute('goals', GoalsView);
+registerRoute('agents', AgentsView);

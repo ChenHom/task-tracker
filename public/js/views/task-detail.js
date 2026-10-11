@@ -8,6 +8,7 @@ import { el, formatTime } from '../utils.js';
  * @typedef {Object} TaskDetailModalOptions
  * @property {Array<Object>} cachedTasks - Cache list of all workspace tasks.
  * @property {Array<Object>} cachedMembers - Cache list of workspace members.
+ * @property {Array<Object>} cachedProjects - Cache list of workspace Projects.
  * @property {Map<string, string>} memberMap - Map associating user IDs to display names or emails.
  * @property {Map<string, string>} memberEmailMap - Map associating user IDs to emails.
  * @property {function(): Promise<void>|void} onUpdate - Reload trigger callback to execute on updates.
@@ -25,6 +26,7 @@ import { el, formatTime } from '../utils.js';
 export async function openTaskDetailModal(taskId, {
   cachedTasks,
   cachedMembers,
+  cachedProjects = [],
   memberMap,
   memberEmailMap,
   onUpdate,
@@ -367,6 +369,29 @@ export async function openTaskDetailModal(taskId, {
   }
   
   leftEl.appendChild(contentSec);
+
+  const projectSec = el('div', { class: 'detail-section sketch-box' });
+  projectSec.appendChild(el('label', {}, 'Project'));
+  if (canManageTask) {
+    const projectSelect = el('select', { 'aria-label': 'Task Project' });
+    projectSelect.appendChild(el('option', { value: '' }, '無專案'));
+    cachedProjects.filter(project => project.status !== 'archived').forEach(project => {
+      const option = el('option', { value: project.project_id }, project.name);
+      option.selected = currentTask.project_id === project.project_id;
+      projectSelect.appendChild(option);
+    });
+    projectSelect.onchange = async () => {
+      try {
+        await api(`/api/tasks/${taskId}`, { method: 'PATCH', body: { projectId: projectSelect.value || null } });
+        currentTask.project_id = projectSelect.value || null;
+        await onUpdate();
+      } catch (error) { alert(error.message); }
+    };
+    projectSec.appendChild(projectSelect);
+  } else {
+    projectSec.appendChild(el('div', {}, cachedProjects.find(project => project.project_id === currentTask.project_id)?.name || '無專案'));
+  }
+  leftEl.appendChild(projectSec);
 
   // Comments Section
   const commSec = el('div', { class: 'detail-section sketch-box' });

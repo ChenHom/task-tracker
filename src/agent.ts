@@ -117,6 +117,22 @@ export function listWorkspaceAgents(workspaceId: string, database = db): AgentRo
   ).all(workspaceId) as unknown as AgentRow[];
 }
 
+export function listWorkspaceAgentSummaries(workspaceId: string, database = db): Array<AgentRow & Record<string, unknown>> {
+  return listWorkspaceAgents(workspaceId, database).map((agent) => {
+    const usage = database.prepare(
+      `SELECT MAX(created_at) AS latest_run_at,
+              COALESCE(SUM(actual_input_tokens), 0) AS total_input_tokens,
+              COALESCE(SUM(actual_output_tokens), 0) AS total_output_tokens
+         FROM goal_runs WHERE agent_id = ?`,
+    ).get(agent.agent_id) as Record<string, unknown>;
+    const current = database.prepare(
+      `SELECT goal_id, task_id FROM goal_runs
+        WHERE agent_id = ? AND status IN ('pending', 'running') ORDER BY rowid DESC LIMIT 1`,
+    ).get(agent.agent_id) as { goal_id: string | null; task_id: string | null } | undefined;
+    return { ...agent, ...usage, current_goal_id: current?.goal_id ?? null, current_task_id: current?.task_id ?? null };
+  });
+}
+
 export function eligibleMemberAgents(database = db): AgentRow[] {
   return database.prepare("SELECT * FROM agents WHERE role = 'member' AND status = 'active' ORDER BY email")
     .all() as unknown as AgentRow[];

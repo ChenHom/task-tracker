@@ -347,23 +347,23 @@ git commit -m "feat: connect goals to production delivery"
 - Modify: `src/frontend.test.ts`
 - Modify: `src/frontendViews.test.ts`
 
-- [ ] **Step 1: Write failing DOM tests for Project controls**
+- [x] **Step 1: Write failing DOM tests for Project controls**
 
 Assert active Project search/selection, archived toggle, an accessible `<dialog>` replacing `prompt()`, fields for name/description/registered target repo, archive guard errors, and a Task detail Project select with `null` plus active same-Workspace Projects. Assert archived Workspaces are absent from the sidebar and main list until the user enables “顯示已封存”.
 
-- [ ] **Step 2: Implement Project UI using existing `api`, `el`, role and modal patterns**
+- [x] **Step 2: Implement Project UI using existing `api`, `el`, role and modal patterns**
 
 Preserve “所有專案” and “無專案”, sessionStorage selection, task badges and legacy unassigned Tasks. Use click/touch and keyboard-capable native controls; do not add a UI dependency.
 
-- [ ] **Step 3: Write failing Goal and Agent view tests**
+- [x] **Step 3: Write failing Goal and Agent view tests**
 
 Assert Goal list/detail shows source, Project, state/phase, success criteria, parent, participants, Runs, token totals, evidence and Tasks. Assert create/pause/resume/cancel and `@Owner` controls obey role. Assert Agents list shows exactly six resources and route/status editing but no add/delete.
 
-- [ ] **Step 4: Implement and register views**
+- [x] **Step 4: Implement and register views**
 
 Add `goals` and `agents` routes and sidebar links within Workspace navigation. Use text nodes and existing helpers for untrusted content; no `innerHTML` interpolation of API values.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 npx tsx src/frontend.test.ts
