@@ -15,6 +15,8 @@ import './task.test';
 import './project.test';
 import './repoRegistry.test';
 import './goal.test';
+import './agent.test';
+import './goalRun.test';
 import './comment.test';
 import './notification.test';
 import './attachment.test';

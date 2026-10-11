@@ -77,6 +77,8 @@ import {
   startDiscussion,
 } from './goal';
 import { MAIN_OWNER_EMAIL } from './mainWorkspacePolicy';
+import { getAgent, listWorkspaceAgents, syncAgents, updateAgent } from './agent';
+import { listContributions, listGoalRuns, listHeartbeats, listParticipations } from './goalRun';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
@@ -786,6 +788,28 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  const goalActivityMatch = req.url?.match(/^\/api\/goals\/([^/?]+)\/activity$/);
+  if (goalActivityMatch && req.method === 'GET') {
+    const goalId = goalActivityMatch[1];
+    const workspaceId = getGoalWorkspaceId(goalId);
+    const goal = getGoal(goalId);
+    if (!workspaceId || !goal) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'goal 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
+    if (!userId) return;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      heartbeats: listHeartbeats(goalId),
+      runs: listGoalRuns(goalId),
+      participations: listParticipations(goalId, goal.revision),
+      contributions: listContributions(goalId, goal.revision),
+    }));
+    return;
+  }
+
   const goalActionMatch = req.url?.match(/^\/api\/goals\/([^/?]+)\/(start|pause|resume|cancel)$/);
   if (goalActionMatch && req.method === 'POST') {
     const [, goalId, action] = goalActionMatch;
@@ -802,6 +826,37 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       if (action === 'pause') pauseGoal(userId, goalId, false);
       if (action === 'resume') resumeGoal(userId, goalId);
       if (action === 'cancel') cancelGoal(userId, goalId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
+  const wsAgentsMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/agents$/);
+  if (wsAgentsMatch && req.method === 'GET') {
+    const workspaceId = wsAgentsMatch[1];
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
+    if (!userId) return;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(listWorkspaceAgents(workspaceId)));
+    return;
+  }
+
+  const wsAgentMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/agents\/([^/?]+)$/);
+  if (wsAgentMatch && req.method === 'PATCH') {
+    const [, workspaceId, agentId] = wsAgentMatch;
+    const userId = requirePermission(req, res, workspaceId, 'Admin');
+    if (!userId) return;
+    if (!getAgent(agentId) || !listWorkspaceAgents(workspaceId).some((agent) => agent.agent_id === agentId)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'agent 不存在於 workspace' }));
+      return;
+    }
+    const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
+    try {
+      updateAgent(agentId, body ?? {});
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     } catch (e) {
@@ -1050,6 +1105,7 @@ if (require.main === module) {
   });
 
   syncMainWorkspaceSafely();
+  syncAgents();
   if (process.env.TASK_TRACKER_DISABLE_LISTEN !== '1') {
     const PORT = Number(process.env.PORT ?? 3000);
     const server = createAppServer();

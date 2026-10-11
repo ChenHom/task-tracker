@@ -181,6 +181,7 @@ void (async () => {
     member: sessionFor('authz-member'),
     outsider: sessionFor('authz-outsider'),
   };
+  grant(wsA, 'owner', 'Admin');
 
   // 泛用 JSON HTTP 呼叫：GET/DELETE 不帶 body 也能安全建構（handler 不會讀取）。
   const call = async (
@@ -205,8 +206,10 @@ void (async () => {
 
   const { createTask, registerTaskProjections } = await import('./task');
   const { registerGoalProjections } = await import('./goal');
+  const { syncAgents } = await import('./agent');
   registerTaskProjections();
   registerGoalProjections();
+  syncAgents(db);
   const patchTaskId = createTask('authz-member', wsA, { title: 'Patch assignee' }, db);
 
   // PATCH 只允許一個已知欄位：正確的 assignee 應成功，未知欄位應回明確 validation error。
@@ -287,6 +290,25 @@ void (async () => {
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/pause`, { cookie: authzCookie.member })).status, 200);
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/resume`, { cookie: authzCookie.member })).status, 200);
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/cancel`, { cookie: authzCookie.member })).status, 200);
+  assert.strictEqual((await call('GET', `/api/goals/${goalId}/activity`, { cookie: authzCookie.member })).status, 200);
+
+  const workspaceAgents = await call('GET', `/api/workspaces/${wsA}/agents`, { cookie: authzCookie.member });
+  assert.strictEqual(workspaceAgents.status, 200);
+  assert.deepStrictEqual((workspaceAgents.json as Array<{ email: string }>).map((agent) => agent.email), ['user01@test.local']);
+  assert.strictEqual(
+    (await call('PATCH', `/api/workspaces/${wsA}/agents/owner`, {
+      cookie: authzCookie.member, body: { status: 'paused' },
+    })).status,
+    403,
+    'Member 不可管理 Agent route/status',
+  );
+  assert.strictEqual(
+    (await call('PATCH', `/api/workspaces/${wsA}/agents/owner`, {
+      cookie, body: { status: 'paused' },
+    })).status,
+    200,
+    'Admin 可管理 Workspace 內的 Agent',
+  );
 
   // attachment 上傳走 raw bytes（非 JSON），需獨立的 helper。
   const uploadAttachment = async (cookie: string | undefined, taskId: string, filename: string, contentType: string, data: Buffer) => {

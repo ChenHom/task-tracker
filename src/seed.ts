@@ -1,6 +1,7 @@
 import { db } from './db';
 import { createUser } from './auth';
 import { CommandError } from './eventStore';
+import { syncAgents } from './agent';
 
 const COUNT = 30;
 const PASSWORD = 'test1234';
@@ -62,6 +63,7 @@ export function seedUsers(database = db): void {
       backfillSeedName(email, name, email in FIXED_NAMES, database);
     }
   }
+  syncAgents(database);
 }
 
 if (require.main === module) {

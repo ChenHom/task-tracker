@@ -207,15 +207,15 @@ git commit -m "feat: add durable goal lifecycle"
 - Modify: `src/test.ts`
 - Modify: `src/server.ts`
 
-- [ ] **Step 1: Write failing Agent seed and eligibility tests**
+- [x] **Step 1: Write failing Agent seed and eligibility tests**
 
 Assert exactly user01–user06 become Agent resources, user01 has `role='owner'`, user09 has no Agent, paused/error and Owner Agents are excluded from member selection, and route edits affect the next read.
 
-- [ ] **Step 2: Implement minimal Agent CRUD and seed**
+- [x] **Step 2: Implement minimal Agent CRUD and seed**
 
 Use `agent_id = user_id` and these stable columns: `role`, `skill_profile_json`, primary/fallback adapter/model, `status`, timestamps. Seed idempotently from canonical emails without changing Workspace membership. Only status and route fields are mutable.
 
-- [ ] **Step 3: Write failing heartbeat and Run ordering tests**
+- [x] **Step 3: Write failing heartbeat and Run ordering tests**
 
 ```ts
 const heartbeat = enqueueHeartbeat({ scopeId: goalId, phase: 'round_1', agentId, revision: 1, triggerRef: 'phase' }, db);
@@ -227,11 +227,11 @@ assert.throws(() => markRunRunning('missing', db), /run 不存在/);
 
 Also cover two `@Owner` comment IDs, patrol slot, follow-up, `actual_tokens=null`, primary/fallback as separate Runs, immutable Participation and Contribution, and no-op Contribution rejection.
 
-- [ ] **Step 4: Implement persistence and read APIs**
+- [x] **Step 4: Implement persistence and read APIs**
 
 Create unique heartbeat key `(scope_id, phase, agent_id, revision, trigger_ref)`. Store estimates/quota before `running`; allow actual tokens/cost to remain null. Contribution writes validate structured claim/reason/evidence and never expose a mutation endpoint to runners.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 npx tsx src/agent.test.ts

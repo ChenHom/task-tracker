@@ -127,6 +127,92 @@ export function runMigrations(db: DatabaseSync): void {
       acquired_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS agents (
+      agent_id              TEXT PRIMARY KEY,
+      user_id               TEXT NOT NULL UNIQUE,
+      email                 TEXT NOT NULL UNIQUE,
+      name                  TEXT NOT NULL,
+      role                  TEXT NOT NULL,
+      skill_profile_json    TEXT NOT NULL,
+      primary_adapter       TEXT NOT NULL,
+      primary_model         TEXT NOT NULL,
+      fallback_adapter      TEXT,
+      fallback_model        TEXT,
+      status                TEXT NOT NULL,
+      created_at            TEXT NOT NULL,
+      updated_at            TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_heartbeats (
+      heartbeat_id TEXT PRIMARY KEY,
+      scope_id     TEXT NOT NULL,
+      goal_id      TEXT,
+      phase        TEXT NOT NULL,
+      agent_id     TEXT NOT NULL,
+      revision     INTEGER NOT NULL,
+      trigger_ref  TEXT NOT NULL,
+      status       TEXT NOT NULL,
+      created_at   TEXT NOT NULL,
+      updated_at   TEXT NOT NULL,
+      UNIQUE (scope_id, phase, agent_id, revision, trigger_ref)
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_runs (
+      run_id                   TEXT PRIMARY KEY,
+      heartbeat_id             TEXT NOT NULL,
+      goal_id                  TEXT,
+      task_id                  TEXT,
+      agent_id                 TEXT NOT NULL,
+      phase                    TEXT NOT NULL,
+      adapter                  TEXT NOT NULL,
+      model                    TEXT NOT NULL,
+      attempt                  TEXT NOT NULL,
+      estimated_input_tokens   INTEGER NOT NULL,
+      estimated_output_tokens  INTEGER NOT NULL,
+      estimate_basis           TEXT NOT NULL,
+      estimate_confidence      TEXT NOT NULL,
+      quota_snapshot_json      TEXT NOT NULL,
+      actual_input_tokens      INTEGER,
+      actual_output_tokens     INTEGER,
+      actual_cost              REAL,
+      status                   TEXT NOT NULL,
+      outcome                  TEXT,
+      error_category           TEXT,
+      evidence_ref             TEXT,
+      side_effect_state        TEXT,
+      started_at               TEXT,
+      ended_at                 TEXT,
+      created_at               TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS goal_runs_goal_idx ON goal_runs (goal_id, created_at, run_id);
+
+    CREATE TABLE IF NOT EXISTS goal_participations (
+      participation_id TEXT PRIMARY KEY,
+      goal_id           TEXT NOT NULL,
+      revision          INTEGER NOT NULL,
+      agent_id          TEXT NOT NULL,
+      reason            TEXT NOT NULL,
+      assignment        TEXT NOT NULL,
+      selected_load     INTEGER NOT NULL,
+      created_at        TEXT NOT NULL,
+      UNIQUE (goal_id, revision, agent_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_contributions (
+      contribution_id TEXT PRIMARY KEY,
+      goal_id         TEXT NOT NULL,
+      revision        INTEGER NOT NULL,
+      round           TEXT NOT NULL,
+      agent_id        TEXT NOT NULL,
+      stance          TEXT NOT NULL,
+      claim           TEXT NOT NULL,
+      reason          TEXT NOT NULL,
+      evidence_json   TEXT NOT NULL,
+      created_at      TEXT NOT NULL,
+      UNIQUE (goal_id, revision, round, agent_id)
+    );
+
     -- Comment：任務留言，同樣傳統 CRUD（不走 ES）。權限經 task → workspace 查；user_id 為留言作者。
     CREATE TABLE IF NOT EXISTS comments (
       comment_id TEXT PRIMARY KEY,
