@@ -16,7 +16,7 @@ Project 現有 CRUD、Task 關聯、Kanban 篩選與 badge 可運作，但只有
 
 - 人類或 Owner Agent 可以建立一個有成功條件的 Goal。
 - Owner 依 Agent 能力與負載選擇 1–5 位參與者，不要求六位全員出席。
-- 入選 Agent 在 Workspace 與 Project 指定 target repo 的既有資料下，完成兩輪協作。
+- 入選 Agent 在 Workspace 與 Project 指定 target repo 的既有資料下，完成 round 1；有 2 份以上有效 Contribution 時再進行 round 2。
 - 每次模型執行前記錄 token 預估與 quota snapshot，執行後補實際用量；紀錄不阻擋執行。
 - Owner 收斂後直接建立並派發 Task，沿用既有全自動 worktree、CI、review、merge、部署與 readback 流程。
 - Claude、Codex、AGY 使用一致的 adapter 生命週期與結果契約，保留各 CLI 必要差異。
@@ -49,7 +49,7 @@ Workspace（長期團隊／產品容器）
         └── Tasks（既有實作與交付流程）
 ```
 
-task-tracker 是唯一事實來源。Goal orchestration 只負責目標、討論、派工與聚合交付證據；Task 建立後，既有 coordinator 繼續負責 worktree、commit、CI、Owner review、merge、部署及 readback。
+task-tracker 是唯一事實來源。Goal orchestration 只負責目標、討論、派工與聚合交付證據；Task 建立後，production 協調器（見「執行器」）繼續負責 worktree、commit、CI、Owner review、merge、部署及 readback。
 
 ## 資料模型與權威邊界
 
@@ -91,13 +91,17 @@ Goal 的 target repo 從 Project 取得。Project target repo 在 active Goal �
 
 既有 user01–user06 的 AI 身分轉成正式 Agent resource，並連回現有 `user_id`。必要資料：
 
-- 名稱、角色與 Capability Profile
+- 名稱、角色與 `skill_profile`（能力與分工；避免和既有工具權限的 `CapabilityProfile`（`sim/agentCapabilities.ts`）撞名）
 - `role: owner | member`
 - primary adapter／model
-- fallback adapter／model
+- fallback adapter／model，可為 `null`；沒有 fallback 時，失敗依「Fallback 與故障恢復」一節處理
 - 可存取 Workspace／repo
 - `active | paused | error` 狀態
 - 最近 Run、目前 Goal／Task 與累積 token
+
+第 2 階段把散落的路由常數（`sim/run.ts` 的 `MEMBER_RUNNERS`、`OWNER_ROUTE`／`OWNER_FALLBACK`，以及 `sim/production/runner.ts` 的 `OWNER_ROUTE`／`MEMBER_ROUTE`）收斂到 Agent resource，兩個 runner 都從這裡讀；UI 修改 route 從下一個 Run 起生效。
+
+Agent route 只用於實作階段，討論階段依「Context 與資料邊界」走 Claude safe discussion route。
 
 user09 是人類 Admin，不建立 Agent resource。第一版 UI 只允許暫停、恢復及修改既有 route，不提供新增／刪除 Agent。
 
@@ -122,14 +126,19 @@ pending -> running -> succeeded
 Heartbeat 的冪等鍵為：
 
 ```text
-goal_id + phase + agent_id + revision + trigger_ref
+scope_id + phase + agent_id + revision + trigger_ref
 ```
+
+`scope_id` 是 `goal_id`；巡檢 discovery 時還沒有 Goal，`scope_id` 用 `workspace_id`。
 
 `trigger_ref` 區分喚醒來源，避免合法的多次喚醒被去重吞掉：
 
 - 階段推進：固定為 `phase`。
 - `@Owner` 留言：該留言的 `comment_id`；每則留言最多一次，編輯同一則留言不再觸發。
 - 定期巡檢：`patrol:<巡檢時段>`。
+- follow-up evaluation：`followup:<goal_id>`。
+
+Heartbeat 只涵蓋 Goal 層級的喚醒（討論、Verifying 判定、`@Owner`、巡檢、follow-up）。實作階段的 Task 執行、repair 與審查，沿用 production 協調器的 `action_log`（`sim/production/state.ts:52-54` 的 deterministic action_key）去重，不另建 heartbeat。
 
 每次 primary 或 fallback 是獨立 Run，並關聯同一 heartbeat。Run 至少保存：
 
@@ -167,7 +176,13 @@ Queued -> Discussing -> Executing -> Verifying -> Done
 
 | 從 | 到 | 條件 |
 |---|---|---|
-| Paused | 暫停前狀態 | 人工恢復或插隊的人類 Goal 結束；暫停前狀態由 event 歷史取得 |
+| Queued／Discussing／Executing／Verifying | Paused | 人工暫停，或同一 target repo 的人類 Goal 插隊；在安全 checkpoint 進入 |
+| Paused | 暫停前狀態 | 人工恢復，或插隊的人類 Goal 進入 Done、Cancelled 或 Blocked；暫停前為 Queued 或尚未取得 lease 的 Discussing 時適用，由 event 歷史取得 |
+| Paused | Discussing／`awaiting_lease` | 從持有 lease 的狀態（`owner_synthesis`、Executing、Verifying）暫停的 Goal 恢復；取得 lease 後重新 `owner_synthesis`（revision + 1） |
+| 尚未取得 lease 的 Discussing | Queued | 自治 Goal 被人類 Goal 插隊 |
+| Discussing | Blocked | Round 1 reconciliation 後仍沒有有效 Contribution，或 Owner 討論 Run 失敗 |
+| Executing | Blocked | `task.blocked` 經 Owner reconciliation 仍無法處理 |
+| Executing／Verifying | Discussing／`owner_synthesis`，revision + 1 | 人類修改成功條件或資料範圍；持有的 lease 不釋放 |
 | Blocked | 卡住前狀態，revision + 1 | 人類處理並記錄實質變更 |
 | Verifying | Discussing／`owner_synthesis`，revision + 1 | 驗收失敗，自動重試上限 1 次；人工解除 Blocked 後重新計算 |
 | Verifying | Blocked | 自動重試後仍驗收失敗 |
@@ -179,7 +194,11 @@ Repo execution lease：
 - `owner_synthesis`、Executing、Verifying 期間持有，驗收失敗回 `owner_synthesis` 重試時不釋放。
 - 已持有 lease 的 Goal 進入 Blocked 時繼續持有，直到人類恢復或 Cancelled，避免其他 Goal 在未完成的 repo 狀態上執行。
 - 進入 Done 或 Cancelled 時釋放。
-- 只在沒有未合併 worktree、進行中 merge 或部署的安全 checkpoint 進入 Paused，進入時釋放；恢復時若暫停前狀態需要 lease 而 lease 被占用，維持 Paused 直到取得。
+- 只在沒有未合併 worktree、進行中 merge 或部署的安全 checkpoint 進入 Paused，進入時釋放。
+- 進入 Paused：協調器不再推進該 Goal 的 Task（依「自動實作與交付」一節「跳過所屬 Goal 不在 Executing 的 Task」）。
+- 在 Discussing 中暫停：不再發新 heartbeat，執行中的 Run 跑完後才進入 Paused，已完成的 Contribution 保留。
+- 從持有 lease 的狀態（`owner_synthesis`、Executing、Verifying）暫停的 Goal 恢復時，回到 Discussing／`awaiting_lease`，取得 lease 後重新 `owner_synthesis`（revision + 1），由 Owner 決定保留或封存剩下的 Task。
+- 進入 Cancelled：經既有 archive API 封存該 Goal 尚未完成的 Task。
 
 ## 建立與選人
 
@@ -187,7 +206,7 @@ Repo execution lease：
 
 Owner discovery 先尋找既有 Project；只有確實沒有合適 Project 時才在同一 Workspace 建立 Project。Owner 不得建立 Workspace。child Goal 預設沿用父 Goal 的 Project。
 
-系統先排除 paused/error Agent、無 Workspace／repo 權限者、Capability 完全不符者及已有不可並行工作的 Agent。Owner Agent 本身不列入參與者候選。Owner 再從合格名單選擇 1–5 位，保存選擇理由與分工。
+系統先排除 paused/error Agent、無 Workspace／repo 權限者、`skill_profile` 完全不符者及已有不可並行工作的 Agent。Owner Agent 本身不列入參與者候選。Owner 再從合格名單選擇 1–5 位，保存選擇理由與分工。
 
 ## 兩輪協作
 
@@ -243,6 +262,8 @@ Project 指定的單一 target repo
 
 repo 內容一律視為不可信資料。路徑先經 realpath／allowlist 檢查；文件內指令不得擴張 Workspace、repo、外網或工具權限。討論階段不提供 shell、Git write、cookie 或 task-tracker mutation 工具。
 
+Discussing 的所有 Run（`owner_scoping`、`round_1`、`round_2`、`owner_synthesis`）一律走 Claude safe discussion route，與 Agent 的 primary／fallback route 分開。現有 safe route 只允許 Claude（`sim/run.ts:2269-2271` 遇到非 Claude 會拋錯），工具只有 WebSearch／WebFetch。沿用它的空白 cwd、過濾環境變數、egress hook 與工具限制；repo 內容只能經 context builder 放進 prompt。Agent 的 primary／fallback route 只用於實作階段。討論 Run 與 Owner 共用 Claude 額度，照常記錄 quota snapshot，不阻擋執行。
+
 ## Adapter 契約
 
 三種 runner 共用相同生命週期，不強迫使用相同 CLI 參數：
@@ -270,6 +291,8 @@ interface AgentAdapter {
 
 `preflight()` 不啟動 AI，只檢查 CLI、route 設定、cwd、資料範圍與本階段所需工具。不得讀出或記錄 credential 內容。
 
+本契約適用於實作階段；討論階段使用 safe route（見「Context 與資料邊界」），不套用 Agent 自己的 adapter。
+
 討論階段由 coordinator 組裝 bounded context，Agent 只回傳 Contribution；coordinator 驗證後寫入 task-tracker。Agent 不登入 task-tracker、不持有 cookie，也不用 curl PATCH／POST 狀態。
 
 實作階段保留 runner 差異：Claude 使用 prompt/tool allowlist，Codex 使用 `exec`、cwd 與 sandbox，AGY 使用自己的 `--model ... --mode accept-edits --print <prompt>` 及 permissions 設定。三者回傳相同的 output、session ID、usage、exit status、error category 與 side-effect state。
@@ -282,8 +305,9 @@ interface AgentAdapter {
 
 - preflight 失敗
 - quota 或啟動失敗
-- 討論階段沒有有效輸出
 - 已證明沒有任何副作用的 runner failure
+
+討論 Run 不做 adapter fallback，失敗依 Round 1 reconciliation 與 Blocked 規則處理。
 
 以下情況不可直接 fallback：
 
@@ -293,7 +317,7 @@ interface AgentAdapter {
 
 這些進入 Owner reconciliation。Owner 必須改變範圍、資料、assignee 或處理方式並增加 revision；沒有實質變更不得原樣重跑。Owner primary 與 fallback 都失敗時，Goal 進入 `Blocked` 並通知人類。
 
-AGY permission 失敗不使用另一個 AGY model 重試；應改用不同 adapter，或由 Owner 修正 capability 後建立新 revision。
+AGY permission 失敗不使用另一個 AGY model 重試；應改用不同 adapter，或由 Owner 修正 `skill_profile` 或 route 後建立新 revision。
 
 程序崩潰後，`pending` heartbeat 可重新領取；lease 過期的 `running` 先 reconciliation。已有外部副作用但結果不明時標記 `uncertain`，不能直接重跑。
 
@@ -310,6 +334,16 @@ AGY permission 失敗不使用另一個 AGY model 重試；應改用不同 adapt
 估算與 quota 只記錄、不要求批准、不阻止執行。只有 adapter 提供可信 billing 資料時才寫金額。Goal 總計包含 discovery、成功、失敗、primary 與 fallback Run。
 
 ## 自動實作與交付
+
+### 執行器
+
+- 實作階段由 production 協調器（`sim/production.ts`）執行。
+- 第 5 階段把它改成從 Project 讀 workspace 與 target repo，取代寫死的 workspace 清單（`sim/production/policy.ts:13-15` 的 `ALLOWED_WORKSPACE_IDS`）；每個 repo 登記 CI checks 與部署方式（或 `deployment_not_required`），取代寫死的 `npm test`（`sim/production.ts:779-780`）。
+- Project.target_repo 只能選已登記的 repo，未登記的 Project 不能啟動 Goal。
+- 協調器跳過所屬 Goal 不在 Executing 的 Task。
+- legacy sweep（`sim/run.ts`）不得在有 active Goal 的 Project 建立 Task 或 worktree，也不得對 lease 被持有的 repo 執行 merge。
+
+### 交付流程
 
 Owner synthesis 建立 Task 後沿用現有流程：
 
@@ -328,6 +362,11 @@ Coordinator 回送 `task.execution_started`、`commit.recorded`、`ci.checked`�
 
 所有必要 Task 為 Done，且部署版本與成功條件都通過後，Goal 才進入 Done。純文件或不需部署的 Task 必須明確標示 `deployment_not_required`，不能默認略過。
 
+### Verifying
+
+- 由 Owner 依 coordinator 回送的事件與 health／live readback 證據，判定成功條件是否通過，輸出 pass／fail 與證據引用。
+- 驗收失敗時，依轉移表回到 `owner_synthesis`，由 Owner 建立修正或 rollback Task，經同一個協調器執行；不另設 rollback 執行者。
+
 ## 固定巡檢與持續自治
 
 Owner discovery timer 每 12 小時觸發一次。Timer 先機械檢查：
@@ -339,7 +378,9 @@ Owner discovery timer 每 12 小時觸發一次。Timer 先機械檢查：
 
 前三項任一成立即記錄 `skipped`，不啟動模型。沒有新 Task／Comment／Attachment、BUG、部署異常、commit、測試失敗或候選證據變化時，也不啟動 Owner。
 
-同一 Workspace 同時最多一個 Owner 自建的 active Goal。人類 Goal 優先：尚未啟動的自治 Goal 回到 Queued；執行中的自治 Goal 在下一個安全 checkpoint 進入 Paused，不中止正在寫入的 transaction 或 worktree 操作。
+同一 Workspace 同時最多一個 Owner 自建的 active Goal。
+
+人類 Goal 優先，插隊範圍是同一 target repo。「尚未啟動」指尚未取得 lease，「執行中」指持有 lease。尚未啟動的自治 Goal 回到 Queued；執行中的自治 Goal 在下一個安全 checkpoint 進入 Paused，不中止正在寫入的 transaction 或 worktree 操作。被暫停的自治 Goal，在插隊的人類 Goal 進入 Done、Cancelled 或 Blocked 時就可以恢復。Blocked 的 Goal 繼續持有 lease，人類 Goal 也不能搶，要等人類先處理那個 Blocked Goal。
 
 同一 target repo 同時最多一個 Goal 持有 repo execution lease，不論 Goal 由人類或 Owner 建立。其他 Goal 可完成 round 1／round 2，但在取得 lease 前停在 `awaiting_lease`，不建立 Task；人類 Goal 只取得下一個安全 checkpoint 的優先權，不強制中斷進行中的寫入、merge 或部署。
 
@@ -355,31 +396,17 @@ Owner Agent 永遠不能建立 Workspace。新產品或隔離空間只能由人�
 
 Workspace 頁預設只顯示 active 項目，提供「顯示已封存」切換；sidebar 排除 archived/deleted。Archived Workspace 仍可從 Audit、Goal 歷史或切換開關找到。
 
-如果歷史上已有 Goal-owned Workspace，退場必須依序：
-
-1. 確認沒有 active Goal。
-2. 確認沒有 Todo／Doing／Review Task。
-3. 確認沒有 dirty worktree 或未合併 commit。
-4. 經正式 member API 移除 Agent 與 user09 membership。
-5. 保留唯一 Owner。
-6. 呼叫既有 archive API。
-7. 回讀 `workspace.archived` 事件與 projection。
-
-任一步驟不符即標記 `retirement_blocked`，不得直接修改 read model 或強制刪除。最後 Owner 不需移除；保留 Owner 是歷史與授權鏈的一部分。
-
-既有閒置 Workspace 清理由獨立操作任務處理，先唯讀分類，再經正式 API 封存；本功能不在 migration 中批次改動正式 Workspace。
+既有閒置或歷史 Workspace 的退場，屬於第 9 階段的獨立操作任務，先唯讀分類，再經正式 member／archive API 處理；本功能不實作，也不在 migration 中批次改動正式 Workspace。
 
 ### Project
 
 Project 是 Goal 的長期容器。Owner 可以在既有 Workspace 建 Project，但建立前先比對現有 Project 的名稱、描述與 target repo，避免重複。
 
-Project 完成某個 Goal 後仍保持 active，可承載後續 Goal。只有沒有 active Goal、沒有未完成 Task、沒有 dirty、未合併或 `cleanup_blocked` 的登記 worktree 時才可封存。Archived Project 預設從 selector 隱藏，但歷史 Goal／Task 仍顯示原 Project。
+Project 完成某個 Goal 後仍保持 active，可承載後續 Goal。只有沒有 active Goal、沒有未完成 Task、沒有 dirty 或未合併的登記 worktree 時才可封存。Archived Project 預設從 selector 隱藏，但歷史 Goal／Task 仍顯示原 Project。
 
 ### Worktree／資料夾
 
-Goal 建立的 worktree 或暫存資料夾必須登記 `goal_id`、target repo、`temporary | persistent`、dirty／unmerged 狀態與 cleanup status。
-
-target repo 永不自動刪除。Dirty、未合併或結果不確定的 worktree 標記 `cleanup_blocked` 並保留。已合併、乾淨且建立時已標記 temporary 的 worktree 可進待清理清單；實際清理必須依另行核准的操作政策執行，不能只因 Goal Done 就刪除。
+Goal 建立的 worktree 登記 `goal_id`、target repo，以及 dirty／unmerged 狀態；本功能不自動刪除 target repo 或 worktree，清理另開任務。
 
 ## UI
 
@@ -404,7 +431,7 @@ Goals 列表顯示目標、來源、Project、狀態、phase、Owner、參與 Ag
 
 ### Agents
 
-Agents 頁顯示六位 Agent 的 Capability、primary／fallback route、狀態、目前 Goal／Task、最近 preflight／Run、累積 token、fallback 次數與未知 usage 次數。
+Agents 頁顯示六位 Agent 的 `skill_profile`、primary／fallback route、狀態、目前 Goal／Task、最近 preflight／Run、累積 token、fallback 次數與未知 usage 次數。
 
 ## 安全與權限
 
@@ -429,6 +456,16 @@ Agents 頁顯示六位 Agent 的 Capability、primary／fallback route、狀態�
 - 同一 target repo 的 execution lease 排他性與安全交接。
 - user09 無 mention 不喚醒；`@Owner` 只喚醒一次。
 - Run estimate 必須早於外部程序啟動。
+- round 2 跳過（`insufficient_peers`）。
+- round 1 全部失敗 -> reconciliation 一次 -> Blocked。
+- 驗收失敗重試 1 次後進入 Blocked。
+- Blocked 時保留 lease，人類 Goal 不能搶。
+- Paused 時釋放 lease，從 Executing 恢復時回到 `awaiting_lease`。
+- Cancelled 時封存未完成的 Task。
+- 各種 `trigger_ref` 不互相吞掉（`@Owner` 兩則、patrol、followup）。
+- Owner Agent 不列入參與者候選。
+- 討論 Run 一律走 safe route，非 Claude route 被拒。
+- legacy sweep 不在有 active Goal 的 Project 建立 Task。
 
 ### Adapter fixtures
 
@@ -467,7 +504,7 @@ Live smoke 不納入預設 `npm test`，必須取得明確 AI／timer 授權。
 2. 建立 Goal、Agent、Participation、Contribution、Heartbeat、Run 資料模型與只讀 API。
 3. 統一 Claude／Codex／AGY adapter lifecycle、preflight、estimate 與 fixture tests。
 4. 交付人工 Goal 與兩輪討論，暫不建立實作 Task；此階段經 API 建立 Goal，Goals UI 於第 6 階段交付。
-5. 接上既有全自動 worktree、CI、merge、deploy 與 readback。
+5. 改造 production 協調器，從 Project 讀 repo 與 checks，接上 worktree、CI、merge、deploy 與 readback，並限制 legacy sweep。
 6. 交付 Goals／Agents UI。
 7. 啟用 Goal 完成後的 follow-up evaluation 與單一 child Goal。
 8. 安裝每 12 小時 discovery timer；預設 disabled，完成 live smoke 後才另行授權啟用。
@@ -480,7 +517,7 @@ Live smoke 不納入預設 `npm test`，必須取得明確 AI／timer 授權。
 - 人類或 Owner 建立的 Goal 都落在既有 Workspace 的 active Project。
 - Owner Agent 無法建立 Workspace。
 - 一個 Project 可依序保存多個 Goal 與完整歷史。
-- Owner 按能力選擇 1–5 位 Agent，完成兩輪協作後自動建立 Task。
+- Owner 按能力選擇 1–5 位 Agent，完成 round 1；有 2 份以上有效 Contribution 時再進行 round 2，之後自動建立 Task。
 - 每個 Run 在啟動前已有 token estimate 與 quota snapshot。
 - AGY 經共同 adapter lifecycle 執行，permission soft-deny 不再被當成功。
 - user09 無 `@Owner` 留言不喚醒 Agent，但已啟動的相關 Agent 可選擇補充。
