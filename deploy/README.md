@@ -55,11 +55,21 @@ Logs/state: `~/.local/state/sim-autodeploy/deploy.log`, `deployed_rev`; `journal
 
 See `docs/operations.md` for verification and troubleshooting.
 
+Goal 交付證據與 worktree 狀態只允許 production coordinator 寫入。在啟用 coordinator 前，
+建立 mode `0600` 的 `~/.config/task-tracker/coordinator.env`，並設定一個高強度隨機值：
+
+```bash
+TASK_TRACKER_COORDINATOR_TOKEN=<random secret>
+```
+
+`task-tracker.service` 與 `sim-coordinator.service` 會讀取同一個檔案；未設定時兩個寫入 API 皆 fail closed 為 403。
+
 ## Goal discovery timer（預設停用）
 
-`goal-discovery.timer` 每 12 小時建立一次機械巡檢 heartbeat。安裝單元不代表啟用；先設定
-`GOAL_PATROL_WORKSPACE_ID`，並以 `systemd-analyze verify` 與手動 dry-run 確認。`--once`
-不呼叫模型、不建立 Workspace。
+`goal-discovery.timer` 每 12 小時建立一次機械巡檢 heartbeat。安裝單元不代表啟用；先建立
+`~/.config/task-tracker/goal-discovery.env`，內含 `GOAL_PATROL_WORKSPACE_ID=<workspace UUID>`，再以
+`systemd-analyze verify` 與手動不帶 `--live` 的 dry-run 確認。unit 含 `--live`：通過機械 gate 時
+會呼叫 Claude safe discovery，但永遠不建立 Workspace，也不會在沒有已登記 Project 時自行建 Project。
 
 ```bash
 install -D -m644 deploy/goal-discovery.service deploy/goal-discovery.timer -t ~/.config/systemd/user/

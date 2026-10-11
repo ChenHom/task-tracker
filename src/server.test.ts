@@ -14,6 +14,7 @@ writeFileSync(repoRegistryPath, JSON.stringify({
   [registeredRepo]: { checks: ['npm test'], deployment: 'not_required' },
 }));
 process.env.TASK_TRACKER_REPO_REGISTRY_PATH = repoRegistryPath;
+process.env.TASK_TRACKER_COORDINATOR_TOKEN = 'test-coordinator-token';
 
 const socketIp = '203.0.113.10';
 
@@ -187,11 +188,11 @@ void (async () => {
   const call = async (
     method: string,
     url: string,
-    opts: { cookie?: string; body?: unknown } = {},
+    opts: { cookie?: string; body?: unknown; headers?: Record<string, string> } = {},
   ): Promise<{ status: number; json: unknown }> => {
     let status = 0;
     let raw = '';
-    const headers: Record<string, string> = opts.cookie ? { cookie: opts.cookie } : {};
+    const headers: Record<string, string> = { ...(opts.headers ?? {}), ...(opts.cookie ? { cookie: opts.cookie } : {}) };
     const request = Object.assign(Readable.from([Buffer.from(JSON.stringify(opts.body ?? {}))]), {
       url, method, headers, socket: { remoteAddress: '127.0.0.1' },
     });
@@ -230,6 +231,9 @@ void (async () => {
   assert.strictEqual((unsupportedPatch.json as { error: string }).error, '不支援的 PATCH 欄位', '未知欄位應回明確錯誤');
 
   // Project：正式欄位、單欄 PATCH、Task 關聯與封存守門。
+  const repositories = await call('GET', `/api/workspaces/${wsA}/repositories`, { cookie: authzCookie.member });
+  assert.strictEqual(repositories.status, 200);
+  assert.strictEqual((repositories.json as Array<{ targetRepo: string }>)[0].targetRepo, registeredRepo);
   const createdProject = await call('POST', `/api/workspaces/${wsA}/projects`, {
     cookie: authzCookie.member,
     body: { name: 'API Project', description: 'HTTP coverage', targetRepo: registeredRepo },
@@ -246,6 +250,17 @@ void (async () => {
     200,
     'Task 應可指向同 Workspace active Project',
   );
+  assert.strictEqual((await call('POST', `/api/tasks/${patchTaskId}/delivery-evidence`, {
+    cookie, headers: { 'x-coordinator-token': 'test-coordinator-token' }, body: { kind: 'ci.checked', ref: 'branch:test', detail: 'passed' },
+  })).status, 201);
+  assert.strictEqual((await call('POST', `/api/tasks/${patchTaskId}/delivery-evidence`, {
+    cookie, body: { kind: 'merge.integrated', ref: 'admin-forged' },
+  })).status, 403, 'Admin 沒有 coordinator credential 也不可寫入交付證據');
+  assert.strictEqual((await call('POST', `/api/tasks/${patchTaskId}/delivery-evidence`, {
+    cookie: authzCookie.member, body: { kind: 'merge.integrated', ref: 'forged' },
+  })).status, 403, '一般 Member 不可偽造權威交付證據');
+  const deliveryEvidence = await call('GET', `/api/tasks/${patchTaskId}/delivery-evidence`, { cookie: authzCookie.member });
+  assert.strictEqual((deliveryEvidence.json as Array<{ kind: string }>)[0].kind, 'ci.checked');
   assert.strictEqual(
     (await call('POST', `/api/projects/${projectId}/archive`, { cookie: authzCookie.member })).status,
     400,
@@ -287,6 +302,17 @@ void (async () => {
   assert.strictEqual((goalList.json as Array<{ source: string }>)[0].source, 'human', 'HTTP 建立一律是 human source');
   assert.strictEqual((await call('GET', `/api/goals/${goalId}`, { cookie: authzCookie.outsider })).status, 403);
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/start`, { cookie: authzCookie.member })).status, 200);
+  const startedActivity = await call('GET', `/api/goals/${goalId}/activity`, { cookie: authzCookie.member });
+  assert.ok((startedActivity.json as { heartbeats: Array<{ phase: string }> }).heartbeats.some((heartbeat) => heartbeat.phase === 'owner_scoping'));
+  assert.strictEqual((await call('POST', `/api/goals/${goalId}/worktrees`, {
+    cookie, headers: { 'x-coordinator-token': 'test-coordinator-token' }, body: { targetRepo: registeredRepo, worktreePath: join(registeredRepo, '.worktrees', goalId) },
+  })).status, 200);
+  assert.strictEqual((await call('POST', `/api/goals/${goalId}/worktrees`, {
+    cookie: authzCookie.member, body: { targetRepo: registeredRepo, worktreePath: '/forged' },
+  })).status, 403);
+  assert.strictEqual((await call('PATCH', `/api/goals/${goalId}/worktrees`, {
+    cookie, headers: { 'x-coordinator-token': 'test-coordinator-token' }, body: { worktreePath: join(registeredRepo, '.worktrees', goalId) },
+  })).status, 200);
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/pause`, { cookie: authzCookie.member })).status, 200);
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/resume`, { cookie: authzCookie.member })).status, 200);
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/cancel`, { cookie: authzCookie.member })).status, 200);

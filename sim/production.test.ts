@@ -129,6 +129,19 @@ import {
   type CutoverManifest,
 } from './production/migrate';
 import type { MemberSnapshot, AuditEventSnapshot } from './production/api';
+import { coordinatorChildEnvironment, execAllowlistedCommand } from './production';
+
+assert.deepStrictEqual(coordinatorChildEnvironment({ PATH: '/bin', TASK_TRACKER_COORDINATOR_TOKEN: 'secret' }), { PATH: '/bin' });
+
+async function runCoordinatorEnvironmentTest(): Promise<void> {
+  const priorCoordinatorToken = process.env.TASK_TRACKER_COORDINATOR_TOKEN;
+  process.env.TASK_TRACKER_COORDINATOR_TOKEN = 'must-not-reach-child';
+  const childEnvironment = await execAllowlistedCommand('/usr/bin/env', tmpdir());
+  assert.strictEqual(childEnvironment.exitCode, 0);
+  assert.doesNotMatch(childEnvironment.output, /TASK_TRACKER_COORDINATOR_TOKEN/, 'repo command 不可繼承 coordinator credential');
+  if (priorCoordinatorToken === undefined) delete process.env.TASK_TRACKER_COORDINATOR_TOKEN;
+  else process.env.TASK_TRACKER_COORDINATOR_TOKEN = priorCoordinatorToken;
+}
 
 // ---------------------------------------------------------------------------
 // LEASE_TTL_MS 必須嚴格大於 DEPLOY_WAIT_TIMEOUT_MS
@@ -606,6 +619,7 @@ function makeTask(
     goalId: overrides.goalId ?? null,
     goalStatus: overrides.goalStatus ?? null,
     projectId: overrides.projectId ?? null,
+    targetRepo: overrides.targetRepo ?? null,
   };
 }
 
@@ -844,8 +858,10 @@ function validPrerequisiteEvidence(): PrerequisiteEvidence {
 
   const goalQueued = makeTask({ taskId: 'goal-queued', workspaceId: CANONICAL_WORKSPACE_ID, status: 'Todo', goalId: 'g1', goalStatus: 'Discussing' });
   const goalExecuting = makeTask({ taskId: 'goal-executing', workspaceId: CANONICAL_WORKSPACE_ID, status: 'Todo', goalId: 'g2', goalStatus: 'Executing' });
+  const externalGoal = makeTask({ taskId: 'goal-external', workspaceId: 'third-workspace', status: 'Todo', goalId: 'g3', goalStatus: 'Executing', targetRepo: '/registered/repo' });
   assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [goalQueued] }), NOW).length, 0, '非 Executing Goal 的 Task 必須跳過');
   assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [goalExecuting] }), NOW)[0]?.taskId, 'goal-executing');
+  assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [externalGoal] }), NOW)[0]?.taskId, 'goal-external', '已登記 repo 的 Goal Task 不受舊 workspace allowlist 限制');
 
   // 只會發現兩個已鎖定的 workspace UUID：第三個 workspace 的 task 必須完全不出現。
   assert.strictEqual(taskIdsInActions.has(thirdWorkspaceTask.taskId), false, '不在允許清單內的 workspace 必須被忽略');
@@ -3281,6 +3297,31 @@ async function runDeployTests(): Promise<void> {
       assert.strictEqual(readbackCalls, 0, 'branch CI 失敗後不得讀取 systemd readback');
       assert.strictEqual(liveAcceptance.state.calls, 0);
       assert.strictEqual(existsSync(join(repoRoot, 'sim-work', 'integration', taskId)), false, '不得留下 integration worktree');
+    }
+
+    // 登記為 deployment_not_required 的 repo 仍必須通過 CI、integration、merge，但不可誤用 task-tracker systemd/readback。
+    {
+      const taskId = 'deploy-not-required';
+      const taskBranch = makeDeployTaskBranch(g, repoRoot, taskId, 'docs only\n');
+      let readbackCalls = 0;
+      let liveCalls = 0;
+      const integrationRunner = makeCountingIntegrationRunner();
+      const result = await runDeployAcceptance({
+        taskId, repoRoot, taskBranch, existingFatalError: null, deployment: 'not_required',
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }),
+        runIntegrationCommand: integrationRunner.fn,
+        integrationCommands: ['npx tsc --noEmit'],
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+        getSystemdReadback: async () => { readbackCalls++; return makeReadback(); },
+        checkHealth: async () => makeHealth(),
+        runTaskLiveAcceptance: async () => { liveCalls++; return { passed: true, detail: 'ok' }; },
+        now: () => 0, sleep: noSleep,
+      });
+      assert.strictEqual(result.kind, 'deployed');
+      assert.strictEqual(readbackCalls, 0);
+      assert.strictEqual(liveCalls, 0);
+      assert.deepStrictEqual(integrationRunner.calls, ['npx tsc --noEmit'], 'integration 必須使用 repo registry 登記的 checks');
+      assert.match(g(['log', '-1', '--pretty=%B', 'master']), new RegExp(taskId));
     }
 
     // ---------------------------------------------------------------------------
@@ -5875,6 +5916,7 @@ async function runMigrateTests(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await runCoordinatorEnvironmentTest();
   await runApiTests();
   await runGitTests();
   await runAgentTests();

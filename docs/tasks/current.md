@@ -4,6 +4,18 @@
 > 順序：建立使用者 + Seeder → 忘記密碼 → Member 邀請 API → 前端串接。
 > 最後巡檢：2026-08-18；Phase 8-11 與 Phase 12 harness 已有實作證據，Phase 25 為目前最新交付，Phase 26 四個階段全數完成，僅剩實跑一次 sweep 驗證。
 
+## 2026-10-11 Goal-driven Agent collaboration
+
+- [x] Project 是長期容器：描述、狀態、registered target repo、archive guards；一個 Project 可保存多個 Goal。
+- [x] event-sourced Goal、repo lease、兩輪 Contribution、1–5 人 Owner 選派、一次 reconciliation。
+- [x] 六個正式 Agent resource、每次執行前 estimate/quota、primary/fallback 分離 Run。
+- [x] synthesis 原子建立 Goal Task，production 僅執行 `Executing` Goal，legacy sweep fail closed。
+- [x] Project/Goal/Agent UI；archived Workspace/Project 預設隱藏。
+- [x] Verifying、一次自動重試、Done 後 follow-up，以及預設停用的 12 小時巡檢 timer。
+- [x] fake-runner + temporary Git repo 的 E2E 驗證，不呼叫真實 Claude/Codex/AGY。
+
+刻意未執行：live AI、timer enable/start、正式資料 migration、既有 Workspace/worktree cleanup。
+
 ---
 
 ## ⚠️ 2026-07-29 量測：sim 車隊全速空轉，這是當前最該追的問題

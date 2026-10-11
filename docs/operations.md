@@ -532,3 +532,44 @@ npx tsx sim/production/migrate.ts --apply --live --expect-generation <n>
 ```
 
 全程零 AI：這個模組沒有任何函式簽名帶 AI runner 參數，「AI 呼叫數為零」是結構性保證。
+
+## Goal-driven collaboration
+
+設定 `TASK_TRACKER_REPO_REGISTRY_PATH` 指向 operator-owned JSON；key 必須是 canonical absolute
+repo path，value 為 `checks` 與 `deployment`：
+
+```json
+{
+  "/home/hom/code/task-tracker": {
+    "checks": ["npm test", "npm run build", "git diff --check"],
+    "deployment": "task-tracker"
+  }
+}
+```
+
+允許的 checks 由 `src/repoRegistry.ts` 白名單控制。Goal discussion 一律走 Claude safe route；
+實作走 Agent primary route，只有已證明零副作用的啟動/preflight/quota failure 可 fallback 一次。
+每次 invocation 前先保存 estimate 與 quota snapshot；這些是觀測紀錄，不會擋執行。
+
+Goal coordinator 預設只讀：`npm run goal:run -- --goal <goal-id>` 只顯示 status/phase。
+只有人類明確授權的 `npm run goal:run -- --goal <goal-id> --live` 才會呼叫 Claude safe discussion
+並推進一個 checkpoint。重複執行會讀回 heartbeat、Run、Contribution、Task 與 delivery evidence；
+未過期的 running Run 不會重跑，過期 Run 先標記 `uncertain` 再進 Owner reconciliation。
+
+Production coordinator 與 `task-tracker.service` 必須共用
+`~/.config/task-tracker/coordinator.env` 內的 `TASK_TRACKER_COORDINATOR_TOKEN=<random secret>`。
+只有 Admin session 加上此 header 才能寫入 delivery evidence 或 Goal worktree 狀態；不可把 token 放入 repo、log 或 Agent prompt。
+
+恢復時先查看 Goal activity、heartbeat/Run 與 repo lease。`pending` 可安全重新領取；`uncertain`
+不可直接重跑，需 Owner reconciliation。Goal materialization、Contribution、synthesis、follow-up
+皆有 deterministic/unique key，重啟後應讀回既有結果。legacy sweep 會排除 Goal Task、active
+Goal Project，repo lease 存在時整個 legacy workspace tick 跳過。
+
+`deploy/goal-discovery.timer` 每 12 小時巡檢，但 repository 只提供停用狀態的 unit。安裝前先建立
+`~/.config/task-tracker/goal-discovery.env`，內含 `GOAL_PATROL_WORKSPACE_ID=<workspace UUID>`；service
+會以 `EnvironmentFile=` 讀取，不依賴 shell 的暫存環境變數。安裝與驗證見 `deploy/README.md`；
+本功能不授權 enable/start。Goal Done 會立即建立 follow-up heartbeat。
+unit 的 `--live` 只會在機械 gate 判定 eligible 且 evidence fingerprint 有變化時啟動
+Claude safe discovery；因此 enable/start timer 本身就是 live AI 授權。手動執行不帶 `--live`
+只回報巡檢結果，不啟動模型。沒有已登記 repo 的 active Project 時不會建立 Workspace 或 Project。
+Workspace cleanup 明確排除：不得因 migration 自動移除成員、封存或刪除既有 Workspace。

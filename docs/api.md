@@ -101,10 +101,20 @@ HTTP `401`。
 | Task | GET/PATCH/DELETE | `/api/tasks/:id` | Viewer / field-dependent / Member | `200` |
 | Task | POST | `/api/tasks/:id/archive` | Member | `200` |
 | Task | POST | `/api/tasks/:id/move` | Member in source and target | `200` |
+| Task delivery evidence | GET/POST | `/api/tasks/:id/delivery-evidence` | Viewer / Admin + coordinator token | coordinator CI/merge/deploy evidence |
 | Notifications | GET | `/api/notifications` | login | `200` notification array |
 | Notifications | POST | `/api/notifications/:id/read` | login, recipient only | `200` |
 | Projects | GET/POST | `/api/workspaces/:id/projects` | Viewer / Member | list / `201` |
-| Project | PATCH/DELETE | `/api/projects/:id` | Member | `200` |
+| Repositories | GET | `/api/workspaces/:id/repositories` | Viewer | registered repo/check/deployment options |
+| Project | GET/PATCH/DELETE | `/api/projects/:id` | Viewer / Member | `200` |
+| Project | POST | `/api/projects/:id/archive` | Member | `200` |
+| Goals | GET/POST | `/api/workspaces/:id/goals` | Viewer / Member | list / `201` |
+| Goal | GET | `/api/goals/:id` | Viewer | `200` |
+| Goal activity | GET | `/api/goals/:id/activity` | Viewer | heartbeats/runs/contributions/tasks/delivery evidence/tokens |
+| Goal action | POST | `/api/goals/:id/start\|pause\|resume\|cancel` | Member | `200` |
+| Goal worktree | POST/PATCH | `/api/goals/:id/worktrees` | Admin + coordinator token | register / mark integrated |
+| Agents | GET | `/api/workspaces/:id/agents` | Viewer | six formal Agent resources |
+| Agent | PATCH | `/api/workspaces/:id/agents/:agentId` | Admin | status/route update |
 | Comments | GET/POST | `/api/tasks/:id/comments` | Viewer / Commenter | list / `201` |
 | Comment | PATCH | `/api/comments/:id` | Commenter + author | `200` |
 | Attachments | GET/POST | `/api/tasks/:id/attachments` | Viewer / Member | list / `201` |
@@ -160,6 +170,7 @@ task list 與 single-task GET 的欄位：
 | `workspace_id` | string |
 | `creator_id` | string \| null |
 | `project_id` | string \| null |
+| `goal_id` | string \| null |
 | `title` | string |
 | `description` | string |
 | `status` | `Todo \| Doing \| Review \| Done \| Archived` |
@@ -175,9 +186,30 @@ task list 與 single-task GET 的欄位：
 {
   "project_id": "project-uuid",
   "workspace_id": "workspace-uuid",
-  "name": "Backend"
+  "name": "Backend",
+  "description": "API work",
+  "status": "active",
+  "target_repo": "/registered/repo",
+  "created_at": "2026-10-11T00:00:00.000Z",
+  "updated_at": "2026-10-11T00:00:00.000Z"
 }
 ```
+
+Project `target_repo` 必須存在於 operator-owned repo registry。既有 Project migration 預設
+`description=''`、`status='active'`、`target_repo=null`；未設定 repo 時不可啟動 Goal。
+有 active Goal、未完成 Task、dirty 或未合併 Goal worktree 時不可封存。
+
+### Goal / Agent
+
+Goal 正常流程為 `Queued -> Discussing -> Executing -> Verifying -> Done`，例外狀態為
+`Paused`、`Blocked`、`Cancelled`。`Discussing` 子階段為 `owner_scoping -> round_1 ->
+round_2 -> awaiting_lease -> owner_synthesis`。同一 repo 同時只有一個 Goal lease；Blocked
+保留 lease。`activity` 的 token total 使用實際值優先，缺少實際值時顯示預估；預估與 quota
+只作紀錄，不是預算 gate。
+
+Agent 只有 user01–user06；user01 是 Owner Agent，user09 仍是自由格式的人類 Admin，不是
+Agent。一般留言不喚醒 Agent，只有 human 的明確 `@Owner` 在 Goal Task 上建立一次 heartbeat，
+以 `comment_id` 去重。
 
 ### Comment
 
@@ -541,15 +573,16 @@ target 必須存在且為 active，不能與 source 相同；archived/deleted ta
 
 ### `POST /api/workspaces/:id/projects`
 
-需要 `Member`。Request JSON：`{ "name": "Backend" }`。name 必須非空、最多 200 字；workspace 必須 active。成功回 `201`、`{ "id": "project-uuid" }`。
+需要 `Member`。Request JSON：`{ "name": "Backend", "description": "API work", "targetRepo": "/registered/repo" }`。
+name 必須非空、最多 200 字；target repo 必須存在於 operator registry；workspace 必須 active。成功回 `201`、`{ "id": "project-uuid" }`。
 
 ### `PATCH /api/projects/:id`
 
-需要 project 所屬 workspace 的 `Member`。Request JSON：`{ "name": "新名稱" }`。成功回 `{ "ok": true }`；project 不存在回 `404`，name validation 回 `400`。
+需要 project 所屬 workspace 的 `Member`。一次只更新 `name`、`description` 或 `targetRepo` 一欄。active Goal 期間不可變更 target repo。
 
 ### `DELETE /api/projects/:id`
 
-需要 `Member`。無 body；成功回 `{ "ok": true }`。刪除 project 會先把關聯 task 的 `project_id` 清為 `null`；project 不存在回 `404`。
+僅為舊 caller 相容 route，新 UI 不呼叫。有 Goal 或 worktree 歷史時回 `400`，避免破壞稽核關聯；其餘舊 Project 刪除時才會將關聯 Task 的 `project_id` 清為 `null`。
 
 ## Comments
 

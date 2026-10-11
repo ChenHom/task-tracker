@@ -197,6 +197,7 @@ export function runMigrations(db: DatabaseSync): void {
     );
 
     CREATE INDEX IF NOT EXISTS goal_runs_goal_idx ON goal_runs (goal_id, created_at, run_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS goal_runs_one_attempt ON goal_runs (heartbeat_id, attempt);
 
     CREATE TABLE IF NOT EXISTS goal_participations (
       participation_id TEXT PRIMARY KEY,
@@ -274,6 +275,21 @@ export function runMigrations(db: DatabaseSync): void {
       workspace_id TEXT PRIMARY KEY,
       fingerprint  TEXT NOT NULL,
       checked_at   TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS task_delivery_evidence (
+      task_id     TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      ref         TEXT NOT NULL,
+      detail      TEXT NOT NULL,
+      created_at  TEXT NOT NULL,
+      UNIQUE (task_id, kind, ref)
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_stage_outputs (
+      heartbeat_id TEXT PRIMARY KEY,
+      output_json  TEXT NOT NULL,
+      created_at   TEXT NOT NULL
     );
 
     -- Comment：任務留言，同樣傳統 CRUD（不走 ES）。權限經 task → workspace 查；user_id 為留言作者。

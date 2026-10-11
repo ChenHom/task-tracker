@@ -112,7 +112,8 @@ export const KanbanView = {
           </label>
           <input id="project-search-input" type="search" placeholder="搜尋 Project" aria-label="搜尋 Project">
           <label><input type="checkbox" id="show-archived-projects"> 顯示已封存 Project</label>
-          <button type="button" id="manage-project-button" class="btn-secondary">管理 Project</button>
+          <button type="button" id="create-project-button" class="btn-secondary">新增 Project</button>
+          <button type="button" id="manage-project-button" class="btn-secondary">編輯選取 Project</button>
           
           <label class="toggle-archived-label">
             <input type="checkbox" id="toggle-archived-checkbox"${savedShowArchived ? ' checked' : ''}>
@@ -121,13 +122,14 @@ export const KanbanView = {
           </label>
         </div>
       </div>
+      <section id="project-context" class="sketch-box" aria-live="polite">選擇 Project 後顯示描述、repo 與 active Goal。</section>
       <dialog id="project-dialog" aria-labelledby="project-dialog-title">
         <form id="project-form" method="dialog" class="goal-toolbar">
           <h3 id="project-dialog-title">建立 Project</h3>
           <label>名稱 <input id="project-name" required maxlength="200"></label>
           <label>描述 <textarea id="project-description" maxlength="2000"></textarea></label>
-          <label>已登記 target repo <input id="project-target-repo" required placeholder="/absolute/registered/repo"></label>
-          <div><button type="submit">建立</button><button type="button" id="project-dialog-cancel" class="btn-secondary">取消</button></div>
+          <label>已登記 target repo <select id="project-target-repo" required></select></label>
+          <div><button type="submit" id="project-submit">建立</button><button type="button" id="project-dialog-cancel" class="btn-secondary">取消</button></div>
           <button type="button" id="project-archive-selected" class="btn-danger">封存目前選取的 Project</button>
         </form>
       </dialog>
@@ -276,6 +278,8 @@ export const KanbanView = {
     let cachedTasks = [];
     let cachedProjects = [];
     let cachedMembers = [];
+    let cachedGoals = [];
+    let cachedRepos = [];
     let projectMap = new Map();
     let memberMap = new Map();
     let memberEmailMap = new Map();
@@ -300,15 +304,19 @@ export const KanbanView = {
       }
 
       try {
-        const [tasks, projects, members] = await Promise.all([
+        const [tasks, projects, members, goals, repos] = await Promise.all([
           api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/tasks`),
           api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/projects`),
-          api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/members`)
+          api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/members`),
+          api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/goals`),
+          api(`/api/workspaces/${encodeURIComponent(renderWorkspaceId)}/repositories`)
         ]);
         if (generation !== loadGeneration || state.workspaceId !== renderWorkspaceId) return;
         cachedTasks = tasks;
         cachedProjects = projects;
         cachedMembers = members;
+        cachedGoals = goals;
+        cachedRepos = repos;
         projectMap = new Map(projects.map(p => [p.project_id, p.name]));
         memberMap = new Map(members.map(m => [m.user_id, m.name || m.email]));
         memberEmailMap = new Map(members.map(m => [m.user_id, m.email]));
@@ -337,6 +345,14 @@ export const KanbanView = {
           } else {
             filterSelect.value = 'all';
           }
+        }
+
+        const selectedProject = projects.find(project => project.project_id === filterSelect?.value);
+        const context = document.getElementById('project-context');
+        if (context) {
+          context.textContent = selectedProject
+            ? `${selectedProject.name} · ${selectedProject.description || '無描述'} · ${selectedProject.target_repo || '未設定 repo'} · Active Goal：${goals.find(goal => goal.project_id === selectedProject.project_id && !['Done', 'Cancelled'].includes(goal.status))?.status || '無'}`
+            : '目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。';
         }
 
         renderKanbanCards(cachedTasks, projectMap, memberMap);
@@ -693,17 +709,37 @@ export const KanbanView = {
         const val = filterSelect.value;
         lastSelectedProject = val;
         sessionStorage.setItem(`kanban_filter_project_${state.workspaceId}`, val);
-        renderKanbanCards(cachedTasks, projectMap, memberMap);
+        await loadAllData();
       });
     }
 
     const projectDialog = document.getElementById('project-dialog');
+    let editingProjectId = null;
+    const openProjectDialog = project => {
+      editingProjectId = project?.project_id || null;
+      document.getElementById('project-dialog-title').textContent = editingProjectId ? '編輯 Project' : '建立 Project';
+      document.getElementById('project-submit').textContent = editingProjectId ? '儲存' : '建立';
+      document.getElementById('project-name').value = project?.name || '';
+      document.getElementById('project-description').value = project?.description || '';
+      const repoSelect = document.getElementById('project-target-repo');
+      repoSelect.textContent = '';
+      for (const repo of cachedRepos) repoSelect.appendChild(el('option', { value: repo.targetRepo }, repo.targetRepo));
+      repoSelect.value = project?.target_repo || cachedRepos[0]?.targetRepo || '';
+      document.getElementById('project-archive-selected').hidden = !editingProjectId;
+      projectDialog?.showModal();
+    };
+    document.getElementById('create-project-button')?.addEventListener('click', () => {
+      if (canManageTask) openProjectDialog(null);
+    });
     document.getElementById('manage-project-button')?.addEventListener('click', () => {
-      if (canManageTask) projectDialog?.showModal();
+      if (!canManageTask) return;
+      const project = cachedProjects.find(item => item.project_id === filterSelect?.value);
+      if (!project) return showError('task-error', new Error('請先選取要編輯的 Project'));
+      openProjectDialog(project);
     });
     document.getElementById('project-dialog-cancel')?.addEventListener('click', () => projectDialog?.close());
     document.getElementById('project-archive-selected')?.addEventListener('click', async () => {
-      const projectId = filterSelect.value;
+      const projectId = editingProjectId;
       if (!projectId || projectId === 'all' || projectId === 'none') return showError('task-error', new Error('請先選取要封存的 Project'));
       try {
         await api(`/api/projects/${encodeURIComponent(projectId)}/archive`, { method: 'POST' });
@@ -713,12 +749,25 @@ export const KanbanView = {
     document.getElementById('project-form')?.addEventListener('submit', async event => {
       event.preventDefault();
       try {
-        const res = await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/projects`, { method: 'POST', body: {
+        const values = {
           name: document.getElementById('project-name').value,
           description: document.getElementById('project-description').value,
           targetRepo: document.getElementById('project-target-repo').value,
-        } });
-        projectDialog?.close(); await loadAllData(); filterSelect.value = res.id;
+        };
+        let selectedId = editingProjectId;
+        if (editingProjectId) {
+          const current = cachedProjects.find(project => project.project_id === editingProjectId);
+          for (const [field, value] of Object.entries(values)) {
+            const storedField = field === 'targetRepo' ? 'target_repo' : field;
+            if (current?.[storedField] !== value) await api(`/api/projects/${encodeURIComponent(editingProjectId)}`, { method: 'PATCH', body: { [field]: value } });
+          }
+        } else {
+          const res = await api(`/api/workspaces/${encodeURIComponent(state.workspaceId)}/projects`, { method: 'POST', body: values });
+          selectedId = res.id;
+        }
+        projectDialog?.close();
+        sessionStorage.setItem(`kanban_filter_project_${state.workspaceId}`, selectedId);
+        await loadAllData();
       } catch (error) { showError('task-error', error); }
     });
     document.getElementById('project-search-input')?.addEventListener('input', loadAllData);

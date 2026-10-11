@@ -25,6 +25,7 @@ type TraceArgs = {
   'ci.checked': { outcome: Outcome; reason: string; evidence: Evidence; detail: string };
   'commit.recorded': { outcome: Outcome; evidence: Evidence | null; detail: string };
   'merge.integrated': { evidence: Evidence; detail: string };
+  'deployment.verified': { evidence: Evidence; detail: string };
   // 交付
   'completion.confirmed': { evidence: Evidence; detail: string };
   'notify.sent': { outcome: Outcome; detail: string };

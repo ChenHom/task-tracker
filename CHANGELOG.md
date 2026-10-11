@@ -8,6 +8,14 @@
 
 尚未發布的 notable change 放在這裡；發布時移入版本區塊並保留 task／commit 識別。
 
+### Added
+
+- Project 多 Goal、正式 Agent resource、兩輪討論、執行前 token/quota 紀錄、Goal lease、既有 production delivery 串接，以及 Goal/Agent UI（Design: `2026-10-11-goal-agent-collaboration-design.md`）。
+
+### Changed
+
+- Archived Workspace/Project 預設不占主導覽；legacy sweep 與 production coordinator 對 Goal lease/state fail closed（Design: `2026-10-11-goal-agent-collaboration-design.md`）。
+
 ## 條目格式
 
 只使用與變更相符的分類；以下是格式範例，不是待發布內容：

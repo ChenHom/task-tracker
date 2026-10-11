@@ -718,6 +718,8 @@ async function runTests() {
     if (path === `/api/workspaces/${workspaceId}/tasks`) return [];
     if (path === `/api/workspaces/${workspaceId}/projects`) return [];
     if (path === `/api/workspaces/${workspaceId}/members`) return [];
+    if (path === `/api/workspaces/${workspaceId}/goals`) return [];
+    if (path === `/api/workspaces/${workspaceId}/repositories`) return [];
     throw new Error('unexpected path: ' + path);
   };
 

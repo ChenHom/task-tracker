@@ -433,7 +433,7 @@ git commit -m "feat: add disabled goal discovery schedule"
 - Modify: `docs/tasks/current.md`
 - Modify: `CHANGELOG.md`
 
-- [ ] **Step 1: Write the fake-runner end-to-end test**
+- [x] **Step 1: Write the fake-runner end-to-end test**
 
 Drive a temporary database and Git repo through:
 
@@ -445,17 +445,17 @@ Project -> Goal -> round 1 -> round 2 -> lease -> synthesis -> Goal Tasks
 
 Restart the orchestrator at each checkpoint and assert no duplicate Contribution, Task, commit, heartbeat or child Goal.
 
-- [ ] **Step 2: Add the test to the full gate and run it red, then close each concrete integration failure with TDD**
+- [x] **Step 2: Add the test to the full gate and run it red, then close each concrete integration failure with TDD**
 
 Run: `npx tsx sim/goal.integration.test.ts`
 
 Expected first run: FAIL at the first unconnected boundary named by the assertion. For each failure, add the smallest focused test beside its owning module, observe that test fail, connect that boundary, and rerun both the focused test and integration test before advancing.
 
-- [ ] **Step 3: Update contracts and changelog**
+- [x] **Step 3: Update contracts and changelog**
 
 Document every new route, Project migration/default, Goal state/phase, permission, registered repo, disabled timer, recovery command and the fact that estimates are records rather than budget gates. Record that Workspace cleanup is excluded and remains a separate archive-first operation.
 
-- [ ] **Step 4: Run the complete gate and security review**
+- [x] **Step 4: Run the complete gate and security review**
 
 ```bash
 npm test
@@ -466,7 +466,7 @@ rg -n "dangerously-skip-permissions|cookie|authorization" src sim public deploy
 
 Review findings must confirm: no credential/context logging, no path escape, no cross-Workspace Project/Goal association, no runner mutation credential in discussion, no destructive repo/worktree cleanup, and no enabled timer.
 
-- [ ] **Step 5: Commit the final integration and documentation**
+- [x] **Step 5: Commit the final integration and documentation**
 
 ```bash
 git add sim/goal.integration.test.ts src/test.ts package.json docs/api.md docs/operations.md docs/tasks/current.md CHANGELOG.md

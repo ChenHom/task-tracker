@@ -17,7 +17,7 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { loadRepoRegistry } from '../src/repoRegistry';
+import { loadRepoRegistry, type RegisteredRepo } from '../src/repoRegistry';
 
 import {
   openCoordinatorState,
@@ -146,6 +146,7 @@ export type DiscoveryResult = DiscoveryOk | DiscoveryFail;
 export async function performDiscovery(
   baseUrl: string,
   isServiceActive: (unit: string) => Promise<boolean>,
+  coordinatorToken?: string,
 ): Promise<DiscoveryResult> {
   let serviceActive: boolean;
   try {
@@ -168,7 +169,7 @@ export async function performDiscovery(
     return { ok: false, reason: `/api/health status 欄位非 ok：${health.status}` };
   }
 
-  const ownerClient = new TaskTrackerClient({ baseUrl });
+  const ownerClient = new TaskTrackerClient({ baseUrl, coordinatorToken });
   try {
     await ownerClient.login(OWNER_EMAIL, PASSWORD);
   } catch {
@@ -221,16 +222,27 @@ export interface GatherSnapshotDeps {
 }
 
 export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<CoordinatorSnapshot> {
-  const [mainTasks, canonicalTasks] = await Promise.all([
-    deps.ownerClient.listWorkspaceTasks(MAIN_WORKSPACE_ID),
-    deps.ownerClient.listWorkspaceTasks(CANONICAL_WORKSPACE_ID),
-  ]);
-  const tasks = [...mainTasks, ...canonicalTasks];
   const registry = loadRepoRegistry();
+  const workspaceIds = new Set([MAIN_WORKSPACE_ID, CANONICAL_WORKSPACE_ID]);
+  const projectConfigs = new Map<string, RegisteredRepo>();
+  for (const workspace of await deps.ownerClient.listWorkspaces()) {
+    if (workspace.status !== 'active') continue;
+    const projects = await deps.ownerClient.listProjects(workspace.workspaceId);
+    for (const project of projects) {
+      const config = project.status === 'active' && project.targetRepo ? registry.get(project.targetRepo) : undefined;
+      if (!config) continue;
+      projectConfigs.set(project.projectId, config);
+      workspaceIds.add(workspace.workspaceId);
+    }
+  }
+  const tasks = (await Promise.all([...workspaceIds].map((workspaceId) => deps.ownerClient.listWorkspaceTasks(workspaceId)))).flat();
   for (const task of tasks) {
     if (!task.goalId || !task.projectId) continue;
-    const project = await deps.ownerClient.getProject(task.projectId);
-    const config = project.targetRepo ? registry.get(project.targetRepo) : undefined;
+    let config = projectConfigs.get(task.projectId);
+    if (!config) {
+      const project = await deps.ownerClient.getProject(task.projectId);
+      config = project.targetRepo ? registry.get(project.targetRepo) : undefined;
+    }
     if (!config) throw new Error(`Goal Task ${task.taskId} 的 Project repo 未登記`);
     task.targetRepo = config.targetRepo;
     task.verificationChecks = config.checks;
@@ -615,10 +627,14 @@ async function realGetSystemdReadback(): Promise<SystemdReadback> {
 }
 
 /** 只允許已通過 allowlist 的固定字面指令；用陣列參數 execFile，永不 shell out 字串。 */
-async function execAllowlistedCommand(command: string, cwd: string): Promise<{ exitCode: number; output: string }> {
+export function coordinatorChildEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key, value]) => key !== 'TASK_TRACKER_COORDINATOR_TOKEN' && value !== undefined));
+}
+
+export async function execAllowlistedCommand(command: string, cwd: string): Promise<{ exitCode: number; output: string }> {
   const [cmd, ...args] = command.split(' ');
   return new Promise((resolve) => {
-    execFile(cmd, args, { cwd, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(cmd, args, { cwd, maxBuffer: 16 * 1024 * 1024, env: coordinatorChildEnvironment() }, (error, stdout, stderr) => {
       const code = error ? ((error as NodeJS.ErrnoException & { code?: number }).code as number | undefined) ?? 1 : 0;
       resolve({ exitCode: typeof code === 'number' ? code : 1, output: `${stdout}${stderr}` });
     });
@@ -644,6 +660,7 @@ function realSendDiscordMessage(): SendDiscordMessage {
 
 export interface RunOnceOptions {
   live: boolean;
+  coordinatorToken?: string;
   baseUrl?: string;
   dbPath?: string;
   repoRoot?: string;
@@ -652,6 +669,7 @@ export interface RunOnceOptions {
   allowedPrefixes?: string[];
   runOwnerSession?: OwnerSessionRunner;
   runMemberSession?: MemberSessionRunner;
+  useAgentRoutes?: boolean;
   runVerificationCommand?: VerificationCommandRunner;
   runIntegrationCommand?: IntegrationCommandRunner;
   runBranchCi?: (taskId: string, worktreePath: string) => Promise<AcceptanceCheckResult>;
@@ -681,6 +699,7 @@ interface ResolvedDeps {
   allowedPrefixes: string[];
   runOwnerSession?: OwnerSessionRunner;
   runMemberSession?: MemberSessionRunner;
+  useAgentRoutes: boolean;
   runVerificationCommand: VerificationCommandRunner;
   runIntegrationCommand: IntegrationCommandRunner;
   runBranchCi: (taskId: string, worktreePath: string) => Promise<AcceptanceCheckResult>;
@@ -751,6 +770,8 @@ async function withAction(
 }
 
 export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
+  const coordinatorToken = options.coordinatorToken ?? process.env.TASK_TRACKER_COORDINATOR_TOKEN;
+  delete process.env.TASK_TRACKER_COORDINATOR_TOKEN;
   const baseUrl = options.baseUrl ?? BASE_URL;
   const dbPath = options.dbPath ?? DB_PATH;
   const repoRoot = options.repoRoot ?? ROOT;
@@ -772,7 +793,7 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
     beginTick(db, tickId, now());
     trace('run.started', { detail: `coordinator tick ${tickId}` });
 
-    const discovery = await performDiscovery(baseUrl, isServiceActive);
+    const discovery = await performDiscovery(baseUrl, isServiceActive, coordinatorToken);
     if (!discovery.ok) {
       lines.push(`DiscoveryUnavailable: ${discovery.reason}`);
       endTickAndTrace(db, trace, { tickId, outcome: 'discovery_unavailable', discoveredCount: 0, processedCount: 0, skippedCount: 0, errorCount: 1, error: discovery.reason }, now());
@@ -789,6 +810,7 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
       allowedPrefixes: options.allowedPrefixes ?? DEFAULT_ALLOWED_PREFIXES,
       runOwnerSession: options.runOwnerSession,
       runMemberSession: options.runMemberSession,
+      useAgentRoutes: options.useAgentRoutes ?? false,
       runVerificationCommand: options.runVerificationCommand ?? execAllowlistedCommand,
       runIntegrationCommand: options.runIntegrationCommand ?? execAllowlistedCommand,
       runBranchCi: options.runBranchCi ?? (async (_taskId, worktreePath) => {
@@ -937,7 +959,9 @@ async function runLiveDispatchLoop(deps: ResolvedDeps, tickId: string): Promise<
     const claimedAssigneesThisIteration = new Set<string>();
     for (const action of actions) {
       try {
-        const outcome = await dispatchAction(deps, action, snapshot, tickId, claimedAssigneesThisIteration);
+        const task = snapshot.tasks.find((candidate) => candidate.taskId === action.taskId);
+        const actionDeps = task?.goalId && task.targetRepo ? { ...deps, repoRoot: task.targetRepo } : deps;
+        const outcome = await dispatchAction(actionDeps, action, snapshot, tickId, claimedAssigneesThisIteration);
         if (outcome === 'progressed') {
           summary.processed++;
           progressedAny = true;
@@ -1001,7 +1025,7 @@ async function dispatchAction(
       case 'member_work':
         return await dispatchMemberWork(deps, action, claimed);
       case 'owner_review':
-        return await dispatchOwnerReview(deps, action, claimed);
+        return await dispatchOwnerReview(deps, action, claimed, snapshot);
       case 'main_discussion_owner':
         return await dispatchMainDiscussion(deps, action, claimed);
       default:
@@ -1062,6 +1086,8 @@ async function assignAndStartDoing(deps: ResolvedDeps, action: CoordinatorAction
 
   const masterSha = await getHeadSha(deps.repoRoot, 'master');
   const worktree = await ensureTaskWorktree(deps.repoRoot, action.taskId, masterSha);
+  const goalTask = await deps.ownerClient.getTask(action.taskId);
+  if (goalTask.goalId) await deps.ownerClient.registerGoalWorktree(goalTask.goalId, deps.repoRoot, worktree.path);
 
   checkpointAndTrace(
     deps,
@@ -1212,6 +1238,7 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     try {
       const masterSha = workingRun.baseSha ?? (await getHeadSha(deps.repoRoot, 'master'));
       const worktree = await ensureTaskWorktree(deps.repoRoot, action.taskId, masterSha);
+      if (task.goalId) await deps.ownerClient.registerGoalWorktree(task.goalId, deps.repoRoot, worktree.path);
       workingRun = checkpointAndTrace(
         deps,
         {
@@ -1275,6 +1302,25 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
   const previousBlocker = comments.length > 0 ? null : null; // 沒有獨立持久化上一次 blocker 文字，保守視為無上一輪
 
   const summaryActionKeyBase = `member_summary:${action.taskId}:${workingRun.headSha ?? 'none'}`;
+  let memberRunner = deps.runMemberSession!;
+  if (deps.useAgentRoutes && task.goalId && task.assigneeId) {
+    const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.agentId === task.assigneeId);
+    if (!agent || agent.status !== 'active') throw new Error('Goal Task assignee 沒有 active Agent route');
+    const primary = createMemberSessionRunner({ runner: agent.primaryAdapter, model: agent.primaryModel });
+    const fallback = agent.fallbackAdapter && agent.fallbackModel
+      ? createMemberSessionRunner({ runner: agent.fallbackAdapter, model: agent.fallbackModel }) : null;
+    memberRunner = async (context) => {
+      const fingerprint = () => `${execFileSync('git', ['rev-parse', 'HEAD'], { cwd: context.worktreePath, encoding: 'utf8' }).trim()}\n${execFileSync('git', ['status', '--porcelain'], { cwd: context.worktreePath, encoding: 'utf8' })}`;
+      const before = fingerprint();
+      try {
+        const result = await primary(context);
+        if (result.exitCode === 0 || !fallback || fingerprint() !== before) return result;
+      } catch (error) {
+        if (!fallback || fingerprint() !== before) throw error;
+      }
+      return fallback(context);
+    };
+  }
 
   const driverActions: MemberSessionDriverActions = {
     confirmReviewTransition: async () => {
@@ -1317,7 +1363,7 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     acceptanceCriteria: task.title,
     comments,
     previousBlocker,
-    runner: deps.runMemberSession!,
+    runner: memberRunner,
     runVerificationCommand: deps.runVerificationCommand,
     driverActions,
   });
@@ -1371,11 +1417,28 @@ function persistFatalError(db: DatabaseSync, fatal: FatalCoordinatorError, now: 
   failAction(db, key, JSON.stringify(fatal), now);
 }
 
-async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun): Promise<'progressed' | 'no_change'> {
+async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun, snapshot: CoordinatorSnapshot): Promise<'progressed' | 'no_change'> {
   assertNoFatalCoordinatorError(getFatalError(deps.db, action.taskId));
 
   const reviewedHeadSha = run.headSha ?? '';
   const currentTask = await deps.ownerClient.getTask(action.taskId);
+  let ownerRunner = deps.runOwnerSession!;
+  if (deps.useAgentRoutes && currentTask.goalId) {
+    const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.role === 'owner');
+    if (!agent || agent.status !== 'active') throw new Error('Goal Owner 沒有 active Agent route');
+    const primary = createOwnerSessionRunner({ runner: agent.primaryAdapter, model: agent.primaryModel });
+    const fallback = agent.fallbackAdapter && agent.fallbackModel
+      ? createOwnerSessionRunner({ runner: agent.fallbackAdapter, model: agent.fallbackModel }) : null;
+    ownerRunner = async (context) => {
+      try {
+        const result = await primary(context);
+        return result.exitCode === 0 || !fallback ? result : fallback(context);
+      } catch (error) {
+        if (!fallback) throw error;
+        return fallback(context);
+      }
+    };
+  }
   const comments = (await deps.ownerClient.listComments(action.taskId)).map((c) => c.content);
 
   const ownerResult = await runOwnerSession({
@@ -1384,7 +1447,7 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
     comments,
     reviewedHeadSha,
     worktreePath: taskWorktreePath(deps.repoRoot, action.taskId),
-    runner: deps.runOwnerSession!,
+    runner: ownerRunner,
   });
 
   if (!ownerResult.valid || !ownerResult.decision) return 'no_change';
@@ -1404,6 +1467,7 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
   if (ownerResult.decision.action !== 'accept') return 'no_change';
 
   const taskBranch = run.branch ?? taskBranchName(action.taskId);
+  const snapshotTask = snapshot.tasks.find((task) => task.taskId === action.taskId);
   const deployResult = await runDeployAcceptance({
     taskId: action.taskId,
     repoRoot: deps.repoRoot,
@@ -1411,17 +1475,33 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
     existingFatalError: getFatalError(deps.db, action.taskId),
     runBranchCi: () => deps.runBranchCi(action.taskId, taskWorktreePath(deps.repoRoot, action.taskId)),
     runIntegrationCommand: deps.runIntegrationCommand,
+    integrationCommands: snapshotTask?.verificationChecks,
     runTaskSpecificAcceptance: () => deps.runTaskSpecificAcceptance(action.taskId),
     getSystemdReadback: deps.getSystemdReadback,
     checkHealth: deps.checkHealth,
     runTaskLiveAcceptance: () => deps.runTaskLiveAcceptance(action.taskId),
     now: () => deps.now().getTime(),
     sleep: deps.sleep,
+    deployment: snapshotTask?.deployment === 'not_required' ? 'not_required' : 'required',
     trace: deps.tracer(action.taskId),
   });
 
   switch (deployResult.kind) {
     case 'deployed': {
+      if (snapshotTask?.goalId) {
+        await deps.ownerClient.markGoalWorktreeIntegrated(snapshotTask.goalId, taskWorktreePath(deps.repoRoot, action.taskId));
+        await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
+          kind: 'ci.checked', ref: taskBranch, detail: 'registered branch and integration checks passed',
+        });
+        await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
+          kind: 'merge.integrated', ref: deployResult.mergeSha, detail: `merged into ${deps.repoRoot}`,
+        });
+        await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
+          kind: snapshotTask.deployment === 'not_required' ? 'deployment_not_required' : 'deployment.verified',
+          ref: snapshotTask.deployment === 'not_required' ? 'registered-policy' : deployResult.mergeSha,
+          detail: snapshotTask.deployment === 'not_required' ? 'Project registry explicitly skips deployment' : 'deployment and live readback passed',
+        });
+      }
       const completion = await postCompletionAndTransitionToDone({
         db: deps.db,
         ownerClient: deps.ownerClient,
@@ -1431,7 +1511,9 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
         taskTitle: currentTask.title,
         acceptedHeadSha: reviewedHeadSha,
         summary: ownerResult.decision.rationale,
-        verification: 'npm test, npm run build, git diff --check, task live acceptance',
+        verification: snapshotTask?.deployment === 'not_required'
+          ? 'registered checks, merge, deployment_not_required'
+          : 'registered checks, merge, deployment and live acceptance',
         deployRev: deployResult.mergeSha,
         now: deps.now(),
       });
@@ -1626,7 +1708,7 @@ async function main(): Promise<void> {
     // 那會讓任何忘了注入的 programmatic caller（包括測試）意外叫出真 AI 並花錢。
     // runOnce() 裡缺 runner 就 throw 的那道防線因此保留。
     const result = await runOnce(live
-      ? { live, runOwnerSession: createOwnerSessionRunner(), runMemberSession: createMemberSessionRunner() }
+      ? { live, runOwnerSession: createOwnerSessionRunner(), runMemberSession: createMemberSessionRunner(), useAgentRoutes: true }
       : { live });
     for (const line of result.lines) console.log(line);
     process.exitCode = result.exitCode;

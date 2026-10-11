@@ -22,12 +22,15 @@ export const GoalsView = {
 
     async function load() {
       try {
-        const [goals, projects, members] = await Promise.all([
+        const [goals, projects, members, agents] = await Promise.all([
           api(`/api/workspaces/${encodeURIComponent(workspaceId)}/goals`),
           api(`/api/workspaces/${encodeURIComponent(workspaceId)}/projects`),
           api(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`),
+          api(`/api/workspaces/${encodeURIComponent(workspaceId)}/agents`),
         ]);
         const role = members.find(member => member.email === state.userEmail)?.role || 'Viewer';
+        const projectNames = new Map(projects.map(project => [project.project_id, project.name]));
+        const agentNames = new Map(agents.map(agent => [agent.agent_id, agent.name]));
         document.getElementById('goal-create-form').hidden = !hasRole(role, 'Member');
         projectSelect.textContent = '';
         projects.filter(project => project.status === 'active' && project.target_repo).forEach(project => {
@@ -38,14 +41,20 @@ export const GoalsView = {
           const card = el('article', { class: 'sketch-box goal-card' });
           card.appendChild(el('h3', {}, goal.objective));
           card.appendChild(el('div', { class: 'goal-meta' }, `${goal.status} / ${goal.discussion_phase || '—'} · revision ${goal.revision} · ${goal.source}`));
+          card.appendChild(el('p', {}, `Project：${projectNames.get(goal.project_id) || goal.project_id} · Owner：${agentNames.get(goal.owner_agent_id) || goal.owner_agent_id}`));
+          if (goal.parent_goal_id) card.appendChild(el('p', { class: 'muted' }, `父 Goal：${goal.parent_goal_id}`));
           card.appendChild(el('p', {}, `成功條件：${goal.success_criteria}`));
           const activity = await api(`/api/goals/${encodeURIComponent(goal.goal_id)}/activity`);
           card.appendChild(el('p', { class: 'muted' }, `參與 ${activity.participations.length} · Runs ${activity.runs.length} · Contributions ${activity.contributions.length}`));
           card.appendChild(el('p', { class: 'muted' }, `Token（實際優先／否則預估）in ${activity.tokenTotals.input} · out ${activity.tokenTotals.output} · Tasks ${activity.tasks.length}`));
+          card.appendChild(el('p', { class: 'muted' }, `Delivery evidence ${activity.deliveryEvidence.length} · 最近事件 ${activity.heartbeats.at(-1)?.phase || '—'}`));
           const evidence = JSON.parse(goal.evidence_refs_json || '[]');
           if (evidence.length) card.appendChild(el('p', {}, `證據：${evidence.join('、')}`));
           const controls = el('div', { class: 'goal-meta' });
-          for (const action of hasRole(role, 'Member') ? (goal.status === 'Paused' ? ['resume', 'cancel'] : ['pause', 'cancel']) : []) {
+          const actions = goal.status === 'Queued' ? ['start', 'cancel']
+            : goal.status === 'Paused' ? ['resume', 'cancel']
+              : ['Discussing', 'Executing', 'Verifying'].includes(goal.status) ? ['pause', 'cancel'] : [];
+          for (const action of hasRole(role, 'Member') ? actions : []) {
             const button = el('button', { type: 'button', class: action === 'cancel' ? 'btn-danger' : 'btn-secondary' }, action);
             button.onclick = async () => { await api(`/api/goals/${goal.goal_id}/${action}`, { method: 'POST' }); await load(); };
             controls.appendChild(button);

@@ -996,7 +996,8 @@ async function runTests() {
   assert.match(goalsSource, /successCriteria/);
   assert.match(goalsSource, /activity[\s\S]*participations[\s\S]*runs[\s\S]*contributions/);
   assert.match(agentsSource, /primary_adapter[\s\S]*fallback_adapter/);
-  assert.match(agentsSource, /user09@test\.local/);
+  assert.match(agentsSource, /hasRole\(role, ['"]Admin['"]\)/);
+  assert.doesNotMatch(agentsSource, /user09@test\.local/, 'Agent 管理 UI 應依 RBAC，不可寫死 email');
   assert.match(kanbanSource, /canCreateTask[\s\S]*canManageTask/);
   assert.match(kanbanSource, /MAIN_POLICY_TITLE[\s\S]*\.sort\(/);
   assert.match(kanbanSource, /const\s+renderWorkspaceId\s*=\s*state\.workspaceId[\s\S]*let\s+loadGeneration\s*=\s*0[\s\S]*async\s+function\s+loadAllData\(\)\s*\{\s*if\s*\(state\.workspaceId\s*!==\s*renderWorkspaceId\)\s*return;[\s\S]*encodeURIComponent\(renderWorkspaceId\)[\s\S]*generation\s*!==\s*loadGeneration[\s\S]*state\.workspaceId\s*!==\s*renderWorkspaceId/);

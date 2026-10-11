@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { db } from './db';
 import { resolveSafePath } from './staticPath';
@@ -54,9 +54,12 @@ import {
   getProject,
   getProjectWorkspaceId,
   listProjects,
+  markGoalWorktreeIntegrated,
+  registerGoalWorktree,
   updateProject,
   type ProjectInput,
 } from './project';
+import { loadRepoRegistry } from './repoRegistry';
 import { createComment, listComments, updateComment, getCommentContext } from './comment';
 import { registerNotificationProjections, listNotifications, listNotificationsPage, markNotificationRead } from './notification';
 import { createAttachment, listAttachments, readAttachment, deleteAttachment, getAttachmentContext, attachmentMaxBytes, contentDispositionHeader } from './attachment';
@@ -79,7 +82,8 @@ import {
 } from './goal';
 import { MAIN_OWNER_EMAIL } from './mainWorkspacePolicy';
 import { getAgent, listWorkspaceAgents, listWorkspaceAgentSummaries, syncAgents, updateAgent } from './agent';
-import { listContributions, listGoalRuns, listHeartbeats, listParticipations } from './goalRun';
+import { enqueueHeartbeat, listContributions, listGoalRuns, listHeartbeats, listParticipations } from './goalRun';
+import { listDeliveryEvidence, recordDeliveryEvidence } from './deliveryEvidence';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
@@ -108,6 +112,22 @@ function isCsrfSafe(req: IncomingMessage): boolean {
   } catch {
     return false;
   }
+}
+
+function hasCoordinatorToken(req: IncomingMessage): boolean {
+  const expected = process.env.TASK_TRACKER_COORDINATOR_TOKEN;
+  const supplied = req.headers['x-coordinator-token'];
+  if (!expected || typeof supplied !== 'string') return false;
+  const expectedBytes = Buffer.from(expected);
+  const suppliedBytes = Buffer.from(supplied);
+  return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes);
+}
+
+function requireCoordinatorToken(req: IncomingMessage, res: ServerResponse): boolean {
+  if (hasCoordinatorToken(req)) return true;
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'coordinator credential required' }));
+  return false;
 }
 
 function syncMainWorkspaceSafely(userId?: string): void {
@@ -536,6 +556,34 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
   }
 
+  const taskDeliveryMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)\/delivery-evidence$/);
+  if (taskDeliveryMatch && (req.method === 'GET' || req.method === 'POST')) {
+    const taskId = taskDeliveryMatch[1];
+    const workspaceId = getTaskWorkspaceId(taskId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'task 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, req.method === 'GET' ? ACCESS_ROLE.read : 'Admin');
+    if (!userId) return;
+    if (req.method === 'POST' && !requireCoordinatorToken(req, res)) return;
+    try {
+      if (req.method === 'POST') {
+        const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
+        recordDeliveryEvidence(taskId, { kind: body?.kind, ref: body?.ref, detail: body?.detail });
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(listDeliveryEvidence(taskId)));
+      }
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
   // 單一 task 操作：先查資源歸屬的 workspace 再驗權限（資源同 workspace 檢查 → 跨 workspace 403/404）。
   const taskMatch = req.url?.match(/^\/api\/tasks\/([^/?]+)$/);
   if (taskMatch && (req.method === 'GET' || req.method === 'PATCH' || req.method === 'DELETE')) {
@@ -569,6 +617,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
         res.end(JSON.stringify({ ok: true }));
       } else {
         applyTaskPatch(userId, taskId, body);
+        if (body.status === 'Done') {
+          const task = getTask(taskId);
+          const goal = task?.goal_id ? getGoal(task.goal_id) : null;
+          if (goal && goal.status === 'Executing') {
+            const unfinished = listTasks(goal.workspace_id).some((candidate) => candidate.goal_id === goal.goal_id && candidate.status !== 'Done' && candidate.status !== 'Archived');
+            if (!unfinished) enqueueHeartbeat({ scopeId: goal.goal_id, goalId: goal.goal_id, phase: 'verifying', agentId: goal.owner_agent_id, revision: goal.revision, triggerRef: 'tasks_done' });
+          }
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       }
@@ -664,6 +720,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
   // ── Project API（傳統 CRUD，不走 ES）───────────────────────────
+  const wsRepositoriesMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/repositories$/);
+  if (wsRepositoriesMatch && req.method === 'GET') {
+    const workspaceId = wsRepositoriesMatch[1];
+    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
+    if (!userId) return;
+    try {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([...loadRepoRegistry().values()]));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
   const wsProjectsMatch = req.url?.match(/^\/api\/workspaces\/([^/?]+)\/projects$/);
   if (wsProjectsMatch) {
     const workspaceId = wsProjectsMatch[1];
@@ -805,18 +875,44 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
     const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
     if (!userId) return;
+    const goalTasks = listTasks(workspaceId).filter((task) => task.goal_id === goalId);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       heartbeats: listHeartbeats(goalId),
       runs: listGoalRuns(goalId),
       participations: listParticipations(goalId, goal.revision),
       contributions: listContributions(goalId, goal.revision),
-      tasks: listTasks(workspaceId).filter((task) => task.goal_id === goalId),
+      tasks: goalTasks,
+      deliveryEvidence: goalTasks.flatMap((task) => listDeliveryEvidence(task.task_id)),
       tokenTotals: listGoalRuns(goalId).reduce((totals, run) => ({
         input: totals.input + (run.actual_input_tokens ?? run.estimated_input_tokens),
         output: totals.output + (run.actual_output_tokens ?? run.estimated_output_tokens),
       }), { input: 0, output: 0 }),
     }));
+    return;
+  }
+
+  const goalWorktreeMatch = req.url?.match(/^\/api\/goals\/([^/?]+)\/worktrees$/);
+  if (goalWorktreeMatch && (req.method === 'POST' || req.method === 'PATCH')) {
+    const goalId = goalWorktreeMatch[1];
+    const workspaceId = getGoalWorkspaceId(goalId);
+    if (!workspaceId) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'goal 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, workspaceId, 'Admin');
+    if (!userId) return;
+    if (!requireCoordinatorToken(req, res)) return;
+    const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
+    try {
+      if (req.method === 'POST') registerGoalWorktree(goalId, String(body?.targetRepo ?? ''), String(body?.worktreePath ?? ''));
+      else markGoalWorktreeIntegrated(goalId, String(body?.worktreePath ?? ''));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
     return;
   }
 
@@ -832,7 +928,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
     if (!userId) return;
     try {
-      if (action === 'start') startDiscussion(userId, goalId);
+      if (action === 'start') {
+        startDiscussion(userId, goalId);
+        const goal = getGoal(goalId)!;
+        enqueueHeartbeat({ scopeId: goalId, goalId, phase: 'owner_scoping', agentId: goal.owner_agent_id, revision: goal.revision, triggerRef: 'phase' });
+      }
       if (action === 'pause') pauseGoal(userId, goalId, false);
       if (action === 'resume') resumeGoal(userId, goalId);
       if (action === 'cancel') cancelGoal(userId, goalId);

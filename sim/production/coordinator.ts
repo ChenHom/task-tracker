@@ -191,12 +191,14 @@ export interface RunDeployAcceptanceInput {
   existingFatalError: FatalCoordinatorError | null;
   runBranchCi: AcceptanceCheck;
   runIntegrationCommand: IntegrationCommandRunner;
+  integrationCommands?: readonly string[];
   runTaskSpecificAcceptance: AcceptanceCheck;
   getSystemdReadback: GetSystemdReadback;
   checkHealth: CheckHealth;
   runTaskLiveAcceptance: AcceptanceCheck;
   now: () => number;
   sleep?: (ms: number) => Promise<void>;
+  deployment?: 'required' | 'not_required';
   /**
    * 選填：只有 production.ts 這一個正式呼叫端會傳，測試不傳。ci.checked 的成功案例
    * 從回傳值看不出來（DeployAcceptanceResult 只回報第一個失敗），所以必須掛在這裡面。
@@ -252,7 +254,7 @@ export async function runDeployAcceptance(input: RunDeployAcceptanceInput): Prom
   }
 
   try {
-    for (const command of INTEGRATION_COMMANDS) {
+    for (const command of input.integrationCommands ?? INTEGRATION_COMMANDS) {
       const result = await input.runIntegrationCommand(command, integration.path);
       input.trace?.('ci.checked', {
         outcome: result.exitCode === 0 ? 'ok' : 'fail',
@@ -277,6 +279,19 @@ export async function runDeployAcceptance(input: RunDeployAcceptanceInput): Prom
     }
   } finally {
     await removeIntegrationWorktree(input.repoRoot, integration);
+  }
+
+  if (input.deployment === 'not_required') {
+    const mergeSha = await mergeTaskIntoMaster(input.repoRoot, input.taskBranch, input.taskId);
+    input.trace?.('merge.integrated', {
+      evidence: { kind: 'git', ref: mergeSha },
+      detail: `${input.taskBranch} --no-ff→ master`,
+    });
+    input.trace?.('deployment.verified', {
+      evidence: { kind: 'readback', ref: 'deployment_not_required' },
+      detail: 'registered Project policy: deployment_not_required',
+    });
+    return { kind: 'deployed', mergeSha, deployObservedOutOfBand: false };
   }
 
   const preMergeReadback = await input.getSystemdReadback();

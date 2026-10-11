@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { DatabaseSync } from 'node:sqlite';
-import { resetProjections } from './eventStore';
+import { appendEvent, resetProjections } from './eventStore';
 import {
   acquireRepoLease,
   blockGoal,
@@ -21,11 +21,13 @@ import {
 import { archiveProject, getProject, updateProject } from './project';
 import type { RepoRegistry } from './repoRegistry';
 import { runMigrations } from './schema';
+import { getTask, registerTaskProjections } from './task';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
 resetProjections();
 registerGoalProjections();
+registerTaskProjections();
 
 db.prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, created_at) VALUES (?, ?, ?, ?)')
   .run('ws-1', 'Workspace', 'active', 't');
@@ -104,7 +106,13 @@ reviseGoal('human-1', revised, 'new acceptance', db);
 assert.strictEqual(getGoal(revised, db)?.status, 'Discussing');
 assert.strictEqual(getGoal(revised, db)?.discussion_phase, 'owner_synthesis');
 assert.strictEqual(getGoal(revised, db)?.revision, 2);
+const cancelledTask = 'cancelled-task';
+appendEvent('Task', cancelledTask, 0, 'task.created', {
+  workspaceId: 'ws-1', projectId: 'project-1', goalId: revised, title: 'cancel me', description: '',
+  status: 'Todo', priority: 'Medium', assigneeId: null, dueAt: null,
+}, {}, db);
 cancelGoal('human-1', revised, db);
+assert.strictEqual(getTask(cancelledTask, db)?.status, 'Archived', 'Cancelled Goal 必須以 event 封存未完成 Task');
 
 const autonomous = create('Auto', 'owner_discovery');
 assert.throws(() => create('Duplicate Auto', 'owner_discovery'), /active 自治 Goal/);

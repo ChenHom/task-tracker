@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isAbsolute, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
 import { CommandError } from './eventStore';
@@ -156,17 +157,32 @@ export function registerGoalWorktree(goalId: string, targetRepo: string, worktre
     `SELECT g.goal_id FROM goals_read_model g JOIN projects_read_model p ON p.project_id = g.project_id
       WHERE g.goal_id = ? AND p.target_repo = ?`,
   ).get(goalId, targetRepo);
-  if (!goal || !worktreePath.trim()) throw new CommandError('Goal worktree 關聯不合法');
+  const cleanPath = worktreePath.trim();
+  const repoRoot = resolve(targetRepo);
+  const relativePath = relative(repoRoot, resolve(cleanPath));
+  const pathWithinRepo = isAbsolute(cleanPath) && relativePath !== '' && !relativePath.startsWith('..');
+  if (!goal || !pathWithinRepo) throw new CommandError('Goal worktree 關聯不合法');
   const now = new Date().toISOString();
   database.prepare(
     `INSERT INTO goal_worktrees (worktree_path, goal_id, target_repo, dirty, unmerged, created_at, updated_at)
      VALUES (?, ?, ?, 0, 1, ?, ?)
      ON CONFLICT(worktree_path) DO UPDATE SET updated_at = excluded.updated_at`,
-  ).run(worktreePath, goalId, targetRepo, now, now);
+  ).run(resolve(cleanPath), goalId, targetRepo, now, now);
+}
+
+export function markGoalWorktreeIntegrated(goalId: string, worktreePath: string, database = db): void {
+  const info = database.prepare(
+    'UPDATE goal_worktrees SET dirty = 0, unmerged = 0, updated_at = ? WHERE goal_id = ? AND worktree_path = ?',
+  ).run(new Date().toISOString(), goalId, worktreePath);
+  if (info.changes === 0) throw new CommandError('Goal worktree 不存在');
 }
 
 // 遷移相容 API；新 UI 不呼叫 hard delete。
 export function deleteProject(projectId: string, database = db): void {
+  if (database.prepare('SELECT 1 FROM goals_read_model WHERE project_id = ? LIMIT 1').get(projectId)
+    || database.prepare('SELECT 1 FROM goal_worktrees w JOIN goals_read_model g ON g.goal_id = w.goal_id WHERE g.project_id = ? LIMIT 1').get(projectId)) {
+    throw new CommandError('project 已有 Goal 或 worktree 歷史，不可 hard delete');
+  }
   database.prepare('UPDATE tasks_read_model SET project_id = NULL WHERE project_id = ?').run(projectId);
   const info = database.prepare('DELETE FROM projects_read_model WHERE project_id = ?').run(projectId);
   if (info.changes === 0) throw new CommandError('project 不存在');

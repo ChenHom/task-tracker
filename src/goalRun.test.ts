@@ -47,6 +47,11 @@ const run = prepareRun({
   estimateConfidence: 'medium',
   quotaSnapshotJson: '{"cachedAt":"t"}',
 }, db);
+assert.strictEqual(prepareRun({
+  heartbeatId: heartbeat, goalId: 'goal-1', taskId: null, agentId: 'agent-2', phase: 'round_1',
+  adapter: 'claude', model: 'claude-sonnet-5-5', attempt: 'primary', estimatedInputTokens: 999,
+  estimatedOutputTokens: 999, estimateBasis: 'racing-worker', estimateConfidence: 'low', quotaSnapshotJson: '{}',
+}, db), run, '同一 heartbeat/attempt 只能 claim 同一個 Run');
 assert.strictEqual(getRun(run, db)?.status, 'pending', 'Run 必須先以 estimate/quota 持久化');
 assert.throws(() => markRunRunning('missing', db), /run 不存在/);
 markRunRunning(run, db);

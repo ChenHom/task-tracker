@@ -522,7 +522,7 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
 
   const genericCandidates = snapshot.tasks.filter(
     (task) =>
-      ALLOWED_WORKSPACE_IDS.includes(task.workspaceId) &&
+      (ALLOWED_WORKSPACE_IDS.includes(task.workspaceId) || Boolean(task.goalId && task.targetRepo)) &&
       !isExcludedTask(task) &&
       !handledIds.has(task.taskId) &&
       !isBlockedTask(task.taskId, snapshot) &&

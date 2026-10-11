@@ -31,6 +31,7 @@ interface RawResponse {
 
 export interface TaskTrackerClientOptions {
   baseUrl: string;
+  coordinatorToken?: string;
   /** 單一 request 的 socket idle timeout；預設 5000ms。 */
   timeoutMs?: number;
   /** 安全操作（health／login／GET）額外重試次數；預設 2（總共最多嘗試 3 次）。 */
@@ -134,6 +135,28 @@ export interface MemberSnapshot {
   name: string;
 }
 
+export interface WorkspaceSnapshot {
+  workspaceId: string;
+  status: string;
+}
+
+export interface ProjectSnapshot {
+  projectId: string;
+  workspaceId: string;
+  status: string;
+  targetRepo: string | null;
+}
+
+export interface AgentRouteSnapshot {
+  agentId: string;
+  role: string;
+  status: string;
+  primaryAdapter: 'claude' | 'codex' | 'agy';
+  primaryModel: string;
+  fallbackAdapter: 'claude' | 'codex' | 'agy' | null;
+  fallbackModel: string | null;
+}
+
 interface WireMemberRow {
   user_id: string;
   role: string;
@@ -183,6 +206,7 @@ export class TaskTrackerClient {
   private readonly timeoutMs: number;
   private readonly retries: number;
   private readonly retryDelayMs: number;
+  private readonly coordinatorToken: string | undefined;
   private readonly cookies = new Map<string, string>();
 
   constructor(options: TaskTrackerClientOptions) {
@@ -190,6 +214,7 @@ export class TaskTrackerClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.retries = options.retries ?? DEFAULT_RETRIES;
     this.retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+    this.coordinatorToken = options.coordinatorToken;
   }
 
   private cookieHeader(): string | undefined {
@@ -342,6 +367,37 @@ export class TaskTrackerClient {
     return tasks;
   }
 
+  async listWorkspaces(): Promise<WorkspaceSnapshot[]> {
+    const res = await this.safeRequest('GET', '/api/workspaces');
+    if (res.status !== 200) throw new Error(`listWorkspaces failed: HTTP ${res.status} ${res.body}`);
+    return (JSON.parse(res.body) as Array<{ workspace_id: string; status: string }>).map((row) => ({
+      workspaceId: row.workspace_id,
+      status: row.status,
+    }));
+  }
+
+  async listProjects(workspaceId: string): Promise<ProjectSnapshot[]> {
+    const res = await this.safeRequest('GET', `/api/workspaces/${encodeURIComponent(workspaceId)}/projects`);
+    if (res.status !== 200) throw new Error(`listProjects failed: HTTP ${res.status} ${res.body}`);
+    return (JSON.parse(res.body) as Array<{ project_id: string; workspace_id: string; status: string; target_repo: string | null }>).map((row) => ({
+      projectId: row.project_id,
+      workspaceId: row.workspace_id,
+      status: row.status,
+      targetRepo: row.target_repo,
+    }));
+  }
+
+  async listAgents(workspaceId: string): Promise<AgentRouteSnapshot[]> {
+    const res = await this.safeRequest('GET', `/api/workspaces/${encodeURIComponent(workspaceId)}/agents`);
+    if (res.status !== 200) throw new Error(`listAgents failed: HTTP ${res.status} ${res.body}`);
+    return (JSON.parse(res.body) as Array<Record<string, unknown>>).map((row) => ({
+      agentId: String(row.agent_id), role: String(row.role), status: String(row.status),
+      primaryAdapter: row.primary_adapter as AgentRouteSnapshot['primaryAdapter'], primaryModel: String(row.primary_model),
+      fallbackAdapter: (row.fallback_adapter ?? null) as AgentRouteSnapshot['fallbackAdapter'],
+      fallbackModel: row.fallback_model == null ? null : String(row.fallback_model),
+    }));
+  }
+
   async getProject(projectId: string): Promise<{ projectId: string; targetRepo: string | null }> {
     const res = await this.safeRequest('GET', `/api/projects/${encodeURIComponent(projectId)}`);
     if (res.status !== 200) throw new Error(`getProject failed: HTTP ${res.status} ${res.body}`);
@@ -353,6 +409,25 @@ export class TaskTrackerClient {
     const res = await this.safeRequest('GET', `/api/tasks/${encodeURIComponent(taskId)}/comments`);
     if (res.status !== 200) throw new Error(`listComments failed: HTTP ${res.status} ${res.body}`);
     return (JSON.parse(res.body) as WireCommentRow[]).map(mapComment);
+  }
+
+  async recordDeliveryEvidence(taskId: string, input: { kind: string; ref: string; detail: string }): Promise<void> {
+    const res = await this.rawRequest('POST', `/api/tasks/${encodeURIComponent(taskId)}/delivery-evidence`, input, this.coordinatorHeaders());
+    if (res.status !== 200 && res.status !== 201) throw new Error(`recordDeliveryEvidence failed: HTTP ${res.status} ${res.body}`);
+  }
+
+  async registerGoalWorktree(goalId: string, targetRepo: string, worktreePath: string): Promise<void> {
+    const res = await this.rawRequest('POST', `/api/goals/${encodeURIComponent(goalId)}/worktrees`, { targetRepo, worktreePath }, this.coordinatorHeaders());
+    if (res.status !== 200) throw new Error(`registerGoalWorktree failed: HTTP ${res.status} ${res.body}`);
+  }
+
+  async markGoalWorktreeIntegrated(goalId: string, worktreePath: string): Promise<void> {
+    const res = await this.rawRequest('PATCH', `/api/goals/${encodeURIComponent(goalId)}/worktrees`, { worktreePath }, this.coordinatorHeaders());
+    if (res.status !== 200) throw new Error(`markGoalWorktreeIntegrated failed: HTTP ${res.status} ${res.body}`);
+  }
+
+  private coordinatorHeaders(): Record<string, string> {
+    return this.coordinatorToken ? { 'X-Coordinator-Token': this.coordinatorToken } : {};
   }
 
   /**

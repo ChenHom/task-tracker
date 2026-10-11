@@ -131,30 +131,43 @@ export function prepareRun(input: PrepareRunInput, database = db): string {
   const quotaSnapshotJson = text(input.quotaSnapshotJson, 'quotaSnapshotJson', 100_000);
   try { JSON.parse(quotaSnapshotJson); } catch { throw new CommandError('quotaSnapshotJson 不是合法 JSON'); }
 
+  const existing = database.prepare(
+    'SELECT run_id FROM goal_runs WHERE heartbeat_id = ? AND attempt = ?',
+  ).get(heartbeatId, attempt) as { run_id: string } | undefined;
+  if (existing) return existing.run_id;
+
   const runId = randomUUID();
-  database.prepare(
-    `INSERT INTO goal_runs
-       (run_id, heartbeat_id, goal_id, task_id, agent_id, phase, adapter, model, attempt,
-        estimated_input_tokens, estimated_output_tokens, estimate_basis, estimate_confidence,
-        quota_snapshot_json, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-  ).run(
-    runId,
-    heartbeatId,
-    input.goalId == null ? null : text(input.goalId, 'goalId', 200),
-    input.taskId == null ? null : text(input.taskId, 'taskId', 200),
-    text(input.agentId, 'agentId', 200),
-    text(input.phase, 'phase', 100),
-    text(input.adapter, 'adapter', 30),
-    text(input.model, 'model', 200),
-    attempt,
-    nonNegativeInteger(input.estimatedInputTokens, 'estimatedInputTokens'),
-    nonNegativeInteger(input.estimatedOutputTokens, 'estimatedOutputTokens'),
-    text(input.estimateBasis, 'estimateBasis', 300),
-    text(input.estimateConfidence, 'estimateConfidence', 30),
-    quotaSnapshotJson,
-    new Date().toISOString(),
-  );
+  try {
+    database.prepare(
+      `INSERT INTO goal_runs
+         (run_id, heartbeat_id, goal_id, task_id, agent_id, phase, adapter, model, attempt,
+          estimated_input_tokens, estimated_output_tokens, estimate_basis, estimate_confidence,
+          quota_snapshot_json, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+    ).run(
+      runId,
+      heartbeatId,
+      input.goalId == null ? null : text(input.goalId, 'goalId', 200),
+      input.taskId == null ? null : text(input.taskId, 'taskId', 200),
+      text(input.agentId, 'agentId', 200),
+      text(input.phase, 'phase', 100),
+      text(input.adapter, 'adapter', 30),
+      text(input.model, 'model', 200),
+      attempt,
+      nonNegativeInteger(input.estimatedInputTokens, 'estimatedInputTokens'),
+      nonNegativeInteger(input.estimatedOutputTokens, 'estimatedOutputTokens'),
+      text(input.estimateBasis, 'estimateBasis', 300),
+      text(input.estimateConfidence, 'estimateConfidence', 30),
+      quotaSnapshotJson,
+      new Date().toISOString(),
+    );
+  } catch (error) {
+    const raced = database.prepare(
+      'SELECT run_id FROM goal_runs WHERE heartbeat_id = ? AND attempt = ?',
+    ).get(heartbeatId, attempt) as { run_id: string } | undefined;
+    if (raced) return raced.run_id;
+    throw error;
+  }
   return runId;
 }
 

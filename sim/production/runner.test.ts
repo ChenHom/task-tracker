@@ -6,7 +6,14 @@ import {
   ownerPrompt,
   parseMemberOutput,
   parseOwnerDecision,
+  productionRunnerEnvironment,
 } from './runner';
+
+assert.deepStrictEqual(
+  productionRunnerEnvironment({ PATH: '/bin', TASK_TRACKER_COORDINATOR_TOKEN: 'secret' }),
+  { PATH: '/bin' },
+  'coordinator credential 不可傳給 AI child process',
+);
 
 // ── extractJsonBlock ────────────────────────────────────────────────
 assert.deepStrictEqual(

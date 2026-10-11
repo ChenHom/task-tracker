@@ -91,6 +91,10 @@ interface AiSessionResult {
   logFile: string;
 }
 
+export function productionRunnerEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key, value]) => key !== 'TASK_TRACKER_COORDINATOR_TOKEN' && value !== undefined));
+}
+
 function runAiSession(
   label: string,
   route: ModelRoute,
@@ -110,7 +114,7 @@ function runAiSession(
     const child = execFile(
       invocation.command,
       invocation.args,
-      { cwd, timeout: SESSION_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 20 * 1024 * 1024 },
+      { cwd, timeout: SESSION_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 20 * 1024 * 1024, env: productionRunnerEnvironment() },
       (err, stdout, stderr) => {
         const e = err as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null;
         const timedOut = !!e && (e.killed === true || e.signal === 'SIGKILL');

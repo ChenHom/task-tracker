@@ -351,6 +351,13 @@ export function cancelGoal(actorId: string, goalId: string, database = db): void
   withTransaction(database, () => {
     const { state, version } = requireGoal(goalId, database);
     requireActive(state);
+    const tasks = database.prepare(
+      `SELECT task_id, version FROM tasks_read_model
+        WHERE goal_id = ? AND status IN ('Todo', 'Doing', 'Review')`,
+    ).all(goalId) as unknown as Array<{ task_id: string; version: number }>;
+    for (const task of tasks) {
+      appendEventInTransaction('Task', task.task_id, task.version, 'task.archived', {}, meta(actorId), database);
+    }
     database.prepare('DELETE FROM repo_leases WHERE goal_id = ?').run(goalId);
     appendEventInTransaction('Goal', goalId, version, 'goal.cancelled', {}, meta(actorId), database);
   });

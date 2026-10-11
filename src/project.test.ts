@@ -100,6 +100,8 @@ db.prepare(`INSERT INTO goals_read_model
    created_by, owner_agent_id, evidence_refs_json, version, created_at, updated_at)
   VALUES ('worktree-goal', 'ws-1', ?, 'human', 'x', 'y', 'Done', 1, 'u1', 'owner', '[]', 1, 't', 't')`).run(worktreeProject);
 registerGoalWorktree('worktree-goal', '/srv/app', '/srv/app/.worktrees/g', db);
+assert.throws(() => registerGoalWorktree('worktree-goal', '/srv/app', '/srv/escape', db), /關聯不合法/, 'worktree path 不可逃出 target repo');
+assert.throws(() => deleteProject(worktreeProject, db), /Goal 或 worktree 歷史/, 'hard delete 不可破壞 Goal 歷史');
 assert.throws(() => archiveProject(worktreeProject, db), /dirty 或未合併 worktree/);
 db.prepare("UPDATE goal_worktrees SET unmerged = 0 WHERE goal_id = 'worktree-goal'").run();
 archiveProject(worktreeProject, db);
