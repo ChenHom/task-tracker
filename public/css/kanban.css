@@ -1,8 +1,10 @@
 /* Kanban Board Styling */
 .kanban-header-bar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  row-gap: 0.8rem;
   margin-bottom: 1.5rem;
   border-bottom: 3px dashed var(--pencil-color);
   padding-bottom: 0.8rem;
@@ -11,11 +13,22 @@
   margin: 0;
   font-size: 2rem;
   font-weight: 800;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .kanban-filters {
   display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap; /* 769–830px 桌面規則下工具列放不下一列時換行，控制項本身不壓縮 */
+  max-width: 100%;
   align-items: center;
   gap: 1rem;
+}
+.kanban-filters > label,
+.kanban-filters > button,
+.kanban-filters input[type="checkbox"] {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .project-filter-label {
   font-weight: bold;
@@ -449,7 +462,25 @@
 }
 
 .kanban-title-wrapper {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 1rem;
   min-width: 0;
+  overflow: hidden;
+}
+
+#project-context {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 32rem;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.35rem 0.6rem;
+  color: var(--pencil-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .kanban-workspace-name {
@@ -462,8 +493,14 @@
 
 @media (max-width: 768px) {
   .kanban-title-wrapper {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.4rem;
     width: 100%;
     overflow: hidden;
+  }
+  #project-context {
+    max-width: 100%;
   }
   .kanban-workspace-name {
     display: block;

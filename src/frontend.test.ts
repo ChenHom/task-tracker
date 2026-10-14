@@ -45,6 +45,21 @@ class MockElement {
         this.appendChild(opt);
       }
     } else {
+      if (val.includes('class="kanban-header-bar"')) {
+        const header = new MockElement('div', { class: 'kanban-header-bar' });
+        const titleWrapper = new MockElement('div', { class: 'kanban-title-wrapper' });
+        header.appendChild(titleWrapper);
+        this.appendChild(header);
+
+        const contextMatch = val.match(/<section id="project-context"[^>]*aria-live="([^"]+)"[^>]*>([^<]*)<\/section>/);
+        if (contextMatch) {
+          const context = new MockElement('section', { id: 'project-context', class: 'sketch-box', 'aria-live': contextMatch[1] });
+          context.textContent = contextMatch[2];
+          const filterMarkerIndex = val.indexOf('<!-- Project Filter and Manage Inline -->');
+          const contextIndex = val.indexOf('id="project-context"');
+          (contextIndex < filterMarkerIndex ? titleWrapper : this).appendChild(context);
+        }
+      }
       if (val.includes('id="goal-error"')) {
         this.appendChild(new MockElement('p', { id: 'goal-error' }));
       }
@@ -590,6 +605,37 @@ async function runTests() {
     'Task Project 選單只應保留目前所屬的 archived Project');
   assert.strictEqual(archivedProjectSelect.options.find((option: MockElement) => option.value === 'project-current')?.selected, true,
     '目前所屬的 archived Project 應維持選取');
+
+  const assertProjectSectionFirst = (overlay: MockElement, mode: string) => {
+    const leftColumn = findElement(overlay, (element) => element.classList.contains('task-detail-left'));
+    assert.ok(leftColumn, `${mode} Task detail 應顯示左欄`);
+    const sections = leftColumn.childNodes.filter((element) => element.classList.contains('detail-section'));
+    assert.strictEqual(sections[0]?.childNodes[0]?.textContent, 'Project', `${mode} Task detail 左欄第一區應為 Project`);
+    assert.strictEqual(sections[1]?.childNodes[0]?.textContent, '任務名稱 *', `${mode} Task detail 左欄第二區應為任務名稱`);
+  };
+
+  bodyChildren.length = 0;
+  await openTaskDetailModal('task-project-order-editable', {
+    cachedTasks: [{ task_id: 'task-project-order-editable', title: 'Editable Task', description: '', status: 'Todo' }],
+    cachedMembers: [],
+    cachedProjects: [],
+    memberMap: new Map(),
+    memberEmailMap: new Map(),
+    onUpdate: async () => {},
+  });
+  assertProjectSectionFirst(bodyChildren.at(-1)!, '可編輯');
+
+  bodyChildren.length = 0;
+  await openTaskDetailModal('task-project-order-readonly', {
+    cachedTasks: [{ task_id: 'task-project-order-readonly', title: 'Read-only Task', description: '', status: 'Todo' }],
+    cachedMembers: [],
+    cachedProjects: [],
+    memberMap: new Map(),
+    memberEmailMap: new Map(),
+    onUpdate: async () => {},
+    currentRole: 'Viewer',
+  });
+  assertProjectSectionFirst(bodyChildren.at(-1)!, '唯讀');
 
   // Test 4: Description input keydown save and transition flow
   bodyChildren.length = 0;
@@ -1163,6 +1209,44 @@ async function runTests() {
     titleInput.value = 'Task under selected Project';
     await form.onsubmit({ preventDefault: () => {} });
     assert.strictEqual(createTaskBody?.projectId, 'project-selected', 'Create Task POST body should include the selected Project');
+    bodyChildren.length = 0;
+  }
+
+  // K2: Project context belongs to the Kanban title area and remains accessible as filters change.
+  {
+    const kanbanContainer = new MockElement('div');
+    bodyChildren.length = 0;
+    bodyChildren.push(kanbanContainer);
+    sandbox.state.workspaceId = 'ws-project-context';
+    sandbox.state.userEmail = 'test@test.com';
+    sandbox.sessionStorage.clear();
+    sandbox.api = async (url: string) => {
+      if (url === '/api/workspaces/ws-project-context/tasks') return [];
+      if (url === '/api/workspaces/ws-project-context/projects') return [
+        { project_id: 'project-context-1', name: 'Placement Project', description: 'Header context', target_repo: '/repos/placement', status: 'active' },
+      ];
+      if (url === '/api/workspaces/ws-project-context/members') return [{ user_id: 'user-1', email: 'test@test.com', role: 'Member' }];
+      if (url === '/api/workspaces/ws-project-context/goals' || url === '/api/workspaces/ws-project-context/repositories') return [];
+      throw new Error(`Unexpected Kanban context API: ${url}`);
+    };
+
+    await KanbanView.render(kanbanContainer);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const titleWrapper = findElement(kanbanContainer, node => node.classList.contains('kanban-title-wrapper'));
+    const context = findElement(kanbanContainer, node => node.id === 'project-context');
+    assert.ok(titleWrapper && context, 'Kanban header 應顯示 Project context');
+    assert.ok(titleWrapper.contains(context), 'Project context 應位於 header 標題區內');
+    assert.strictEqual(context['aria-live'], 'polite', 'Project context 應保留 polite live region');
+    assert.strictEqual(context.textContent, '目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。');
+    assert.strictEqual(context.title, context.textContent, '總覽 context 的 title 應與完整文字一致');
+
+    const projectSelect = findElement(kanbanContainer, node => node.id === 'project-filter-select');
+    assert.ok(projectSelect, 'Kanban 應顯示 Project filter');
+    projectSelect.value = 'project-context-1';
+    await projectSelect.eventListeners.change[0]();
+    assert.ok(context.textContent.includes('Placement Project'), '選定 Project 後 context 應顯示名稱');
+    assert.ok(context.textContent.includes('/repos/placement'), '選定 Project 後 context 應顯示 repo');
+    assert.strictEqual(context.title, context.textContent, '選定 Project 後 title 應與完整文字一致');
     bodyChildren.length = 0;
   }
 

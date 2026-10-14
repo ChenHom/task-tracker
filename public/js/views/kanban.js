@@ -99,6 +99,7 @@ export const KanbanView = {
           <div class="kanban-workspace-name" id="kanban-workspace-name-el" style="font-size: 1.1rem; font-weight: bold; margin-top: 0.4rem; color: var(--pencil-color);">
             看板：${state.workspaceName || ''}
           </div>
+          <section id="project-context" class="sketch-box" aria-live="polite" title="目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。">目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。</section>
         </div>
         
         <!-- Project Filter and Manage Inline -->
@@ -122,7 +123,6 @@ export const KanbanView = {
           </label>
         </div>
       </div>
-      <section id="project-context" class="sketch-box" aria-live="polite">選擇 Project 後顯示描述、repo 與 active Goal。</section>
       <dialog id="project-dialog" aria-labelledby="project-dialog-title">
         <form id="project-form" method="dialog" class="goal-toolbar">
           <h3 id="project-dialog-title">建立 Project</h3>
@@ -365,6 +365,7 @@ export const KanbanView = {
           context.textContent = selectedProject
             ? `${selectedProject.name} · ${selectedProject.description || '無描述'} · ${selectedProject.target_repo || '未設定 repo'} · 進度：${progress} · Active Goal：${goals.find(goal => goal.project_id === selectedProject.project_id && !['Done', 'Cancelled'].includes(goal.status))?.status || '無'}`
             : '目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。';
+          context.title = context.textContent;
         }
 
         renderKanbanCards(cachedTasks, projectMap, memberMap);

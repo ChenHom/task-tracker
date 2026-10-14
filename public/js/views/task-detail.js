@@ -368,8 +368,6 @@ export async function openTaskDetailModal(taskId, {
     contentSec.appendChild(description);
   }
   
-  leftEl.appendChild(contentSec);
-
   const projectSec = el('div', { class: 'detail-section sketch-box' });
   projectSec.appendChild(el('label', {}, 'Project'));
   if (canManageTask) {
@@ -392,6 +390,7 @@ export async function openTaskDetailModal(taskId, {
     projectSec.appendChild(el('div', {}, cachedProjects.find(project => project.project_id === currentTask.project_id)?.name || '無專案'));
   }
   leftEl.appendChild(projectSec);
+  leftEl.appendChild(contentSec);
 
   // Comments Section
   const commSec = el('div', { class: 'detail-section sketch-box' });
