@@ -592,56 +592,36 @@ async function runTests() {
   assert.strictEqual(listeners['keydown'].length, 1, 'Duplicate open should cleanup previous keydown listeners on document');
   assert.strictEqual(windowListeners['keydown'].length, 1, 'Duplicate open should cleanup previous keydown listeners on window');
 
-  // Archived Project 只保留 Task 目前所屬者，避免歷史關聯顯示成「無專案」。
-  bodyChildren.length = 0;
-  await openTaskDetailModal('task-archived-project', {
-    cachedTasks: [{ task_id: 'task-archived-project', title: 'Done Task', description: '', status: 'Done', project_id: 'project-current' }],
-    cachedMembers: [],
-    cachedProjects: [
-      { project_id: 'project-current', name: 'Current Archived', status: 'archived' },
-      { project_id: 'project-other', name: 'Other Archived', status: 'archived' },
-    ],
-    memberMap: new Map(),
-    memberEmailMap: new Map(),
-    onUpdate: async () => {},
-  });
-  const archivedProjectSelect = findElement(bodyChildren.at(-1)!, (element) => element['aria-label'] === 'Task Project');
-  assert.ok(archivedProjectSelect, 'Task Project 選單應存在');
-  assert.deepStrictEqual(archivedProjectSelect.options.map((option: MockElement) => option.value), ['', 'project-current'],
-    'Task Project 選單只應保留目前所屬的 archived Project');
-  assert.strictEqual(archivedProjectSelect.options.find((option: MockElement) => option.value === 'project-current')?.selected, true,
-    '目前所屬的 archived Project 應維持選取');
-
-  const assertProjectSectionFirst = (overlay: MockElement, mode: string) => {
+  // Task detail 不顯示 Project（2026-10-14 使用者決定移除），左欄第一區是任務名稱。
+  const assertNoProjectSection = (overlay: MockElement, mode: string) => {
     const leftColumn = findElement(overlay, (element) => element.classList.contains('task-detail-left'));
     assert.ok(leftColumn, `${mode} Task detail 應顯示左欄`);
     const sections = leftColumn.childNodes.filter((element) => element.classList.contains('detail-section'));
-    assert.strictEqual(sections[0]?.childNodes[0]?.textContent, 'Project', `${mode} Task detail 左欄第一區應為 Project`);
-    assert.strictEqual(sections[1]?.childNodes[0]?.textContent, '任務名稱 *', `${mode} Task detail 左欄第二區應為任務名稱`);
+    assert.strictEqual(sections[0]?.childNodes[0]?.textContent, '任務名稱 *', `${mode} Task detail 左欄第一區應為任務名稱`);
+    assert.ok(!sections.some((section) => section.childNodes[0]?.textContent === 'Project'), `${mode} Task detail 不應有 Project 區塊`);
+    assert.strictEqual(findElement(overlay, (element) => element['aria-label'] === 'Task Project'), null, `${mode} Task detail 不應有 Project 選單`);
   };
 
   bodyChildren.length = 0;
   await openTaskDetailModal('task-project-order-editable', {
-    cachedTasks: [{ task_id: 'task-project-order-editable', title: 'Editable Task', description: '', status: 'Todo' }],
+    cachedTasks: [{ task_id: 'task-project-order-editable', title: 'Editable Task', description: '', status: 'Todo', project_id: 'project-1' }],
     cachedMembers: [],
-    cachedProjects: [],
     memberMap: new Map(),
     memberEmailMap: new Map(),
     onUpdate: async () => {},
   });
-  assertProjectSectionFirst(bodyChildren.at(-1)!, '可編輯');
+  assertNoProjectSection(bodyChildren.at(-1)!, '可編輯');
 
   bodyChildren.length = 0;
   await openTaskDetailModal('task-project-order-readonly', {
-    cachedTasks: [{ task_id: 'task-project-order-readonly', title: 'Read-only Task', description: '', status: 'Todo' }],
+    cachedTasks: [{ task_id: 'task-project-order-readonly', title: 'Read-only Task', description: '', status: 'Todo', project_id: 'project-1' }],
     cachedMembers: [],
-    cachedProjects: [],
     memberMap: new Map(),
     memberEmailMap: new Map(),
     onUpdate: async () => {},
     currentRole: 'Viewer',
   });
-  assertProjectSectionFirst(bodyChildren.at(-1)!, '唯讀');
+  assertNoProjectSection(bodyChildren.at(-1)!, '唯讀');
 
   // Test 4: Description input keydown save and transition flow
   bodyChildren.length = 0;
@@ -1311,9 +1291,6 @@ async function runTests() {
   assert.match(kanbanSource, /targetRepo:\s*document\.getElementById\(['"]project-target-repo['"]\)\.value\s*\|\|\s*null/,
     '建立或編輯未設定 repo 的 Project 必須送出 null');
   assert.doesNotMatch(kanbanSource, /prompt\(['"]請輸入新專案名稱/);
-  assert.match(taskDetailSource, /aria-label['"]?:\s*['"]Task Project['"][\s\S]*projectId/);
-  assert.match(taskDetailSource, /project\.status !== ['"]archived['"]\s*\|\|\s*project\.project_id === currentTask\.project_id/,
-    'Task 目前所屬 archived Project 必須保留在選單');
   assert.match(routesSource, /registerRoute\(['"]goals['"],[\s\S]*registerRoute\(['"]agents['"]/);
   assert.match(goalsSource, /successCriteria/);
   assert.match(goalsSource, /goal-data-scope/);

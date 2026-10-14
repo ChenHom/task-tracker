@@ -383,7 +383,6 @@ export const KanbanView = {
         if (openTaskId) {
           openTaskDetailModal(openTaskId, {
             cachedTasks,
-            cachedProjects,
             cachedMembers,
             memberMap,
             memberEmailMap,

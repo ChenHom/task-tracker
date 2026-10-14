@@ -421,7 +421,7 @@ Workspace 頂部的 Project 從單純篩選提升為明確上下文：
 - 建立使用正式 dialog，不再使用原生 `prompt()`。
 - 可編輯名稱、描述、target repo，並可在符合條件時封存。
 
-建立 Task 時明確顯示 Project，預設目前選取的 Project。Task detail 可以切換同 Workspace 的 active Project 或設為無 Project。後端必須驗證 Project 存在、active 且屬於同一 Workspace；Task 搬移 Workspace 時沿用現行清空 Project 的行為。
+建立 Task 時明確顯示 Project，預設目前選取的 Project。Task detail 不顯示也不提供切換 Project（2026-10-14 使用者決定移除）；建立後要改 Project 只能走 `PATCH /api/tasks/:id`。後端必須驗證 Project 存在、active 且屬於同一 Workspace；Task 搬移 Workspace 時沿用現行清空 Project 的行為。
 
 ### Goals
 
@@ -488,7 +488,7 @@ Project -> Goal -> 兩輪討論 -> Owner synthesis -> Task
 
 ### 前端與 live smoke
 
-- Project 建立、搜尋、選擇、記憶、Task 關聯修改與封存顯示。
+- Project 建立、搜尋、選擇、記憶、建立 Task 時的 Project 預設與封存顯示。
 - Goals／Agents 桌面、觸控及鍵盤操作。
 - 正式 service health 與部署 revision readback。
 - AGY 討論與 coding 各一次真實 smoke。
