@@ -500,6 +500,8 @@ systemctl --user enable --now sim-sweep-owner.timer sim-sweep-team.timer
 | `10e65231-a4b2-4bdb-aab4-9f3c5fb0e916`（mainDiscussion） | `00123ef0...` 前置條件通過後機械式結案一次，不建立新 Owner AI action |
 | `027c0052-46d5-4da7-90fa-dd8efb2219fc`（deferredAssignment） | 依賴 `938aa035...`；解除前維持 Todo／unassigned／`queued`；解除後固定指派 user05 |
 
+當這五筆固定 cutover task 都處於終態（`Done` 或 `Archived`）時，cutover 視為已結案：coordinator 不再驗證 `completedPrerequisite` 的歷史證據鏈，也不再對這五筆 task 套用固定 disposition，改以一般 policy 處理目前看板。只要其中任一筆仍是非終態，既有固定 disposition 與完整證據鏈閘門維持不變。已結案的 `--once` discovery 不會產生 `CutoverPrerequisiteMissing`，依 Exit code 契約回 `0`。
+
 另有兩筆永遠排除（`isExcludedTask`，ID 為主、canonical title 為輔的雙重規則）：`27ec8d7e-8605-468c-9f2c-13a80bef2a5a`（`[規則] 主工作區協作與交接`，mainPolicy）與 `8be538bc-ffc6-4122-9757-026a54ba813f`（`[討論] 方向與下一步`，legacyCanonicalDiscussion）——两者只出現在 manifest 的 excluded 清單，永遠不建立 checkpoint、lease、action 或 mutation。
 
 `027c0052...`／`6384b6f4...` 的依賴解除條件是 `isActiveReviewGateOpen`：`938aa035...` 的看板 status 必須是 **Done**（不是 Doing／Review），**且**它的 accepted head（coordinator 自己 `task_runs` checkpoint 記錄的 `headSha`）必須驗證是目前 master 的祖先——這是「Done readback」，不是單看狀態欄位。gate 未開啟前兩者的 coordinator checkpoint 都固定寫成 `queued`。

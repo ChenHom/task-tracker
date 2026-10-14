@@ -44,6 +44,7 @@ import {
 } from './production/api';
 import {
   selectCoordinatorActions,
+  isCutoverSettled,
   isExcludedTask,
   validatePrerequisiteEvidence,
   MAIN_WORKSPACE_ID,
@@ -695,6 +696,8 @@ export interface RunOnceOptions {
   sleep?: (ms: number) => Promise<void>;
   /** 測試以 memory sink 注入，避免寫進 sim-logs/trace 並汙染終端輸出。 */
   traceSink?: TraceSink;
+  performDiscovery?: typeof performDiscovery;
+  gatherSnapshot?: (deps: GatherSnapshotDeps) => Promise<CoordinatorSnapshot>;
 }
 
 export interface RunOnceResult {
@@ -806,7 +809,7 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
     beginTick(db, tickId, now());
     trace('run.started', { detail: `coordinator tick ${tickId}` });
 
-    const discovery = await performDiscovery(baseUrl, isServiceActive, coordinatorToken);
+    const discovery = await (options.performDiscovery ?? performDiscovery)(baseUrl, isServiceActive, coordinatorToken);
     if (!discovery.ok) {
       lines.push(`DiscoveryUnavailable: ${discovery.reason}`);
       endTickAndTrace(db, trace, { tickId, outcome: 'discovery_unavailable', discoveredCount: 0, processedCount: 0, skippedCount: 0, errorCount: 1, error: discovery.reason }, now());
@@ -849,12 +852,15 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
       taskChecks,
     };
 
-    const snapshot = await gatherSnapshot(deps);
+    const snapshot = await (options.gatherSnapshot ?? gatherSnapshot)(deps);
     const actions = selectCoordinatorActions(snapshot, now());
-    const prerequisiteSatisfied = validatePrerequisiteEvidence(snapshot.prerequisiteEvidence);
+    const cutoverSettled = isCutoverSettled(snapshot.tasks);
+    const prerequisiteSatisfied = cutoverSettled || validatePrerequisiteEvidence(snapshot.prerequisiteEvidence);
     const prereqMissing = actions.find((a) => a.kind === 'cutover_prerequisite_missing');
 
-    lines.push(...describeCutoverDisposition(snapshot.tasks, snapshot.userIdsByEmail, prerequisiteSatisfied));
+    lines.push(...(cutoverSettled
+      ? ['cutover 固定處置已結案']
+      : describeCutoverDisposition(snapshot.tasks, snapshot.userIdsByEmail, prerequisiteSatisfied)));
     lines.push(...(snapshot.warnings ?? []).map((warning) => `warning: ${warning}`));
     lines.push(`app rev: ${discovery.healthRev}`);
     lines.push(`planned actions this tick: ${actions.length}`);

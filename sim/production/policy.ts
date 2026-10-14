@@ -437,6 +437,20 @@ function isBlockedTask(taskId: string, snapshot: CoordinatorSnapshot): boolean {
 // selectCoordinatorActions
 // ---------------------------------------------------------------------------
 
+export function isCutoverSettled(tasks: TaskSnapshot[]): boolean {
+  const tasksById = new Map(tasks.map((task) => [task.taskId, task] as const));
+  return [
+    CUTOVER_TASKS.mainDiscussion,
+    CUTOVER_TASKS.activeReview.taskId,
+    CUTOVER_TASKS.queuedReview.taskId,
+    CUTOVER_TASKS.completedPrerequisite.taskId,
+    CUTOVER_TASKS.deferredAssignment.taskId,
+  ].every((taskId) => {
+    const status = tasksById.get(taskId)?.status;
+    return status === 'Done' || status === 'Archived';
+  });
+}
+
 export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Date): CoordinatorAction[] {
   snapshot = {
     ...snapshot,
@@ -446,13 +460,14 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
     )),
   };
   const tasksById = new Map(snapshot.tasks.map((t) => [t.taskId, t] as const));
+  const cutoverSettled = isCutoverSettled(snapshot.tasks);
   const reservedAssignees = new Set<string>();
   const actions: CoordinatorAction[] = [];
 
   // 1) Fixed cutover disposition：activeReview（938aa035）是 user06 唯一可執行 action，
   //    優先於一般排序，且不受同狀態 task 的 updated_at 影響。
   const activeReviewTask = tasksById.get(CUTOVER_TASKS.activeReview.taskId);
-  if (activeReviewTask && !isExcludedTask(activeReviewTask) && !isUnresumableHumanBlocked(activeReviewTask.taskId, snapshot)) {
+  if (!cutoverSettled && activeReviewTask && !isExcludedTask(activeReviewTask) && !isUnresumableHumanBlocked(activeReviewTask.taskId, snapshot)) {
     if (activeReviewTask.status === 'Review') {
       const assigneeId = activeReviewTask.assigneeId ?? snapshot.userIdsByEmail[CUTOVER_TASKS.activeReview.assigneeEmail] ?? null;
       actions.push({
@@ -478,7 +493,7 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
 
   // 2) completedPrerequisite（00123ef0）：只驗證證據鏈，永遠不產生指派／branch／AI action。
   const prerequisiteTask = tasksById.get(CUTOVER_TASKS.completedPrerequisite.taskId);
-  if (prerequisiteTask) {
+  if (!cutoverSettled && prerequisiteTask) {
     const satisfied = validatePrerequisiteEvidence(snapshot.prerequisiteEvidence);
     if (!satisfied) {
       actions.push({
@@ -495,7 +510,7 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
   // 3) deferredAssignment（027c0052）：只有在 activeReview 的 readback 狀態是 Done
   //    之後，才產生指派 user05 的 action；在此之前保持 queued／unassigned、零 action。
   const deferredTask = tasksById.get(CUTOVER_TASKS.deferredAssignment.taskId);
-  if (deferredTask && !isUnresumableHumanBlocked(deferredTask.taskId, snapshot)) {
+  if (!cutoverSettled && deferredTask && !isUnresumableHumanBlocked(deferredTask.taskId, snapshot)) {
     const gateTask = tasksById.get(CUTOVER_TASKS.deferredAssignment.afterTaskId);
     const gateDone = gateTask?.status === 'Done';
     if (gateDone && !deferredTask.assigneeId) {
@@ -514,14 +529,14 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
   // 4) 主討論（10e65231）：mainDiscussionNeedsOwner(status) 不再是 production policy；
   //    只有 fingerprint 變化或已到期才建立 Owner action。
   const mainDiscussionTask = tasksById.get(CUTOVER_TASKS.mainDiscussion);
-  if (mainDiscussionTask && !isUnresumableHumanBlocked(mainDiscussionTask.taskId, snapshot)) {
+  if (!cutoverSettled && mainDiscussionTask && !isUnresumableHumanBlocked(mainDiscussionTask.taskId, snapshot)) {
     const action = buildMainDiscussionAction(mainDiscussionTask, snapshot, now);
     if (action) actions.push(action);
   }
 
   // 5) 其餘所有 in-scope task 走 generic 排序：Review > 已指派 Doing > Todo，
   //    同一 assignee 在本次 tick 只會取得一個非 blocked WIP action（WIP1）。
-  const handledIds = new Set<string>([
+  const handledIds = new Set<string>(cutoverSettled ? [] : [
     CUTOVER_TASKS.activeReview.taskId,
     CUTOVER_TASKS.completedPrerequisite.taskId,
     CUTOVER_TASKS.deferredAssignment.taskId,
