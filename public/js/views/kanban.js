@@ -98,22 +98,21 @@ export const KanbanView = {
           <div class="kanban-workspace-name" id="kanban-workspace-name-el" style="font-size: 1.1rem; font-weight: bold; margin-top: 0.4rem; color: var(--pencil-color);">
             看板：${state.workspaceName || ''}
           </div>
-          <section id="project-context" class="sketch-box" aria-live="polite" title="目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。">目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。</section>
         </div>
         
         <!-- Project Filter and Manage Inline -->
         <div class="kanban-filters">
           <label class="project-filter-label">
-            <span class="filter-label">專案篩選:</span>
+            <span class="filter-label">Project</span>
             <select id="project-filter-select">
               <option value="all">所有專案</option>
               <option value="none">無專案</option>
             </select>
           </label>
-          <input id="project-search-input" type="search" placeholder="搜尋 Project" aria-label="搜尋 Project">
-          <label><input type="checkbox" id="show-archived-projects"> 顯示已封存 Project</label>
-          <button type="button" id="create-project-button" class="btn-secondary">新增 Project</button>
-          <button type="button" id="manage-project-button" class="btn-secondary">編輯選取 Project</button>
+          <input id="project-search-input" type="search" placeholder="搜尋 Project" aria-label="搜尋 Project" hidden>
+          <label id="show-archived-projects-label" hidden><input type="checkbox" id="show-archived-projects"> 顯示已封存 Project</label>
+          <button type="button" id="manage-project-button" class="btn-secondary" title="編輯選取的 Project" hidden>編輯</button>
+          <button type="button" id="create-project-button" class="btn-secondary" title="新增 Project">＋ 新增</button>
           
           <label class="toggle-archived-label">
             <input type="checkbox" id="toggle-archived-checkbox"${savedShowArchived ? ' checked' : ''}>
@@ -121,6 +120,7 @@ export const KanbanView = {
             <span class="mobile-text">已歸檔</span>
           </label>
         </div>
+        <section id="project-context" aria-live="polite"></section>
       </div>
       <dialog id="project-dialog" aria-labelledby="project-dialog-title">
         <form id="project-form" method="dialog" class="goal-toolbar">
@@ -354,6 +354,15 @@ export const KanbanView = {
         }
 
         const selectedProject = projects.find(project => project.project_id === filterSelect?.value);
+        // ponytail: 搜尋框只在 Project 多時出現（規格「Project 多時可搜尋」），門檻 8 是經驗值
+        const searchInput = document.getElementById('project-search-input');
+        if (searchInput) searchInput.hidden = projects.length <= 8 && !searchInput.value;
+        const archivedToggle = document.getElementById('show-archived-projects-label');
+        if (archivedToggle) archivedToggle.hidden = !projects.some(project => project.status === 'archived');
+        const manageButton = document.getElementById('manage-project-button');
+        if (manageButton) manageButton.hidden = !selectedProject || !canManageTask;
+        const createButton = document.getElementById('create-project-button');
+        if (createButton) createButton.hidden = !canManageTask;
         const context = document.getElementById('project-context');
         if (context) {
           const projectTasks = selectedProject
@@ -361,9 +370,10 @@ export const KanbanView = {
             : [];
           const completedTasks = projectTasks.filter(task => task.status === 'Done').length;
           const progress = projectTasks.length ? `${completedTasks}/${projectTasks.length} (${Math.round(completedTasks / projectTasks.length * 100)}%)` : '0/0';
+          // 總覽時留空，CSS :empty 會收起這一行
           context.textContent = selectedProject
-            ? `${selectedProject.name} · ${selectedProject.description || '無描述'} · ${selectedProject.target_repo || '未設定 repo'} · 進度：${progress} · Active Goal：${goals.find(goal => goal.project_id === selectedProject.project_id && !['Done', 'Cancelled'].includes(goal.status))?.status || '無'}`
-            : '目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。';
+            ? `${selectedProject.description || '無描述'} · ${selectedProject.target_repo || '未設定 repo'} · 進度：${progress} · Active Goal：${goals.find(goal => goal.project_id === selectedProject.project_id && !['Done', 'Cancelled'].includes(goal.status))?.status || '無'}`
+            : '';
           context.title = context.textContent;
         }
 

@@ -57,7 +57,7 @@ class MockElement {
           context.textContent = contextMatch[2];
           const filterMarkerIndex = val.indexOf('<!-- Project Filter and Manage Inline -->');
           const contextIndex = val.indexOf('id="project-context"');
-          (contextIndex < filterMarkerIndex ? titleWrapper : this).appendChild(context);
+          (contextIndex < filterMarkerIndex ? titleWrapper : header).appendChild(context);
         }
       }
       if (val.includes('id="goal-error"')) {
@@ -68,6 +68,9 @@ class MockElement {
       }
       for (const match of val.matchAll(/id="(cards-[A-Za-z]+)"/g)) {
         this.appendChild(new MockElement('div', { id: match[1] }));
+      }
+      for (const match of val.matchAll(/id="((?:manage|create)-project-button)"/g)) {
+        this.appendChild(new MockElement('button', { id: match[1] }));
       }
       if (val.includes('id="project-filter-select"')) {
         const select = new MockElement('select', { id: 'project-filter-select' });
@@ -1215,7 +1218,7 @@ async function runTests() {
     bodyChildren.length = 0;
   }
 
-  // K2: Project context belongs to the Kanban title area and remains accessible as filters change.
+  // K2: Project context 是 header 最後一行，總覽時留空（CSS :empty 收起），選定 Project 後顯示資訊。
   {
     const kanbanContainer = new MockElement('div');
     bodyChildren.length = 0;
@@ -1235,19 +1238,21 @@ async function runTests() {
 
     await KanbanView.render(kanbanContainer);
     await new Promise(resolve => setTimeout(resolve, 20));
-    const titleWrapper = findElement(kanbanContainer, node => node.classList.contains('kanban-title-wrapper'));
+    const header = findElement(kanbanContainer, node => node.classList.contains('kanban-header-bar'));
     const context = findElement(kanbanContainer, node => node.id === 'project-context');
-    assert.ok(titleWrapper && context, 'Kanban header 應顯示 Project context');
-    assert.ok(titleWrapper.contains(context), 'Project context 應位於 header 標題區內');
+    assert.ok(header && context, 'Kanban header 應有 Project context');
+    assert.ok(header.contains(context), 'Project context 應位於 header 內');
     assert.strictEqual(context['aria-live'], 'polite', 'Project context 應保留 polite live region');
-    assert.strictEqual(context.textContent, '目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。');
-    assert.strictEqual(context.title, context.textContent, '總覽 context 的 title 應與完整文字一致');
+    assert.strictEqual(context.textContent, '', '總覽時 Project context 應留空');
+    const manageButton = findElement(kanbanContainer, node => node.id === 'manage-project-button');
+    assert.strictEqual(manageButton?.hidden, true, '總覽時不應顯示「編輯」Project');
 
     const projectSelect = findElement(kanbanContainer, node => node.id === 'project-filter-select');
     assert.ok(projectSelect, 'Kanban 應顯示 Project filter');
     projectSelect.value = 'project-context-1';
     await projectSelect.eventListeners.change[0]();
-    assert.ok(context.textContent.includes('Placement Project'), '選定 Project 後 context 應顯示名稱');
+    assert.ok(context.textContent.includes('Header context'), '選定 Project 後 context 應顯示描述');
+    assert.strictEqual(manageButton.hidden, false, '選定 Project 後應顯示「編輯」Project');
     assert.ok(context.textContent.includes('/repos/placement'), '選定 Project 後 context 應顯示 repo');
     assert.strictEqual(context.title, context.textContent, '選定 Project 後 title 應與完整文字一致');
     bodyChildren.length = 0;

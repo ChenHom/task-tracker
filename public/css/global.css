@@ -264,6 +264,11 @@ body {
   text-align: center;
 }
 
+/* hidden 屬性要壓過下面 button 等元件的 display */
+[hidden] {
+  display: none !important;
+}
+
 /* Global button styles - mechanical press-down active state */
 button {
   font-family: inherit;

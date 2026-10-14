@@ -4,7 +4,7 @@
   flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  row-gap: 0.8rem;
+  gap: 0.8rem 1rem;
   margin-bottom: 1.5rem;
   border-bottom: 3px dashed var(--pencil-color);
   padding-bottom: 0.8rem;
@@ -18,7 +18,7 @@
 }
 .kanban-filters {
   display: flex;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   flex-wrap: wrap; /* 769–830px 桌面規則下工具列放不下一列時換行，控制項本身不壓縮 */
   max-width: 100%;
   align-items: center;
@@ -32,7 +32,7 @@
 }
 .project-filter-label {
   font-weight: bold;
-  display: none;
+  display: flex;
   align-items: center;
   gap: 0.3rem;
 }
@@ -40,13 +40,13 @@
   font-size: 0.9rem;
   padding: 0.25rem 0.5rem;
   font-family: inherit;
-  max-width: 180px;
+  max-width: 16rem;
   text-overflow: ellipsis;
   overflow: hidden;
   white-space: nowrap;
 }
 .toggle-archived-label {
-  margin-left: clamp(0.3rem, 2vw, 1rem);
+  margin-left: auto;
   font-weight: bold;
   cursor: pointer;
   display: flex;
@@ -463,24 +463,27 @@
 
 .kanban-title-wrapper {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   align-items: center;
   gap: 1rem;
   min-width: 0;
   overflow: hidden;
 }
 
+/* 選定 Project 時的資訊列：獨占 header 最後一行；總覽時內容為空就收起 */
 #project-context {
-  flex: 1 1 auto;
+  flex: 1 0 100%;
   min-width: 0;
-  max-width: 32rem;
-  box-sizing: border-box;
+  max-width: 100%; /* 手機版 header 是 column + flex-start，不設上限會撐到文字全長 */
   margin: 0;
-  padding: 0.35rem 0.6rem;
-  color: var(--pencil-color);
+  font-size: 0.9rem;
+  color: #4b5563;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+#project-context:empty {
+  display: none;
 }
 
 .kanban-workspace-name {
@@ -498,9 +501,6 @@
     gap: 0.4rem;
     width: 100%;
     overflow: hidden;
-  }
-  #project-context {
-    max-width: 100%;
   }
   .kanban-workspace-name {
     display: block;
