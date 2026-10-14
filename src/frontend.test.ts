@@ -66,6 +66,9 @@ class MockElement {
       if (val.includes('id="goal-detail"')) {
         this.appendChild(new MockElement('div', { id: 'goal-detail' }));
       }
+      for (const match of val.matchAll(/id="(cards-[A-Za-z]+)"/g)) {
+        this.appendChild(new MockElement('div', { id: match[1] }));
+      }
       if (val.includes('id="project-filter-select"')) {
         const select = new MockElement('select', { id: 'project-filter-select' });
         const optAll = new MockElement('option', { value: 'all' });
@@ -1247,6 +1250,46 @@ async function runTests() {
     assert.ok(context.textContent.includes('Placement Project'), '選定 Project 後 context 應顯示名稱');
     assert.ok(context.textContent.includes('/repos/placement'), '選定 Project 後 context 應顯示 repo');
     assert.strictEqual(context.title, context.textContent, '選定 Project 後 title 應與完整文字一致');
+    bodyChildren.length = 0;
+  }
+
+  // 卡片 Project 標籤只在「所有專案」總覽顯示；選定單一 Project 時標題旁已有 Project 資訊。
+  {
+    const kanbanContainer = new MockElement('div');
+    bodyChildren.length = 0;
+    bodyChildren.push(kanbanContainer);
+    sandbox.state.workspaceId = 'ws-card-badge';
+    sandbox.state.userEmail = 'test@test.com';
+    sandbox.sessionStorage.clear();
+    sandbox.api = async (url: string) => {
+      if (url === '/api/workspaces/ws-card-badge/tasks') return [{
+        task_id: 'badge-task-1', workspace_id: 'ws-card-badge', project_id: 'badge-project-1', title: 'Badge task',
+        description: '', status: 'Todo', priority: 'Medium', assignee_id: 'user-1', creator_id: 'user-1',
+        due_at: null, updated_at: '2026-10-14T00:00:00.000Z',
+      }];
+      if (url === '/api/workspaces/ws-card-badge/projects') return [
+        { project_id: 'badge-project-1', name: 'Badge Project', description: '', target_repo: null, status: 'active' },
+      ];
+      if (url === '/api/workspaces/ws-card-badge/members') return [{ user_id: 'user-1', email: 'test@test.com', role: 'Member' }];
+      if (url === '/api/workspaces/ws-card-badge/goals' || url === '/api/workspaces/ws-card-badge/repositories') return [];
+      throw new Error(`Unexpected Kanban badge API: ${url}`);
+    };
+
+    await KanbanView.render(kanbanContainer);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const todoColumn = () => mockDocument.getElementById('cards-Todo');
+    const badgeOf = () => findElement(todoColumn(), node => node.classList.contains('badge-project'));
+    assert.ok(findElement(todoColumn(), node => node.textContent === 'Badge task'), '總覽時應顯示卡片');
+    assert.ok(badgeOf(), '總覽時卡片應顯示 Project 標籤');
+    assert.strictEqual(badgeOf().textContent, 'Badge Project');
+
+    const projectSelect = findElement(kanbanContainer, node => node.id === 'project-filter-select');
+    // MockElement 的 textContent 是一般欄位，renderKanbanCards 的 `textContent = ''` 清不掉子節點；真實 DOM 會清，這裡手動模擬
+    todoColumn().childNodes.length = 0;
+    projectSelect.value = 'badge-project-1';
+    await projectSelect.eventListeners.change[0]();
+    assert.ok(findElement(todoColumn(), node => node.textContent === 'Badge task'), '選定 Project 後卡片仍應顯示');
+    assert.strictEqual(badgeOf(), null, '選定單一 Project 時卡片不應再顯示 Project 標籤');
     bodyChildren.length = 0;
   }
 

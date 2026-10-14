@@ -286,6 +286,7 @@ export const KanbanView = {
     let cachedMembers = [];
     let cachedGoals = [];
     let cachedRepos = [];
+    let projectMap = new Map();
     let memberMap = new Map();
     let memberEmailMap = new Map();
 
@@ -322,6 +323,7 @@ export const KanbanView = {
         cachedMembers = members;
         cachedGoals = goals;
         cachedRepos = repos;
+        projectMap = new Map(projects.map(p => [p.project_id, p.name]));
         memberMap = new Map(members.map(m => [m.user_id, m.name || m.email]));
         memberEmailMap = new Map(members.map(m => [m.user_id, m.email]));
         const currentMember = members.find(m => m.email === state.userEmail);
@@ -365,7 +367,7 @@ export const KanbanView = {
           context.title = context.textContent;
         }
 
-        renderKanbanCards(cachedTasks, memberMap);
+        renderKanbanCards(cachedTasks, projectMap, memberMap);
 
         // 如果有指定開啟任務，則彈出 modal
         if (openTaskId) {
@@ -395,10 +397,11 @@ export const KanbanView = {
     /**
      * Distributes, filters, and renders individual task nodes within respective column elements.
      * @param {Array<Object>} tasks - Cached array of workspace tasks.
+     * @param {Map<string, string>} projectMap - Associated workspace project mappings.
      * @param {Map<string, string>} memberMap - Member display names lookup.
      * @returns {void}
      */
-    function renderKanbanCards(tasks, memberMap) {
+    function renderKanbanCards(tasks, projectMap, memberMap) {
       const columns = ['Todo', 'Doing', 'Review', 'Done', 'Archived'];
       columns.forEach(s => {
         const container = document.getElementById(`cards-${s}`);
@@ -463,11 +466,16 @@ export const KanbanView = {
         // Mid Section: Meta, Assignee, Time
         const midEl = el('div', { class: 'task-card-mid clickable-section' });
 
-        // Meta (Priority)
+        // Meta (Priority, Project)
         const metaEl = el('div', { class: 'task-card-meta' });
         const pClass = `badge badge-${task.priority.toLowerCase()}`;
         metaEl.appendChild(el('span', { class: pClass }, task.priority));
 
+        // 只在「所有專案」總覽顯示：選定單一 Project 時標題旁已有 Project 資訊
+        if (projectFilterVal === 'all' && task.project_id) {
+          const projName = projectMap.get(task.project_id) || '未知專案';
+          metaEl.appendChild(el('span', { class: 'badge badge-project' }, projName));
+        }
         midEl.appendChild(metaEl);
 
         // Creator & Assignee
@@ -784,7 +792,7 @@ export const KanbanView = {
     if (toggleArchivedCheckbox) {
       toggleArchivedCheckbox.addEventListener('change', () => {
         sessionStorage.setItem(`kanban_filter_show_archived_${state.workspaceId}`, toggleArchivedCheckbox.checked);
-        renderKanbanCards(cachedTasks, memberMap);
+        renderKanbanCards(cachedTasks, projectMap, memberMap);
       });
     }
 
