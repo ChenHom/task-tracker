@@ -176,6 +176,16 @@ export interface CoordinatorAction {
   errorCode?: 'CutoverPrerequisiteMissing';
 }
 
+export interface CoordinatorSkip {
+  taskId: string;
+  reason: string;
+}
+
+export interface CoordinatorPlan {
+  actions: CoordinatorAction[];
+  skips: CoordinatorSkip[];
+}
+
 // ---------------------------------------------------------------------------
 // 排除規則：ID + canonical title 雙重規則
 // ---------------------------------------------------------------------------
@@ -372,6 +382,12 @@ export function prerequisiteEvidenceFingerprint(evidence: PrerequisiteEvidence |
 // 主討論（10e65231）：只有 fingerprint 變化或已到期才建立 Owner action
 // ---------------------------------------------------------------------------
 
+export function mainDiscussionEvidenceFingerprint(evidence: TaskEvidence, now: Date): string {
+  const evidenceFingerprint = taskEvidenceFingerprint(evidence);
+  if (!evidence.dueAt || new Date(evidence.dueAt).getTime() > now.getTime()) return evidenceFingerprint;
+  return createHash('sha256').update(JSON.stringify([evidenceFingerprint, 'past_due', evidence.dueAt])).digest('hex');
+}
+
 function buildMainDiscussionAction(
   task: TaskSnapshot,
   snapshot: CoordinatorSnapshot,
@@ -382,11 +398,11 @@ function buildMainDiscussionAction(
   const evidence = snapshot.taskEvidence[task.taskId];
   const run = snapshot.taskRuns[task.taskId];
   const previousFingerprint = run?.evidenceFingerprint ?? '';
-  const currentFingerprint = evidence ? taskEvidenceFingerprint(evidence) : '';
+  const currentFingerprint = evidence ? mainDiscussionEvidenceFingerprint(evidence, now) : '';
   const fingerprintChanged = currentFingerprint !== previousFingerprint;
   const isPastDue = Boolean(task.dueAt) && new Date(task.dueAt as string).getTime() <= now.getTime();
 
-  if (!fingerprintChanged && !isPastDue) return null;
+  if (run && !fingerprintChanged) return null;
 
   return {
     kind: 'main_discussion_owner',
@@ -394,7 +410,9 @@ function buildMainDiscussionAction(
     workspaceId: task.workspaceId,
     reason: fingerprintChanged
       ? '主討論證據自上次 checkpoint 後已變化（期限事件或新留言）'
-      : '主討論已超過固定回覆期限',
+      : isPastDue
+        ? '主討論已超過固定回覆期限'
+        : '主工作區 Todo 進入討論流程',
   };
 }
 
@@ -451,7 +469,7 @@ export function isCutoverSettled(tasks: TaskSnapshot[]): boolean {
   });
 }
 
-export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Date): CoordinatorAction[] {
+export function selectCoordinatorPlan(snapshot: CoordinatorSnapshot, now: Date): CoordinatorPlan {
   snapshot = {
     ...snapshot,
     tasks: snapshot.tasks.filter((task) => !task.goalId || (
@@ -463,6 +481,7 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
   const cutoverSettled = isCutoverSettled(snapshot.tasks);
   const reservedAssignees = new Set<string>();
   const actions: CoordinatorAction[] = [];
+  const skips: CoordinatorSkip[] = [];
 
   // 1) Fixed cutover disposition：activeReview（938aa035）是 user06 唯一可執行 action，
   //    優先於一般排序，且不受同狀態 task 的 updated_at 影響。
@@ -470,14 +489,18 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
   if (!cutoverSettled && activeReviewTask && !isExcludedTask(activeReviewTask) && !isUnresumableHumanBlocked(activeReviewTask.taskId, snapshot)) {
     if (activeReviewTask.status === 'Review') {
       const assigneeId = activeReviewTask.assigneeId ?? snapshot.userIdsByEmail[CUTOVER_TASKS.activeReview.assigneeEmail] ?? null;
-      actions.push({
-        kind: 'owner_review',
-        taskId: activeReviewTask.taskId,
-        workspaceId: activeReviewTask.workspaceId,
-        assigneeId,
-        reason: 'fixed cutover disposition：activeReview 等待 Owner 驗收',
-      });
       if (assigneeId) reservedAssignees.add(assigneeId);
+      if (!snapshot.taskRuns[activeReviewTask.taskId]?.branch) {
+        skips.push({ taskId: activeReviewTask.taskId, reason: 'owner_review skipped: no coordinator run' });
+      } else {
+        actions.push({
+          kind: 'owner_review',
+          taskId: activeReviewTask.taskId,
+          workspaceId: activeReviewTask.workspaceId,
+          assigneeId,
+          reason: 'fixed cutover disposition：activeReview 等待 Owner 驗收',
+        });
+      }
     } else if (activeReviewTask.status === 'Doing') {
       const assigneeId = activeReviewTask.assigneeId ?? snapshot.userIdsByEmail[CUTOVER_TASKS.activeReview.assigneeEmail] ?? null;
       actions.push({
@@ -570,6 +593,10 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
     }
     const tier = genericTier(task);
     if (tier === 0) {
+      if (!snapshot.taskRuns[task.taskId]?.branch) {
+        skips.push({ taskId: task.taskId, reason: 'owner_review skipped: no coordinator run' });
+        continue;
+      }
       actions.push({
         kind: 'owner_review',
         taskId: task.taskId,
@@ -587,6 +614,11 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
         reason: '已指派的 Doing task 繼續 member 工作',
       });
     } else {
+      if (task.workspaceId === MAIN_WORKSPACE_ID) {
+        const action = buildMainDiscussionAction(task, snapshot, now);
+        if (action) actions.push(action);
+        continue;
+      }
       if (task.goalId && task.assigneeId) {
         if (snapshot.agentIds && !snapshot.agentIds.includes(task.assigneeId)) continue;
         actions.push({
@@ -595,6 +627,10 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
         });
         continue;
       }
+      const run = snapshot.taskRuns[task.taskId];
+      const evidence = snapshot.taskEvidence[task.taskId];
+      const currentFingerprint = evidence ? taskEvidenceFingerprint(evidence) : '';
+      if (run && currentFingerprint === run.evidenceFingerprint) continue;
       actions.push({
         kind: 'owner_dispatch',
         taskId: task.taskId,
@@ -605,5 +641,9 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
     }
   }
 
-  return actions;
+  return { actions, skips };
+}
+
+export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Date): CoordinatorAction[] {
+  return selectCoordinatorPlan(snapshot, now).actions;
 }

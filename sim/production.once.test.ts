@@ -81,7 +81,8 @@ async function testSettledCutoverReportUsesGenericActions(): Promise<void> {
     ]) {
       assert.doesNotMatch(output, new RegExp(staleMessage), `cutover 已結案時不得再輸出：${staleMessage}`);
     }
-    assert.match(output, /owner_review current-/, 'planned actions 應保留一般 owner_review');
+    assert.doesNotMatch(output, /owner_review current-/, '沒有 coordinator run 時不得排 owner_review');
+    assert.match(output, /current-.*owner_review skipped: no coordinator run/, 'tick 輸出必須列出 owner_review skip 原因');
     assert.match(output, /owner_dispatch current-/, 'planned actions 應保留一般 owner_dispatch');
   } finally {
     rmSync(dbDir, { recursive: true, force: true });

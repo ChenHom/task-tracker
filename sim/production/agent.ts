@@ -354,6 +354,10 @@ export interface OwnerSessionResult {
   decision: OwnerDecision | null;
 }
 
+export function ownerAcceptanceIsValid(decision: OwnerDecision, reviewedHeadSha: string): boolean {
+  return decision.action !== 'accept' || (reviewedHeadSha.length > 0 && decision.rationale.includes(reviewedHeadSha));
+}
+
 export async function runOwnerSession(input: RunOwnerSessionInput): Promise<OwnerSessionResult> {
   const context: OwnerSessionRunnerContext = {
     taskId: input.taskId,
@@ -384,7 +388,7 @@ export async function runOwnerSession(input: RunOwnerSessionInput): Promise<Owne
 
   // Owner acceptance 必須是「引用已審查 head SHA 的結構化決策」；OwnerDecision 沒有
   // 專屬的 sha 欄位，因此以 rationale 是否明確提到這個 head SHA 作為引用證據。
-  if (decision.action === 'accept' && !decision.rationale.includes(input.reviewedHeadSha)) {
+  if (!ownerAcceptanceIsValid(decision, input.reviewedHeadSha)) {
     return {
       valid: false,
       rejectedReason: 'accept decision must cite the reviewed head SHA in its rationale',

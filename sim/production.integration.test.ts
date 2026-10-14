@@ -536,9 +536,8 @@ async function testStuckDoingRecoversAfterWorktreeFailure(): Promise<void> {
     dbAfterTick4.close();
     assert.strictEqual(runAfterTick4?.phase, 'human_blocked', 'task 應該已經轉入 human_blocked（不是永久沉默地卡在 doing）');
 
-    // ---- 恢復路徑：把 repo 修好（補一個 commit，讓 master ref 存在）。human_blocked
-    //      的留言本身改變了 evidence fingerprint，下一個 tick 會自然恢復嘗試；這次
-    //      worktree 應該真的建立成功，task 可以繼續往前走（不是永久卡死）。
+    // ---- 把 repo 修好（補一個 commit，讓 master ref 存在），但沒有人工 task 變化：
+    //      human_blocked 通知本身不得被當成新進展，下一個 tick 仍應維持 blocked。
     writeFileSync(join(brokenRepoRoot, 'README.md'), 'root\n');
     execFileSync('git', ['add', 'README.md'], { cwd: brokenRepoRoot });
     execFileSync('git', ['config', 'user.email', 'stuck-repair@example.com'], { cwd: brokenRepoRoot });
@@ -546,10 +545,25 @@ async function testStuckDoingRecoversAfterWorktreeFailure(): Promise<void> {
     execFileSync('git', ['commit', '-q', '-m', 'repair: repo now has a master ref'], { cwd: brokenRepoRoot });
 
     await runOnce({ ...baseOptions, repoRoot: brokenRepoRoot });
+    const dbBeforeHumanComment = openCoordinatorState(dbPath);
+    const runBeforeHumanComment = getTaskRun(dbBeforeHumanComment, STUCK_TASK_ID);
+    dbBeforeHumanComment.close();
+    assert.strictEqual(runBeforeHumanComment?.phase, 'human_blocked', '只有通知、沒有人類留言時，下一輪仍須維持 human_blocked');
+    assert.strictEqual(runBeforeHumanComment?.branch, null, 'human_blocked 通知本身不得觸發 worktree 重試');
+
+    // ---- 人類真的留言後才恢復，這次 worktree 應該建立成功，task 可以繼續往前走。
+    state.comments.push({
+      comment_id: `comment-${++state.commentSeq}`,
+      task_id: STUCK_TASK_ID,
+      user_id: USER09_ID,
+      content: '已確認，請重試。',
+      created_at: `2026-01-01T00:00:${String(state.commentSeq).padStart(2, '0')}.000Z`,
+    });
+    await runOnce({ ...baseOptions, repoRoot: brokenRepoRoot });
     const dbAfterRepair = openCoordinatorState(dbPath);
     const runAfterRepair = getTaskRun(dbAfterRepair, STUCK_TASK_ID);
     dbAfterRepair.close();
-    assert.ok(runAfterRepair?.branch, `repo 修好之後，下一個 tick 的 worktree 重試應該成功並記錄 branch，實際：${JSON.stringify(runAfterRepair)}`);
+    assert.ok(runAfterRepair?.branch, `人類留言後，下一個 tick 的 worktree 重試應該成功並記錄 branch，實際：${JSON.stringify(runAfterRepair)}`);
   } finally {
     await close();
     rmSync(brokenRepoRoot, { recursive: true, force: true });

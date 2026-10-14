@@ -2,8 +2,11 @@ import assert from 'node:assert';
 import {
   CUTOVER_TASKS,
   MAIN_WORKSPACE_ID,
+  mainDiscussionEvidenceFingerprint,
   selectCoordinatorActions,
+  taskEvidenceFingerprint,
   type CoordinatorSnapshot,
+  type TaskEvidence,
   type TaskSnapshot,
 } from './policy';
 
@@ -81,10 +84,15 @@ assert.strictEqual(
 assert.deepStrictEqual(
   settledActions.map(({ kind, taskId }) => ({ kind, taskId })),
   [
-    { kind: 'owner_review', taskId: 'current-review' },
-    { kind: 'owner_dispatch', taskId: 'current-todo' },
+    { kind: 'main_discussion_owner', taskId: 'current-todo' },
   ],
-  'cutover 結案後應以一般 policy 處理目前看板',
+  'cutover 結案後主工作區的非固定 ID Todo 應走主討論流程',
+);
+
+assert.strictEqual(
+  settledActions.some(({ taskId }) => taskId === 'current-review'),
+  false,
+  '沒有 coordinator task_run branch 的 Review task 不得排 owner_review',
 );
 
 const missingEvidenceActions = selectCoordinatorActions(cutoverSnapshot(cutoverTasks({
@@ -96,9 +104,24 @@ assert.strictEqual(
   '任一 cutover task 尚未終態時仍須驗證 completedPrerequisite 證據鏈',
 );
 
-const activeReviewActions = selectCoordinatorActions(cutoverSnapshot(cutoverTasks({
+const activeReviewSnapshot = cutoverSnapshot(cutoverTasks({
   [CUTOVER_TASKS.activeReview.taskId]: 'Review',
-})), now);
+}));
+activeReviewSnapshot.taskRuns[CUTOVER_TASKS.activeReview.taskId] = {
+  taskId: CUTOVER_TASKS.activeReview.taskId,
+  workspaceId: MAIN_WORKSPACE_ID,
+  phase: 'review',
+  workerId: null,
+  branch: 'task/active-review',
+  baseSha: 'base',
+  headSha: 'head',
+  evidenceFingerprint: '',
+  noProgressCount: 0,
+  ownerIntervened: false,
+  leaseUntil: null,
+  updatedAt: now.toISOString(),
+};
+const activeReviewActions = selectCoordinatorActions(activeReviewSnapshot, now);
 assert.strictEqual(
   activeReviewActions.some(({ taskId, kind, reason }) => (
     taskId === CUTOVER_TASKS.activeReview.taskId
@@ -107,6 +130,70 @@ assert.strictEqual(
   )),
   true,
   'activeReview 尚未終態時仍須套用固定處置',
+);
+
+const discussionTask = boardTask('main-discussion-g2', 'Todo');
+const discussionEvidence: TaskEvidence = {
+  taskId: discussionTask.taskId,
+  status: 'Todo',
+  assigneeId: null,
+  dueAt: null,
+  commentCount: 1,
+  lastCommentId: 'comment-1',
+  lastCommentAt: '2026-10-14T00:00:00.000Z',
+};
+const discussionSnapshot = cutoverSnapshot([
+  ...cutoverTasks(),
+  discussionTask,
+]);
+discussionSnapshot.taskEvidence[discussionTask.taskId] = discussionEvidence;
+discussionSnapshot.taskRuns[discussionTask.taskId] = {
+  taskId: discussionTask.taskId,
+  workspaceId: MAIN_WORKSPACE_ID,
+  phase: 'doing',
+  workerId: null,
+  branch: null,
+  baseSha: null,
+  headSha: null,
+  evidenceFingerprint: taskEvidenceFingerprint(discussionEvidence),
+  noProgressCount: 0,
+  ownerIntervened: false,
+  leaseUntil: null,
+  updatedAt: now.toISOString(),
+};
+assert.deepStrictEqual(
+  selectCoordinatorActions(discussionSnapshot, now).filter(({ taskId }) => taskId === discussionTask.taskId),
+  [],
+  'Owner intervene 後證據未變，不得再次排主討論',
+);
+
+discussionSnapshot.taskEvidence[discussionTask.taskId] = {
+  ...discussionEvidence,
+  commentCount: 2,
+  lastCommentId: 'comment-2',
+  lastCommentAt: '2026-10-14T00:01:00.000Z',
+};
+assert.strictEqual(
+  selectCoordinatorActions(discussionSnapshot, now).some(({ taskId, kind }) => (
+    taskId === discussionTask.taskId && kind === 'main_discussion_owner'
+  )),
+  true,
+  '新增留言後應再次排主討論',
+);
+
+const overdueTask = { ...boardTask('main-discussion-overdue-g2', 'Todo'), dueAt: '2026-10-13T00:00:00.000Z' };
+const overdueEvidence: TaskEvidence = { ...discussionEvidence, taskId: overdueTask.taskId, dueAt: overdueTask.dueAt };
+const overdueSnapshot = cutoverSnapshot([...cutoverTasks(), overdueTask]);
+overdueSnapshot.taskEvidence[overdueTask.taskId] = overdueEvidence;
+overdueSnapshot.taskRuns[overdueTask.taskId] = {
+  ...discussionSnapshot.taskRuns[discussionTask.taskId]!,
+  taskId: overdueTask.taskId,
+  evidenceFingerprint: mainDiscussionEvidenceFingerprint(overdueEvidence, now),
+};
+assert.deepStrictEqual(
+  selectCoordinatorActions(overdueSnapshot, now).filter(({ taskId }) => taskId === overdueTask.taskId),
+  [],
+  '同一 dueAt 已處理且證據未變，不得再次排主討論',
 );
 
 console.log('production/policy.test.ts OK');

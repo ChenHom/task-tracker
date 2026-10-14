@@ -91,8 +91,8 @@ function buildHumanBlockedNotice(run: TaskRun, session: MemberSessionResult): Hu
  * Owner 介入與 human_blocked 升級，違背這整個 subsystem 要防的「假裝有進展」反模式。
  *
  * `currentEvidence` 代表呼叫端（未來真正呼叫 API 的那一層；這裡永遠是呼叫端自行
- * 組好或測試注入的快照）目前讀到的板面證據（留言／狀態／期限）。只有在這次呼叫
- * 剛好轉入 human_blocked 時才會用到它，寫進 evidenceFingerprint 當作「卡關當下」的
+ * 組好或測試注入的快照）目前讀到的板面證據（留言／狀態／期限）。每次呼叫以
+ * human_blocked 結束時都會用到它，寫進 evidenceFingerprint 當作「卡關當下」的
  * 基準，讓之後的 shouldResumeFromHumanBlocked 只在真的出現新證據（新留言、期限
  * 事件，或未記錄的人工 task mutation）時才判定可恢復——不會因為卡關前後板面完全沒變
  * 就立刻誤判「可以恢復」。
@@ -104,15 +104,15 @@ export function recordMemberSessionAttempt(
 ): MemberAttemptTransition {
   const evidenceChanged = session.evidenceChanged;
   const wasIntervened = run.ownerIntervened;
-  const wasBlocked = run.phase === 'human_blocked';
-
   let updatedRun = recordMemberAttempt(run, evidenceChanged);
 
   const ownerInterventionRequested = !wasIntervened && updatedRun.ownerIntervened;
 
   let humanBlockedNotice: HumanBlockedNotice | null = null;
-  if (!wasBlocked && updatedRun.phase === 'human_blocked') {
+  if (updatedRun.phase === 'human_blocked') {
     updatedRun = { ...updatedRun, evidenceFingerprint: taskEvidenceFingerprint(currentEvidence) };
+  }
+  if (run.phase !== 'human_blocked' && updatedRun.phase === 'human_blocked') {
     humanBlockedNotice = buildHumanBlockedNotice(updatedRun, session);
   }
 

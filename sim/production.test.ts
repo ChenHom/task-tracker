@@ -147,9 +147,93 @@ import {
   type CutoverManifest,
 } from './production/migrate';
 import type { MemberSnapshot, AuditEventSnapshot } from './production/api';
-import { coordinatorChildEnvironment, execAllowlistedCommand } from './production';
+import { assignAndStartDoing, coordinatorChildEnvironment, execAllowlistedCommand, withAction } from './production';
 
 assert.deepStrictEqual(coordinatorChildEnvironment({ PATH: '/bin', TASK_TRACKER_COORDINATOR_TOKEN: 'secret' }), { PATH: '/bin' });
+
+async function runG1Tests(): Promise<void> {
+  const db = openCoordinatorState(':memory:');
+  const now = new Date('2026-10-14T00:00:00.000Z');
+  const actionKey = 'preserve-pending-action';
+  beginAction(db, { actionKey, taskId: 'task-pending-action', kind: 'test' }, now);
+  const before = getAction(db, actionKey);
+  let called = false;
+  const deps = { db, now: () => new Date('2026-10-14T00:01:00.000Z'), tracer: () => () => undefined } as never;
+
+  await withAction(deps, actionKey, 'test', 'task-pending-action', async () => {
+    called = true;
+    return 'must not run';
+  });
+
+  assert.strictEqual(called, false, 'status=pending 的 action 不得重新執行');
+  assert.deepStrictEqual(getAction(db, actionKey), before, 'status=pending 的 action_log 必須維持不變');
+  db.close();
+}
+
+async function runF5Tests(): Promise<void> {
+  {
+    const db = openCoordinatorState(':memory:');
+    const now = new Date('2026-10-14T00:00:00.000Z');
+    let calls = 0;
+    const deps = { db, now: () => now, tracer: () => () => undefined } as never;
+
+    await assert.rejects(
+      withAction(deps, 'retry-failed-action', 'test', 'task-retry-action', async () => {
+        calls++;
+        throw new Error('first attempt failed');
+      }),
+      /first attempt failed/,
+    );
+    assert.strictEqual(getAction(db, 'retry-failed-action')?.status, 'failed');
+
+    await withAction(deps, 'retry-failed-action', 'test', 'task-retry-action', async () => {
+      calls++;
+      return 'retried';
+    });
+    assert.strictEqual(calls, 2, 'status=failed 的 action 必須重新執行');
+    assert.strictEqual(getAction(db, 'retry-failed-action')?.status, 'completed');
+    db.close();
+  }
+
+  {
+    const { repoRoot, g } = migrateTestRepo();
+    const db = openCoordinatorState(':memory:');
+    const taskId = 'f5-existing-worktree';
+    const workspaceId = 'ws-f5';
+    const assigneeId = 'user-f5';
+    const now = new Date('2026-10-14T00:00:00.000Z');
+    try {
+      const baseSha = g(['rev-parse', 'master']);
+      const originalWorktree = await ensureTaskWorktree(repoRoot, taskId, baseSha);
+      writeFileSync(join(repoRoot, 'master-moved.txt'), 'new master commit\n');
+      g(['add', 'master-moved.txt']);
+      g(['commit', '-q', '-m', 'advance master']);
+      assert.notStrictEqual(g(['rev-parse', 'master']), baseSha, 'fixture 必須讓 master 往前移');
+
+      const run = upsertTaskCheckpoint(db, { taskId, workspaceId, phase: 'assigned', baseSha, evidenceFingerprint: '' }, now);
+      const task = makeTask({ taskId, workspaceId, title: 'F5 base reuse', status: 'Doing', assigneeId });
+      const ownerClient = {
+        getTask: async () => task,
+        patchTaskField: async () => task,
+      };
+      const deps = {
+        db,
+        ownerClient,
+        repoRoot,
+        now: () => now,
+        tracer: () => () => undefined,
+      } as never;
+
+      await assignAndStartDoing(deps, { taskId, workspaceId } as never, run, assigneeId);
+      const updated = getTaskRun(db, taskId)!;
+      assert.strictEqual(updated.baseSha, baseSha, '既有 worktree 必須沿用 run.baseSha，不可改用已前進的 master');
+      assert.strictEqual(taskWorktreePath(repoRoot, taskId), originalWorktree.path, '必須重用同一個 task worktree');
+    } finally {
+      db.close();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }
+}
 
 async function runCoordinatorEnvironmentTest(): Promise<void> {
   const priorCoordinatorToken = process.env.TASK_TRACKER_COORDINATOR_TOKEN;
@@ -956,16 +1040,17 @@ function validPrerequisiteEvidence(): PrerequisiteEvidence {
     status: 'Todo',
     dueAt: '2026-07-22T00:00:00.000Z', // 早於 NOW
   });
+  const pastDueEvidence = { ...evidence, dueAt: pastDueTask.dueAt };
   const pastDueSnapshot = baseSnapshot({
     tasks: [pastDueTask],
     taskRuns: {
       [pastDueTask.taskId]: makeTaskRun({
         taskId: pastDueTask.taskId,
         workspaceId: MAIN_WORKSPACE_ID,
-        evidenceFingerprint: fingerprint,
+        evidenceFingerprint: taskEvidenceFingerprint(pastDueEvidence),
       }),
     },
-    taskEvidence: { [pastDueTask.taskId]: evidence },
+    taskEvidence: { [pastDueTask.taskId]: pastDueEvidence },
   });
   const pastDueActions = selectCoordinatorActions(pastDueSnapshot, NOW);
   assert.strictEqual(pastDueActions.length, 1, '已過期的主討論必須建立 Owner action');
@@ -1226,6 +1311,14 @@ function validPrerequisiteEvidence(): PrerequisiteEvidence {
 
   const snapshot = baseSnapshot({
     tasks: [unassignedTodo, doingNewerSameMember, doingOlder, doingTaskSameMember, reviewTask],
+    taskRuns: {
+      [reviewTask.taskId]: makeTaskRun({
+        taskId: reviewTask.taskId,
+        workspaceId: reviewTask.workspaceId,
+        phase: 'review',
+        branch: `task/${reviewTask.taskId}`,
+      }),
+    },
   });
   const result = selectCoordinatorActions(snapshot, NOW);
   const kindByTaskId = new Map(result.map((a) => [a.taskId, a.kind]));
@@ -2746,6 +2839,20 @@ async function runAgentTests(): Promise<void> {
       });
       assert.strictEqual(resultNoSha.valid, false, 'accept 決策沒有引用被驗收的 head SHA 必須被拒絕');
       assert.strictEqual(resultNoSha.decision, null);
+
+      const resultEmptySha = await runOwnerSession({
+        taskId,
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        reviewedHeadSha: '',
+        worktreePath: wt.path,
+        runner: async () => ({
+          exitCode: 0,
+          decision: { action: 'accept', rationale: 'looks fine to me', evidenceCommentIds: [] },
+        }),
+      });
+      assert.strictEqual(resultEmptySha.valid, false, 'reviewedHeadSha 空字串時 accept 必須被拒絕');
+      assert.strictEqual(resultEmptySha.decision, null);
 
       const resultWithSha = await runOwnerSession({
         taskId,
@@ -5939,6 +6046,8 @@ async function runMigrateTests(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await runG1Tests();
+  await runF5Tests();
   await runCoordinatorEnvironmentTest();
   await runApiTests();
   await runGitTests();
