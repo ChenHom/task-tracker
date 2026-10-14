@@ -5,6 +5,24 @@ import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+
+const productionEvidenceSource = [
+  join(__dirname, 'production.ts'),
+  join(__dirname, 'production', 'deliveryEvidence.ts'),
+].map((path) => readFileSync(path, 'utf8')).join('\n');
+for (const kind of ['task.execution_started', 'commit.recorded', 'task.blocked', 'ci.checked', 'merge.integrated']) {
+  assert.match(productionEvidenceSource, new RegExp(`kind: '${kind.replace('.', '\\.')}'`), `production 必須回送 ${kind}`);
+}
+assert.match(productionEvidenceSource, /'deployment\.verified'/, 'production 必須回送 deployment.verified');
+assert.match(productionEvidenceSource, /failed: \$\{deployResult\.detail\}/, 'CI 失敗也必須寫 ci.checked 失敗結果');
+assert.match(productionEvidenceSource, /trackGoalRunAttempt\(/, 'production Goal Task 必須寫入 goal_runs');
+assert.match(productionEvidenceSource, /tracked\('primary'/, 'production 必須記錄 primary Run');
+assert.match(productionEvidenceSource, /tracked\('fallback'/, 'production fallback 必須另記一筆 Run');
+assert.match(productionEvidenceSource, /executeWithSingleFallback\(/, 'production 實作必須使用共用 adapter fallback 契約');
+assert.match(productionEvidenceSource, /classifyAdapterResult\(/, 'production 實作必須使用共用 adapter result 分類');
+assert.doesNotMatch(productionEvidenceSource, /throw new Error\(`Goal Task \$\{task\.taskId\} 的 Project repo 未登記`\)/, '未登記 repo 不得讓整個 tick 失敗');
+assert.match(productionEvidenceSource, /repoUnavailable = true/, '未登記 repo 必須只標記該 Goal Task 略過');
+assert.match(productionEvidenceSource, /setGoalWorktreeDirty\([^,]+,[^,]+, true\)/, 'member session 前必須標記 Goal worktree dirty');
 import {
   LEASE_TTL_MS,
   openCoordinatorState,
@@ -642,6 +660,7 @@ function baseSnapshot(overrides: Partial<CoordinatorSnapshot> = {}): Coordinator
     taskEvidence: overrides.taskEvidence ?? {},
     prerequisiteEvidence: overrides.prerequisiteEvidence ?? null,
     userIdsByEmail: overrides.userIdsByEmail ?? USER_IDS,
+    agentIds: overrides.agentIds ?? Object.entries(USER_IDS).filter(([email]) => email !== 'user09@test.local').map(([, id]) => id),
   };
 }
 
@@ -859,9 +878,13 @@ function validPrerequisiteEvidence(): PrerequisiteEvidence {
   const goalQueued = makeTask({ taskId: 'goal-queued', workspaceId: CANONICAL_WORKSPACE_ID, status: 'Todo', goalId: 'g1', goalStatus: 'Discussing' });
   const goalExecuting = makeTask({ taskId: 'goal-executing', workspaceId: CANONICAL_WORKSPACE_ID, status: 'Todo', goalId: 'g2', goalStatus: 'Executing' });
   const externalGoal = makeTask({ taskId: 'goal-external', workspaceId: 'third-workspace', status: 'Todo', goalId: 'g3', goalStatus: 'Executing', targetRepo: '/registered/repo' });
+  const assignedGoal = makeTask({ taskId: 'goal-assigned', workspaceId: 'third-workspace', status: 'Todo', goalId: 'g4', goalStatus: 'Executing', targetRepo: '/registered/repo', assigneeId: USER_IDS['user03@test.local'] });
+  const humanGoal = makeTask({ taskId: 'goal-human', workspaceId: 'third-workspace', status: 'Doing', goalId: 'g5', goalStatus: 'Executing', targetRepo: '/registered/repo', assigneeId: USER_IDS['user09@test.local'] });
   assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [goalQueued] }), NOW).length, 0, '非 Executing Goal 的 Task 必須跳過');
   assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [goalExecuting] }), NOW)[0]?.taskId, 'goal-executing');
   assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [externalGoal] }), NOW)[0]?.taskId, 'goal-external', '已登記 repo 的 Goal Task 不受舊 workspace allowlist 限制');
+  assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [assignedGoal] }), NOW)[0]?.kind, 'assign_member', '已指派 Goal Task 必須保留 Owner 指派，不走 owner_dispatch');
+  assert.strictEqual(selectCoordinatorActions(baseSnapshot({ tasks: [humanGoal] }), NOW).length, 0, '指派給人類的 Goal Task 不得進 member_work');
 
   // 只會發現兩個已鎖定的 workspace UUID：第三個 workspace 的 task 必須完全不出現。
   assert.strictEqual(taskIdsInActions.has(thirdWorkspaceTask.taskId), false, '不在允許清單內的 workspace 必須被忽略');

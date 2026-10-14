@@ -29,6 +29,7 @@ let bobRows = listNotifications('bob', db);
 assert.strictEqual(bobRows.length, 1, '同留言重複 mention 同一人只應發一筆');
 assert.strictEqual(bobRows[0].recipient_id, 'bob');
 assert.strictEqual(bobRows[0].source_task_id, 'task-1');
+assert.strictEqual(bobRows[0].source_goal_id, null, '一般 Task 通知沒有 Goal 來源');
 assert.strictEqual(bobRows[0].source_comment_id, comment1);
 assert.strictEqual(bobRows[0].read_at, null, '新通知預設未讀');
 assert.strictEqual(listNotifications('alice', db).length, 0, '@ 自己不應收到通知');

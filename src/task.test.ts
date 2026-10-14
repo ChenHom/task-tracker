@@ -68,6 +68,7 @@ for (const [id, email, name] of [
   ['target-only', 'target-only@test.local', 'Target Only'],
   ['invite-assignee', 'invite-assignee@test.local', 'Invite Assignee'],
   ['pending-assignee', 'pending-assignee@test.local', 'Pending Assignee'],
+  ['agent-user', 'agent@test.local', 'Agent User'],
 ] as const) {
   db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run(id, email, name, 'x');
 }
@@ -78,6 +79,12 @@ insertMember.run(MAIN_WORKSPACE_ID, 'main-owner', 'Owner', 't');
 insertMember.run(MAIN_WORKSPACE_ID, 'main-user', 'Commenter', 't');
 insertMember.run(MAIN_WORKSPACE_ID, 'main-boss', 'Commenter', 't');
 for (const userId of ['u1', 'bob', 'carol']) insertMember.run(WS, userId, 'Member', 't');
+insertMember.run(WS, 'agent-user', 'Member', 't');
+db.prepare(`INSERT INTO agents
+  (agent_id, user_id, email, name, role, skill_profile_json, repo_access_json,
+   primary_adapter, primary_model, fallback_adapter, fallback_model, status, created_at, updated_at)
+  VALUES ('agent-user', 'agent-user', 'agent@test.local', 'Agent User', 'member', '{}', '[]',
+   'codex', 'test-model', NULL, NULL, 'active', 't', 't')`).run();
 insertMember.run(COMMENTER_WS, 'main-user', 'Commenter', 't');
 insertMember.run(MOVE_SOURCE_WS, 'mover', 'Member', 't');
 for (const userId of ['invite-assignee', 'pending-assignee']) insertMember.run(MOVE_SOURCE_WS, userId, 'Member', 't');
@@ -217,6 +224,17 @@ assert.throws(() => changeTaskTitle('u1', id, 'x', db), CommandError, 'archived 
 assert.throws(() => changeTaskStatus('u1', id, 'Doing', db), CommandError, 'archived 不可改狀態');
 assert.throws(() => archiveTask('u1', id, db), CommandError, '重複 archive 應拒');
 
+// ── Goal Task 不可刪除，且拒絕時不得寫入事件 ──
+const goalTaskDeleteId = createTask('u1', WS, { title: 'Keep Goal Task history' }, db);
+db.prepare('UPDATE tasks_read_model SET goal_id = ? WHERE task_id = ?').run('goal-delete-guard', goalTaskDeleteId);
+const goalTaskEventsBeforeDelete = loadEvents(goalTaskDeleteId, db).length;
+assert.throws(
+  () => deleteTask('u1', goalTaskDeleteId, db),
+  { name: 'CommandError', message: 'Goal Task 不可刪除，請改用封存' },
+);
+assert.strictEqual(getTask(goalTaskDeleteId, db)?.goal_id, 'goal-delete-guard', '拒絕後 Goal Task 仍存在');
+assert.strictEqual(loadEvents(goalTaskDeleteId, db).length, goalTaskEventsBeforeDelete, '拒絕後不得寫入 event');
+
 // ── delete：archived 可刪；deleted 從 read model 消失、終態 ──
 deleteTask('u1', id, db);
 assert.strictEqual(listTasks(WS, db).find((x) => x.task_id === id), undefined, 'deleted 從 read model 移除');
@@ -251,6 +269,15 @@ assert.strictEqual(getTask('nonexistent', db), null, 'getTask 不存在的 id �
 // ── moveTask：成功搬移會更新 workspace_id、清空 project_id，且 route 之後會跟著新 workspace 走 ──
 db.prepare('INSERT INTO projects_read_model (project_id, workspace_id, name) VALUES (?, ?, ?)')
   .run('proj-1', MOVE_SOURCE_WS, 'Move source project');
+db.prepare('INSERT INTO projects_read_model (project_id, workspace_id, name) VALUES (?, ?, ?)')
+  .run('proj-2', MOVE_SOURCE_WS, 'Other goal project');
+const goalTaskId = 'goal-task-locked';
+appendEvent('Task', goalTaskId, 0, 'task.created', {
+  workspaceId: MOVE_SOURCE_WS, projectId: 'proj-1', goalId: 'goal-1', title: 'Goal task', description: '',
+  status: 'Todo', priority: 'Medium', assigneeId: null, dueAt: null,
+}, {}, db);
+assert.throws(() => moveTask('mover', goalTaskId, MOVE_TARGET_WS, db), /Goal Task 不可搬移 Workspace/);
+assert.throws(() => changeTaskProject('mover', goalTaskId, 'proj-2', db), /Goal Task 不可變更 Project/);
 const moveId = createTask('mover', MOVE_SOURCE_WS, { title: 'Move me', projectId: 'proj-1' }, db);
 const moveResult = moveTask('mover', moveId, MOVE_TARGET_WS, db);
 assert.deepStrictEqual(moveResult, { invitedAssignee: false });
@@ -672,10 +699,37 @@ assert.throws(
   () => createTask('u1', WS, { title: 'Archived project', projectId: 'project-archived' }, db),
   /project 已封存/,
 );
-const projectTaskId = createTask('u1', WS, { title: 'Project task', projectId: 'project-active' }, db);
-assert.strictEqual(getTask(projectTaskId, db)?.project_id, 'project-active');
+db.prepare(`INSERT INTO goals_read_model
+  (goal_id, workspace_id, project_id, source, objective, success_criteria, status, revision,
+   created_by, owner_agent_id, evidence_refs_json, version, created_at, updated_at)
+  VALUES ('active-goal-project', ?, 'project-active', 'human', 'x', 'y', 'Executing', 1,
+   'u1', 'owner', '[]', 1, 't', 't')`).run(WS);
+assert.throws(
+  () => createTask('agent-user', WS, { title: 'Legacy task blocked by Goal', projectId: 'project-active' }, db),
+  /active Goal/,
+  'active Goal 的 Project 不可手動建立 legacy Task',
+);
+const humanProjectTaskId = createTask('u1', WS, { title: 'Human project task', projectId: 'project-active' }, db);
+assert.strictEqual(getTask(humanProjectTaskId, db)?.project_id, 'project-active');
+const projectTaskId = createTask('u1', WS, { title: 'Project task' }, db);
+changeTaskProject('u1', projectTaskId, 'project-active', db);
+assert.strictEqual(getTask(projectTaskId, db)?.project_id, 'project-active', '人類可把 Task 改進 active Goal 的 Project');
+changeTaskProject('u1', projectTaskId, null, db);
+assert.throws(
+  () => changeTaskProject('agent-user', projectTaskId, 'project-active', db),
+  /active Goal/,
+  'Agent 不可把 legacy Task 改進 active Goal 的 Project',
+);
+assert.throws(
+  () => changeTaskProject('u1', projectTaskId, 'project-other', db),
+  /同一 workspace/,
+  'Task 不可改成其他 Workspace 的 Project',
+);
 changeTaskProject('u1', projectTaskId, null, db);
 assert.strictEqual(getTask(projectTaskId, db)?.project_id, null);
+db.prepare("UPDATE goals_read_model SET status = 'Done' WHERE goal_id = 'active-goal-project'").run();
+const completedGoalTaskId = createTask('agent-user', WS, { title: 'After Goal done', projectId: 'project-active' }, db);
+assert.strictEqual(getTask(completedGoalTaskId, db)?.project_id, 'project-active');
 applyTaskPatch('u1', projectTaskId, { projectId: 'project-active' }, db);
 assert.strictEqual(getTask(projectTaskId, db)?.project_id, 'project-active');
 assert.strictEqual(loadEvents(projectTaskId, db).at(-1)?.event_type, 'task.project_changed');

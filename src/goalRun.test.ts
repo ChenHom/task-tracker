@@ -30,7 +30,10 @@ assert.strictEqual(enqueueHeartbeat(heartbeatInput, db), heartbeat, '相同 trig
 const mentionA = enqueueHeartbeat({ ...heartbeatInput, phase: 'owner_comment', triggerRef: 'comment-a' }, db);
 const mentionB = enqueueHeartbeat({ ...heartbeatInput, phase: 'owner_comment', triggerRef: 'comment-b' }, db);
 assert.notStrictEqual(mentionA, mentionB, '兩則 @Owner 留言不可互相吞掉');
-assert.strictEqual(listHeartbeats('goal-1', db).length, 3);
+const patrol = enqueueHeartbeat({ ...heartbeatInput, phase: 'discovery', triggerRef: 'patrol:2026-10-12T00:00+08:00' }, db);
+const followup = enqueueHeartbeat({ ...heartbeatInput, phase: 'followup', triggerRef: 'followup:goal-1' }, db);
+assert.notStrictEqual(patrol, followup, 'patrol 與 followup trigger_ref 不可互相吞掉');
+assert.strictEqual(listHeartbeats('goal-1', db).length, 5);
 
 const run = prepareRun({
   heartbeatId: heartbeat,
@@ -46,6 +49,7 @@ const run = prepareRun({
   estimateBasis: 'bounded_context_chars',
   estimateConfidence: 'medium',
   quotaSnapshotJson: '{"cachedAt":"t"}',
+  sourceRefsJson: '["docs/context.md","comment:c1"]',
 }, db);
 assert.strictEqual(prepareRun({
   heartbeatId: heartbeat, goalId: 'goal-1', taskId: null, agentId: 'agent-2', phase: 'round_1',
@@ -53,20 +57,25 @@ assert.strictEqual(prepareRun({
   estimatedOutputTokens: 999, estimateBasis: 'racing-worker', estimateConfidence: 'low', quotaSnapshotJson: '{}',
 }, db), run, '同一 heartbeat/attempt 只能 claim 同一個 Run');
 assert.strictEqual(getRun(run, db)?.status, 'pending', 'Run 必須先以 estimate/quota 持久化');
+assert.strictEqual(getRun(run, db)?.source_refs_json, '["docs/context.md","comment:c1"]', 'Run 必須保存實際 context source refs');
 assert.throws(() => markRunRunning('missing', db), /run 不存在/);
 markRunRunning(run, db);
 finishRun(run, {
   status: 'succeeded',
   actualInputTokens: null,
   actualOutputTokens: null,
+  tokenTotal: 321,
   actualCost: null,
   credibleBilling: false,
   outcome: 'valid_contribution',
   errorCategory: null,
   evidenceRef: 'contribution:1',
   sideEffectState: 'none',
+  sessionId: 'session-123',
 }, db);
 assert.strictEqual(getRun(run, db)?.actual_input_tokens, null, '缺少 usage 不可寫成零');
+assert.strictEqual(getRun(run, db)?.actual_total_tokens, 321, 'adapter 只提供 tokenTotal 時也必須保存');
+assert.strictEqual(getRun(run, db)?.session_id, 'session-123', 'Run 必須保存 runner session ID');
 
 const fallback = prepareRun({
   ...{
@@ -101,6 +110,12 @@ assert.throws(() => addContribution({
   goalId: 'goal-1', revision: 1, round: 'round_2', agentId: 'agent-3',
   stance: 'agree', claim: '收到', reason: '了解', evidenceRefs: [],
 }, db), /實質內容/);
+for (const stance of ['concern', 'correction'] as const) {
+  assert.throws(() => addContribution({
+    goalId: 'goal-1', revision: 1, round: 'round_2', agentId: `agent-${stance}`,
+    stance, claim: 'Needs a change', reason: 'The evidence shows a gap', evidenceRefs: [],
+  }, db), /evidenceRefs/, `${stance} 必須引用證據`);
+}
 assert.strictEqual(listContributions('goal-1', 1, db).length, 1);
 
 console.log('goalRun.test.ts OK');

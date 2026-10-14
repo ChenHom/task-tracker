@@ -170,6 +170,11 @@ function showSourceError(notificationId, message) {
  * @returns {Promise<void>}
  */
 async function openNotification(n) {
+  if (n.source_goal_id && !n.source_task_id) {
+    if (n.read_at === null) markRead(n.notification_id);
+    navigate(`#/goals/${n.source_goal_id}`);
+    return;
+  }
   let task;
   try {
     task = await api(`/api/tasks/${n.source_task_id}`);

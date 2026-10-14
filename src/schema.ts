@@ -78,7 +78,8 @@ export function runMigrations(db: DatabaseSync): void {
       due_at      TEXT,
       done_at     TEXT,
       version     INTEGER NOT NULL,
-      updated_at  TEXT
+      updated_at  TEXT,
+      deployment_not_required INTEGER NOT NULL DEFAULT 0
     );
 
     -- Project：DESIGN 指定不走 ES，這張就是主表（傳統 CRUD 直接讀寫，無 event_store / projection）。
@@ -101,6 +102,7 @@ export function runMigrations(db: DatabaseSync): void {
       source                TEXT NOT NULL,
       objective             TEXT NOT NULL,
       success_criteria      TEXT NOT NULL,
+      data_scope            TEXT NOT NULL DEFAULT '',
       status                TEXT NOT NULL,
       discussion_phase      TEXT,
       revision              INTEGER NOT NULL,
@@ -110,6 +112,7 @@ export function runMigrations(db: DatabaseSync): void {
       paused_from_phase     TEXT,
       blocked_from_status   TEXT,
       blocked_from_phase    TEXT,
+      pause_requested       INTEGER NOT NULL DEFAULT 0,
       evidence_refs_json    TEXT NOT NULL DEFAULT '[]',
       version               INTEGER NOT NULL,
       created_at            TEXT NOT NULL,
@@ -145,6 +148,7 @@ export function runMigrations(db: DatabaseSync): void {
       name                  TEXT NOT NULL,
       role                  TEXT NOT NULL,
       skill_profile_json    TEXT NOT NULL,
+      repo_access_json      TEXT NOT NULL DEFAULT '["*"]',
       primary_adapter       TEXT NOT NULL,
       primary_model         TEXT NOT NULL,
       fallback_adapter      TEXT,
@@ -163,6 +167,7 @@ export function runMigrations(db: DatabaseSync): void {
       revision     INTEGER NOT NULL,
       trigger_ref  TEXT NOT NULL,
       status       TEXT NOT NULL,
+      last_processed_seq INTEGER NOT NULL DEFAULT 0,
       created_at   TEXT NOT NULL,
       updated_at   TEXT NOT NULL,
       UNIQUE (scope_id, phase, agent_id, revision, trigger_ref)
@@ -183,8 +188,11 @@ export function runMigrations(db: DatabaseSync): void {
       estimate_basis           TEXT NOT NULL,
       estimate_confidence      TEXT NOT NULL,
       quota_snapshot_json      TEXT NOT NULL,
+      source_refs_json         TEXT NOT NULL DEFAULT '[]',
+      session_id               TEXT,
       actual_input_tokens      INTEGER,
       actual_output_tokens     INTEGER,
+      actual_total_tokens      INTEGER,
       actual_cost              REAL,
       status                   TEXT NOT NULL,
       outcome                  TEXT,
@@ -249,6 +257,10 @@ export function runMigrations(db: DatabaseSync): void {
       summary       TEXT NOT NULL,
       task_plans_json TEXT NOT NULL,
       evidence_json TEXT NOT NULL,
+      decision_rationale TEXT NOT NULL DEFAULT '',
+      change_scope TEXT NOT NULL DEFAULT '',
+      uncertainties_json TEXT NOT NULL DEFAULT '[]',
+      archive_task_ids_json TEXT NOT NULL DEFAULT '[]',
       created_at    TEXT NOT NULL,
       PRIMARY KEY (goal_id, revision)
     );
@@ -271,10 +283,41 @@ export function runMigrations(db: DatabaseSync): void {
       UNIQUE (parent_goal_id, success_criteria, evidence_fingerprint)
     );
 
+    CREATE TABLE IF NOT EXISTS goal_followup_candidates (
+      candidate_id         TEXT PRIMARY KEY,
+      parent_goal_id       TEXT NOT NULL,
+      workspace_id         TEXT NOT NULL,
+      project_id           TEXT NOT NULL,
+      objective            TEXT NOT NULL,
+      success_criteria     TEXT NOT NULL,
+      reason               TEXT NOT NULL,
+      evidence_json        TEXT NOT NULL,
+      evidence_fingerprint TEXT NOT NULL,
+      created_at           TEXT NOT NULL,
+      UNIQUE (workspace_id, project_id, success_criteria, evidence_fingerprint)
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_preemptions (
+      human_goal_id      TEXT NOT NULL,
+      autonomous_goal_id TEXT NOT NULL,
+      kind               TEXT NOT NULL,
+      created_at         TEXT NOT NULL,
+      resumed_at         TEXT,
+      PRIMARY KEY (human_goal_id, autonomous_goal_id)
+    );
+
     CREATE TABLE IF NOT EXISTS goal_patrol_evidence (
       workspace_id TEXT PRIMARY KEY,
       fingerprint  TEXT NOT NULL,
       checked_at   TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_patrol_checks (
+      heartbeat_id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      fingerprint  TEXT NOT NULL,
+      skip_reason  TEXT,
+      created_at   TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS task_delivery_evidence (
@@ -306,6 +349,7 @@ export function runMigrations(db: DatabaseSync): void {
       notification_id  TEXT PRIMARY KEY,
       recipient_id     TEXT NOT NULL,
       source_task_id   TEXT NOT NULL,
+      source_goal_id   TEXT,
       source_comment_id TEXT NOT NULL,
       snippet          TEXT NOT NULL,
       created_at       TEXT NOT NULL,
@@ -353,6 +397,18 @@ export function runMigrations(db: DatabaseSync): void {
     // 忽略如果欄位已存在
   }
 
+  try {
+    db.prepare('ALTER TABLE goals_read_model ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0').run();
+  } catch {
+    // 冪等 migration：欄位已存在時略過。
+  }
+
+  try {
+    db.prepare('ALTER TABLE goal_heartbeats ADD COLUMN last_processed_seq INTEGER NOT NULL DEFAULT 0').run();
+  } catch {
+    // 冪等 migration：欄位已存在時略過。
+  }
+
   // 舊資料從 event store 回填真正進入 Done 的時間，不用 updated_at（後續欄位修改會改它）。
   db.prepare(
     `UPDATE tasks_read_model
@@ -390,6 +446,46 @@ export function runMigrations(db: DatabaseSync): void {
     db.prepare('ALTER TABLE notifications_read_model ADD COLUMN read_at TEXT').run();
   } catch {
     // 忽略如果欄位已存在
+  }
+
+  try {
+    db.prepare('ALTER TABLE notifications_read_model ADD COLUMN source_goal_id TEXT').run();
+  } catch {
+    // 冪等 migration：欄位已存在時略過。
+  }
+
+  try {
+    db.prepare("ALTER TABLE goals_read_model ADD COLUMN data_scope TEXT NOT NULL DEFAULT ''").run();
+  } catch {
+    // 冪等 migration：欄位已存在時略過。
+  }
+
+  try {
+    db.prepare('ALTER TABLE goal_runs ADD COLUMN actual_total_tokens INTEGER').run();
+  } catch {
+    // 冪等 migration：欄位已存在時略過。
+  }
+
+  try {
+    db.prepare(`ALTER TABLE agents ADD COLUMN repo_access_json TEXT NOT NULL DEFAULT '["*"]'`).run();
+  } catch {
+    // 冪等 migration：欄位已存在時略過。
+  }
+
+  try {
+    db.prepare("ALTER TABLE goal_runs ADD COLUMN source_refs_json TEXT NOT NULL DEFAULT '[]'").run();
+  } catch {
+    // 冪等 migration：欄位已存在時略過。
+  }
+  for (const sql of [
+    'ALTER TABLE goal_runs ADD COLUMN session_id TEXT',
+    'ALTER TABLE tasks_read_model ADD COLUMN deployment_not_required INTEGER NOT NULL DEFAULT 0',
+    "ALTER TABLE goal_syntheses ADD COLUMN decision_rationale TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE goal_syntheses ADD COLUMN change_scope TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE goal_syntheses ADD COLUMN uncertainties_json TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE goal_syntheses ADD COLUMN archive_task_ids_json TEXT NOT NULL DEFAULT '[]'",
+  ]) {
+    try { db.prepare(sql).run(); } catch { /* 冪等 migration */ }
   }
 
   for (const sql of [

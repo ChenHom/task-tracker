@@ -60,6 +60,7 @@ Goal 交付證據與 worktree 狀態只允許 production coordinator 寫入。�
 
 ```bash
 TASK_TRACKER_COORDINATOR_TOKEN=<random secret>
+TASK_TRACKER_REPO_REGISTRY_PATH=/absolute/path/to/repo-registry.json
 ```
 
 `task-tracker.service` 與 `sim-coordinator.service` 會讀取同一個檔案；未設定時兩個寫入 API 皆 fail closed 為 403。
@@ -67,9 +68,11 @@ TASK_TRACKER_COORDINATOR_TOKEN=<random secret>
 ## Goal discovery timer（預設停用）
 
 `goal-discovery.timer` 每 12 小時建立一次機械巡檢 heartbeat。安裝單元不代表啟用；先建立
-`~/.config/task-tracker/goal-discovery.env`，內含 `GOAL_PATROL_WORKSPACE_ID=<workspace UUID>`，再以
+`~/.config/task-tracker/goal-discovery.env`，內含 `GOAL_PATROL_WORKSPACE_ID=<workspace UUID>` 與
+`TASK_TRACKER_REPO_REGISTRY_PATH=/absolute/path/to/repo-registry.json`，再以
 `systemd-analyze verify` 與手動不帶 `--live` 的 dry-run 確認。unit 含 `--live`：通過機械 gate 時
-會呼叫 Claude safe discovery，但永遠不建立 Workspace，也不會在沒有已登記 Project 時自行建 Project。
+會呼叫 Claude safe discovery；Owner 永遠不建立 Workspace，但沒有合適 Project 時可在同一 Workspace
+為 registry 已登記的 repo 建立 Project。
 
 ```bash
 install -D -m644 deploy/goal-discovery.service deploy/goal-discovery.timer -t ~/.config/systemd/user/
@@ -78,3 +81,14 @@ systemd-analyze verify deploy/goal-discovery.service deploy/goal-discovery.timer
 ```
 
 需另經人工核准才可執行 `systemctl --user enable --now goal-discovery.timer`。
+
+## Goal coordinator timer（預設停用）
+
+```bash
+install -D -m644 deploy/goal-coordinator.service deploy/goal-coordinator.timer -t ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemd-analyze verify deploy/goal-coordinator.service deploy/goal-coordinator.timer
+```
+
+此 timer 每分鐘處理一個 pending Goal heartbeat；只有人工核准後才可執行
+`systemctl --user enable --now goal-coordinator.timer`。

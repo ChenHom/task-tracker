@@ -48,6 +48,15 @@ legacy.exec(`
     workspace_id TEXT NOT NULL,
     name TEXT NOT NULL
   );
+  CREATE TABLE notifications_read_model (
+    notification_id TEXT PRIMARY KEY,
+    recipient_id TEXT NOT NULL,
+    source_task_id TEXT NOT NULL,
+    source_comment_id TEXT NOT NULL,
+    snippet TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    read_at TEXT
+  );
   INSERT INTO projects_read_model (project_id, workspace_id, name) VALUES ('legacy-project', 'legacy-ws', 'Legacy');
 `);
 runMigrations(legacy);
@@ -57,5 +66,25 @@ assert.strictEqual(migratedProject.status, 'active', 'legacy Project 應保持 a
 assert.strictEqual(migratedProject.target_repo, null, 'legacy Project 不可猜測 target repo');
 assert.ok(migratedProject.created_at, 'legacy Project 應回填 created_at');
 assert.ok(migratedProject.updated_at, 'legacy Project 應回填 updated_at');
+assert.ok(
+  (legacy.prepare("PRAGMA table_info('goal_runs')").all() as unknown as Array<{ name: string }>).some((column) => column.name === 'actual_total_tokens'),
+  'goal_runs 必須保存 adapter 提供的 tokenTotal',
+);
+assert.ok(
+  (legacy.prepare("PRAGMA table_info('agents')").all() as unknown as Array<{ name: string }>).some((column) => column.name === 'repo_access_json'),
+  'Agent 必須保存 repo access',
+);
+assert.ok(
+  (legacy.prepare("PRAGMA table_info('goal_heartbeats')").all() as unknown as Array<{ name: string }>).some((column) => column.name === 'last_processed_seq'),
+  'goal heartbeat 必須保存公平輪替的處理序號',
+);
+assert.ok(
+  (legacy.prepare("PRAGMA table_info('goal_syntheses')").all() as unknown as Array<{ name: string }>).some((column) => column.name === 'archive_task_ids_json'),
+  'Goal synthesis 必須保存要封存的既有 Task',
+);
+assert.ok(
+  (legacy.prepare("PRAGMA table_info('notifications_read_model')").all() as unknown as Array<{ name: string }>).some((column) => column.name === 'source_goal_id'),
+  '舊通知表必須冪等新增 Goal 來源欄位',
+);
 
 console.log('schema.test.ts OK');

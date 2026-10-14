@@ -12,6 +12,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { createTracer, createFileSink, formatTraceRecord, type Tracer, type TraceSink } from './trace';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
+import { SAFE_DISCUSSION_ROUTE } from '../src/safeDiscussionRoute';
+export { SAFE_DISCUSSION_ROUTE } from '../src/safeDiscussionRoute';
 import {
   createNotificationTelemetryRecorder,
   type NotificationTelemetryErrorCategory,
@@ -447,6 +449,21 @@ export const FIXED_SWEEP_WORKSPACE_SCENARIOS: Record<string, keyof typeof SCENAR
 
 export function canonicalWorkspaceForRepoRoot(repoRoot: string): string | undefined {
   return CANONICAL_WORKSPACE_BY_REPOROOT[repoRoot];
+}
+
+export function repoHasGoalLease(database: DatabaseSync, repoRoot: string): boolean {
+  const canonicalRepo = realpathSync(repoRoot);
+  const leases = database.prepare('SELECT target_repo FROM repo_leases').all() as unknown as Array<{ target_repo: string }>;
+  return leases.some((lease) => {
+    try {
+      return realpathSync(lease.target_repo) === canonicalRepo;
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      const filesystemError = error as NodeJS.ErrnoException;
+      if (typeof filesystemError.code !== 'string' || typeof filesystemError.syscall !== 'string') throw error;
+      return resolve(lease.target_repo) === canonicalRepo;
+    }
+  });
 }
 
 export function ensureCanonicalWorkspaceCandidates(
@@ -1704,6 +1721,30 @@ export async function runNotificationSweep(
   return results;
 }
 
+export async function bootstrapWorkspace(input: {
+  title: string;
+  request: NotificationGateRequest;
+  loginActor: (email: string) => Promise<string>;
+}): Promise<{ workspaceId: string; ownerCookie: string }> {
+  const bossCookie = await input.loginActor(MAIN_BOSS_EMAIL);
+  const workspace = await input.request('/api/workspaces', {
+    method: 'POST', body: JSON.stringify({ name: input.title }),
+  }, bossCookie);
+  if (workspace.status !== 201) throw new Error(`建 workspace 失敗: ${JSON.stringify(workspace.body)}`);
+  const workspaceId: string = workspace.body.id;
+
+  const invitation = await input.request(`/api/workspaces/${workspaceId}/members`, {
+    method: 'POST', body: JSON.stringify({ email: OWNER.email, role: 'Owner' }),
+  }, bossCookie);
+  if (invitation.status !== 200 && invitation.status !== 201) {
+    throw new Error(`邀請 ${OWNER.email} 失敗: ${JSON.stringify(invitation.body)}`);
+  }
+  const ownerCookie = await input.loginActor(OWNER.email);
+  const joined = await input.request(`/api/workspaces/${workspaceId}/members/join`, { method: 'POST' }, ownerCookie);
+  if (joined.status !== 200) throw new Error(`${OWNER.email} join 失敗: ${JSON.stringify(joined.body)}`);
+  return { workspaceId, ownerCookie };
+}
+
 async function deployedRevisionForTelemetry(request: NotificationGateRequest, log: (line: string) => void): Promise<string> {
   try {
     const response = await request('/api/health');
@@ -1760,10 +1801,11 @@ async function bootstrap(scenario: Scenario): Promise<{ wsId: string; tag: strin
     }
   }
 
-  const ownerCookie = await login(OWNER.email);
-  const ws = await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: scenario.title }) }, ownerCookie);
-  if (ws.status !== 201) throw new Error(`建 workspace 失敗: ${JSON.stringify(ws.body)}`);
-  const wsId: string = ws.body.id;
+  const { workspaceId: wsId, ownerCookie } = await bootstrapWorkspace({
+    title: scenario.title,
+    request: api,
+    loginActor: login,
+  });
 
   for (const m of RUN.members) {
     const inv = await api(`/api/workspaces/${wsId}/members`, { method: 'POST', body: JSON.stringify({ email: m.email, role: 'Member' }) }, ownerCookie);
@@ -1798,7 +1840,6 @@ export const MEMBER_TOOLS = INTERNAL_MEMBER_TOOLS;
 export const MAIN_OWNER_TOOLS = 'Bash(curl:*)';
 export const SAFE_DISCUSSION_TOOLS = SAFE_DISCUSSION_PROFILE.tools;
 export const ATTACHMENT_DISCUSSION_TOOLS = 'Read';
-export const SAFE_DISCUSSION_ROUTE: ModelRoute = { runner: 'claude', model: 'claude-sonnet-5' };
 const SAFE_DISCUSSION_TIMEOUT = 12 * 60 * 1000;
 export const NOTIFICATION_TOOLS = SAFE_DISCUSSION_TOOLS;
 // owner prompt 會要求整合驗證失敗時 git reset --hard 回 merge 前、cd 進子專案跑測試、輪詢部署；codex sandbox 原本都能跑，Claude 需明列
@@ -3308,10 +3349,7 @@ async function sweep(role: 'owner' | 'team' | 'both'): Promise<void> {
     }
     const ws = db.prepare('SELECT status FROM workspaces_read_model WHERE workspace_id = ?').get(wsId) as { status: string } | undefined;
     if (!ws || ws.status !== 'active') continue;
-    const repoLeased = db.prepare(
-      `SELECT 1 FROM repo_leases l JOIN projects_read_model p ON p.target_repo = l.target_repo
-        WHERE p.workspace_id = ? AND p.target_repo = ? LIMIT 1`,
-    ).get(wsId, scenario.repoRoot);
+    const repoLeased = repoHasGoalLease(db, scenario.repoRoot);
     if (repoLeased) {
       console.log(`[sweep:${role}] workspace ${wsId.slice(0, 8)} 的 repo 已由 Goal lease 持有，略過 legacy sweep`);
       continue;

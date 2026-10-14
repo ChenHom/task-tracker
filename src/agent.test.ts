@@ -5,11 +5,13 @@ import {
   getAgent,
   listAgents,
   listWorkspaceAgents,
+  listWorkspaceAgentSummaries,
   syncAgents,
   updateAgent,
 } from './agent';
 import { runMigrations } from './schema';
 import { seedUsers } from './seed';
+import { enqueueHeartbeat, finishRun, markRunRunning, prepareRun } from './goalRun';
 
 const db = new DatabaseSync(':memory:');
 runMigrations(db);
@@ -57,5 +59,35 @@ db.prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, creat
 db.prepare('INSERT INTO workspace_members_read_model (workspace_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)')
   .run('ws-agents', member.user_id, 'Member', 't');
 assert.deepStrictEqual(listWorkspaceAgents('ws-agents', db).map((agent) => agent.agent_id), [member.agent_id]);
+function createSummaryRun(triggerRef: string, attempt: 'primary' | 'fallback'): string {
+  const heartbeatId = enqueueHeartbeat({
+    scopeId: 'g', goalId: 'g', phase: 'implementation', agentId: member.agent_id, revision: 1, triggerRef,
+  }, db);
+  return prepareRun({
+    heartbeatId, goalId: 'g', taskId: 'task-1', agentId: member.agent_id, phase: 'implementation',
+    adapter: attempt === 'fallback' ? 'claude' : 'codex', model: 'm', attempt,
+    estimatedInputTokens: 1, estimatedOutputTokens: 1, estimateBasis: 'test', estimateConfidence: 'high',
+    quotaSnapshotJson: '{}',
+  }, db);
+}
+function completeSummaryRun(runId: string, status: 'succeeded' | 'failed', errorCategory: string | null): void {
+  markRunRunning(runId, db);
+  finishRun(runId, {
+    status, actualInputTokens: null, actualOutputTokens: null, actualCost: null, credibleBilling: false,
+    outcome: status, errorCategory, evidenceRef: null, sideEffectState: 'none',
+  }, db);
+}
+completeSummaryRun(createSummaryRun('t', 'primary'), 'succeeded', null);
+completeSummaryRun(createSummaryRun('f', 'fallback'), 'failed', 'quota');
+const preflightRun = createSummaryRun('p', 'primary');
+completeSummaryRun(preflightRun, 'failed', 'preflight');
+const pendingRun = createSummaryRun('pending', 'primary');
+const summaries = listWorkspaceAgentSummaries('ws-agents', db);
+assert.strictEqual(summaries.length, 6, 'Agents 頁固定列出 user01–06，不受目前 workspace membership 限制');
+const summary = summaries.find(agent => agent.agent_id === member.agent_id)!;
+assert.strictEqual(summary.fallback_count, 1);
+assert.strictEqual(summary.unknown_usage_count, 3);
+assert.strictEqual((summary.latest_run as { run_id: string }).run_id, pendingRun);
+assert.strictEqual((summary.latest_preflight as { run_id: string }).run_id, preflightRun);
 
 console.log('agent.test.ts OK');

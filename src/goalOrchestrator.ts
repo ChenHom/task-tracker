@@ -1,15 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
-import { getAgent, listWorkspaceAgents } from './agent';
+import { getAgent, listAgents, listWorkspaceAgents } from './agent';
 import { appendEventInTransaction, CommandError, ConflictError } from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 import {
-  acquireRepoLease, blockGoal, getGoal, reconcileGoalDiscussion, setDiscussionPhase,
+  acquireRepoLease, blockGoal, createGoal, getGoal, reconcileGoalDiscussion, setDiscussionPhase,
   completeGoal, reviseGoal, startVerification,
 } from './goal';
-import { requireActiveProject } from './project';
-import { listDeliveryEvidence } from './deliveryEvidence';
+import { getProject, requireActiveProject } from './project';
+import { loadRepoRegistry, type RepoRegistry } from './repoRegistry';
+import { listDeliveryEvidence, type DeliveryEvidenceKind } from './deliveryEvidence';
+import { SAFE_DISCUSSION_ROUTE } from './safeDiscussionRoute';
+import { archiveTask } from './task';
 import {
   addContribution, addParticipation, enqueueHeartbeat, finishRun, getRun,
   listContributions, listParticipations, markRunRunning, prepareRun,
@@ -18,19 +21,40 @@ import {
 export interface ParticipantSelection {
   agentId: string; reason: string; assignment: string; selectedLoad: number;
 }
+
+export interface EligibleGoalParticipant { agent: ReturnType<typeof listWorkspaceAgents>[number]; selectedLoad: number }
 export interface DiscussionOutput {
   stance: 'analysis' | 'agree' | 'concern' | 'correction';
   claim: string; reason: string; evidenceRefs: string[];
   actualInputTokens?: number | null; actualOutputTokens?: number | null;
+  tokenTotal?: number | null;
+  sourceRefs?: string[];
 }
 export interface SynthesisOutput {
   summary: string;
-  taskPlans: Array<{ title: string; description: string; assigneeId: string; dependsOn?: string[]; acceptanceCriteria: string; rollbackCondition: string }>;
+  decisionRationale: string;
+  changeScope: string;
+  uncertainties: string[];
+  taskPlans: Array<{ title: string; description: string; assigneeId: string; dependsOn: string[]; deploymentNotRequired: boolean; acceptanceCriteria: string; rollbackCondition: string }>;
+  archiveTaskIds?: string[];
   evidenceRefs: string[];
+}
+
+function withTransaction<T>(database: DatabaseSync, action: () => T): T {
+  if (database.isTransaction) return action();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const value = action();
+    database.exec('COMMIT');
+    return value;
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
 }
 export interface GoalDiscussionDeps {
   database?: DatabaseSync;
-  quotaSnapshot: () => string;
+  quotaSnapshot: () => string | Promise<string>;
   invoke: (input: { goalId: string; revision: number; round: 'round_1' | 'round_2'; agentId: string; assignment: string; peerContributions: Record<string, unknown>[] }) => Promise<DiscussionOutput>;
   estimate?: (input: { assignment: string; peerCount: number }) => { inputTokens: number; outputTokens: number };
 }
@@ -40,29 +64,165 @@ function clean(value: unknown, field: string): string {
   return value.trim();
 }
 
+export class InvalidGoalSynthesisError extends CommandError {}
+
+function synthesisText(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new InvalidGoalSynthesisError(`${field} 不可為空`);
+  return value.trim();
+}
+
+export function validateGoalSynthesis(output: unknown, workspaceId: string, database = db, goalId?: string): SynthesisOutput {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+  const value = output as Record<string, unknown>;
+  if (!Array.isArray(value.taskPlans) || !Array.isArray(value.evidenceRefs) || !Array.isArray(value.uncertainties)
+    || value.uncertainties.some((item) => typeof item !== 'string' || !item.trim())
+    || value.evidenceRefs.some((ref) => typeof ref !== 'string' || !ref.trim())) {
+    throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+  }
+  const archiveTaskIds = value.archiveTaskIds == null ? [] : value.archiveTaskIds;
+  if (!Array.isArray(archiveTaskIds) || archiveTaskIds.some((id) => typeof id !== 'string' || !id.trim())
+    || new Set(archiveTaskIds).size !== archiveTaskIds.length) {
+    throw new InvalidGoalSynthesisError('archiveTaskIds 格式不合法');
+  }
+  if (archiveTaskIds.length && (!goalId || archiveTaskIds.some((taskId) => !database.prepare(
+    "SELECT 1 FROM tasks_read_model WHERE task_id = ? AND goal_id = ? AND status IN ('Todo', 'Doing', 'Review')",
+  ).get(taskId, goalId)))) throw new InvalidGoalSynthesisError('archiveTaskIds 只能包含本 Goal 的未完成 Task');
+  const retainedTask = goalId && database.prepare(
+    `SELECT 1 FROM tasks_read_model WHERE goal_id = ? AND status <> 'Archived'
+      AND task_id NOT IN (SELECT value FROM json_each(?)) LIMIT 1`,
+  ).get(goalId, JSON.stringify(archiveTaskIds));
+  if (value.taskPlans.length === 0 && !retainedTask) throw new InvalidGoalSynthesisError('synthesis 必須包含 Task');
+  const taskPlans = value.taskPlans.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+    const plan = item as Record<string, unknown>;
+    if ([plan.title, plan.description, plan.assigneeId, plan.acceptanceCriteria, plan.rollbackCondition]
+      .some((field) => typeof field !== 'string')) throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+    const title = synthesisText(plan.title, 'Task title');
+    const description = synthesisText(plan.description, 'Task description');
+    const assigneeId = synthesisText(plan.assigneeId, 'Task assignee');
+    if (title.length > 200 || description.length > 5000) throw new InvalidGoalSynthesisError('Task 內容過長');
+    if (!database.prepare('SELECT 1 FROM workspace_members_read_model WHERE workspace_id = ? AND user_id = ?').get(workspaceId, assigneeId)) {
+      throw new InvalidGoalSynthesisError('Task assignee 必須是 Workspace member');
+    }
+    if (!Array.isArray(plan.dependsOn)
+      || plan.dependsOn.some((dependency) => typeof dependency !== 'string' || !dependency.trim())) {
+      throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+    }
+    if (typeof plan.deploymentNotRequired !== 'boolean') throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+    return {
+      title,
+      description,
+      assigneeId,
+      dependsOn: (plan.dependsOn as string[]).map((dependency) => dependency.trim()),
+      deploymentNotRequired: plan.deploymentNotRequired,
+      acceptanceCriteria: synthesisText(plan.acceptanceCriteria, 'acceptanceCriteria'),
+      rollbackCondition: synthesisText(plan.rollbackCondition, 'rollbackCondition'),
+    };
+  });
+  return {
+    summary: synthesisText(value.summary, 'summary'),
+    decisionRationale: synthesisText(value.decisionRationale, 'decisionRationale'),
+    changeScope: synthesisText(value.changeScope, 'changeScope'),
+    uncertainties: (value.uncertainties as string[]).map((item) => item.trim()),
+    taskPlans,
+    archiveTaskIds: archiveTaskIds.map((id) => id.trim()),
+    evidenceRefs: (value.evidenceRefs as string[]).map((ref) => ref.trim()),
+  };
+}
+
 export function selectGoalParticipants(
   ownerAgentId: string, goalId: string, selections: readonly ParticipantSelection[], database = db,
-): void {
+): 'selected' | 'blocked' {
   const goal = getGoal(goalId, database);
   if (!goal) throw new CommandError('goal 不存在');
-  if (goal.owner_agent_id !== ownerAgentId || goal.status !== 'Discussing' || goal.discussion_phase !== 'owner_scoping') {
+  if (goal.owner_agent_id !== ownerAgentId || goal.status !== 'Discussing') {
     throw new CommandError('Goal 目前不可選人');
   }
   if (selections.length < 1 || selections.length > 5) throw new CommandError('參與者必須為 1–5 位');
-  const eligible = new Set(listWorkspaceAgents(goal.workspace_id, database)
-    .filter((agent) => agent.role === 'member' && agent.status === 'active')
-    .map((agent) => agent.agent_id));
+  const candidates = eligibleGoalParticipants(goalId, database);
+  const eligible = new Map(candidates.map((candidate) => [candidate.agent.agent_id, candidate.selectedLoad]));
   if (new Set(selections.map((item) => item.agentId)).size !== selections.length) throw new CommandError('參與者不可重複');
-  for (const item of selections) {
-    if (!eligible.has(item.agentId)) throw new CommandError('Agent 不符合 Workspace／狀態資格');
-    addParticipation({
-      goalId, revision: goal.revision, agentId: item.agentId,
-      reason: clean(item.reason, 'reason'), assignment: clean(item.assignment, 'assignment'),
-      selectedLoad: item.selectedLoad,
-    }, database);
-    enqueueHeartbeat({ scopeId: goalId, goalId, phase: 'round_1', agentId: item.agentId, revision: goal.revision, triggerRef: 'phase' }, database);
+  const normalized = selections.map((item) => {
+    if (!eligible.has(item.agentId)) {
+      const agent = getAgent(item.agentId, database);
+      const targetRepo = (database.prepare('SELECT target_repo FROM projects_read_model WHERE project_id = ?').get(goal.project_id) as { target_repo: string | null }).target_repo;
+      if (agent && !JSON.parse(agent.repo_access_json || '[]').some((repo: string) => repo === '*' || repo === targetRepo)) {
+        throw new CommandError('Agent 缺少 repo 權限');
+      }
+      const load = agentWorkload(item.agentId, agent?.user_id ?? item.agentId, goalId, database);
+      if (load > 0) throw new CommandError('Agent 已有不可並行工作');
+      throw new CommandError('Agent skill_profile 完全不符或不符合 Workspace／狀態資格');
+    }
+    return { ...item, selectedLoad: eligible.get(item.agentId)!, reason: clean(item.reason, 'reason'), assignment: clean(item.assignment, 'assignment') };
+  });
+  if (isGoalReconciliationRevision(goalId, goal.revision, database)) {
+    const previous = listParticipations(goalId, goal.revision - 1, database)
+      .map((row) => ({ agentId: String(row.agent_id), assignment: String(row.assignment) })).sort((a, b) => a.agentId.localeCompare(b.agentId));
+    const current = normalized.map((row) => ({ agentId: row.agentId, assignment: row.assignment })).sort((a, b) => a.agentId.localeCompare(b.agentId));
+    if (previous.length && JSON.stringify(previous) === JSON.stringify(current)) {
+      blockGoal(ownerAgentId, goalId, 'reconciliation 未改變人選或分析面向', database);
+      return 'blocked';
+    }
   }
-  setDiscussionPhase(ownerAgentId, goalId, 'round_1', database);
+  const existing = listParticipations(goalId, goal.revision, database);
+  if (existing.length) {
+    const comparable = (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
+      agentId: String(row.agentId ?? row.agent_id), reason: String(row.reason), assignment: String(row.assignment),
+      selectedLoad: Number(row.selectedLoad ?? row.selected_load),
+    })).sort((a, b) => a.agentId.localeCompare(b.agentId));
+    if (goal.discussion_phase === 'round_1'
+      && JSON.stringify(comparable(existing)) === JSON.stringify(comparable(normalized))) return 'selected';
+    throw new ConflictError('Participation 已存在');
+  }
+  if (goal.discussion_phase !== 'owner_scoping') throw new CommandError('Goal 目前不可選人');
+  withTransaction(database, () => {
+    for (const item of normalized) {
+      addParticipation({ goalId, revision: goal.revision, ...item }, database);
+      enqueueHeartbeat({ scopeId: goalId, goalId, phase: 'round_1', agentId: item.agentId, revision: goal.revision, triggerRef: 'phase' }, database);
+    }
+    appendEventInTransaction('Goal', goalId, goal.version, 'goal.discussion_phase_changed', { phase: 'round_1' }, meta(ownerAgentId), database);
+  });
+  return 'selected';
+}
+
+export function isGoalReconciliationRevision(goalId: string, revision: number, database = db): boolean {
+  return Boolean(database.prepare('SELECT 1 FROM goal_reconciliations WHERE goal_id = ? AND revision = ?').get(goalId, revision));
+}
+
+function agentWorkload(agentId: string, userId: string, excludingGoalId: string, database: DatabaseSync): number {
+  const participations = (database.prepare(
+    `SELECT COUNT(*) AS n FROM goal_participations p JOIN goals_read_model g ON g.goal_id = p.goal_id
+      WHERE p.agent_id = ? AND p.goal_id <> ? AND g.status = 'Discussing'
+        AND g.discussion_phase IN ('owner_scoping','round_1','round_2') AND p.revision = g.revision`,
+  ).get(agentId, excludingGoalId) as { n: number }).n;
+  const tasks = (database.prepare(
+    "SELECT COUNT(*) AS n FROM tasks_read_model WHERE assignee_id = ? AND status IN ('Doing','Review')",
+  ).get(userId) as { n: number }).n;
+  return participations + tasks;
+}
+
+export function eligibleGoalParticipants(goalId: string, database = db, includeBusy = false): EligibleGoalParticipant[] {
+  const goal = getGoal(goalId, database);
+  if (!goal) throw new CommandError('goal 不存在');
+  const project = requireActiveProject(goal.workspace_id, goal.project_id, database);
+  const targetRepo = database.prepare('SELECT target_repo FROM projects_read_model WHERE project_id = ?').get(project) as { target_repo: string | null };
+  const agents = listWorkspaceAgents(goal.workspace_id, database).filter((agent) => agent.role === 'member' && agent.status === 'active');
+  const knownSkills = new Set(listAgents(database).flatMap((agent) => {
+    const profile = JSON.parse(agent.skill_profile_json) as { skills?: unknown };
+    return Array.isArray(profile.skills) ? profile.skills.filter((skill): skill is string => typeof skill === 'string').map((skill) => skill.toLowerCase()) : [];
+  }));
+  const goalText = `${goal.objective} ${goal.success_criteria} ${goal.data_scope}`.toLowerCase();
+  const goalTokens = new Set(goalText.match(/[a-z][a-z0-9-]*/g) ?? []);
+  const requiredSkills = [...knownSkills].filter((skill) => goalTokens.has(skill));
+  return agents.flatMap((agent) => {
+    const repos = JSON.parse(agent.repo_access_json || '[]') as string[];
+    if (!targetRepo.target_repo || !repos.some((repo) => repo === '*' || repo === targetRepo.target_repo)) return [];
+    const profile = JSON.parse(agent.skill_profile_json) as { skills?: unknown };
+    const skills = Array.isArray(profile.skills) ? profile.skills.filter((skill): skill is string => typeof skill === 'string').map((skill) => skill.toLowerCase()) : [];
+    if (requiredSkills.length && !requiredSkills.some((skill) => skills.includes(skill))) return [];
+    const selectedLoad = agentWorkload(agent.agent_id, agent.user_id, goalId, database);
+    return includeBusy || selectedLoad === 0 ? [{ agent, selectedLoad }] : [];
+  });
 }
 
 function recordRound(goalId: string, revision: number, round: string, status: string, reason: string | null, database: DatabaseSync): void {
@@ -106,9 +266,10 @@ async function runContribution(
     ?? { inputTokens: Math.ceil((String(participation.assignment).length + JSON.stringify(peers).length) / 4), outputTokens: 500 };
   const runId = previous?.run_id ?? prepareRun({
     heartbeatId, goalId, taskId: null, agentId, phase: round,
-    adapter: 'claude', model: 'claude-sonnet-5-5', attempt: 'primary',
+    adapter: SAFE_DISCUSSION_ROUTE.runner, model: SAFE_DISCUSSION_ROUTE.model, attempt: 'primary',
     estimatedInputTokens: estimate.inputTokens, estimatedOutputTokens: estimate.outputTokens,
-    estimateBasis: 'bounded_context_chars', estimateConfidence: 'medium', quotaSnapshotJson: deps.quotaSnapshot(),
+    estimateBasis: 'bounded_context_chars', estimateConfidence: 'medium', quotaSnapshotJson: await deps.quotaSnapshot(),
+    sourceRefsJson: '[]',
   }, database);
   const claimed = getRun(runId, database)!;
   if (claimed.status === 'running') return 'waiting';
@@ -121,10 +282,13 @@ async function runContribution(
   }
   try {
     const output = await deps.invoke({ goalId, revision, round, agentId, assignment: String(participation.assignment), peerContributions: peers });
+    database.prepare('UPDATE goal_runs SET source_refs_json = ? WHERE run_id = ?')
+      .run(JSON.stringify(output.sourceRefs ?? []), runId);
     const contributionId = addContribution({ goalId, revision, round, agentId, ...output }, database);
     finishRun(runId, {
       status: 'succeeded', actualInputTokens: output.actualInputTokens ?? null,
-      actualOutputTokens: output.actualOutputTokens ?? null, actualCost: null, credibleBilling: false,
+      actualOutputTokens: output.actualOutputTokens ?? null, tokenTotal: output.tokenTotal ?? null,
+      actualCost: null, credibleBilling: false,
       outcome: 'valid_contribution', errorCategory: null, evidenceRef: `contribution:${contributionId}`, sideEffectState: 'none',
     }, database);
     return 'terminal';
@@ -146,8 +310,11 @@ export async function advanceGoalDiscussion(goalId: string, deps: GoalDiscussion
   const round = goal.discussion_phase;
   const participation = listParticipations(goalId, goal.revision, database);
   const roundOne = listContributions(goalId, goal.revision, database).filter((row) => row.round === 'round_1');
-  const outcomes = [];
-  for (const selected of participation) outcomes.push(await runContribution(goalId, goal.revision, round, selected, round === 'round_2' ? roundOne : [], deps, database));
+  const calls = participation.map((selected) => () => runContribution(
+    goalId, goal.revision, round, selected, round === 'round_2' ? roundOne : [], deps, database,
+  ));
+  const outcomes = round === 'round_1' ? await Promise.all(calls.map((call) => call())) : [];
+  if (round === 'round_2') for (const call of calls) outcomes.push(await call());
   if (outcomes.includes('waiting')) return 'waiting';
   const all = listContributions(goalId, goal.revision, database);
   const valid = all.filter((row) => row.round === round);
@@ -158,13 +325,13 @@ export async function advanceGoalDiscussion(goalId: string, deps: GoalDiscussion
     return 'awaiting_lease';
   }
   if (valid.length === 0) {
-    const prior = database.prepare('SELECT 1 FROM goal_reconciliations WHERE goal_id = ?').get(goalId);
+    const prior = database.prepare('SELECT 1 FROM goal_reconciliations WHERE goal_id = ? AND revision = ?').get(goalId, goal.revision);
     if (prior) {
       blockGoal(goal.owner_agent_id, goalId, 'Round 1 reconciliation 後仍無有效 Contribution', database);
       return 'blocked';
     }
     database.prepare('INSERT INTO goal_reconciliations (goal_id, revision, reason, created_at) VALUES (?, ?, ?, ?)')
-      .run(goalId, goal.revision, 'no_valid_contribution', new Date().toISOString());
+      .run(goalId, goal.revision + 1, 'no_valid_contribution', new Date().toISOString());
     reconcileGoalDiscussion(goal.owner_agent_id, goalId, database);
     return 'reconciled';
   }
@@ -183,13 +350,16 @@ export function storeGoalSynthesis(goalId: string, output: SynthesisOutput, data
   const goal = getGoal(goalId, database);
   if (goal && getGoalSynthesis(goalId, goal.revision, database)) return;
   if (!goal || goal.status !== 'Discussing' || (goal.discussion_phase !== 'awaiting_lease' && goal.discussion_phase !== 'owner_synthesis')) throw new CommandError('Goal 尚未等待 lease');
+  const validated = validateGoalSynthesis(output, goal.workspace_id, database, goalId);
   if (goal.discussion_phase === 'awaiting_lease') acquireRepoLease(goal.owner_agent_id, goalId, database);
   else if (!database.prepare('SELECT 1 FROM repo_leases WHERE goal_id = ?').get(goalId)) throw new CommandError('Goal 未持有 repo lease');
   try {
     database.prepare(
-      `INSERT INTO goal_syntheses (goal_id, revision, summary, task_plans_json, evidence_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(goalId, goal.revision, clean(output.summary, 'summary'), JSON.stringify(output.taskPlans), JSON.stringify(output.evidenceRefs), new Date().toISOString());
+      `INSERT INTO goal_syntheses
+         (goal_id, revision, summary, task_plans_json, evidence_json, decision_rationale, change_scope, uncertainties_json, archive_task_ids_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(goalId, goal.revision, validated.summary, JSON.stringify(validated.taskPlans), JSON.stringify(validated.evidenceRefs),
+      validated.decisionRationale, validated.changeScope, JSON.stringify(validated.uncertainties), JSON.stringify(validated.archiveTaskIds), new Date().toISOString());
   } catch (error) {
     if (String(error).includes('UNIQUE')) throw new ConflictError('Goal synthesis 已存在');
     throw error;
@@ -210,57 +380,72 @@ export function materializeGoalTasks(ownerAgentId: string, goalId: string, datab
   const synthesis = getGoalSynthesis(goalId, goal.revision, database);
   if (!synthesis) throw new CommandError('Goal synthesis 不存在');
   if (!database.prepare('SELECT 1 FROM repo_leases WHERE goal_id = ?').get(goalId)) throw new CommandError('Goal 未持有 repo lease');
-  const plans = JSON.parse(String(synthesis.task_plans_json)) as SynthesisOutput['taskPlans'];
-  if (!Array.isArray(plans) || plans.length === 0) throw new CommandError('synthesis 必須包含 Task');
   const ids: string[] = [];
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    for (const plan of plans) {
-      const title = clean(plan.title, 'Task title');
-      const description = clean(plan.description, 'Task description');
-      const assigneeId = clean(plan.assigneeId, 'Task assignee');
-      if (title.length > 200 || description.length > 5000) throw new CommandError('Task 內容過長');
-      if (!database.prepare('SELECT 1 FROM workspace_members_read_model WHERE workspace_id = ? AND user_id = ?').get(goal.workspace_id, assigneeId)) {
-        throw new CommandError('Task assignee 必須是 Workspace member');
-      }
+  return withTransaction(database, () => {
+    const validated = validateGoalSynthesis({
+      summary: synthesis.summary,
+      decisionRationale: synthesis.decision_rationale,
+      changeScope: synthesis.change_scope,
+      uncertainties: JSON.parse(String(synthesis.uncertainties_json)),
+      taskPlans: JSON.parse(String(synthesis.task_plans_json)),
+      archiveTaskIds: JSON.parse(String(synthesis.archive_task_ids_json)),
+      evidenceRefs: JSON.parse(String(synthesis.evidence_json)),
+    }, goal.workspace_id, database, goalId);
+    for (const taskId of validated.archiveTaskIds ?? []) archiveTask(ownerAgentId, taskId, database);
+    for (const plan of validated.taskPlans) {
       const taskId = randomUUID();
       appendEventInTransaction('Task', taskId, 0, 'task.created', {
         workspaceId: goal.workspace_id, projectId: goal.project_id, goalId,
-        title, description: `${description}\n\n驗收：${clean(plan.acceptanceCriteria, 'acceptanceCriteria')}\nRollback：${clean(plan.rollbackCondition, 'rollbackCondition')}`,
-        status: 'Todo', priority: 'Medium', assigneeId, dueAt: null,
+        title: plan.title, description: `${plan.description}\n\nDepends on: ${plan.dependsOn.join(', ') || 'none'}\n驗收：${plan.acceptanceCriteria}\nRollback：${plan.rollbackCondition}`,
+        status: 'Todo', priority: 'Medium', assigneeId: plan.assigneeId, dueAt: null,
+        deploymentNotRequired: plan.deploymentNotRequired,
       }, meta(ownerAgentId), database);
       ids.push(taskId);
     }
     appendEventInTransaction('Goal', goalId, goal.version, 'goal.execution_started', {}, meta(ownerAgentId), database);
-    database.exec('COMMIT');
     return ids;
-  } catch (error) {
-    database.exec('ROLLBACK');
-    throw error;
+  });
+}
+
+export function validateGoalDeliveryEvidence(goalId: string, database = db, repos: RepoRegistry = loadRepoRegistry()): string[] {
+  const goal = getGoal(goalId, database);
+  if (!goal) throw new CommandError('goal 不存在');
+  const project = getProject(goal.project_id, database);
+  if (!project) throw new CommandError('project 不存在');
+  const repoDeploymentNotRequired = project.target_repo
+    ? repos.get(project.target_repo)?.deployment === 'not_required'
+    : false;
+  const tasks = database.prepare("SELECT task_id, deployment_not_required FROM tasks_read_model WHERE goal_id = ? AND status <> 'Archived'")
+    .all(goalId) as unknown as Array<{ task_id: string; deployment_not_required: number }>;
+  const refs: string[] = [];
+  for (const task of tasks) {
+    const evidence = listDeliveryEvidence(task.task_id, database);
+    const kinds = new Set(evidence.map((item) => item.kind));
+    const latestCi = evidence.filter((item) => item.kind === 'ci.checked').at(-1);
+    if (!latestCi?.detail.startsWith('passed')) kinds.delete('ci.checked');
+    const deploymentKind = task.deployment_not_required === 1 || repoDeploymentNotRequired
+      ? 'deployment_not_required'
+      : 'deployment.verified';
+    const required: DeliveryEvidenceKind[] = ['ci.checked', 'merge.integrated', deploymentKind];
+    const missing = required.filter((kind) => !kinds.has(kind));
+    if (missing.length) throw new CommandError(`Task ${task.task_id} 缺少 ${missing.join('、')} 權威證據`);
+    refs.push(...evidence.map((item) => `${item.kind}:${item.ref}`));
   }
+  return refs;
 }
 
 export function verifyGoalDelivery(ownerAgentId: string, goalId: string, input: {
   passed: boolean; evidenceRefs: string[]; deployment: 'verified' | 'not_required' | 'missing';
-}, database = db): 'done' | 'retry' | 'blocked' {
+}, database = db, repos: RepoRegistry = loadRepoRegistry()): 'done' | 'retry' | 'blocked' {
   let goal = getGoal(goalId, database);
   if (!goal) throw new CommandError('goal 不存在');
   if (goal.status === 'Executing') startVerification(ownerAgentId, goalId, database);
   goal = getGoal(goalId, database)!;
   if (goal.status !== 'Verifying') throw new CommandError('Goal 不在 Verifying');
-  const tasks = database.prepare('SELECT task_id, status FROM tasks_read_model WHERE goal_id = ?').all(goalId) as unknown as Array<{ task_id: string; status: string }>;
-  if (tasks.length === 0 || tasks.some((task) => task.status !== 'Done')) throw new CommandError('Goal 仍有未完成 Task');
+  const tasks = database.prepare("SELECT task_id, status, deployment_not_required FROM tasks_read_model WHERE goal_id = ? AND status <> 'Archived'").all(goalId) as unknown as Array<{ task_id: string; status: string; deployment_not_required: number }>;
+  if (tasks.some((task) => task.status !== 'Done')) throw new CommandError('Goal 仍有未完成 Task');
   if (!Array.isArray(input.evidenceRefs) || input.evidenceRefs.length === 0) throw new CommandError('Goal 驗收缺少 evidence');
-  const deliveryRefs: string[] = [];
-  for (const task of tasks) {
-    const evidence = listDeliveryEvidence(task.task_id, database);
-    const kinds = new Set(evidence.map((item) => item.kind));
-    if (!kinds.has('ci.checked') || !kinds.has('merge.integrated')
-      || (!kinds.has('deployment.verified') && !kinds.has('deployment_not_required'))) {
-      throw new CommandError(`Task ${task.task_id} 缺少 CI、merge 或 deployment 權威證據`);
-    }
-    deliveryRefs.push(...evidence.map((item) => `${item.kind}:${item.ref}`));
-  }
+  const deliveryRefs = validateGoalDeliveryEvidence(goalId, database, repos);
   const evidenceRefs = [...new Set([...input.evidenceRefs, ...deliveryRefs])];
   database.prepare(
     `INSERT INTO goal_verifications (goal_id, revision, passed, evidence_json, created_at)
@@ -270,18 +455,35 @@ export function verifyGoalDelivery(ownerAgentId: string, goalId: string, input: 
     completeGoal(ownerAgentId, goalId, evidenceRefs, database);
     return 'done';
   }
-  const failures = (database.prepare('SELECT COUNT(*) AS count FROM goal_verifications WHERE goal_id = ? AND passed = 0').get(goalId) as { count: number }).count;
+  const reset = database.prepare(
+    `SELECT CAST(json_extract(resumed.payload_json, '$.revision') AS INTEGER) AS revision
+       FROM event_store resumed
+       JOIN event_store blocked
+         ON blocked.aggregate_id = resumed.aggregate_id
+        AND blocked.aggregate_version = resumed.aggregate_version - 1
+        AND blocked.event_type = 'goal.blocked'
+      WHERE resumed.aggregate_id = ? AND resumed.event_type = 'goal.resumed'
+      ORDER BY resumed.aggregate_version DESC LIMIT 1`,
+  ).get(goalId) as { revision: number } | undefined;
+  const failures = (database.prepare(
+    'SELECT COUNT(*) AS count FROM goal_verifications WHERE goal_id = ? AND passed = 0 AND revision >= ?',
+  ).get(goalId, reset?.revision ?? 0) as { count: number }).count;
   if (failures >= 2) {
     blockGoal(ownerAgentId, goalId, '第二次驗收仍失敗', database);
     return 'blocked';
   }
   reviseGoal(ownerAgentId, goalId, goal.success_criteria, database);
+  const revised = getGoal(goalId, database)!;
+  enqueueHeartbeat({
+    scopeId: goalId, goalId, phase: 'owner_synthesis', agentId: revised.owner_agent_id,
+    revision: revised.revision, triggerRef: 'phase',
+  }, database);
   return 'retry';
 }
 
 export function createFollowupGoal(ownerAgentId: string, parentGoalId: string, input: {
   objective: string; successCriteria: string; reason: string; evidenceRefs: string[];
-}, database = db): string {
+}, database = db, repos: RepoRegistry = loadRepoRegistry()): string {
   const parent = getGoal(parentGoalId, database);
   if (!parent || parent.status !== 'Done') throw new CommandError('只有 Done Goal 可建立 follow-up');
   const successCriteria = clean(input.successCriteria, 'successCriteria');
@@ -291,34 +493,43 @@ export function createFollowupGoal(ownerAgentId: string, parentGoalId: string, i
   const fingerprint = createHash('sha256').update(JSON.stringify([...input.evidenceRefs].sort())).digest('hex');
   const objective = clean(input.objective, 'objective');
   requireActiveProject(parent.workspace_id, parent.project_id, database);
-  database.exec('BEGIN IMMEDIATE');
-  try {
+  return withTransaction(database, () => {
     const existing = database.prepare(
-      'SELECT child_goal_id FROM goal_followups WHERE parent_goal_id = ? AND success_criteria = ? AND evidence_fingerprint = ?',
-    ).get(parentGoalId, successCriteria, fingerprint) as { child_goal_id: string } | undefined;
-    if (existing) {
-      database.exec('COMMIT');
-      return existing.child_goal_id;
-    }
-    const childGoalId = randomUUID();
-    appendEventInTransaction('Goal', childGoalId, 0, 'goal.created', {
-      workspaceId: parent.workspace_id,
-      projectId: parent.project_id,
-      parentGoalId,
-      source: 'followup',
-      objective,
-      successCriteria,
-      createdBy: ownerAgentId,
-      ownerAgentId,
-    }, meta(ownerAgentId), database);
+      `SELECT f.child_goal_id FROM goal_followups f
+         JOIN goals_read_model p ON p.goal_id = f.parent_goal_id
+        WHERE p.workspace_id = ? AND p.project_id = ?
+          AND f.success_criteria = ? AND f.evidence_fingerprint = ?`,
+    ).get(parent.workspace_id, parent.project_id, successCriteria, fingerprint) as { child_goal_id: string } | undefined;
+    if (existing) throw new ConflictError('follow-up 指紋重複');
+    const childGoalId = createGoal(ownerAgentId, {
+      workspaceId: parent.workspace_id, projectId: parent.project_id, parentGoalId,
+      source: 'followup', objective, successCriteria, ownerAgentId,
+    }, database, repos);
     database.prepare(
       `INSERT INTO goal_followups (parent_goal_id, success_criteria, evidence_fingerprint, child_goal_id, created_at)
        VALUES (?, ?, ?, ?, ?)`,
     ).run(parentGoalId, successCriteria, fingerprint, childGoalId, new Date().toISOString());
-    database.exec('COMMIT');
     return childGoalId;
-  } catch (error) {
-    database.exec('ROLLBACK');
-    throw error;
-  }
+  });
+}
+
+export function saveFollowupCandidate(ownerAgentId: string, parentGoalId: string, input: {
+  objective: string; successCriteria: string; reason: string; evidenceRefs: string[];
+}, database = db): 'saved' {
+  const parent = getGoal(parentGoalId, database);
+  if (!parent || parent.status !== 'Done') throw new CommandError('只有 Done Goal 可保存 follow-up 候選');
+  const objective = clean(input.objective, 'objective');
+  const successCriteria = clean(input.successCriteria, 'successCriteria');
+  const reason = clean(input.reason, 'reason');
+  if (!Array.isArray(input.evidenceRefs) || input.evidenceRefs.length === 0) throw new CommandError('follow-up 必須有增量證據');
+  const evidenceRefs = input.evidenceRefs.map((ref) => clean(ref, 'evidenceRef'));
+  const fingerprint = createHash('sha256').update(JSON.stringify([...evidenceRefs].sort())).digest('hex');
+  database.prepare(
+    `INSERT OR IGNORE INTO goal_followup_candidates
+       (candidate_id, parent_goal_id, workspace_id, project_id, objective, success_criteria, reason,
+        evidence_json, evidence_fingerprint, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(randomUUID(), parentGoalId, parent.workspace_id, parent.project_id, objective, successCriteria, reason,
+    JSON.stringify(evidenceRefs), fingerprint, new Date().toISOString());
+  return 'saved';
 }

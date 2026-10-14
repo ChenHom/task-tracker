@@ -15,6 +15,7 @@ export interface NotificationRow {
   notification_id: string;
   recipient_id: string;
   source_task_id: string;
+  source_goal_id: string | null;
   source_comment_id: string;
   snippet: string;
   created_at: string;
@@ -90,21 +91,48 @@ export function emitMentionNotifications(
   }
 }
 
+export function notifyWorkspaceHumanAdmins(
+  actorId: string,
+  workspaceId: string,
+  sourceTaskId: string,
+  message: string,
+  database = db,
+  sourceGoalId: string | null = null,
+): void {
+  const admins = database.prepare(
+    `SELECT m.user_id FROM workspace_members_read_model m
+      WHERE m.workspace_id = ? AND m.role IN ('Admin', 'Owner')
+        AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.user_id = m.user_id)`,
+  ).all(workspaceId) as unknown as Array<{ user_id: string }>;
+  const append = database.isTransaction ? appendEventInTransaction : appendEvent;
+  for (const admin of admins) {
+    const notificationId = randomUUID();
+    append('Notification', notificationId, 0, 'notification.created', {
+      recipientId: admin.user_id,
+      sourceTaskId,
+      sourceGoalId,
+      sourceCommentId: `goal-blocked:${sourceGoalId ?? sourceTaskId}`,
+      snippet: snippet(message),
+    }, meta(actorId), database);
+  }
+}
+
 export function registerNotificationProjections(): void {
   registerProjection('notification.created', (e, database) => {
     const p = e.payload as {
       recipientId: string;
       sourceTaskId: string;
+      sourceGoalId?: string | null;
       sourceCommentId: string;
       snippet: string;
     };
     database
       .prepare(
         `INSERT INTO notifications_read_model
-           (notification_id, recipient_id, source_task_id, source_comment_id, snippet, created_at, read_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (notification_id, recipient_id, source_task_id, source_goal_id, source_comment_id, snippet, created_at, read_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(e.aggregate_id, p.recipientId, p.sourceTaskId, p.sourceCommentId, p.snippet, e.occurred_at, null);
+      .run(e.aggregate_id, p.recipientId, p.sourceTaskId, p.sourceGoalId ?? null, p.sourceCommentId, p.snippet, e.occurred_at, null);
   });
   registerProjection('notification.read', (e, database) => {
     const p = e.payload as { readAt: string };
@@ -129,7 +157,7 @@ export function listNotifications(
   const visibilityParams = filter === 'unread' ? [] : [cutoff];
   return database
     .prepare(
-      `SELECT notification_id, recipient_id, source_task_id, source_comment_id, snippet, created_at, read_at
+      `SELECT notification_id, recipient_id, source_task_id, source_goal_id, source_comment_id, snippet, created_at, read_at
          FROM notifications_read_model
         WHERE recipient_id = ? AND ${filterClause(filter)}
         ORDER BY CASE WHEN read_at IS NULL THEN 0 ELSE 1 END, created_at DESC, notification_id DESC`,
@@ -206,7 +234,7 @@ export function listNotificationsPage(
 
   const items = database
     .prepare(
-      `SELECT notification_id, recipient_id, source_task_id, source_comment_id, snippet, created_at, read_at
+      `SELECT notification_id, recipient_id, source_task_id, source_goal_id, source_comment_id, snippet, created_at, read_at
          FROM notifications_read_model
         WHERE recipient_id = ? AND ${where}
         ORDER BY created_at DESC, notification_id DESC
@@ -220,7 +248,7 @@ export function listNotificationsPage(
 export function getNotification(notificationId: string, userId: string, database = db): NotificationRow | null {
   const row = database
     .prepare(
-      `SELECT notification_id, recipient_id, source_task_id, source_comment_id, snippet, created_at, read_at
+      `SELECT notification_id, recipient_id, source_task_id, source_goal_id, source_comment_id, snippet, created_at, read_at
          FROM notifications_read_model
         WHERE notification_id = ? AND recipient_id = ?`,
     )

@@ -80,6 +80,7 @@ import {
   isStaleSocketError,
   ownerSweepPrompt,
   parseScenario,
+  repoHasGoalLease,
   ROOT,
   RSSHUB_ROOT,
   HARNESS_ROOT,
@@ -119,6 +120,26 @@ import {
   safeDiscussionEnvironment,
   SAFE_DISCUSSION_TOOLS,
 } from './run';
+
+const leaseRoot = mkdtempSync(join(tmpdir(), 'goal-lease-canonical-'));
+const leaseRepo = join(leaseRoot, 'repo');
+const leaseAlias = join(leaseRoot, 'repo-alias');
+const deletedLeaseRepo = join(leaseRoot, 'deleted-repo');
+mkdirSync(leaseRepo);
+symlinkSync(leaseRepo, leaseAlias);
+mkdirSync(deletedLeaseRepo);
+rmSync(deletedLeaseRepo, { recursive: true, force: true });
+const leaseDb = new DatabaseSync(':memory:');
+runMigrations(leaseDb);
+leaseDb.prepare("INSERT INTO repo_leases VALUES (?, 'goal-for-deleted-repo', 't')").run(deletedLeaseRepo);
+leaseDb.prepare("INSERT INTO repo_leases VALUES (?, 'goal-in-other-workspace', 't')").run(leaseAlias);
+assert.strictEqual(repoHasGoalLease(leaseDb, leaseRepo), true,
+  '已刪除 lease 不可阻止後續 symlink lease 被辨識');
+leaseDb.prepare("DELETE FROM repo_leases WHERE goal_id = 'goal-in-other-workspace'").run();
+assert.strictEqual(repoHasGoalLease(leaseDb, leaseRepo), false,
+  '只有已刪除 lease 時，檢查另一個存在的 repo 必須回 false');
+leaseDb.close();
+rmSync(leaseRoot, { recursive: true, force: true });
 
 assert.strictEqual(legacyTaskAllowed({ project_id: 'p', goal_id: null }, new Set(['p'])), false, 'active Goal Project 不可進 legacy sweep');
 assert.strictEqual(legacyTaskAllowed({ project_id: 'p', goal_id: 'g' }, new Set()), false, 'Goal Task 永遠不由 legacy sweep 執行');

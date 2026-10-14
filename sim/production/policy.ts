@@ -40,10 +40,13 @@ export interface TaskSnapshot {
   version: number;
   goalId?: string | null;
   goalStatus?: string | null;
+  goalPauseRequested?: boolean;
   projectId?: string | null;
   targetRepo?: string | null;
   verificationChecks?: string[];
   deployment?: 'task-tracker' | 'not_required' | null;
+  deploymentNotRequired?: boolean;
+  repoUnavailable?: boolean;
 }
 
 export interface CommentSnapshot {
@@ -152,6 +155,8 @@ export interface CoordinatorSnapshot {
   prerequisiteEvidence: PrerequisiteEvidence | null;
   /** email -> canonical user ID，由呼叫端（有 I/O 能力那層）先解析好。 */
   userIdsByEmail: Record<string, string>;
+  agentIds?: string[];
+  warnings?: string[];
 }
 
 export type CoordinatorActionKind =
@@ -435,7 +440,10 @@ function isBlockedTask(taskId: string, snapshot: CoordinatorSnapshot): boolean {
 export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Date): CoordinatorAction[] {
   snapshot = {
     ...snapshot,
-    tasks: snapshot.tasks.filter((task) => !task.goalId || task.goalStatus === 'Executing'),
+    tasks: snapshot.tasks.filter((task) => !task.goalId || (
+      task.goalStatus === 'Executing'
+      && (!task.goalPauseRequested || task.status === 'Doing' || task.status === 'Review')
+    )),
   };
   const tasksById = new Map(snapshot.tasks.map((t) => [t.taskId, t] as const));
   const reservedAssignees = new Set<string>();
@@ -524,6 +532,7 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
     (task) =>
       (ALLOWED_WORKSPACE_IDS.includes(task.workspaceId) || Boolean(task.goalId && task.targetRepo)) &&
       !isExcludedTask(task) &&
+      !(task.goalId && task.repoUnavailable) &&
       !handledIds.has(task.taskId) &&
       !isBlockedTask(task.taskId, snapshot) &&
       genericTier(task) !== null,
@@ -554,6 +563,7 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
         reason: 'task 在 Review，等待 Owner 驗收',
       });
     } else if (tier === 1) {
+      if (task.goalId && task.assigneeId && snapshot.agentIds && !snapshot.agentIds.includes(task.assigneeId)) continue;
       actions.push({
         kind: 'member_work',
         taskId: task.taskId,
@@ -562,6 +572,14 @@ export function selectCoordinatorActions(snapshot: CoordinatorSnapshot, now: Dat
         reason: '已指派的 Doing task 繼續 member 工作',
       });
     } else {
+      if (task.goalId && task.assigneeId) {
+        if (snapshot.agentIds && !snapshot.agentIds.includes(task.assigneeId)) continue;
+        actions.push({
+          kind: 'assign_member', taskId: task.taskId, workspaceId: task.workspaceId,
+          assigneeId: task.assigneeId, reason: 'Goal Task 保留 Owner synthesis 指派',
+        });
+        continue;
+      }
       actions.push({
         kind: 'owner_dispatch',
         taskId: task.taskId,

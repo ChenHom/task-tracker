@@ -76,8 +76,9 @@ export function getProject(projectId: string, database = db): ProjectRow | null 
   return (database.prepare('SELECT * FROM projects_read_model WHERE project_id = ?').get(projectId) as ProjectRow | undefined) ?? null;
 }
 
-export function listProjects(workspaceId: string, database = db): ProjectRow[] {
-  return database.prepare('SELECT * FROM projects_read_model WHERE workspace_id = ? ORDER BY rowid')
+export function listProjects(workspaceId: string, database = db, options: { includeArchived?: boolean } = {}): ProjectRow[] {
+  const statusFilter = options.includeArchived ? '' : " AND status = 'active'";
+  return database.prepare(`SELECT * FROM projects_read_model WHERE workspace_id = ?${statusFilter} ORDER BY rowid`)
     .all(workspaceId) as unknown as ProjectRow[];
 }
 
@@ -168,6 +169,13 @@ export function registerGoalWorktree(goalId: string, targetRepo: string, worktre
      VALUES (?, ?, ?, 0, 1, ?, ?)
      ON CONFLICT(worktree_path) DO UPDATE SET updated_at = excluded.updated_at`,
   ).run(resolve(cleanPath), goalId, targetRepo, now, now);
+}
+
+export function setGoalWorktreeDirty(goalId: string, worktreePath: string, dirty: boolean, database = db): void {
+  const info = database.prepare(
+    'UPDATE goal_worktrees SET dirty = ?, updated_at = ? WHERE goal_id = ? AND worktree_path = ?',
+  ).run(dirty ? 1 : 0, new Date().toISOString(), goalId, worktreePath);
+  if (info.changes === 0) throw new CommandError('Goal worktree 不存在');
 }
 
 export function markGoalWorktreeIntegrated(goalId: string, worktreePath: string, database = db): void {

@@ -17,6 +17,7 @@ const URL_USERINFO = /\b(https?:\/\/)[^\s/@]+@/giu;
 const PRIVATE_IPV4 = /\b(?:0|10|127|169\.254|192\.168|172\.(?:1[6-9]|2\d|3[0-1])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7]))\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?\b/g;
 const PRIVATE_HOST = /\b(?:localhost|[^\s./]+\.local)\b/giu;
 const TOOL_OR_API_ENVELOPE = /(?:<\/?(?:tool|function|function_calls?)\b|["']?(?:tool_name|function_call)["']?\s*:|(?:^|\n)\s*(?:(?:curl|wget|bash)\b|(?:Read|Write|Edit|Glob|Grep)\s*\(|(?:GET|POST|PATCH|DELETE)\s+\/?(?:api|http)))/iu;
+const UNTRUSTED_FENCE_MARKER = /\b(?:END_)?UNTRUSTED_[A-Z0-9_]*\b/giu;
 
 export type DiscussionMode = 'safe' | 'internal';
 
@@ -70,6 +71,7 @@ function maskAssignment(match: string): string {
 export function sanitizeUntrustedText(value: string, maxChars: number): string {
   let normalized = String(value ?? '').normalize('NFC').replace(/\r\n?/g, '\n').replace(CONTROL_CHARACTERS, '');
   normalized = normalized
+    .replace(UNTRUSTED_FENCE_MARKER, '[untrusted-marker-neutralized]')
     .replace(URL_USERINFO, '$1[redacted-userinfo]@')
     .replace(CREDENTIAL_ASSIGNMENT, maskAssignment)
     .replace(JWT_OR_KEY_PREFIX, '[credential-redacted]')

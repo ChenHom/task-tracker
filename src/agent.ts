@@ -14,6 +14,7 @@ export interface AgentRow {
   name: string;
   role: AgentRole;
   skill_profile_json: string;
+  repo_access_json: string;
   primary_adapter: AgentAdapterName;
   primary_model: string;
   fallback_adapter: AgentAdapterName | null;
@@ -28,6 +29,7 @@ interface AgentDefinition {
   name: string;
   role: AgentRole;
   summary: string;
+  skills: string[];
   primaryAdapter: AgentAdapterName;
   primaryModel: string;
   fallbackAdapter?: AgentAdapterName;
@@ -37,33 +39,33 @@ interface AgentDefinition {
 const DEFINITIONS: readonly AgentDefinition[] = [
   {
     email: 'user01@test.local', name: '阿哲', role: 'owner',
-    summary: 'Goal scoping, synthesis, review and delivery decisions',
+    summary: 'Goal scoping, synthesis, review and delivery decisions', skills: ['planning', 'review', 'delivery'],
     primaryAdapter: 'claude', primaryModel: 'claude-sonnet-5-5',
     fallbackAdapter: 'codex', fallbackModel: 'gpt-5.6-sol',
   },
   {
     email: 'user02@test.local', name: '小美', role: 'member',
-    summary: 'Small auth and security fixes with focused tests',
+    summary: 'Small auth and security fixes with focused tests', skills: ['auth', 'security', 'api', 'tests'],
     primaryAdapter: 'codex', primaryModel: 'gpt-5.6-sol',
   },
   {
     email: 'user03@test.local', name: '阿凱', role: 'member',
-    summary: 'Cross-file and architectural implementation',
+    summary: 'Cross-file and architectural implementation', skills: ['architecture', 'backend', 'state'],
     primaryAdapter: 'codex', primaryModel: 'gpt-5.6-terra',
   },
   {
     email: 'user04@test.local', name: '婷婷', role: 'member',
-    summary: 'File IO and defensive implementation',
+    summary: 'File IO and defensive implementation', skills: ['file', 'io', 'backend'],
     primaryAdapter: 'codex', primaryModel: 'gpt-5.6-luna',
   },
   {
     email: 'user05@test.local', name: '大熊', role: 'member',
-    summary: 'Small changes with current-state verification',
+    summary: 'Small changes with current-state verification', skills: ['verification', 'tests', 'maintenance'],
     primaryAdapter: 'codex', primaryModel: 'gpt-5.6-luna',
   },
   {
     email: 'user06@test.local', name: '小芸', role: 'member',
-    summary: 'Frontend interaction, responsive UI and browser verification',
+    summary: 'Frontend interaction, responsive UI and browser verification', skills: ['frontend', 'ui', 'browser', 'responsive'],
     primaryAdapter: 'codex', primaryModel: 'gpt-5.6-sol',
   },
 ];
@@ -81,9 +83,9 @@ function adapter(value: unknown, field: string): AgentAdapterName {
 export function syncAgents(database = db): void {
   const insert = database.prepare(
     `INSERT INTO agents
-       (agent_id, user_id, email, name, role, skill_profile_json, primary_adapter, primary_model,
+       (agent_id, user_id, email, name, role, skill_profile_json, repo_access_json, primary_adapter, primary_model,
         fallback_adapter, fallback_model, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, '["*"]', ?, ?, ?, ?, 'active', ?, ?)
      ON CONFLICT(agent_id) DO NOTHING`,
   );
   for (const definition of DEFINITIONS) {
@@ -92,7 +94,7 @@ export function syncAgents(database = db): void {
     const now = new Date().toISOString();
     insert.run(
       userId, userId, definition.email, definition.name, definition.role,
-      JSON.stringify({ summary: definition.summary }),
+      JSON.stringify({ summary: definition.summary, skills: definition.skills }),
       definition.primaryAdapter, definition.primaryModel,
       definition.fallbackAdapter ?? null, definition.fallbackModel ?? null,
       now, now,
@@ -118,18 +120,38 @@ export function listWorkspaceAgents(workspaceId: string, database = db): AgentRo
 }
 
 export function listWorkspaceAgentSummaries(workspaceId: string, database = db): Array<AgentRow & Record<string, unknown>> {
-  return listWorkspaceAgents(workspaceId, database).map((agent) => {
+  void workspaceId;
+  return listAgents(database).map((agent) => {
     const usage = database.prepare(
       `SELECT MAX(created_at) AS latest_run_at,
               COALESCE(SUM(actual_input_tokens), 0) AS total_input_tokens,
-              COALESCE(SUM(actual_output_tokens), 0) AS total_output_tokens
+              COALESCE(SUM(COALESCE(actual_output_tokens, actual_total_tokens)), 0) AS total_output_tokens
          FROM goal_runs WHERE agent_id = ?`,
     ).get(agent.agent_id) as Record<string, unknown>;
     const current = database.prepare(
       `SELECT goal_id, task_id FROM goal_runs
         WHERE agent_id = ? AND status IN ('pending', 'running') ORDER BY rowid DESC LIMIT 1`,
     ).get(agent.agent_id) as { goal_id: string | null; task_id: string | null } | undefined;
-    return { ...agent, ...usage, current_goal_id: current?.goal_id ?? null, current_task_id: current?.task_id ?? null };
+    const latestRun = database.prepare(
+      `SELECT run_id, phase, adapter, model, attempt, status, error_category, created_at
+         FROM goal_runs WHERE agent_id = ? ORDER BY rowid DESC LIMIT 1`,
+    ).get(agent.agent_id) as Record<string, unknown> | undefined;
+    const latestPreflight = database.prepare(
+      `SELECT run_id, phase, adapter, model, status, error_category, created_at
+         FROM goal_runs WHERE agent_id = ? AND error_category = 'preflight' ORDER BY rowid DESC LIMIT 1`,
+    ).get(agent.agent_id) as Record<string, unknown> | undefined;
+    const counts = database.prepare(
+      `SELECT COALESCE(SUM(CASE WHEN attempt = 'fallback' THEN 1 ELSE 0 END), 0) AS fallback_count,
+              COALESCE(SUM(CASE WHEN actual_input_tokens IS NULL AND actual_output_tokens IS NULL
+                                 AND actual_total_tokens IS NULL
+                                 AND status IN ('succeeded', 'failed', 'uncertain') THEN 1 ELSE 0 END), 0) AS unknown_usage_count
+         FROM goal_runs WHERE agent_id = ?`,
+    ).get(agent.agent_id) as Record<string, unknown>;
+    return {
+      ...agent, ...usage, ...counts,
+      current_goal_id: current?.goal_id ?? null, current_task_id: current?.task_id ?? null,
+      latest_run: latestRun ?? null, latest_preflight: latestPreflight ?? null,
+    };
   });
 }
 

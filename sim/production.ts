@@ -13,7 +13,7 @@
 // 零 AI）／3 DiscoveryUnavailable（零 mutation、零 AI）／1 未分類程式錯誤（不保證零 mutation）。
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
@@ -74,8 +74,12 @@ import {
   type VerificationCommandRunner,
   type MemberSessionDriverActions,
   type MemberSessionResult,
+  type MemberSessionRunnerContext,
+  type MemberSessionRunnerResult,
 } from './production/agent';
 import { createOwnerSessionRunner, createMemberSessionRunner, setSessionTraceFactory } from './production/runner';
+import { createPreflightRunPersister, trackGoalRunAttempt, type GoalRunRecorder } from './goalUsage';
+import { buildAdapterInvocation, classifyAdapterResult, executeWithSingleFallback, type AgentAdapter, type AdapterInput } from './goalAdapters';
 import {
   recordMemberSessionAttempt,
   runDeployAcceptance,
@@ -89,6 +93,7 @@ import {
   type FatalCoordinatorError,
   type MemberAttemptTransition,
 } from './production/coordinator';
+import { recordDeployDeliveryEvidence } from './production/deliveryEvidence';
 import { postCompletionAndTransitionToDone } from './production/completion';
 import { createTracer, createFileSink, type Tracer, type TraceSink } from './trace';
 import type { TaskRun, WorkPhase } from './production/types';
@@ -225,6 +230,7 @@ export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<Coordina
   const registry = loadRepoRegistry();
   const workspaceIds = new Set([MAIN_WORKSPACE_ID, CANONICAL_WORKSPACE_ID]);
   const projectConfigs = new Map<string, RegisteredRepo>();
+  const warnings: string[] = [];
   for (const workspace of await deps.ownerClient.listWorkspaces()) {
     if (workspace.status !== 'active') continue;
     const projects = await deps.ownerClient.listProjects(workspace.workspaceId);
@@ -238,15 +244,20 @@ export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<Coordina
   const tasks = (await Promise.all([...workspaceIds].map((workspaceId) => deps.ownerClient.listWorkspaceTasks(workspaceId)))).flat();
   for (const task of tasks) {
     if (!task.goalId || !task.projectId) continue;
+    if (task.status === 'Done' || task.status === 'Archived') continue;
     let config = projectConfigs.get(task.projectId);
     if (!config) {
       const project = await deps.ownerClient.getProject(task.projectId);
       config = project.targetRepo ? registry.get(project.targetRepo) : undefined;
     }
-    if (!config) throw new Error(`Goal Task ${task.taskId} 的 Project repo 未登記`);
+    if (!config) {
+      task.repoUnavailable = true;
+      warnings.push(`Goal Task ${task.taskId} 的 Project repo 未登記，略過該 Task`);
+      continue;
+    }
     task.targetRepo = config.targetRepo;
     task.verificationChecks = config.checks;
-    task.deployment = config.deployment;
+    task.deployment = task.deploymentNotRequired ? 'not_required' : config.deployment;
     deps.taskChecks?.set(task.taskId, config.checks);
   }
 
@@ -273,10 +284,12 @@ export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<Coordina
   const members = await deps.ownerClient.listMembers(CANONICAL_WORKSPACE_ID);
   const userIdsByEmail: Record<string, string> = {};
   for (const m of members) userIdsByEmail[m.email] = m.userId;
+  const agentIds = [...new Set((await Promise.all([...workspaceIds].map((workspaceId) => deps.ownerClient.listAgents(workspaceId))))
+    .flat().map((agent) => agent.agentId))];
 
   const prerequisiteEvidence = await gatherPrerequisiteEvidence(deps, tasks, userIdsByEmail);
 
-  return { tasks, taskRuns, taskEvidence, prerequisiteEvidence, userIdsByEmail };
+  return { tasks, taskRuns, taskEvidence, prerequisiteEvidence, userIdsByEmail, agentIds, warnings };
 }
 
 // =============================================================================
@@ -842,6 +855,7 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
     const prereqMissing = actions.find((a) => a.kind === 'cutover_prerequisite_missing');
 
     lines.push(...describeCutoverDisposition(snapshot.tasks, snapshot.userIdsByEmail, prerequisiteSatisfied));
+    lines.push(...(snapshot.warnings ?? []).map((warning) => `warning: ${warning}`));
     lines.push(`app rev: ${discovery.healthRev}`);
     lines.push(`planned actions this tick: ${actions.length}`);
     for (const a of actions) {
@@ -1087,7 +1101,12 @@ async function assignAndStartDoing(deps: ResolvedDeps, action: CoordinatorAction
   const masterSha = await getHeadSha(deps.repoRoot, 'master');
   const worktree = await ensureTaskWorktree(deps.repoRoot, action.taskId, masterSha);
   const goalTask = await deps.ownerClient.getTask(action.taskId);
-  if (goalTask.goalId) await deps.ownerClient.registerGoalWorktree(goalTask.goalId, deps.repoRoot, worktree.path);
+  if (goalTask.goalId) {
+    await deps.ownerClient.registerGoalWorktree(goalTask.goalId, deps.repoRoot, worktree.path);
+    await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
+      kind: 'task.execution_started', ref: worktree.branch, detail: `worktree ${worktree.path}`,
+    });
+  }
 
   checkpointAndTrace(
     deps,
@@ -1217,8 +1236,74 @@ async function applyMemberAttemptTransition(
       await deps.ownerClient.postCommentOnce(action.taskId, notice.content, key);
     }, 'swallow');
   }
+  if (task.goalId && transition.run.phase === 'human_blocked') {
+    await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
+      kind: 'task.blocked', ref: transition.run.evidenceFingerprint || 'human_blocked',
+      detail: result.output.blocker || result.evidence.rejectedReason || result.outcome,
+    });
+  }
 
   return transition;
+}
+
+function goalRunRecorder(client: TaskTrackerClient, goalId: string): GoalRunRecorder {
+  return {
+    quotaSnapshot: () => client.quotaSnapshot(),
+    prepareRun: (input) => client.prepareGoalRun(input),
+    finishRun: (runId, input) => client.finishGoalRun(goalId, runId, input),
+  };
+}
+
+export function productionMemberAdapter(
+  route: { runner: 'claude' | 'codex' | 'agy'; model: string },
+  runner: MemberSessionRunner,
+  context: MemberSessionRunnerContext,
+  fingerprint: () => string,
+  checkCli: boolean,
+): AgentAdapter {
+  return {
+    name: route.runner,
+    async preflight(input) {
+      if (!existsSync(context.worktreePath)) return { ready: false, reason: 'cwd 不存在' };
+      if (!checkCli) return { ready: true };
+      const command = buildAdapterInvocation(route.runner, { ...input, model: route.model }).command;
+      const available = command.includes('/')
+        ? existsSync(command)
+        : (process.env.PATH ?? '').split(':').some((directory) => existsSync(join(directory, command)));
+      return available ? { ready: true } : { ready: false, reason: `${command} CLI 不存在` };
+    },
+    estimate(input: AdapterInput) {
+      return { inputTokens: Math.ceil(input.prompt.length / 4), outputTokens: 1000, basis: 'bounded_context_chars', confidence: 'medium' };
+    },
+    async run() {
+      const before = fingerprint();
+      try {
+        const result = await runner(context);
+        const classification = classifyAdapterResult({
+          exitCode: result.exitCode,
+          stdout: '',
+          stderr: result.stderr ?? '',
+        });
+        if (classification.status === 'failed' && classification.errorCategory === 'runner' && fingerprint() === before) {
+          classification.sideEffectState = 'none';
+        }
+        return {
+          ...classification,
+          output: JSON.stringify(result), sessionId: result.sessionId ?? null,
+          usage: {
+            inputTokens: result.actualInputTokens ?? null,
+            outputTokens: result.actualOutputTokens ?? null,
+            totalTokens: result.tokenTotal ?? null,
+            cost: null,
+          },
+        };
+      } catch (error) {
+        const classification = classifyAdapterResult({ exitCode: 1, stdout: '', stderr: String(error) });
+        if (classification.errorCategory === 'runner' && fingerprint() === before) classification.sideEffectState = 'none';
+        return { ...classification, output: '', sessionId: null, usage: null };
+      }
+    },
+  };
 }
 
 async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun): Promise<'progressed' | 'no_change'> {
@@ -1238,7 +1323,12 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     try {
       const masterSha = workingRun.baseSha ?? (await getHeadSha(deps.repoRoot, 'master'));
       const worktree = await ensureTaskWorktree(deps.repoRoot, action.taskId, masterSha);
-      if (task.goalId) await deps.ownerClient.registerGoalWorktree(task.goalId, deps.repoRoot, worktree.path);
+      if (task.goalId) {
+        await deps.ownerClient.registerGoalWorktree(task.goalId, deps.repoRoot, worktree.path);
+        await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
+          kind: 'task.execution_started', ref: worktree.branch, detail: `worktree ${worktree.path}`,
+        });
+      }
       workingRun = checkpointAndTrace(
         deps,
         {
@@ -1303,22 +1393,43 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
 
   const summaryActionKeyBase = `member_summary:${action.taskId}:${workingRun.headSha ?? 'none'}`;
   let memberRunner = deps.runMemberSession!;
-  if (deps.useAgentRoutes && task.goalId && task.assigneeId) {
+  if (task.goalId && task.assigneeId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.agentId === task.assigneeId);
     if (!agent || agent.status !== 'active') throw new Error('Goal Task assignee 沒有 active Agent route');
-    const primary = createMemberSessionRunner({ runner: agent.primaryAdapter, model: agent.primaryModel });
-    const fallback = agent.fallbackAdapter && agent.fallbackModel
-      ? createMemberSessionRunner({ runner: agent.fallbackAdapter, model: agent.fallbackModel }) : null;
+    const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel };
+    const primary = deps.useAgentRoutes ? createMemberSessionRunner(primaryRoute) : memberRunner;
+    const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
+      ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
+    const fallback = deps.useAgentRoutes && fallbackRoute
+      ? createMemberSessionRunner(fallbackRoute) : null;
+    const tracked = (attempt: 'primary' | 'fallback', route: typeof primaryRoute, runner: MemberSessionRunner): MemberSessionRunner => async (context) =>
+      trackGoalRunAttempt({
+        recorder: goalRunRecorder(deps.ownerClient, task.goalId!), goalId: task.goalId!, taskId: task.taskId,
+        agentId: agent.agentId, phase: 'implementation', adapter: route.runner, model: route.model,
+        attempt, triggerRef: String(workingRun.workerId), prompt: JSON.stringify(context), estimatedOutputTokens: 1000,
+        invoke: () => runner(context),
+      });
+    const trackedPrimary = tracked('primary', primaryRoute, primary);
+    const trackedFallback = fallback && fallbackRoute ? tracked('fallback', fallbackRoute, fallback) : null;
     memberRunner = async (context) => {
       const fingerprint = () => `${execFileSync('git', ['rev-parse', 'HEAD'], { cwd: context.worktreePath, encoding: 'utf8' }).trim()}\n${execFileSync('git', ['status', '--porcelain'], { cwd: context.worktreePath, encoding: 'utf8' })}`;
-      const before = fingerprint();
-      try {
-        const result = await primary(context);
-        if (result.exitCode === 0 || !fallback || fingerprint() !== before) return result;
-      } catch (error) {
-        if (!fallback || fingerprint() !== before) throw error;
-      }
-      return fallback(context);
+      const adapterInput = { prompt: JSON.stringify(context), cwd: context.worktreePath, model: primaryRoute.model };
+      const result = await executeWithSingleFallback(
+        adapterInput,
+        productionMemberAdapter(primaryRoute, trackedPrimary, context, fingerprint, deps.useAgentRoutes),
+        trackedFallback && fallbackRoute ? productionMemberAdapter(fallbackRoute, trackedFallback, context, fingerprint, deps.useAgentRoutes) : null,
+        createPreflightRunPersister({
+          recorder: goalRunRecorder(deps.ownerClient, task.goalId!),
+          goalId: task.goalId!, taskId: task.taskId, agentId: agent.agentId, phase: 'implementation',
+          triggerRef: String(workingRun.workerId),
+          routes: {
+            primary: { adapter: primaryRoute.runner, model: primaryRoute.model },
+            fallback: fallbackRoute ? { adapter: fallbackRoute.runner, model: fallbackRoute.model } : null,
+          },
+        }),
+      );
+      if (!result.output) throw new Error(`member adapter ${result.attempt} failed: ${result.errorCategory ?? 'unknown'}`);
+      return JSON.parse(result.output) as MemberSessionRunnerResult;
     };
   }
 
@@ -1356,17 +1467,33 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     },
   };
 
-  const result = await runMemberSession({
-    taskId: action.taskId,
-    worktreePath,
-    allowedPrefixes: deps.allowedPrefixes,
-    acceptanceCriteria: task.title,
-    comments,
-    previousBlocker,
-    runner: memberRunner,
-    runVerificationCommand: deps.runVerificationCommand,
-    driverActions,
-  });
+  if (task.goalId) await deps.ownerClient.setGoalWorktreeDirty(task.goalId, worktreePath, true);
+  let result: MemberSessionResult;
+  try {
+    result = await runMemberSession({
+      taskId: action.taskId,
+      worktreePath,
+      allowedPrefixes: deps.allowedPrefixes,
+      acceptanceCriteria: task.title,
+      comments,
+      previousBlocker,
+      runner: memberRunner,
+      runVerificationCommand: deps.runVerificationCommand,
+      driverActions,
+    });
+  } finally {
+    if (task.goalId) {
+      const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: worktreePath, encoding: 'utf8' }).trim().length > 0;
+      await deps.ownerClient.setGoalWorktreeDirty(task.goalId, worktreePath, dirty);
+    }
+  }
+
+  if (task.goalId && result.evidence.commitSha) {
+    await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
+      kind: 'commit.recorded', ref: result.evidence.commitSha,
+      detail: result.evidence.commitChangedPaths.join(', '),
+    });
+  }
 
   const transition = await applyMemberAttemptTransition(deps, action, workingRun, result, task);
 
@@ -1423,19 +1550,31 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
   const reviewedHeadSha = run.headSha ?? '';
   const currentTask = await deps.ownerClient.getTask(action.taskId);
   let ownerRunner = deps.runOwnerSession!;
-  if (deps.useAgentRoutes && currentTask.goalId) {
+  if (currentTask.goalId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.role === 'owner');
     if (!agent || agent.status !== 'active') throw new Error('Goal Owner 沒有 active Agent route');
-    const primary = createOwnerSessionRunner({ runner: agent.primaryAdapter, model: agent.primaryModel });
-    const fallback = agent.fallbackAdapter && agent.fallbackModel
-      ? createOwnerSessionRunner({ runner: agent.fallbackAdapter, model: agent.fallbackModel }) : null;
+    const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel };
+    const primary = deps.useAgentRoutes ? createOwnerSessionRunner(primaryRoute) : ownerRunner;
+    const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
+      ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
+    const fallback = deps.useAgentRoutes && fallbackRoute
+      ? createOwnerSessionRunner(fallbackRoute) : null;
+    const tracked = (attempt: 'primary' | 'fallback', route: typeof primaryRoute, runner: OwnerSessionRunner): OwnerSessionRunner => async (context) =>
+      trackGoalRunAttempt({
+        recorder: goalRunRecorder(deps.ownerClient, currentTask.goalId!), goalId: currentTask.goalId!, taskId: currentTask.taskId,
+        agentId: agent.agentId, phase: 'owner_review', adapter: route.runner, model: route.model,
+        attempt, triggerRef: String(run.workerId), prompt: JSON.stringify(context), estimatedOutputTokens: 500,
+        invoke: () => runner(context),
+      });
+    const trackedPrimary = tracked('primary', primaryRoute, primary);
+    const trackedFallback = fallback && fallbackRoute ? tracked('fallback', fallbackRoute, fallback) : null;
     ownerRunner = async (context) => {
       try {
-        const result = await primary(context);
-        return result.exitCode === 0 || !fallback ? result : fallback(context);
+        const result = await trackedPrimary(context);
+        return result.exitCode === 0 || !trackedFallback ? result : trackedFallback(context);
       } catch (error) {
-        if (!fallback) throw error;
-        return fallback(context);
+        if (!trackedFallback) throw error;
+        return trackedFallback(context);
       }
     };
   }
@@ -1486,21 +1625,14 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
     trace: deps.tracer(action.taskId),
   });
 
+  if (snapshotTask) await recordDeployDeliveryEvidence(
+    deps.ownerClient, snapshotTask, deployResult, taskBranch, reviewedHeadSha,
+  );
+
   switch (deployResult.kind) {
     case 'deployed': {
       if (snapshotTask?.goalId) {
         await deps.ownerClient.markGoalWorktreeIntegrated(snapshotTask.goalId, taskWorktreePath(deps.repoRoot, action.taskId));
-        await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
-          kind: 'ci.checked', ref: taskBranch, detail: 'registered branch and integration checks passed',
-        });
-        await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
-          kind: 'merge.integrated', ref: deployResult.mergeSha, detail: `merged into ${deps.repoRoot}`,
-        });
-        await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
-          kind: snapshotTask.deployment === 'not_required' ? 'deployment_not_required' : 'deployment.verified',
-          ref: snapshotTask.deployment === 'not_required' ? 'registered-policy' : deployResult.mergeSha,
-          detail: snapshotTask.deployment === 'not_required' ? 'Project registry explicitly skips deployment' : 'deployment and live readback passed',
-        });
       }
       const completion = await postCompletionAndTransitionToDone({
         db: deps.db,

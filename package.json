@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit && tsc -p sim/tsconfig.json",
-    "test": "npm run lint && npm run typecheck && node --import tsx src/test.ts && node --import tsx deploy/sim-autodeploy.test.ts && node --import tsx sim/agentCapabilities.test.ts && node --import tsx sim/goalDiscussion.test.ts && node --import tsx sim/goalAdapters.test.ts && node --import tsx sim/goalPatrol.test.ts && node --import tsx sim/goal.integration.test.ts && node --import tsx sim/run.test.ts && node --import tsx sim/escalateNotify.test.ts && node --import tsx sim/trace.test.ts && node --import tsx sim/production/runner.test.ts",
+    "test": "npm run lint && npm run typecheck && node --import tsx src/test.ts && node --import tsx src/goalHttp.test.ts && node --import tsx deploy/sim-autodeploy.test.ts && node --import tsx sim/agentCapabilities.test.ts && node --import tsx sim/goalDiscussion.test.ts && node --import tsx sim/goalAdapters.test.ts && node --import tsx sim/goalPatrol.test.ts && node --import tsx sim/goalCoordinator.test.ts && node --import tsx sim/goalCoordinatorSetup.test.ts && node --import tsx sim/goalUsage.test.ts && node --import tsx sim/goal.integration.test.ts && node --import tsx sim/run.test.ts && node --import tsx sim/runBootstrap.test.ts && node --import tsx sim/escalateNotify.test.ts && node --import tsx sim/trace.test.ts && node --import tsx sim/production.test.ts && node --import tsx sim/production/deliveryEvidence.test.ts && node --import tsx sim/production/policy.test.ts && node --import tsx sim/production/runner.test.ts",
     "seed": "tsx src/seed.ts",
     "sim": "tsx sim/run.ts",
     "sim:production": "tsx sim/production.ts",

@@ -255,7 +255,7 @@ npm run sim -- --sweep team
 npm run sim -- --sweep
 ```
 
-`npm run sim` executes `tsx sim/run.ts`. The entrypoint acquires the run lock and then selects either the full sprint flow or the requested sweep role. Omitting a scenario uses `self-directed`; omitting a sweep role runs `owner + team`.
+`npm run sim` executes `tsx sim/run.ts`. The entrypoint acquires the run lock and then selects either the full sprint flow or the requested sweep role. Omitting a scenario uses `self-directed`; omitting a sweep role runs `owner + team`. Full sprint bootstrap 由人類帳號 user09 建立 Workspace、邀請 user01 為 Owner，再由 user01 join；之後的成員邀請沿用 user01 session。
 
 ### Operator-controlled sweeps
 
@@ -557,7 +557,8 @@ Goal coordinator 預設只讀：`npm run goal:run -- --goal <goal-id>` 只顯示
 未過期的 running Run 不會重跑，過期 Run 先標記 `uncertain` 再進 Owner reconciliation。
 
 Production coordinator 與 `task-tracker.service` 必須共用
-`~/.config/task-tracker/coordinator.env` 內的 `TASK_TRACKER_COORDINATOR_TOKEN=<random secret>`。
+`~/.config/task-tracker/coordinator.env` 內的 `TASK_TRACKER_COORDINATOR_TOKEN=<random secret>`，且該檔
+也須設定 `TASK_TRACKER_REPO_REGISTRY_PATH=/absolute/path/to/repo-registry.json`。
 只有 Admin session 加上此 header 才能寫入 delivery evidence 或 Goal worktree 狀態；不可把 token 放入 repo、log 或 Agent prompt。
 
 恢復時先查看 Goal activity、heartbeat/Run 與 repo lease。`pending` 可安全重新領取；`uncertain`
@@ -566,10 +567,24 @@ Production coordinator 與 `task-tracker.service` 必須共用
 Goal Project，repo lease 存在時整個 legacy workspace tick 跳過。
 
 `deploy/goal-discovery.timer` 每 12 小時巡檢，但 repository 只提供停用狀態的 unit。安裝前先建立
-`~/.config/task-tracker/goal-discovery.env`，內含 `GOAL_PATROL_WORKSPACE_ID=<workspace UUID>`；service
+`~/.config/task-tracker/goal-discovery.env`，內含 `GOAL_PATROL_WORKSPACE_ID=<workspace UUID>` 與
+`TASK_TRACKER_REPO_REGISTRY_PATH=/absolute/path/to/repo-registry.json`；service
 會以 `EnvironmentFile=` 讀取，不依賴 shell 的暫存環境變數。安裝與驗證見 `deploy/README.md`；
 本功能不授權 enable/start。Goal Done 會立即建立 follow-up heartbeat。
 unit 的 `--live` 只會在機械 gate 判定 eligible 且 evidence fingerprint 有變化時啟動
 Claude safe discovery；因此 enable/start timer 本身就是 live AI 授權。手動執行不帶 `--live`
-只回報巡檢結果，不啟動模型。沒有已登記 repo 的 active Project 時不會建立 Workspace 或 Project。
+只回報巡檢結果，不啟動模型。Owner 永遠不建立 Workspace；沒有合適 Project 時，可在同一
+Workspace 為 registry 已登記的 repo 建立 Project。
 Workspace cleanup 明確排除：不得因 migration 自動移除成員、封存或刪除既有 Workspace。
+
+`deploy/goal-coordinator.timer` 每分鐘以 `--pending --live` 推進一個 pending Goal checkpoint，
+包括 `@Owner` 留言與 Done Goal 的 follow-up。安裝前先以手動不帶 `--live` 的
+`npm run goal:run -- --pending` 確認選擇結果；安裝單元不代表啟用：
+
+```bash
+install -D -m644 deploy/goal-coordinator.service deploy/goal-coordinator.timer -t ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemd-analyze verify deploy/goal-coordinator.service deploy/goal-coordinator.timer
+```
+
+需另經人工核准才可執行 `systemctl --user enable --now goal-coordinator.timer`。

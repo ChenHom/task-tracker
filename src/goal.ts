@@ -12,6 +12,12 @@ import {
 } from './eventStore';
 import { getProject, requireActiveProject } from './project';
 import { buildMetadata as meta } from './requestContext';
+import { getUserIdByEmail } from './auth';
+import { MAIN_OWNER_EMAIL } from './mainWorkspacePolicy';
+import { archiveTask } from './task';
+import { getAgent } from './agent';
+import { loadRepoRegistry, type RepoRegistry } from './repoRegistry';
+import { notifyWorkspaceHumanAdmins } from './notification';
 
 export type GoalSource = 'human' | 'owner_discovery' | 'followup';
 export type GoalStatus = 'Queued' | 'Discussing' | 'Executing' | 'Verifying' | 'Paused' | 'Blocked' | 'Done' | 'Cancelled';
@@ -24,6 +30,7 @@ export interface CreateGoalInput {
   source?: unknown;
   objective?: unknown;
   successCriteria?: unknown;
+  dataScope?: unknown;
   ownerAgentId?: unknown;
 }
 
@@ -35,6 +42,7 @@ export interface GoalRow {
   source: GoalSource;
   objective: string;
   success_criteria: string;
+  data_scope: string;
   status: GoalStatus;
   discussion_phase: DiscussionPhase | null;
   revision: number;
@@ -44,6 +52,7 @@ export interface GoalRow {
   paused_from_phase: DiscussionPhase | null;
   blocked_from_status: GoalStatus | null;
   blocked_from_phase: DiscussionPhase | null;
+  pause_requested: number;
   evidence_refs_json: string;
   version: number;
   created_at: string;
@@ -57,8 +66,11 @@ interface GoalState {
   revision: number;
   pausedFromStatus: GoalStatus | null;
   pausedFromPhase: DiscussionPhase | null;
+  preemptedFromStatus: GoalStatus | null;
+  preemptedFromPhase: DiscussionPhase | null;
   blockedFromStatus: GoalStatus | null;
   blockedFromPhase: DiscussionPhase | null;
+  pauseRequested: boolean;
 }
 
 const INITIAL: GoalState = {
@@ -68,8 +80,11 @@ const INITIAL: GoalState = {
   revision: 0,
   pausedFromStatus: null,
   pausedFromPhase: null,
+  preemptedFromStatus: null,
+  preemptedFromPhase: null,
   blockedFromStatus: null,
   blockedFromPhase: null,
+  pauseRequested: false,
 };
 
 const TERMINAL = new Set<GoalStatus>(['Done', 'Cancelled']);
@@ -111,7 +126,7 @@ function reduce(state: GoalState, event: StoredEvent): GoalState {
     case 'goal.verification_started':
       return { ...state, status: 'Verifying', phase: null };
     case 'goal.completed':
-      return { ...state, status: 'Done', phase: null };
+      return { ...state, status: 'Done', phase: null, pauseRequested: false };
     case 'goal.paused':
       return {
         ...state,
@@ -119,7 +134,10 @@ function reduce(state: GoalState, event: StoredEvent): GoalState {
         phase: null,
         pausedFromStatus: payload.fromStatus as GoalStatus,
         pausedFromPhase: (payload.fromPhase as DiscussionPhase | null) ?? null,
+        pauseRequested: false,
       };
+    case 'goal.pause_requested':
+      return { ...state, pauseRequested: true };
     case 'goal.resumed':
       return {
         ...state,
@@ -138,9 +156,10 @@ function reduce(state: GoalState, event: StoredEvent): GoalState {
         phase: null,
         blockedFromStatus: payload.fromStatus as GoalStatus,
         blockedFromPhase: (payload.fromPhase as DiscussionPhase | null) ?? null,
+        pauseRequested: false,
       };
     case 'goal.cancelled':
-      return { ...state, status: 'Cancelled', phase: null };
+      return { ...state, status: 'Cancelled', phase: null, pauseRequested: false };
     case 'goal.revised':
       return {
         ...state,
@@ -150,6 +169,24 @@ function reduce(state: GoalState, event: StoredEvent): GoalState {
       };
     case 'goal.discussion_reconciled':
       return { ...state, status: 'Discussing', phase: 'owner_scoping', revision: Number(payload.revision) };
+    case 'goal.preempted':
+      return {
+        ...state,
+        status: 'Queued',
+        phase: null,
+        preemptedFromStatus: payload.fromStatus as GoalStatus,
+        preemptedFromPhase: (payload.fromPhase as DiscussionPhase | null) ?? null,
+        pauseRequested: false,
+      };
+    case 'goal.preemption_released':
+      return {
+        ...state,
+        status: state.preemptedFromStatus ?? state.status,
+        phase: state.preemptedFromPhase,
+        preemptedFromStatus: null,
+        preemptedFromPhase: null,
+        pauseRequested: false,
+      };
     default:
       return state;
   }
@@ -175,6 +212,7 @@ function requireActive(state: GoalState): void {
 }
 
 function withTransaction<T>(database: DatabaseSync, action: () => T): T {
+  if (database.isTransaction) return action();
   database.exec('BEGIN IMMEDIATE');
   try {
     const value = action();
@@ -190,15 +228,104 @@ function hasLease(goalId: string, database: DatabaseSync): boolean {
   return Boolean(database.prepare('SELECT 1 FROM repo_leases WHERE goal_id = ?').get(goalId));
 }
 
-export function createGoal(actorId: string, input: CreateGoalInput, database = db): string {
+function skipPendingGoalHeartbeats(goalId: string, database: DatabaseSync): void {
+  database.prepare("UPDATE goal_heartbeats SET status = 'skipped', updated_at = ? WHERE goal_id = ? AND status = 'pending'")
+    .run(new Date().toISOString(), goalId);
+}
+
+function resumePreemptedGoals(humanGoalId: string, database: DatabaseSync): void {
+  const rows = database.prepare(
+    'SELECT autonomous_goal_id FROM goal_preemptions WHERE human_goal_id = ? AND resumed_at IS NULL',
+  ).all(humanGoalId) as unknown as Array<{ autonomous_goal_id: string }>;
+  for (const row of rows) {
+    const goal = getGoal(row.autonomous_goal_id, database);
+    if (!goal || goal.status === 'Done' || goal.status === 'Cancelled' || goal.status === 'Blocked') continue;
+    if (goal.status === 'Paused') {
+      resumeGoal(goal.owner_agent_id, goal.goal_id, undefined, database);
+    } else if (goal.status === 'Queued') {
+      releaseGoalPreemption(goal.owner_agent_id, goal.goal_id, database);
+    } else if (goal.pause_requested) {
+      appendEventInTransaction('Goal', goal.goal_id, goal.version, 'goal.preemption_released', {}, meta(goal.owner_agent_id), database);
+    }
+    database.prepare('UPDATE goal_preemptions SET resumed_at = ? WHERE human_goal_id = ? AND autonomous_goal_id = ?')
+      .run(new Date().toISOString(), humanGoalId, goal.goal_id);
+  }
+}
+
+function releaseGoalPreemption(actorId: string, goalId: string, database = db): boolean {
+  const { state, version } = requireGoal(goalId, database);
+  if (state.status !== 'Queued' || !state.preemptedFromStatus) return false;
+  appendEventInTransaction('Goal', goalId, version, 'goal.preemption_released', {
+    status: state.preemptedFromStatus, phase: state.preemptedFromPhase,
+  }, meta(actorId), database);
+  const restored = getGoal(goalId, database)!;
+  enqueueTransitionHeartbeat(goalId, database);
+  const pending = database.prepare(
+    "SELECT 1 FROM goal_heartbeats WHERE goal_id = ? AND status = 'pending' AND phase IN ('owner_scoping','round_1','round_2','owner_synthesis') LIMIT 1",
+  ).get(goalId);
+  if (!pending) {
+    const phase = restored.status === 'Queued' ? 'owner_scoping'
+      : restored.discussion_phase === 'awaiting_lease' ? 'owner_synthesis' : restored.discussion_phase;
+    if (phase) database.prepare(
+      `INSERT INTO goal_heartbeats
+         (heartbeat_id, scope_id, goal_id, phase, agent_id, revision, trigger_ref, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    ).run(randomUUID(), goalId, goalId, phase, restored.owner_agent_id, restored.revision, `preemption:${version}`, new Date().toISOString(), new Date().toISOString());
+  }
+  return true;
+}
+
+function enqueueGoalHeartbeat(goal: GoalRow, phase: string, database: DatabaseSync, agentId = goal.owner_agent_id): void {
+  const now = new Date().toISOString();
+  const restored = database.prepare(
+    `UPDATE goal_heartbeats SET status = 'pending', updated_at = ?
+      WHERE heartbeat_id = (SELECT heartbeat_id FROM goal_heartbeats
+        WHERE goal_id = ? AND phase = ? AND agent_id = ? AND revision = ? AND trigger_ref = 'phase' AND status = 'skipped'
+        ORDER BY rowid DESC LIMIT 1)`,
+  ).run(now, goal.goal_id, phase, agentId, goal.revision);
+  if (restored.changes) return;
+  database.prepare(
+    `INSERT OR IGNORE INTO goal_heartbeats
+       (heartbeat_id, scope_id, goal_id, phase, agent_id, revision, trigger_ref, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'phase', 'pending', ?, ?)`,
+  ).run(randomUUID(), goal.goal_id, goal.goal_id, phase, agentId, goal.revision, now, now);
+}
+
+function enqueueTransitionHeartbeat(goalId: string, database: DatabaseSync): void {
+  const goal = getGoal(goalId, database);
+  if (!goal) return;
+  if (goal.status === 'Queued') return enqueueGoalHeartbeat(goal, 'owner_scoping', database);
+  if (goal.status === 'Discussing') {
+    if (goal.discussion_phase === 'owner_scoping') return enqueueGoalHeartbeat(goal, 'owner_scoping', database);
+    if (goal.discussion_phase === 'awaiting_lease' || goal.discussion_phase === 'owner_synthesis') {
+      return enqueueGoalHeartbeat(goal, 'owner_synthesis', database);
+    }
+    if (goal.discussion_phase === 'round_1' || goal.discussion_phase === 'round_2') {
+      const pending = database.prepare(
+        'SELECT 1 FROM goal_heartbeats WHERE goal_id = ? AND phase = ? AND revision = ? AND status = ? LIMIT 1',
+      ).get(goalId, goal.discussion_phase, goal.revision, 'pending');
+      if (!pending) enqueueGoalHeartbeat(goal, goal.discussion_phase, database);
+    }
+    return;
+  }
+  if (goal.status === 'Verifying') return enqueueGoalHeartbeat(goal, 'verifying', database);
+  if (goal.status === 'Executing' && !database.prepare(
+    "SELECT 1 FROM tasks_read_model WHERE goal_id = ? AND status NOT IN ('Done', 'Archived') LIMIT 1",
+  ).get(goalId)) enqueueGoalHeartbeat(goal, 'verifying', database);
+}
+
+export function createGoal(actorId: string, input: CreateGoalInput, database = db, repos: RepoRegistry = loadRepoRegistry()): string {
   const workspaceId = requiredText(input.workspaceId, 'workspaceId', 200);
   const projectId = requireActiveProject(workspaceId, input.projectId, database);
   const project = getProject(projectId, database)!;
   if (!project.target_repo) throw new CommandError('Project 尚未設定 target repo');
+  if (!repos.has(project.target_repo)) throw new CommandError('target repo 未登記');
   const source = parseSource(input.source);
   const objective = requiredText(input.objective, 'objective', 2000);
   const successCriteria = requiredText(input.successCriteria, 'successCriteria', 5000);
+  const dataScope = input.dataScope == null ? '' : requiredText(input.dataScope, 'dataScope', 5000);
   const ownerAgentId = requiredText(input.ownerAgentId, 'ownerAgentId', 200);
+  if (getAgent(ownerAgentId, database)?.role !== 'owner') throw new CommandError('ownerAgentId 必須是 Owner Agent');
   const parentGoalId = optionalId(input.parentGoalId, 'parentGoalId');
   if (parentGoalId) {
     const parent = getGoal(parentGoalId, database);
@@ -215,16 +342,38 @@ export function createGoal(actorId: string, input: CreateGoalInput, database = d
   }
 
   const goalId = randomUUID();
-  appendEvent('Goal', goalId, 0, 'goal.created', {
-    workspaceId,
-    projectId,
-    parentGoalId,
-    source,
-    objective,
-    successCriteria,
-    createdBy: actorId,
-    ownerAgentId,
-  }, meta(actorId), database);
+  const create = () => {
+    appendEventInTransaction('Goal', goalId, 0, 'goal.created', {
+      workspaceId, projectId, parentGoalId, source, objective, successCriteria, dataScope, createdBy: actorId, ownerAgentId,
+    }, meta(actorId), database);
+    if (source === 'human') {
+      const autonomous = database.prepare(
+        `SELECT g.* FROM goals_read_model g JOIN projects_read_model p ON p.project_id = g.project_id
+          WHERE g.source <> 'human' AND g.status NOT IN ('Done', 'Cancelled') AND p.target_repo = ?`,
+      ).all(project.target_repo) as unknown as GoalRow[];
+      for (const goal of autonomous) {
+        if (goal.status === 'Blocked' || goal.status === 'Paused') continue;
+        const leased = hasLease(goal.goal_id, database);
+        if (leased && goal.pause_requested) continue;
+        database.prepare(
+          `INSERT OR IGNORE INTO goal_preemptions
+             (human_goal_id, autonomous_goal_id, kind, created_at, resumed_at) VALUES (?, ?, ?, ?, NULL)`,
+        ).run(goalId, goal.goal_id, leased ? 'pause' : 'queue', new Date().toISOString());
+        if (leased) {
+          if (!goal.pause_requested) appendEventInTransaction(
+            'Goal', goal.goal_id, goal.version, 'goal.pause_requested', {}, meta(ownerAgentId), database,
+          );
+        } else {
+          skipPendingGoalHeartbeats(goal.goal_id, database);
+          appendEventInTransaction('Goal', goal.goal_id, goal.version, 'goal.preempted', {
+            fromStatus: goal.status, fromPhase: goal.discussion_phase,
+          }, meta(ownerAgentId), database);
+        }
+      }
+    }
+  };
+  if (database.isTransaction) create();
+  else withTransaction(database, create);
   return goalId;
 }
 
@@ -281,7 +430,8 @@ export function startVerification(actorId: string, goalId: string, database = db
   if (state.status !== 'Executing' || !hasLease(goalId, database)) {
     throw new CommandError(`goal 狀態 ${state.status} 不可開始驗證`);
   }
-  appendEvent('Goal', goalId, version, 'goal.verification_started', {}, meta(actorId), database);
+  const append = database.isTransaction ? appendEventInTransaction : appendEvent;
+  append('Goal', goalId, version, 'goal.verification_started', {}, meta(actorId), database);
 }
 
 export function completeGoal(actorId: string, goalId: string, evidenceRefs: unknown, database = db): void {
@@ -289,12 +439,14 @@ export function completeGoal(actorId: string, goalId: string, evidenceRefs: unkn
     throw new CommandError('Goal 完成必須提供 evidence refs');
   }
   withTransaction(database, () => {
-    const { state, version } = requireGoal(goalId, database);
+    const { row, state, version } = requireGoal(goalId, database);
     if (state.status !== 'Verifying' || !hasLease(goalId, database)) {
       throw new CommandError(`goal 狀態 ${state.status} 不可完成`);
     }
     database.prepare('DELETE FROM repo_leases WHERE goal_id = ?').run(goalId);
+    skipPendingGoalHeartbeats(goalId, database);
     appendEventInTransaction('Goal', goalId, version, 'goal.completed', { evidenceRefs }, meta(actorId), database);
+    if (row.source === 'human') resumePreemptedGoals(goalId, database);
     const now = new Date().toISOString();
     database.prepare(
       `INSERT OR IGNORE INTO goal_heartbeats
@@ -304,86 +456,168 @@ export function completeGoal(actorId: string, goalId: string, evidenceRefs: unkn
   });
 }
 
-export function pauseGoal(actorId: string, goalId: string, safeCheckpoint: boolean, database = db): void {
-  withTransaction(database, () => {
-    const { state, version } = requireGoal(goalId, database);
+export function pauseGoal(actorId: string, goalId: string, safeCheckpoint: boolean, database = db): 'paused' | 'scheduled' {
+  return withTransaction(database, () => {
+    const { row, state, version } = requireGoal(goalId, database);
     requireActive(state);
     if (state.status === 'Paused' || state.status === 'Blocked') throw new CommandError(`goal 狀態 ${state.status} 不可暫停`);
+    const runningRun = database.prepare("SELECT 1 FROM goal_runs WHERE goal_id = ? AND status = 'running' LIMIT 1").get(goalId);
+    if (!safeCheckpoint || runningRun) {
+      if (!state.pauseRequested) {
+        appendEventInTransaction('Goal', goalId, version, 'goal.pause_requested', {}, meta(actorId), database);
+      }
+      return 'scheduled';
+    }
     const leased = hasLease(goalId, database);
-    if (leased && !safeCheckpoint) throw new CommandError('repo 尚未到安全 checkpoint');
     if (leased) database.prepare('DELETE FROM repo_leases WHERE goal_id = ?').run(goalId);
     appendEventInTransaction('Goal', goalId, version, 'goal.paused', {
       fromStatus: state.status,
       fromPhase: state.phase,
     }, meta(actorId), database);
+    return 'paused';
   });
 }
 
-export function resumeGoal(actorId: string, goalId: string, database = db): void {
-  const { state, version } = requireGoal(goalId, database);
-  if (state.status !== 'Paused' && state.status !== 'Blocked') throw new CommandError(`goal 狀態 ${state.status} 不可恢復`);
-  const fromStatus = state.status === 'Paused' ? state.pausedFromStatus : state.blockedFromStatus;
-  const fromPhase = state.status === 'Paused' ? state.pausedFromPhase : state.blockedFromPhase;
-  if (!fromStatus) throw new CommandError('goal 缺少恢復狀態');
-  const heldLeaseState = fromStatus === 'Executing' || fromStatus === 'Verifying' || fromPhase === 'owner_synthesis';
-  const status: GoalStatus = heldLeaseState ? 'Discussing' : fromStatus;
-  const phase: DiscussionPhase | null = heldLeaseState ? 'awaiting_lease' : fromPhase;
-  const revision = state.status === 'Blocked' || heldLeaseState ? state.revision + 1 : state.revision;
-  appendEvent('Goal', goalId, version, 'goal.resumed', {
-    status,
-    phase,
-    revision,
-  }, meta(actorId), database);
+export function applyPendingGoalPause(actorId: string, goalId: string, safeCheckpoint: boolean, database = db): boolean {
+  const goal = getGoal(goalId, database);
+  if (!goal?.pause_requested || !safeCheckpoint) return false;
+  return pauseGoal(actorId, goalId, true, database) === 'paused';
+}
+
+export function isGoalSafeCheckpoint(goalId: string, database = db, coordinatorDatabase?: DatabaseSync): boolean {
+  if (database.prepare(
+    'SELECT 1 FROM goal_worktrees WHERE goal_id = ? AND (dirty = 1 OR unmerged = 1) LIMIT 1',
+  ).get(goalId)) return false;
+  if (!coordinatorDatabase) return true;
+  const taskIds = (database.prepare('SELECT task_id FROM tasks_read_model WHERE goal_id = ?').all(goalId) as unknown as Array<{ task_id: string }>)
+    .map((row) => row.task_id);
+  if (!taskIds.length) return true;
+  const placeholders = taskIds.map(() => '?').join(',');
+  return !coordinatorDatabase.prepare(
+    `SELECT 1 FROM action_log
+      WHERE task_id IN (${placeholders}) AND status = 'pending'
+        AND (lower(kind) LIKE '%merge%' OR lower(kind) LIKE '%deploy%') LIMIT 1`,
+  ).get(...taskIds);
+}
+
+export function resumeGoal(actorId: string, goalId: string, changeDescription: unknown = undefined, database = db): void {
+  const resume = () => {
+    const { state, version } = requireGoal(goalId, database);
+    if (state.status !== 'Paused' && state.status !== 'Blocked') throw new CommandError(`goal 狀態 ${state.status} 不可恢復`);
+    const blockedChange = state.status === 'Blocked' ? requiredText(changeDescription, '變更說明', 2000) : null;
+    const fromStatus = state.status === 'Paused' ? state.pausedFromStatus : state.blockedFromStatus;
+    const fromPhase = state.status === 'Paused' ? state.pausedFromPhase : state.blockedFromPhase;
+    if (!fromStatus) throw new CommandError('goal 缺少恢復狀態');
+    const heldLeaseState = fromStatus === 'Executing' || fromStatus === 'Verifying' || fromPhase === 'owner_synthesis';
+    const status: GoalStatus = state.status === 'Blocked' ? fromStatus : heldLeaseState ? 'Discussing' : fromStatus;
+    const phase: DiscussionPhase | null = state.status === 'Blocked'
+      ? fromStatus === 'Discussing' ? 'owner_scoping' : fromPhase
+      : heldLeaseState ? 'awaiting_lease' : fromPhase;
+    const revision = state.status === 'Blocked' || heldLeaseState ? state.revision + 1 : state.revision;
+    appendEventInTransaction('Goal', goalId, version, 'goal.resumed', {
+      status, phase, revision, changeDescription: blockedChange,
+    }, meta(actorId), database);
+    enqueueTransitionHeartbeat(goalId, database);
+  };
+  if (database.isTransaction) resume();
+  else withTransaction(database, resume);
 }
 
 export function blockGoal(actorId: string, goalId: string, reason: unknown, database = db): void {
-  const { state, version } = requireGoal(goalId, database);
-  requireActive(state);
-  if (state.status === 'Paused' || state.status === 'Blocked') throw new CommandError(`goal 狀態 ${state.status} 不可標記 Blocked`);
-  appendEvent('Goal', goalId, version, 'goal.blocked', {
-    reason: requiredText(reason, 'reason', 2000),
-    fromStatus: state.status,
-    fromPhase: state.phase,
-  }, meta(actorId), database);
+  const block = () => {
+    const { row, state, version } = requireGoal(goalId, database);
+    requireActive(state);
+    if (state.status === 'Queued') throw new CommandError('goal 狀態 Queued 不可標記 Blocked');
+    if (state.status === 'Paused' || state.status === 'Blocked') throw new CommandError(`goal 狀態 ${state.status} 不可標記 Blocked`);
+    const blockedReason = requiredText(reason, 'reason', 2000);
+    appendEventInTransaction('Goal', goalId, version, 'goal.blocked', {
+      reason: blockedReason, fromStatus: state.status, fromPhase: state.phase,
+    }, meta(actorId), database);
+    const task = database.prepare(
+      "SELECT task_id FROM tasks_read_model WHERE goal_id = ? AND status <> 'Archived' ORDER BY rowid LIMIT 1",
+    ).get(goalId) as { task_id: string } | undefined;
+    notifyWorkspaceHumanAdmins(actorId, row.workspace_id, task?.task_id ?? '', `Goal Blocked：${blockedReason}`, database, goalId);
+    if (row.source === 'human') resumePreemptedGoals(goalId, database);
+  };
+  if (database.isTransaction) block();
+  else withTransaction(database, block);
 }
 
 export function cancelGoal(actorId: string, goalId: string, database = db): void {
   withTransaction(database, () => {
-    const { state, version } = requireGoal(goalId, database);
+    const { row, state, version } = requireGoal(goalId, database);
     requireActive(state);
     const tasks = database.prepare(
-      `SELECT task_id, version FROM tasks_read_model
+      `SELECT task_id FROM tasks_read_model
         WHERE goal_id = ? AND status IN ('Todo', 'Doing', 'Review')`,
-    ).all(goalId) as unknown as Array<{ task_id: string; version: number }>;
+    ).all(goalId) as unknown as Array<{ task_id: string }>;
+    const ownerAgentId = tasks.length ? getUserIdByEmail(MAIN_OWNER_EMAIL, database) : null;
+    if (tasks.length && !ownerAgentId) throw new CommandError('Owner Agent 尚未建立');
     for (const task of tasks) {
-      appendEventInTransaction('Task', task.task_id, task.version, 'task.archived', {}, meta(actorId), database);
+      archiveTask(ownerAgentId!, task.task_id, database);
     }
     database.prepare('DELETE FROM repo_leases WHERE goal_id = ?').run(goalId);
+    skipPendingGoalHeartbeats(goalId, database);
     appendEventInTransaction('Goal', goalId, version, 'goal.cancelled', {}, meta(actorId), database);
+    if (row.source === 'human') resumePreemptedGoals(goalId, database);
   });
 }
 
 export function reviseGoal(actorId: string, goalId: string, successCriteria: unknown, database = db): void {
-  const { state, version } = requireGoal(goalId, database);
-  requireActive(state);
-  const criteria = requiredText(successCriteria, 'successCriteria', 5000);
-  const holdsLease = hasLease(goalId, database);
-  appendEvent('Goal', goalId, version, 'goal.revised', {
-    successCriteria: criteria,
-    status: holdsLease ? 'Discussing' : state.status,
-    phase: holdsLease ? 'owner_synthesis' : state.phase,
-    revision: state.revision + 1,
-  }, meta(actorId), database);
+  const revise = () => {
+    const { row, state, version } = requireGoal(goalId, database);
+    requireActive(state);
+    if (state.status === 'Blocked' || state.status === 'Paused') {
+      throw new CommandError(`Goal 為 ${state.status}，請先恢復再修改`);
+    }
+    const criteria = requiredText(successCriteria, 'successCriteria', 5000);
+    const holdsLease = hasLease(goalId, database);
+    const restartDiscussion = !holdsLease && state.status === 'Discussing';
+    appendEventInTransaction('Goal', goalId, version, 'goal.revised', {
+      successCriteria: criteria, dataScope: row.data_scope, status: holdsLease ? 'Discussing' : state.status,
+      phase: holdsLease ? 'owner_synthesis' : restartDiscussion ? 'owner_scoping' : state.phase, revision: state.revision + 1,
+    }, meta(actorId), database);
+    if (restartDiscussion) skipPendingGoalHeartbeats(goalId, database);
+    if (holdsLease || restartDiscussion) enqueueTransitionHeartbeat(goalId, database);
+  };
+  if (database.isTransaction) revise();
+  else withTransaction(database, revise);
+}
+
+export function reviseGoalDataScope(actorId: string, goalId: string, dataScope: unknown, database = db): void {
+  const revise = () => {
+    const { row, state, version } = requireGoal(goalId, database);
+    requireActive(state);
+    if (state.status === 'Blocked' || state.status === 'Paused') {
+      throw new CommandError(`Goal 為 ${state.status}，請先恢復再修改`);
+    }
+    const scope = requiredText(dataScope, 'dataScope', 5000);
+    const holdsLease = hasLease(goalId, database);
+    const restartDiscussion = !holdsLease && state.status === 'Discussing';
+    appendEventInTransaction('Goal', goalId, version, 'goal.revised', {
+      successCriteria: row.success_criteria, dataScope: scope, status: holdsLease ? 'Discussing' : state.status,
+      phase: holdsLease ? 'owner_synthesis' : restartDiscussion ? 'owner_scoping' : state.phase, revision: state.revision + 1,
+    }, meta(actorId), database);
+    if (restartDiscussion) skipPendingGoalHeartbeats(goalId, database);
+    if (holdsLease || restartDiscussion) enqueueTransitionHeartbeat(goalId, database);
+  };
+  if (database.isTransaction) revise();
+  else withTransaction(database, revise);
 }
 
 export function reconcileGoalDiscussion(actorId: string, goalId: string, database = db): void {
-  const { state, version } = requireGoal(goalId, database);
-  if (state.status !== 'Discussing' || state.phase !== 'round_1') {
-    throw new CommandError('只有 round_1 可進行 reconciliation');
-  }
-  appendEvent('Goal', goalId, version, 'goal.discussion_reconciled', {
-    revision: state.revision + 1,
-  }, meta(actorId), database);
+  const reconcile = () => {
+    const { state, version } = requireGoal(goalId, database);
+    if (state.status !== 'Discussing' || state.phase !== 'round_1') {
+      throw new CommandError('只有 round_1 可進行 reconciliation');
+    }
+    appendEventInTransaction('Goal', goalId, version, 'goal.discussion_reconciled', {
+      revision: state.revision + 1,
+    }, meta(actorId), database);
+    enqueueTransitionHeartbeat(goalId, database);
+  };
+  if (database.isTransaction) reconcile();
+  else withTransaction(database, reconcile);
 }
 
 export function getGoal(goalId: string, database = db): GoalRow | null {
@@ -403,17 +637,17 @@ export function registerGoalProjections(): void {
   registerProjection('goal.created', (event, database) => {
     const payload = event.payload as {
       workspaceId: string; projectId: string; parentGoalId: string | null; source: GoalSource;
-      objective: string; successCriteria: string; createdBy: string; ownerAgentId: string;
+      objective: string; successCriteria: string; dataScope: string; createdBy: string; ownerAgentId: string;
     };
     database.prepare(
       `INSERT INTO goals_read_model
-         (goal_id, workspace_id, project_id, parent_goal_id, source, objective, success_criteria,
+         (goal_id, workspace_id, project_id, parent_goal_id, source, objective, success_criteria, data_scope,
           status, discussion_phase, revision, created_by, owner_agent_id, evidence_refs_json,
           version, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'Queued', NULL, 1, ?, ?, '[]', ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Queued', NULL, 1, ?, ?, '[]', ?, ?, ?)`,
     ).run(
       event.aggregate_id, payload.workspaceId, payload.projectId, payload.parentGoalId, payload.source,
-      payload.objective, payload.successCriteria, payload.createdBy, payload.ownerAgentId,
+      payload.objective, payload.successCriteria, payload.dataScope ?? '', payload.createdBy, payload.ownerAgentId,
       event.aggregate_version, event.occurred_at, event.occurred_at,
     );
   });
@@ -447,38 +681,51 @@ export function registerGoalProjections(): void {
   }));
   registerProjection('goal.completed', (event, database) => update(event, database, {
     status: 'Done', discussion_phase: null,
+    pause_requested: 0,
     evidence_refs_json: JSON.stringify((event.payload as { evidenceRefs: string[] }).evidenceRefs),
   }));
   registerProjection('goal.paused', (event, database) => {
     const payload = event.payload as { fromStatus: GoalStatus; fromPhase: DiscussionPhase | null };
     update(event, database, {
       status: 'Paused', discussion_phase: null,
-      paused_from_status: payload.fromStatus, paused_from_phase: payload.fromPhase,
+      paused_from_status: payload.fromStatus, paused_from_phase: payload.fromPhase, pause_requested: 0,
     });
   });
+  registerProjection('goal.pause_requested', (event, database) => update(event, database, {
+    pause_requested: 1,
+  }));
+  registerProjection('goal.preempted', (event, database) => update(event, database, {
+    status: 'Queued', discussion_phase: null, pause_requested: 0,
+  }));
+  registerProjection('goal.preemption_released', (event, database) => update(event, database, {
+    status: (event.payload as { status: GoalStatus }).status,
+    discussion_phase: (event.payload as { phase: DiscussionPhase | null }).phase,
+    pause_requested: 0,
+  }));
   registerProjection('goal.resumed', (event, database) => {
     const payload = event.payload as { status: GoalStatus; phase: DiscussionPhase | null; revision: number };
     update(event, database, {
       status: payload.status, discussion_phase: payload.phase, revision: payload.revision,
       paused_from_status: null, paused_from_phase: null, blocked_from_status: null, blocked_from_phase: null,
+      pause_requested: 0,
     });
   });
   registerProjection('goal.blocked', (event, database) => {
     const payload = event.payload as { fromStatus: GoalStatus; fromPhase: DiscussionPhase | null };
     update(event, database, {
       status: 'Blocked', discussion_phase: null,
-      blocked_from_status: payload.fromStatus, blocked_from_phase: payload.fromPhase,
+      blocked_from_status: payload.fromStatus, blocked_from_phase: payload.fromPhase, pause_requested: 0,
     });
   });
   registerProjection('goal.cancelled', (event, database) => update(event, database, {
-    status: 'Cancelled', discussion_phase: null,
+    status: 'Cancelled', discussion_phase: null, pause_requested: 0,
   }));
   registerProjection('goal.revised', (event, database) => {
     const payload = event.payload as {
-      successCriteria: string; status: GoalStatus; phase: DiscussionPhase | null; revision: number;
+      successCriteria: string; dataScope: string; status: GoalStatus; phase: DiscussionPhase | null; revision: number;
     };
     update(event, database, {
-      success_criteria: payload.successCriteria, status: payload.status,
+      success_criteria: payload.successCriteria, data_scope: payload.dataScope, status: payload.status,
       discussion_phase: payload.phase, revision: payload.revision,
     });
   });

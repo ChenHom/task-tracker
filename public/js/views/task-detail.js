@@ -375,7 +375,7 @@ export async function openTaskDetailModal(taskId, {
   if (canManageTask) {
     const projectSelect = el('select', { 'aria-label': 'Task Project' });
     projectSelect.appendChild(el('option', { value: '' }, '無專案'));
-    cachedProjects.filter(project => project.status !== 'archived').forEach(project => {
+    cachedProjects.filter(project => project.status !== 'archived' || project.project_id === currentTask.project_id).forEach(project => {
       const option = el('option', { value: project.project_id }, project.name);
       option.selected = currentTask.project_id === project.project_id;
       projectSelect.appendChild(option);

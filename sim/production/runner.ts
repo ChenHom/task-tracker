@@ -31,7 +31,8 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { buildRunnerInvocation, isQuotaExhaustion, type ModelRoute } from '../run';
+import { buildRunnerInvocation, isQuotaExhaustion, parseReportedTokenTotal, type ModelRoute } from '../run';
+import { classifyAdapterResult } from '../goalAdapters';
 import type { Tracer } from '../trace';
 import type {
   MemberSessionOutput,
@@ -85,10 +86,26 @@ const OUTPUT_CONTRACT = [
 
 interface AiSessionResult {
   text: string;
+  stderr: string;
   timedOut: boolean;
   errored: boolean;
   quotaExhausted: boolean;
   logFile: string;
+  tokenTotal: number | null;
+  exitCode: number;
+  errorCategory: string | null;
+}
+
+export function classifySessionResult(input: {
+  exitCode: number; stdout: string; stderr: string; err: Error | null;
+}): Pick<AiSessionResult, 'errored' | 'quotaExhausted' | 'errorCategory'> {
+  const classified = classifyAdapterResult(input);
+  const errored = input.err !== null;
+  return {
+    errored,
+    quotaExhausted: errored && (classified.errorCategory === 'quota' || isQuotaExhaustion(`${input.stdout}\n${input.stderr}\n${String(input.err)}`)),
+    errorCategory: errored ? classified.errorCategory : null,
+  };
 }
 
 export function productionRunnerEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -123,13 +140,18 @@ function runAiSession(
         // codex 會把最後一則訊息單獨寫到 <logFile>.last，比在 stdout 裡撈可靠。
         const lastFile = `${logFile}.last`;
         const text = existsSync(lastFile) ? readFileSync(lastFile, 'utf8') : stdout;
-        const quotaExhausted = !!err && isQuotaExhaustion(combined);
+        const exitCode = typeof e?.code === 'number' ? e.code : err ? 1 : 0;
+        const classified = classifySessionResult({ exitCode, stdout, stderr, err });
+        const quotaExhausted = classified.quotaExhausted;
         trace?.('session.ended', {
           outcome: err ? 'fail' : 'ok',
           evidence: { kind: 'log', ref: logFile },
           detail: timedOut ? '逾時' : quotaExhausted ? '額度耗盡' : err ? String(err) : `${text.length} 字元輸出`,
         });
-        resolve({ text, timedOut, errored: !!err, quotaExhausted, logFile });
+        resolve({
+          text, stderr, timedOut, errored: classified.errored, quotaExhausted, logFile,
+          tokenTotal: parseReportedTokenTotal(combined), exitCode, errorCategory: classified.errorCategory,
+        });
       },
     );
     if (route.runner !== 'claude') child.stdin?.end(); // codex/agy headless 看到 piped stdin 會等 EOF
@@ -311,6 +333,9 @@ function assertSessionUsable(label: string, session: AiSessionResult): void {
   if (session.quotaExhausted) {
     throw new Error(`${label}: AI session 額度耗盡；log=${session.logFile}`);
   }
+  if (session.errorCategory === 'permission') {
+    throw new Error(`${label}: AI session permission failure；log=${session.logFile}`);
+  }
 }
 
 export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE): MemberSessionRunner {
@@ -324,7 +349,7 @@ export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE): Mem
       if (raw === null) {
         throw new Error(`${label}: AI 沒有產生可解析的 JSON 區塊；log=${session.logFile}`);
       }
-      return { exitCode: session.errored ? 1 : 0, output: parseMemberOutput(raw, `${label} (log=${session.logFile})`) };
+      return { exitCode: session.exitCode, stderr: session.stderr, sessionId: basename(session.logFile), output: parseMemberOutput(raw, `${label} (log=${session.logFile})`), tokenTotal: session.tokenTotal };
     } finally {
       cleanup();
     }
@@ -342,7 +367,7 @@ export function createOwnerSessionRunner(route: ModelRoute = OWNER_ROUTE): Owner
       if (raw === null) {
         throw new Error(`${label}: AI 沒有產生可解析的 JSON 區塊；log=${session.logFile}`);
       }
-      return { exitCode: session.errored ? 1 : 0, decision: parseOwnerDecision(raw, `${label} (log=${session.logFile})`) };
+      return { exitCode: session.exitCode, sessionId: basename(session.logFile), decision: parseOwnerDecision(raw, `${label} (log=${session.logFile})`), tokenTotal: session.tokenTotal };
     } finally {
       cleanup();
     }

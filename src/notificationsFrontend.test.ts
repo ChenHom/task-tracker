@@ -317,6 +317,18 @@ async function main(): Promise<void> {
     assert.strictEqual(env.getNavigatedHash(), '#/task/t3?comment=c3', '應導向來源 task 並定位留言');
     assert.strictEqual(env.state.workspaceId, 'ws-1', '應切到通知來源所屬工作區');
 
+    // ── 3b. 尚無 Task 的 Goal Blocked 通知直接導向 Goal ──
+    env.setApiMock(async () => page([
+      { notification_id: 'g1', source_task_id: '', source_goal_id: 'goal-1', source_comment_id: 'goal-blocked:goal-1', snippet: 'Goal Blocked：needs human', created_at: '2026-01-04T00:00:00.000Z', read_at: null }
+    ], { unreadTotal: 1 }));
+    await NotificationsView.render(container);
+    stopNotificationPolling();
+    const goalBody = findAllByClass(findById(root, 'notif-card-g1')!, 'notif-body')[0];
+    env.setApiMock(async (path: string) => path === '/api/notifications/g1/read' ? { ok: true } : page([]));
+    await goalBody.onclick!();
+    assert.strictEqual(env.getNavigatedHash(), '#/goals/goal-1', '無 Task 的 Goal 通知應直接導向 Goal');
+    assert.ok(!env.apiCalls.some((call) => call.path === '/api/tasks/'), '無 Task 的 Goal 通知不得讀取空 task id');
+
     // ── 4. 點擊通知本體，來源 403：保留卡片、顯示友善原因，不導頁 ──
     env.setApiMock(async () => page([
       { notification_id: 'n4', source_task_id: 't4', source_comment_id: 'c4', snippet: '@我 沒權限', created_at: '2026-01-05T00:00:00.000Z', read_at: null }

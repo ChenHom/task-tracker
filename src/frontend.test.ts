@@ -45,6 +45,12 @@ class MockElement {
         this.appendChild(opt);
       }
     } else {
+      if (val.includes('id="goal-error"')) {
+        this.appendChild(new MockElement('p', { id: 'goal-error' }));
+      }
+      if (val.includes('id="goal-detail"')) {
+        this.appendChild(new MockElement('div', { id: 'goal-detail' }));
+      }
       if (val.includes('id="project-filter-select"')) {
         const select = new MockElement('select', { id: 'project-filter-select' });
         const optAll = new MockElement('option', { value: 'all' });
@@ -69,6 +75,12 @@ class MockElement {
         const colArchived = new MockElement('div', { id: 'col-Archived-el' });
         board.appendChild(colArchived);
         this.appendChild(board);
+      }
+      if (val.includes('id="add-btn-Todo"')) {
+        this.appendChild(new MockElement('span', { id: 'add-btn-Todo' }));
+      }
+      if (val.includes('id="add-form-Todo"')) {
+        this.appendChild(new MockElement('div', { id: 'add-form-Todo' }));
       }
       if (val.includes('id="ws-list-container"')) {
         const wsList = new MockElement('div', { id: 'ws-list-container' });
@@ -308,7 +320,12 @@ let kanbanCode = readFileSync(join(__dirname, '../public/js/views/kanban.js'), '
 kanbanCode = kanbanCode.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
 kanbanCode = kanbanCode.replace(/export\s+const\s+KanbanView\s*=\s*/g, 'globalThis.KanbanView = ');
 
-// 2.6 Read and transform public/js/views/workspaces.js
+// 2.6 Read and transform public/js/views/goals.js
+let goalsCode = readFileSync(join(__dirname, '../public/js/views/goals.js'), 'utf8');
+goalsCode = goalsCode.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
+goalsCode = goalsCode.replace(/export\s+const\s+GoalsView\s*=\s*/g, 'globalThis.GoalsView = ');
+
+// 2.7 Read and transform public/js/views/workspaces.js
 let workspacesCode = readFileSync(join(__dirname, '../public/js/views/workspaces.js'), 'utf8');
 workspacesCode = workspacesCode.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
 workspacesCode = workspacesCode.replace(/export\s+const\s+WorkspacesView\s*=\s*/g, 'globalThis.WorkspacesView = ');
@@ -367,6 +384,7 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
 vm.runInContext(kanbanCode, sandbox);
+vm.runInContext(goalsCode, sandbox);
 vm.runInContext(workspacesCode, sandbox);
 
 const openTaskDetailModal = sandbox.globalThis.openTaskDetailModal;
@@ -502,6 +520,26 @@ async function runTests() {
   // After opening, keydown listeners should be cleaned up and set to exactly the new listener (length 1)
   assert.strictEqual(listeners['keydown'].length, 1, 'Duplicate open should cleanup previous keydown listeners on document');
   assert.strictEqual(windowListeners['keydown'].length, 1, 'Duplicate open should cleanup previous keydown listeners on window');
+
+  // Archived Project 只保留 Task 目前所屬者，避免歷史關聯顯示成「無專案」。
+  bodyChildren.length = 0;
+  await openTaskDetailModal('task-archived-project', {
+    cachedTasks: [{ task_id: 'task-archived-project', title: 'Done Task', description: '', status: 'Done', project_id: 'project-current' }],
+    cachedMembers: [],
+    cachedProjects: [
+      { project_id: 'project-current', name: 'Current Archived', status: 'archived' },
+      { project_id: 'project-other', name: 'Other Archived', status: 'archived' },
+    ],
+    memberMap: new Map(),
+    memberEmailMap: new Map(),
+    onUpdate: async () => {},
+  });
+  const archivedProjectSelect = findElement(bodyChildren.at(-1)!, (element) => element['aria-label'] === 'Task Project');
+  assert.ok(archivedProjectSelect, 'Task Project 選單應存在');
+  assert.deepStrictEqual(archivedProjectSelect.options.map((option: MockElement) => option.value), ['', 'project-current'],
+    'Task Project 選單只應保留目前所屬的 archived Project');
+  assert.strictEqual(archivedProjectSelect.options.find((option: MockElement) => option.value === 'project-current')?.selected, true,
+    '目前所屬的 archived Project 應維持選取');
 
   // Test 4: Description input keydown save and transition flow
   bodyChildren.length = 0;
@@ -985,20 +1023,142 @@ async function runTests() {
   assert.strictEqual(safeHttpUrl('/relative/path'), null);
   assert.strictEqual(safeHttpUrl('not a url'), null);
 
+  // Y20 D1: Goal 詳情必須實際渲染 activity API 的欄位與 Goal 關係連結。
+  {
+    const GoalsView = sandbox.globalThis.GoalsView;
+    assert.ok(GoalsView, 'GoalsView should be loaded into the DOM sandbox');
+    const goalContainer = new MockElement('div');
+    bodyChildren.length = 0;
+    bodyChildren.push(goalContainer);
+    sandbox.state.workspaceId = 'ws-goal-detail';
+    sandbox.api = async (url: string) => {
+      if (url === '/api/goals/goal-child') return {
+        goal_id: 'goal-child', project_id: 'project-1', objective: 'Ship Goal detail', status: 'Discussing',
+        discussion_phase: 'round_2', revision: 3, success_criteria: 'All behavior is visible',
+        data_scope: 'workspace data', parent_goal_id: 'goal-parent',
+      };
+      if (url === '/api/goals/goal-child/activity') return {
+        participations: [{ agent_id: 'agent-1', reason: 'Selected for frontend expertise', assignment: 'Review UI' }],
+        contributions: [
+          { round: 'round_1', stance: 'analysis', claim: 'Round one contribution', reason: 'Initial evidence', evidence_json: '[]' },
+          { round: 'round_2', stance: 'agree', claim: 'Round two contribution', reason: 'Confirmed evidence', evidence_json: '[]' },
+        ],
+        synthesis: {
+          summary: 'Synthesis summary', decision_rationale: 'Decision uses both rounds', change_scope: 'UI tests', uncertainties_json: '[]',
+        },
+        tasks: [],
+        runs: [{ phase: 'round_2', agent_id: 'agent-1', adapter: 'codex', model: 'test-model', status: 'succeeded', session_id: 'session-1', actual_total_tokens: 4321 }],
+        childGoals: [{ goal_id: 'goal-grandchild', objective: 'Follow-up Goal' }],
+        deliveryEvidence: [{ kind: 'commit', ref: 'abc123', detail: 'test evidence' }],
+        tokenTotals: { input: 0, output: 0 },
+      };
+      if (url === '/api/workspaces/ws-goal-detail/projects') return [{ project_id: 'project-1', name: 'Project One' }];
+      if (url === '/api/workspaces/ws-goal-detail/members') return [{ email: 'test@test.com', role: 'Viewer' }];
+      if (url === '/api/workspaces/ws-goal-detail/agents') return [{ agent_id: 'agent-1', name: 'Frontend Agent' }];
+      throw new Error(`Unexpected Goal detail API: ${url}`);
+    };
+
+    await GoalsView.render(goalContainer, ['goal-child']);
+    const renderedText: string[] = [];
+    const collectText = (node: MockElement) => {
+      if (node.textContent) renderedText.push(node.textContent);
+      node.childNodes.forEach(collectText);
+    };
+    collectText(goalContainer);
+    const text = renderedText.join('\n');
+    for (const expected of [
+      'Selected for frontend expertise', 'round_1', 'Round one contribution', 'round_2',
+      'Round two contribution', 'Decision uses both rounds', '4321', 'commit', 'abc123',
+    ]) assert.ok(text.includes(expected), `Goal detail should render ${expected}`);
+    assert.ok(findElement(goalContainer, node => node.tag === 'a' && node.href === '#/goals/goal-parent'), 'Goal detail should link its parent Goal');
+    assert.ok(findElement(goalContainer, node => node.tag === 'a' && node.href === '#/goals/goal-grandchild'), 'Goal detail should link its child Goal');
+  }
+
+  // Y20 D3: 建立 Task 的 Project 預選與 POST body 必須由實際 DOM 操作驗證。
+  {
+    const kanbanContainer = new MockElement('div');
+    bodyChildren.length = 0;
+    bodyChildren.push(kanbanContainer);
+    sandbox.state.workspaceId = 'ws-task-project';
+    sandbox.state.userEmail = 'test@test.com';
+    sandbox.sessionStorage.clear();
+    sandbox.sessionStorage.setItem('kanban_filter_project_ws-task-project', 'project-selected');
+    let createTaskBody: any = null;
+    sandbox.api = async (url: string, options?: any) => {
+      if (url === '/api/workspaces/ws-task-project/tasks' && options?.method === 'POST') {
+        createTaskBody = options.body;
+        return { id: 'task-created' };
+      }
+      if (url === '/api/workspaces/ws-task-project/tasks') return [];
+      if (url === '/api/workspaces/ws-task-project/projects') return [
+        { project_id: 'project-selected', name: 'Selected Project', status: 'active' },
+        { project_id: 'project-other', name: 'Other Project', status: 'active' },
+      ];
+      if (url === '/api/workspaces/ws-task-project/members') return [{ user_id: 'user-1', email: 'test@test.com', role: 'Member' }];
+      if (url === '/api/workspaces/ws-task-project/goals' || url === '/api/workspaces/ws-task-project/repositories') return [];
+      throw new Error(`Unexpected Kanban API: ${url}`);
+    };
+
+    await KanbanView.render(kanbanContainer);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const addButton = findElement(kanbanContainer, node => node.classList.contains('column-add-task-btn'));
+    assert.ok(addButton?.onclick, 'Todo column should render its add Task button');
+    addButton.onclick();
+    const projectSelect = findElement(kanbanContainer, node => node.classList.contains('column-add-task-project'));
+    assert.ok(projectSelect, 'Create Task form should render a Project select');
+    assert.strictEqual(projectSelect.value, 'project-selected', 'Create Task Project should default to the selected Project filter');
+    const titleInput = findElement(kanbanContainer, node => node.classList.contains('column-add-task-input'));
+    const form = findElement(kanbanContainer, node => node.classList.contains('column-add-task-form'));
+    assert.ok(titleInput && form?.onsubmit, 'Create Task form should be submittable');
+    titleInput.value = 'Task under selected Project';
+    await form.onsubmit({ preventDefault: () => {} });
+    assert.strictEqual(createTaskBody?.projectId, 'project-selected', 'Create Task POST body should include the selected Project');
+    bodyChildren.length = 0;
+  }
+
   // Keep broad view policy checks source-level; the modal behavior above owns the DOM harness.
   assert.match(stateSource, /ROLE_RANK[\s\S]*Commenter:\s*1[\s\S]*MAIN_WORKSPACE_ID[\s\S]*MAIN_OWNER_EMAIL[\s\S]*MAIN_POLICY_TITLE/);
   assert.match(stateSource, /MAIN_DISCUSSION_DESCRIPTION_TEMPLATE/);
   assert.match(kanbanSource, /main-workspace-policy/);
   assert.match(kanbanSource, /<dialog id="project-dialog"[\s\S]*project-target-repo[\s\S]*project-archive-selected/);
+  assert.doesNotMatch(kanbanSource, /id="project-target-repo"\s+required/, 'Project target repo 必須選填');
+  assert.match(kanbanSource, /不設定（此 Project 無法啟動 Goal）/);
+  assert.match(kanbanSource, /docs\/operations\.md[\s\S]*Goal-driven collaboration[\s\S]*cachedRepos\.length/,
+    '空 repo registry 必須顯示操作文件提示');
+  assert.match(kanbanSource, /targetRepo:\s*document\.getElementById\(['"]project-target-repo['"]\)\.value\s*\|\|\s*null/,
+    '建立或編輯未設定 repo 的 Project 必須送出 null');
   assert.doesNotMatch(kanbanSource, /prompt\(['"]請輸入新專案名稱/);
   assert.match(taskDetailSource, /aria-label['"]?:\s*['"]Task Project['"][\s\S]*projectId/);
+  assert.match(taskDetailSource, /project\.status !== ['"]archived['"]\s*\|\|\s*project\.project_id === currentTask\.project_id/,
+    'Task 目前所屬 archived Project 必須保留在選單');
   assert.match(routesSource, /registerRoute\(['"]goals['"],[\s\S]*registerRoute\(['"]agents['"]/);
   assert.match(goalsSource, /successCriteria/);
+  assert.match(goalsSource, /goal-data-scope/);
+  assert.match(goalsSource, /method:\s*'PATCH'/);
   assert.match(goalsSource, /activity[\s\S]*participations[\s\S]*runs[\s\S]*contributions/);
+  assert.match(goalsSource, /pause_requested[\s\S]*暫停請求已排定/);
+  assert.match(goalsSource, /button\.onclick\s*=\s*async[\s\S]*try[\s\S]*showError\(['"]goal-error['"]/,
+    'Goal action 錯誤必須顯示在 UI');
+  assert.match(goalsSource, /goal\.status === ['"]Blocked['"][\s\S]*window\.prompt[\s\S]*changeDescription/,
+    'Blocked 恢復必須要求人類輸入變更說明');
+  assert.match(goalsSource, /rest\?\.\[0\][\s\S]*renderGoalDetail/, 'Goals route 必須支援獨立詳情頁');
+  for (const field of ['participations', 'contributions', 'synthesis', 'tasks', 'runs', 'deliveryEvidence', 'parent_goal_id', 'childGoals']) {
+    assert.match(goalsSource, new RegExp(field), `Goal 詳情必須顯示 ${field}`);
+  }
+  assert.match(goalsSource, /@Owner[\s\S]*\/comments/, 'Goal 詳情必須提供 @Owner 留言入口');
+  assert.match(goalsSource, /changeDescription[\s\S]*successCriteria/, 'Goal 詳情必須保留 Blocked 恢復與成功條件修改');
+  assert.match(readFileSync(join(__dirname, '../public/css/goals.css'), 'utf8'), /@media \(max-width: 768px\)[\s\S]*overflow-wrap:\s*anywhere/,
+    'Goal 詳情行動版不得造成水平捲動');
   assert.match(agentsSource, /primary_adapter[\s\S]*fallback_adapter/);
+  assert.match(agentsSource, /latest_preflight[\s\S]*latest_run[\s\S]*fallback_count[\s\S]*unknown_usage_count/,
+    'Agents 頁必須顯示最近 preflight、Run、fallback 與未知 usage');
   assert.match(agentsSource, /hasRole\(role, ['"]Admin['"]\)/);
   assert.doesNotMatch(agentsSource, /user09@test\.local/, 'Agent 管理 UI 應依 RBAC，不可寫死 email');
   assert.match(kanbanSource, /canCreateTask[\s\S]*canManageTask/);
+  assert.match(kanbanSource, /column-add-task-project[\s\S]*projectId:\s*projectSelect\.value\s*\|\|\s*null/,
+    '建立 Task 表單必須明示 Project 並以選取值送出');
+  assert.match(kanbanSource, /projectTasks[\s\S]*Done[\s\S]*進度：/,
+    'Project context 必須顯示 Task 完成進度');
   assert.match(kanbanSource, /MAIN_POLICY_TITLE[\s\S]*\.sort\(/);
   assert.match(kanbanSource, /const\s+renderWorkspaceId\s*=\s*state\.workspaceId[\s\S]*let\s+loadGeneration\s*=\s*0[\s\S]*async\s+function\s+loadAllData\(\)\s*\{\s*if\s*\(state\.workspaceId\s*!==\s*renderWorkspaceId\)\s*return;[\s\S]*encodeURIComponent\(renderWorkspaceId\)[\s\S]*generation\s*!==\s*loadGeneration[\s\S]*state\.workspaceId\s*!==\s*renderWorkspaceId/);
   assert.match(kanbanSource, /hasRole\(currentRole,\s*['"]Member['"]\)[\s\S]*:\s*\{\s*title,\s*description\s*\}/);

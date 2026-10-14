@@ -56,6 +56,9 @@ export const AgentsView = {
         }
         card.appendChild(el('p', { class: 'muted' }, `目前 Goal/Task: ${agent.current_goal_id || '—'} / ${agent.current_task_id || '—'}`));
         card.appendChild(el('p', { class: 'muted' }, `累積 token: ${(agent.total_input_tokens || 0) + (agent.total_output_tokens || 0)}`));
+        card.appendChild(el('p', { class: 'muted' }, `最近 preflight: ${agent.latest_preflight ? `${agent.latest_preflight.status} · ${agent.latest_preflight.error_category || 'ok'} · ${agent.latest_preflight.created_at}` : '—'}`));
+        card.appendChild(el('p', { class: 'muted' }, `最近 Run: ${agent.latest_run ? `${agent.latest_run.phase} · ${agent.latest_run.adapter}/${agent.latest_run.model} · ${agent.latest_run.status}` : '—'}`));
+        card.appendChild(el('p', { class: 'muted' }, `fallback 次數: ${agent.fallback_count || 0} · usage 未知次數: ${agent.unknown_usage_count || 0}`));
         list.appendChild(card);
       }
     } catch (error) { showError('agent-error', error); }

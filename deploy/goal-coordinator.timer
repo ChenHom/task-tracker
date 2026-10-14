@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Task Tracker Goal coordinator every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=false
+Unit=goal-coordinator.service
+
+[Install]
+WantedBy=timers.target

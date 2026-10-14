@@ -35,8 +35,11 @@ export interface GoalRunRow {
   estimate_basis: string;
   estimate_confidence: string;
   quota_snapshot_json: string;
+  source_refs_json: string;
+  session_id: string | null;
   actual_input_tokens: number | null;
   actual_output_tokens: number | null;
+  actual_total_tokens: number | null;
   actual_cost: number | null;
   status: RunStatus;
   outcome: string | null;
@@ -119,6 +122,7 @@ export interface PrepareRunInput {
   estimateBasis: unknown;
   estimateConfidence: unknown;
   quotaSnapshotJson: unknown;
+  sourceRefsJson?: unknown;
 }
 
 export function prepareRun(input: PrepareRunInput, database = db): string {
@@ -130,6 +134,11 @@ export function prepareRun(input: PrepareRunInput, database = db): string {
   if (attempt !== 'primary' && attempt !== 'fallback') throw new CommandError('Run attempt 不合法');
   const quotaSnapshotJson = text(input.quotaSnapshotJson, 'quotaSnapshotJson', 100_000);
   try { JSON.parse(quotaSnapshotJson); } catch { throw new CommandError('quotaSnapshotJson 不是合法 JSON'); }
+  const sourceRefsJson = input.sourceRefsJson == null ? '[]' : text(input.sourceRefsJson, 'sourceRefsJson', 100_000);
+  try {
+    const refs = JSON.parse(sourceRefsJson);
+    if (!Array.isArray(refs) || refs.some((ref) => typeof ref !== 'string')) throw new Error();
+  } catch { throw new CommandError('sourceRefsJson 不是合法字串陣列 JSON'); }
 
   const existing = database.prepare(
     'SELECT run_id FROM goal_runs WHERE heartbeat_id = ? AND attempt = ?',
@@ -142,8 +151,8 @@ export function prepareRun(input: PrepareRunInput, database = db): string {
       `INSERT INTO goal_runs
          (run_id, heartbeat_id, goal_id, task_id, agent_id, phase, adapter, model, attempt,
           estimated_input_tokens, estimated_output_tokens, estimate_basis, estimate_confidence,
-          quota_snapshot_json, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+          quota_snapshot_json, source_refs_json, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
     ).run(
       runId,
       heartbeatId,
@@ -159,6 +168,7 @@ export function prepareRun(input: PrepareRunInput, database = db): string {
       text(input.estimateBasis, 'estimateBasis', 300),
       text(input.estimateConfidence, 'estimateConfidence', 30),
       quotaSnapshotJson,
+      sourceRefsJson,
       new Date().toISOString(),
     );
   } catch (error) {
@@ -190,8 +200,11 @@ export function markRunRunning(runId: string, database = db): void {
 
 export interface FinishRunInput {
   status: unknown;
+  deferHeartbeatCompletion?: unknown;
   actualInputTokens: unknown;
   actualOutputTokens: unknown;
+  tokenTotal?: unknown;
+  sessionId?: unknown;
   actualCost: unknown;
   credibleBilling: unknown;
   outcome: unknown;
@@ -212,6 +225,9 @@ export function finishRun(runId: string, input: FinishRunInput, database = db): 
   if (input.status !== 'succeeded' && input.status !== 'failed' && input.status !== 'uncertain') {
     throw new CommandError('Run status 不合法');
   }
+  if (input.deferHeartbeatCompletion != null && typeof input.deferHeartbeatCompletion !== 'boolean') {
+    throw new CommandError('deferHeartbeatCompletion 不合法');
+  }
   let actualCost: number | null = null;
   if (input.actualCost != null) {
     if (input.credibleBilling !== true) throw new CommandError('actual cost 只能來自可信 billing');
@@ -221,25 +237,36 @@ export function finishRun(runId: string, input: FinishRunInput, database = db): 
     actualCost = input.actualCost;
   }
   const now = new Date().toISOString();
-  const info = database.prepare(
-    `UPDATE goal_runs SET status = ?, actual_input_tokens = ?, actual_output_tokens = ?, actual_cost = ?,
-       outcome = ?, error_category = ?, evidence_ref = ?, side_effect_state = ?, ended_at = ?
-     WHERE run_id = ? AND status = 'running'`,
-  ).run(
-    input.status,
-    optionalTokens(input.actualInputTokens, 'actualInputTokens'),
-    optionalTokens(input.actualOutputTokens, 'actualOutputTokens'),
-    actualCost,
-    optionalText(input.outcome, 'outcome'),
-    optionalText(input.errorCategory, 'errorCategory'),
-    optionalText(input.evidenceRef, 'evidenceRef'),
-    optionalText(input.sideEffectState, 'sideEffectState'),
-    now,
-    runId,
-  );
-  if (info.changes === 0) throw new CommandError('run 不存在或狀態不可完成');
-  database.prepare('UPDATE goal_heartbeats SET status = ?, updated_at = ? WHERE heartbeat_id = (SELECT heartbeat_id FROM goal_runs WHERE run_id = ?)')
-    .run(input.status, now, runId);
+  database.exec('SAVEPOINT finish_run');
+  try {
+    const info = database.prepare(
+      `UPDATE goal_runs SET status = ?, actual_input_tokens = ?, actual_output_tokens = ?, actual_total_tokens = ?, session_id = ?, actual_cost = ?,
+         outcome = ?, error_category = ?, evidence_ref = ?, side_effect_state = ?, ended_at = ?
+       WHERE run_id = ? AND status = 'running'`,
+    ).run(
+      input.status,
+      optionalTokens(input.actualInputTokens, 'actualInputTokens'),
+      optionalTokens(input.actualOutputTokens, 'actualOutputTokens'),
+      optionalTokens(input.tokenTotal, 'tokenTotal'),
+      optionalText(input.sessionId, 'sessionId'),
+      actualCost,
+      optionalText(input.outcome, 'outcome'),
+      optionalText(input.errorCategory, 'errorCategory'),
+      optionalText(input.evidenceRef, 'evidenceRef'),
+      optionalText(input.sideEffectState, 'sideEffectState'),
+      now,
+      runId,
+    );
+    if (info.changes === 0) throw new CommandError('run 不存在或狀態不可完成');
+    const heartbeatStatus = input.status === 'succeeded' && input.deferHeartbeatCompletion ? 'pending' : input.status;
+    database.prepare('UPDATE goal_heartbeats SET status = ?, updated_at = ? WHERE heartbeat_id = (SELECT heartbeat_id FROM goal_runs WHERE run_id = ?)')
+      .run(heartbeatStatus, now, runId);
+    database.exec('RELEASE finish_run');
+  } catch (error) {
+    database.exec('ROLLBACK TO finish_run');
+    database.exec('RELEASE finish_run');
+    throw error;
+  }
 }
 
 export interface ParticipationInput {
@@ -302,6 +329,9 @@ export function addContribution(input: ContributionInput, database = db): string
   }
   if (!Array.isArray(input.evidenceRefs) || input.evidenceRefs.some((ref) => typeof ref !== 'string' || !ref.trim())) {
     throw new CommandError('evidenceRefs 不合法');
+  }
+  if ((input.stance === 'concern' || input.stance === 'correction') && input.evidenceRefs.length === 0) {
+    throw new CommandError('concern／correction 的 evidenceRefs 不可為空');
   }
 
   const id = randomUUID();

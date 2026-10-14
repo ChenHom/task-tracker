@@ -10,6 +10,7 @@ import {
   getProjectWorkspaceId,
   listProjects,
   registerGoalWorktree,
+  setGoalWorktreeDirty,
   updateProject,
 } from './project';
 import { createTask, listTasks, registerTaskProjections } from './task';
@@ -92,6 +93,10 @@ assert.throws(() => archiveProject(archiveId, db), /未完成 task/, '未完成 
 db.prepare("UPDATE tasks_read_model SET status = 'Done' WHERE task_id = ?").run(unfinishedTask);
 archiveProject(archiveId, db);
 assert.strictEqual(getProject(archiveId, db)?.status, 'archived');
+assert.strictEqual(listProjects('ws-1', db).some((project) => project.project_id === archiveId), false,
+  '已封存 Project 不可出現在 domain list');
+assert.strictEqual(listProjects('ws-1', db, { includeArchived: true }).find((project) => project.project_id === archiveId)?.status, 'archived',
+  'includeArchived 應回傳已封存 Project');
 assert.throws(() => createTask('u1', 'ws-1', { title: 'No new task', projectId: archiveId }, db), /project 已封存/);
 
 const worktreeProject = createProject('ws-1', { name: 'Worktree', targetRepo: '/srv/app' }, db, repos);
@@ -100,10 +105,14 @@ db.prepare(`INSERT INTO goals_read_model
    created_by, owner_agent_id, evidence_refs_json, version, created_at, updated_at)
   VALUES ('worktree-goal', 'ws-1', ?, 'human', 'x', 'y', 'Done', 1, 'u1', 'owner', '[]', 1, 't', 't')`).run(worktreeProject);
 registerGoalWorktree('worktree-goal', '/srv/app', '/srv/app/.worktrees/g', db);
+setGoalWorktreeDirty('worktree-goal', '/srv/app/.worktrees/g', true, db);
+assert.strictEqual((db.prepare("SELECT dirty FROM goal_worktrees WHERE goal_id = 'worktree-goal'").get() as { dirty: number }).dirty, 1,
+  'member 開始修改時 worktree 必須可標記 dirty');
 assert.throws(() => registerGoalWorktree('worktree-goal', '/srv/app', '/srv/escape', db), /關聯不合法/, 'worktree path 不可逃出 target repo');
 assert.throws(() => deleteProject(worktreeProject, db), /Goal 或 worktree 歷史/, 'hard delete 不可破壞 Goal 歷史');
 assert.throws(() => archiveProject(worktreeProject, db), /dirty 或未合併 worktree/);
 db.prepare("UPDATE goal_worktrees SET unmerged = 0 WHERE goal_id = 'worktree-goal'").run();
+setGoalWorktreeDirty('worktree-goal', '/srv/app/.worktrees/g', false, db);
 archiveProject(worktreeProject, db);
 
 console.log('project.test.ts OK');

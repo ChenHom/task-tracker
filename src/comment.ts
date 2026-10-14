@@ -35,8 +35,7 @@ export function createComment(
   const id = randomUUID();
   const createdAt = now.toISOString();
 
-  database.exec('BEGIN IMMEDIATE');
-  try {
+  const create = () => {
     if (getTaskWorkspaceId(taskId, database) === null) throw new CommandError('task 不存在'); // 不對孤兒 task 留言
     database.prepare('INSERT INTO comments (comment_id, task_id, user_id, content, created_at) VALUES (?, ?, ?, ?, ?)').run(
       id,
@@ -47,19 +46,26 @@ export function createComment(
     );
     emitMentionNotifications(userId, taskId, id, clean, database);
     const linked = database.prepare(
-      `SELECT t.goal_id, g.revision, g.owner_agent_id
+      `SELECT t.goal_id, g.revision, g.owner_agent_id, g.status
          FROM tasks_read_model t JOIN goals_read_model g ON g.goal_id = t.goal_id
         WHERE t.task_id = ?`,
-    ).get(taskId) as { goal_id: string; revision: number; owner_agent_id: string } | undefined;
+    ).get(taskId) as { goal_id: string; revision: number; owner_agent_id: string; status: string } | undefined;
     const authorIsAgent = database.prepare('SELECT 1 FROM agents WHERE user_id = ?').get(userId);
-    if (linked && !authorIsAgent && /@Owner(?=$|[\s.,，。！？!?;；:：)\]}>])/iu.test(clean)) {
+    if (linked && !['Done', 'Cancelled'].includes(linked.status) && !authorIsAgent
+      && /@Owner(?=$|[\s.,，。！？!?;；:：)\]}>])/iu.test(clean)) {
       enqueueHeartbeat({
         scopeId: linked.goal_id, goalId: linked.goal_id, phase: 'owner_comment',
         agentId: linked.owner_agent_id, revision: linked.revision, triggerRef: id,
       }, database);
     }
-    database.exec('COMMIT');
     return id;
+  };
+  if (database.isTransaction) return create();
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const result = create();
+    database.exec('COMMIT');
+    return result;
   } catch (error) {
     database.exec('ROLLBACK');
     throw error;

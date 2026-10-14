@@ -61,7 +61,12 @@ export interface MemberSessionRunnerContext {
 
 export interface MemberSessionRunnerResult {
   exitCode: number;
+  stderr?: string;
+  sessionId?: string | null;
   output: MemberSessionOutput;
+  actualInputTokens?: number | null;
+  actualOutputTokens?: number | null;
+  tokenTotal?: number | null;
 }
 
 /** 正式環境會是真正呼叫 AI coding agent 的實作；這裡永遠是呼叫端（測試）注入的假函式。 */
@@ -318,7 +323,11 @@ export interface OwnerSessionRunnerContext {
 
 export interface OwnerSessionRunnerResult {
   exitCode: number;
+  sessionId?: string | null;
   decision: OwnerDecision;
+  actualInputTokens?: number | null;
+  actualOutputTokens?: number | null;
+  tokenTotal?: number | null;
 }
 
 /** 正式環境會是真正呼叫 AI 的實作；這裡永遠是呼叫端（測試）注入的假函式。 */

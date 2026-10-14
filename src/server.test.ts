@@ -164,10 +164,16 @@ void (async () => {
   mkUser('authz-commenter-b', 'authz-commenter-b@test.local');
   mkUser('authz-member', 'authz-member@test.local');
   mkUser('authz-outsider', 'authz-outsider@test.local'); // 只在 wsB，用來測跨 workspace
+  mkUser('authz-admin', 'authz-admin@test.local');
+  mkUser('agent-member', 'user02@test.local');
+  for (const n of [3, 4, 5, 6]) mkUser(`agent-user0${n}`, `user0${n}@test.local`); // D2：syncAgents 只為已存在的帳號建 Agent
   grant(wsA, 'authz-viewer', 'Viewer');
   grant(wsA, 'authz-commenter-a', 'Commenter');
   grant(wsA, 'authz-commenter-b', 'Commenter');
   grant(wsA, 'authz-member', 'Member');
+  grant(wsA, 'authz-admin', 'Admin');
+  grant(mainWorkspaceId, 'authz-admin', 'Admin');
+  grant(wsA, 'agent-member', 'Member');
   grant(wsB, 'authz-outsider', 'Member');
 
   const authzTaskId = 'authz-task-1';
@@ -180,6 +186,9 @@ void (async () => {
     commenterA: sessionFor('authz-commenter-a'),
     commenterB: sessionFor('authz-commenter-b'),
     member: sessionFor('authz-member'),
+    admin: sessionFor('authz-admin'),
+    agentOwner: cookie,
+    agentMember: sessionFor('agent-member'),
     outsider: sessionFor('authz-outsider'),
   };
   grant(wsA, 'owner', 'Admin');
@@ -206,11 +215,17 @@ void (async () => {
   };
 
   const { createTask, registerTaskProjections } = await import('./task');
-  const { registerGoalProjections } = await import('./goal');
+  const { blockGoal, registerGoalProjections } = await import('./goal');
   const { syncAgents } = await import('./agent');
   registerTaskProjections();
   registerGoalProjections();
   syncAgents(db);
+  assert.strictEqual((await call('POST', '/api/workspaces', {
+    cookie: authzCookie.agentOwner, body: { name: 'Agent must not create' },
+  })).status, 403, 'Owner Agent 帳號不得建立 Workspace');
+  assert.strictEqual((await call('POST', '/api/workspaces', {
+    cookie: authzCookie.admin, body: { name: 'Human-created workspace' },
+  })).status, 201, '人類帳號仍可建立 Workspace');
   const patchTaskId = createTask('authz-member', wsA, { title: 'Patch assignee' }, db);
 
   // PATCH 只允許一個已知欄位：正確的 assignee 應成功，未知欄位應回明確 validation error。
@@ -286,6 +301,12 @@ void (async () => {
     body: { name: 'Goal Project', targetRepo: registeredRepo },
   });
   const goalProjectId = (goalProjectResponse.json as { id: string }).id;
+  for (const agentCookie of [authzCookie.agentOwner, authzCookie.agentMember]) {
+    assert.strictEqual((await call('POST', `/api/workspaces/${wsA}/goals`, {
+      cookie: agentCookie,
+      body: { projectId: goalProjectId, objective: 'Agent forged human Goal', successCriteria: 'must be rejected' },
+    })).status, 403, 'Agent 帳號不得建立 human Goal');
+  }
   const createdGoal = await call('POST', `/api/workspaces/${wsA}/goals`, {
     cookie: authzCookie.member,
     body: {
@@ -300,6 +321,15 @@ void (async () => {
   const goalList = await call('GET', `/api/workspaces/${wsA}/goals`, { cookie: authzCookie.member });
   assert.strictEqual(goalList.status, 200);
   assert.strictEqual((goalList.json as Array<{ source: string }>)[0].source, 'human', 'HTTP 建立一律是 human source');
+  assert.strictEqual((await call('PATCH', `/api/goals/${goalId}`, {
+    cookie: authzCookie.agentMember, body: { successCriteria: 'Agent forged criteria' },
+  })).status, 403, 'Agent 帳號不得修改成功條件');
+  assert.strictEqual((await call('PATCH', `/api/goals/${goalId}`, {
+    cookie: authzCookie.member, body: { dataScope: 'src/server.ts' },
+  })).status, 200, '人類成員可修改資料範圍');
+  assert.strictEqual((await call('PATCH', `/api/goals/${goalId}`, {
+    cookie: authzCookie.member, body: { successCriteria: 'new', dataScope: 'src' },
+  })).status, 400, 'Goal PATCH 一次只能改一個欄位');
   assert.strictEqual((await call('GET', `/api/goals/${goalId}`, { cookie: authzCookie.outsider })).status, 403);
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/start`, { cookie: authzCookie.member })).status, 200);
   const startedActivity = await call('GET', `/api/goals/${goalId}/activity`, { cookie: authzCookie.member });
@@ -310,6 +340,10 @@ void (async () => {
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/worktrees`, {
     cookie: authzCookie.member, body: { targetRepo: registeredRepo, worktreePath: '/forged' },
   })).status, 403);
+  assert.strictEqual((await call('POST', `/api/goals/${goalId}/pause`, { cookie: authzCookie.member })).status, 202,
+    '未合併 worktree 應排定暫停');
+  const pauseScheduledList = await call('GET', `/api/workspaces/${wsA}/goals`, { cookie: authzCookie.member });
+  assert.strictEqual((pauseScheduledList.json as Array<{ pause_requested: number }>)[0].pause_requested, 1);
   assert.strictEqual((await call('PATCH', `/api/goals/${goalId}/worktrees`, {
     cookie, headers: { 'x-coordinator-token': 'test-coordinator-token' }, body: { worktreePath: join(registeredRepo, '.worktrees', goalId) },
   })).status, 200);
@@ -318,9 +352,36 @@ void (async () => {
   assert.strictEqual((await call('POST', `/api/goals/${goalId}/cancel`, { cookie: authzCookie.member })).status, 200);
   assert.strictEqual((await call('GET', `/api/goals/${goalId}/activity`, { cookie: authzCookie.member })).status, 200);
 
+  const blockedGoalResponse = await call('POST', `/api/workspaces/${wsA}/goals`, {
+    cookie: authzCookie.member,
+    body: { projectId: goalProjectId, objective: 'Recover API', successCriteria: 'HTTP 200' },
+  });
+  const blockedGoalId = (blockedGoalResponse.json as { id: string }).id;
+  assert.strictEqual((await call('POST', `/api/goals/${blockedGoalId}/start`, { cookie: authzCookie.member })).status, 200);
+  blockGoal('owner', blockedGoalId, 'discussion failed', db);
+  assert.strictEqual((await call('POST', `/api/goals/${blockedGoalId}/resume`, {
+    cookie: authzCookie.agentMember, body: { changeDescription: 'Agent 作為人類解除' },
+  })).status, 403, 'Agent 帳號不得解除 Blocked');
+  assert.strictEqual((await call('POST', `/api/goals/${blockedGoalId}/resume`, { cookie: authzCookie.member })).status, 400,
+    'Blocked 恢復缺少變更說明應回 400');
+  assert.strictEqual((await call('POST', `/api/goals/${blockedGoalId}/resume`, {
+    cookie: authzCookie.member, body: { changeDescription: '調整討論範圍' },
+  })).status, 200);
+  assert.strictEqual((await call('POST', `/api/goals/${blockedGoalId}/cancel`, { cookie: authzCookie.agentOwner })).status, 403,
+    'Owner Agent 帳號不得走人類 cancel API');
+  assert.strictEqual((await call('POST', `/api/goals/${blockedGoalId}/cancel`, { cookie: authzCookie.member })).status, 200);
+
   const workspaceAgents = await call('GET', `/api/workspaces/${wsA}/agents`, { cookie: authzCookie.member });
   assert.strictEqual(workspaceAgents.status, 200);
-  assert.deepStrictEqual((workspaceAgents.json as Array<{ email: string }>).map((agent) => agent.email), ['user01@test.local']);
+  assert.deepStrictEqual((workspaceAgents.json as Array<{ email: string }>).map((agent) => agent.email), [
+    'user01@test.local', 'user02@test.local', 'user03@test.local',
+    'user04@test.local', 'user05@test.local', 'user06@test.local',
+  ], 'Agents API 固定列出六位全域 Agent');
+  for (const agent of workspaceAgents.json as Array<Record<string, unknown>>) {
+    for (const field of ['latest_preflight', 'latest_run', 'fallback_count', 'unknown_usage_count']) {
+      assert.ok(field in agent, `Agents API 必須包含 ${field}`);
+    }
+  }
   assert.strictEqual(
     (await call('PATCH', `/api/workspaces/${wsA}/agents/owner`, {
       cookie: authzCookie.member, body: { status: 'paused' },
@@ -330,10 +391,17 @@ void (async () => {
   );
   assert.strictEqual(
     (await call('PATCH', `/api/workspaces/${wsA}/agents/owner`, {
-      cookie, body: { status: 'paused' },
+      cookie: authzCookie.admin, body: { status: 'paused' },
+    })).status,
+    403,
+    '其他 Workspace 的 Admin 不可修改全域 Agent',
+  );
+  assert.strictEqual(
+    (await call('PATCH', `/api/workspaces/${mainWorkspaceId}/agents/owner`, {
+      cookie: authzCookie.admin, body: { status: 'paused' },
     })).status,
     200,
-    'Admin 可管理 Workspace 內的 Agent',
+    '主協作工作區的人類 Admin 可管理 Agent',
   );
 
   // attachment 上傳走 raw bytes（非 JSON），需獨立的 helper。

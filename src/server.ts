@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { db } from './db';
@@ -56,6 +58,7 @@ import {
   listProjects,
   markGoalWorktreeIntegrated,
   registerGoalWorktree,
+  setGoalWorktreeDirty,
   updateProject,
   type ProjectInput,
 } from './project';
@@ -74,22 +77,41 @@ import {
   createGoal,
   getGoal,
   getGoalWorkspaceId,
+  isGoalSafeCheckpoint,
   listGoals,
   pauseGoal,
   registerGoalProjections,
   resumeGoal,
+  reviseGoal,
+  reviseGoalDataScope,
   startDiscussion,
 } from './goal';
-import { MAIN_OWNER_EMAIL } from './mainWorkspacePolicy';
+import { MAIN_OWNER_EMAIL, MAIN_WORKSPACE_ID } from './mainWorkspacePolicy';
 import { getAgent, listWorkspaceAgents, listWorkspaceAgentSummaries, syncAgents, updateAgent } from './agent';
-import { enqueueHeartbeat, listContributions, listGoalRuns, listHeartbeats, listParticipations } from './goalRun';
+import { enqueueHeartbeat, finishRun, getRun, listContributions, listGoalRuns, listHeartbeats, listParticipations, markRunRunning, prepareRun } from './goalRun';
 import { listDeliveryEvidence, recordDeliveryEvidence } from './deliveryEvidence';
+import { getGoalSynthesis } from './goalOrchestrator';
 
 // 登入 rate limit：每 IP 15 分鐘最多 10 次失敗（成功清零），擋密碼暴力破解。
 const loginLimiter = createRateLimiter(15 * 60 * 1000, 10);
 // 忘記密碼 rate limit：同樣每 IP 15 分鐘最多 10 次，擋惡意大量發信/枚舉。
 const forgotPasswordLimiter = createRateLimiter(15 * 60 * 1000, 10);
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+
+function goalPauseSafeCheckpoint(goalId: string): boolean {
+  const statePath = process.env.TASK_TRACKER_COORDINATOR_DB_PATH
+    ?? join(__dirname, '..', 'sim-logs', 'production-coordinator.db');
+  if (!existsSync(statePath)) return isGoalSafeCheckpoint(goalId);
+  let coordinatorDb: DatabaseSync | undefined;
+  try {
+    coordinatorDb = new DatabaseSync(statePath, { readOnly: true });
+    return isGoalSafeCheckpoint(goalId, db, coordinatorDb);
+  } catch {
+    return false;
+  } finally {
+    coordinatorDb?.close();
+  }
+}
 
 
 // CSRF：mutating 請求若帶 Origin，必須同源。無 Origin（curl/API client）放行——SameSite=Strict cookie 是主防線。
@@ -127,6 +149,13 @@ function requireCoordinatorToken(req: IncomingMessage, res: ServerResponse): boo
   if (hasCoordinatorToken(req)) return true;
   res.writeHead(403, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'coordinator credential required' }));
+  return false;
+}
+
+function requireHumanGoalActor(userId: string, res: ServerResponse): boolean {
+  if (!db.prepare('SELECT 1 FROM agents WHERE user_id = ?').get(userId)) return true;
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Agent 帳號不得執行人類 Goal 操作' }));
   return false;
 }
 
@@ -380,6 +409,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     if (req.method === 'POST') {
+      if (getAgent(userId)?.role === 'owner') {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Owner Agent 帳號不得建立 Workspace' }));
+        return;
+      }
       const body = (await readJson(req).catch(() => null)) as { name?: unknown } | null;
       try {
         const id = createWorkspace(userId, body?.name);
@@ -622,7 +656,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
           const goal = task?.goal_id ? getGoal(task.goal_id) : null;
           if (goal && goal.status === 'Executing') {
             const unfinished = listTasks(goal.workspace_id).some((candidate) => candidate.goal_id === goal.goal_id && candidate.status !== 'Done' && candidate.status !== 'Archived');
-            if (!unfinished) enqueueHeartbeat({ scopeId: goal.goal_id, goalId: goal.goal_id, phase: 'verifying', agentId: goal.owner_agent_id, revision: goal.revision, triggerRef: 'tasks_done' });
+            if (!unfinished) enqueueHeartbeat({ scopeId: goal.goal_id, goalId: goal.goal_id, phase: 'verifying', agentId: goal.owner_agent_id, revision: goal.revision, triggerRef: 'phase' });
           }
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -645,6 +679,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
     const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.mutateTask);
     if (!userId) return;
+    if (getTask(taskId)?.goal_id && !requireHumanGoalActor(userId, res)) return;
     try {
       archiveTask(userId, taskId);
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -741,7 +776,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
       if (!userId) return;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(listProjects(workspaceId)));
+      res.end(JSON.stringify(listProjects(workspaceId, db, { includeArchived: true })));
       return;
     }
     if (req.method === 'POST') {
@@ -825,6 +860,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     if (req.method === 'POST') {
       const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
       if (!userId) return;
+      if (!requireHumanGoalActor(userId, res)) return;
       const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
       try {
         const ownerAgentId = getUserIdByEmail(MAIN_OWNER_EMAIL);
@@ -836,6 +872,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
           source: 'human',
           objective: body?.objective,
           successCriteria: body?.successCriteria,
+          dataScope: body?.dataScope,
           ownerAgentId,
         });
         res.writeHead(201, { 'Content-Type': 'application/json' });
@@ -848,7 +885,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   const goalMatch = req.url?.match(/^\/api\/goals\/([^/?]+)$/);
-  if (goalMatch && req.method === 'GET') {
+  if (goalMatch && (req.method === 'GET' || req.method === 'PATCH')) {
     const goalId = goalMatch[1];
     const workspaceId = getGoalWorkspaceId(goalId);
     if (!workspaceId) {
@@ -856,10 +893,25 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       res.end(JSON.stringify({ error: 'goal 不存在' }));
       return;
     }
-    const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.read);
+    const userId = requirePermission(req, res, workspaceId, req.method === 'GET' ? ACCESS_ROLE.read : ACCESS_ROLE.writeProject);
     if (!userId) return;
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(getGoal(goalId)));
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getGoal(goalId)));
+      return;
+    }
+    if (!requireHumanGoalActor(userId, res)) return;
+    const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
+    try {
+      const keys = body ? Object.keys(body) : [];
+      if (keys.length !== 1 || !['successCriteria', 'dataScope'].includes(keys[0])) throw new CommandError('Goal PATCH 一次只能改一個支援欄位');
+      if (keys[0] === 'successCriteria') reviseGoal(userId, goalId, body?.successCriteria);
+      else reviseGoalDataScope(userId, goalId, body?.dataScope);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
     return;
   }
 
@@ -882,7 +934,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       runs: listGoalRuns(goalId),
       participations: listParticipations(goalId, goal.revision),
       contributions: listContributions(goalId, goal.revision),
+      synthesis: getGoalSynthesis(goalId, goal.revision),
       tasks: goalTasks,
+      childGoals: listGoals(workspaceId).filter((candidate) => candidate.parent_goal_id === goalId),
       deliveryEvidence: goalTasks.flatMap((task) => listDeliveryEvidence(task.task_id)),
       tokenTotals: listGoalRuns(goalId).reduce((totals, run) => ({
         input: totals.input + (run.actual_input_tokens ?? run.estimated_input_tokens),
@@ -907,9 +961,60 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
     try {
       if (req.method === 'POST') registerGoalWorktree(goalId, String(body?.targetRepo ?? ''), String(body?.worktreePath ?? ''));
+      else if (typeof body?.dirty === 'boolean') setGoalWorktreeDirty(goalId, String(body.worktreePath ?? ''), body.dirty);
       else markGoalWorktreeIntegrated(goalId, String(body?.worktreePath ?? ''));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      sendCommandError(res, e);
+    }
+    return;
+  }
+
+  const goalRunMatch = req.url?.match(/^\/api\/goals\/([^/?]+)\/runs$/);
+  if (goalRunMatch && req.method === 'POST') {
+    const goalId = goalRunMatch[1];
+    const goal = getGoal(goalId);
+    if (!goal) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'goal 不存在' }));
+      return;
+    }
+    const userId = requirePermission(req, res, goal.workspace_id, 'Admin');
+    if (!userId || !requireCoordinatorToken(req, res)) return;
+    const body = (await readJson(req).catch(() => null)) as Record<string, unknown> | null;
+    try {
+      if (body?.action === 'prepare') {
+        const task = getTask(String(body.taskId ?? ''));
+        if (!task || task.goal_id !== goalId) throw new CommandError('Run Task 不屬於 Goal');
+        const heartbeatId = enqueueHeartbeat({
+          scopeId: goalId, goalId, phase: body.phase, agentId: body.agentId,
+          revision: goal.revision, triggerRef: body.triggerRef,
+        });
+        const runId = prepareRun({
+          heartbeatId, goalId, taskId: body.taskId, agentId: body.agentId, phase: body.phase,
+          adapter: body.adapter, model: body.model, attempt: body.attempt,
+          estimatedInputTokens: body.estimatedInputTokens, estimatedOutputTokens: body.estimatedOutputTokens,
+          estimateBasis: body.estimateBasis, estimateConfidence: body.estimateConfidence,
+          quotaSnapshotJson: body.quotaSnapshotJson,
+        });
+        if (getRun(runId)?.status === 'pending') markRunRunning(runId);
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ runId }));
+      } else if (body?.action === 'finish') {
+        const runId = String(body.runId ?? '');
+        if (getRun(runId)?.goal_id !== goalId) throw new CommandError('Run 不屬於 Goal');
+        finishRun(runId, {
+          status: body.status, actualInputTokens: body.actualInputTokens, actualOutputTokens: body.actualOutputTokens,
+          tokenTotal: body.tokenTotal, actualCost: null, credibleBilling: false,
+          sessionId: body.sessionId,
+          outcome: body.outcome, errorCategory: body.errorCategory, evidenceRef: null, sideEffectState: body.sideEffectState,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } else {
+        throw new CommandError('Run action 不合法');
+      }
     } catch (e) {
       sendCommandError(res, e);
     }
@@ -927,17 +1032,21 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
     const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
     if (!userId) return;
+    if (action !== 'start' && !requireHumanGoalActor(userId, res)) return;
     try {
+      const body = action === 'resume'
+        ? (await readJson(req).catch(() => null)) as { changeDescription?: unknown } | null
+        : null;
       if (action === 'start') {
         startDiscussion(userId, goalId);
         const goal = getGoal(goalId)!;
         enqueueHeartbeat({ scopeId: goalId, goalId, phase: 'owner_scoping', agentId: goal.owner_agent_id, revision: goal.revision, triggerRef: 'phase' });
       }
-      if (action === 'pause') pauseGoal(userId, goalId, false);
-      if (action === 'resume') resumeGoal(userId, goalId);
+      const pauseResult = action === 'pause' ? pauseGoal(userId, goalId, goalPauseSafeCheckpoint(goalId)) : null;
+      if (action === 'resume') resumeGoal(userId, goalId, body?.changeDescription);
       if (action === 'cancel') cancelGoal(userId, goalId);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      res.writeHead(pauseResult === 'scheduled' ? 202 : 200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, ...(pauseResult ? { pause: pauseResult } : {}) }));
     } catch (e) {
       sendCommandError(res, e);
     }
@@ -959,6 +1068,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     const [, workspaceId, agentId] = wsAgentMatch;
     const userId = requirePermission(req, res, workspaceId, 'Admin');
     if (!userId) return;
+    if (workspaceId !== MAIN_WORKSPACE_ID || db.prepare('SELECT 1 FROM agents WHERE user_id = ?').get(userId)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: '只有主協作工作區的人類 Admin 或 Owner 可管理 Agent' }));
+      return;
+    }
     if (!getAgent(agentId) || !listWorkspaceAgents(workspaceId).some((agent) => agent.agent_id === agentId)) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'agent 不存在於 workspace' }));

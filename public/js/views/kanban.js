@@ -128,7 +128,8 @@ export const KanbanView = {
           <h3 id="project-dialog-title">建立 Project</h3>
           <label>名稱 <input id="project-name" required maxlength="200"></label>
           <label>描述 <textarea id="project-description" maxlength="2000"></textarea></label>
-          <label>已登記 target repo <select id="project-target-repo" required></select></label>
+          <label>已登記 target repo <select id="project-target-repo"></select></label>
+          <p id="project-repo-empty-hint" class="muted" hidden>尚無已登記 repo；設定方式見 docs/operations.md「Goal-driven collaboration」。</p>
           <div><button type="submit" id="project-submit">建立</button><button type="button" id="project-dialog-cancel" class="btn-secondary">取消</button></div>
           <button type="button" id="project-archive-selected" class="btn-danger">封存目前選取的 Project</button>
         </form>
@@ -223,6 +224,13 @@ export const KanbanView = {
                 'aria-label': '討論描述'
               })
             : null;
+          const projectSelect = el('select', { class: 'column-add-task-project', 'aria-label': 'Project' });
+          projectSelect.appendChild(el('option', { value: '' }, '無 Project'));
+          cachedProjects.filter(project => project.status === 'active').forEach(project => {
+            projectSelect.appendChild(el('option', { value: project.project_id }, project.name));
+          });
+          const currentProject = document.getElementById('project-filter-select')?.value;
+          if (currentProject && !['all', 'none'].includes(currentProject)) projectSelect.value = currentProject;
           if (descriptionInput) descriptionInput.value = MAIN_DISCUSSION_DESCRIPTION_TEMPLATE;
           const submitBtn = el('button', { type: 'submit', class: 'column-add-task-submit' }, '確認');
           const cancelBtn = el('button', {
@@ -234,6 +242,7 @@ export const KanbanView = {
 
           form.appendChild(input);
           if (descriptionInput) form.appendChild(descriptionInput);
+          if (hasRole(currentRole, 'Member')) form.appendChild(projectSelect);
           form.appendChild(submitBtn);
           form.appendChild(cancelBtn);
 
@@ -242,8 +251,6 @@ export const KanbanView = {
             const title = input.value.trim();
             if (!title) return;
 
-            const filterVal = document.getElementById('project-filter-select').value;
-            const projectId = (filterVal && filterVal !== 'all' && filterVal !== 'none') ? filterVal : null;
             const description = descriptionInput ? descriptionInput.value : '';
 
             try {
@@ -252,7 +259,7 @@ export const KanbanView = {
                     title,
                     description,
                     priority: 'Medium',
-                    projectId,
+                    projectId: projectSelect.value || null,
                     assigneeId: null,
                     dueAt: null
                   }
@@ -350,8 +357,13 @@ export const KanbanView = {
         const selectedProject = projects.find(project => project.project_id === filterSelect?.value);
         const context = document.getElementById('project-context');
         if (context) {
+          const projectTasks = selectedProject
+            ? cachedTasks.filter(task => task.project_id === selectedProject.project_id && task.status !== 'Archived')
+            : [];
+          const completedTasks = projectTasks.filter(task => task.status === 'Done').length;
+          const progress = projectTasks.length ? `${completedTasks}/${projectTasks.length} (${Math.round(completedTasks / projectTasks.length * 100)}%)` : '0/0';
           context.textContent = selectedProject
-            ? `${selectedProject.name} · ${selectedProject.description || '無描述'} · ${selectedProject.target_repo || '未設定 repo'} · Active Goal：${goals.find(goal => goal.project_id === selectedProject.project_id && !['Done', 'Cancelled'].includes(goal.status))?.status || '無'}`
+            ? `${selectedProject.name} · ${selectedProject.description || '無描述'} · ${selectedProject.target_repo || '未設定 repo'} · 進度：${progress} · Active Goal：${goals.find(goal => goal.project_id === selectedProject.project_id && !['Done', 'Cancelled'].includes(goal.status))?.status || '無'}`
             : '目前為總覽；選擇 Project 後顯示描述、repo 與 active Goal。';
         }
 
@@ -723,8 +735,10 @@ export const KanbanView = {
       document.getElementById('project-description').value = project?.description || '';
       const repoSelect = document.getElementById('project-target-repo');
       repoSelect.textContent = '';
+      repoSelect.appendChild(el('option', { value: '' }, '不設定（此 Project 無法啟動 Goal）'));
       for (const repo of cachedRepos) repoSelect.appendChild(el('option', { value: repo.targetRepo }, repo.targetRepo));
-      repoSelect.value = project?.target_repo || cachedRepos[0]?.targetRepo || '';
+      repoSelect.value = project?.target_repo || '';
+      document.getElementById('project-repo-empty-hint').hidden = cachedRepos.length !== 0;
       document.getElementById('project-archive-selected').hidden = !editingProjectId;
       projectDialog?.showModal();
     };
@@ -752,7 +766,7 @@ export const KanbanView = {
         const values = {
           name: document.getElementById('project-name').value,
           description: document.getElementById('project-description').value,
-          targetRepo: document.getElementById('project-target-repo').value,
+          targetRepo: document.getElementById('project-target-repo').value || null,
         };
         let selectedId = editingProjectId;
         if (editingProjectId) {

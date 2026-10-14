@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
-import { appendEvent, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
+import { appendEvent, appendEventInTransaction, loadEvents, registerProjection, CommandError, type StoredEvent } from './eventStore';
 import { buildMetadata as meta } from './requestContext';
 import { getWorkspaceStatus } from './workspace';
 import { getMemberRole, getMembershipStatus, hasPermission, inviteMember } from './member';
@@ -148,6 +148,16 @@ function requireActiveWorkspace(workspaceId: string, database: DatabaseSync): vo
   if (status !== 'active') throw new CommandError(`workspace 目前為 ${status}，不可新增 task`);
 }
 
+function requireAgentProjectAvailable(actorId: string, projectId: string, database: DatabaseSync): void {
+  const blocked = database.prepare(
+    `SELECT 1 FROM agents
+       JOIN goals_read_model goals ON goals.project_id = ?
+      WHERE agents.user_id = ? AND goals.status NOT IN ('Done', 'Cancelled')
+      LIMIT 1`,
+  ).get(projectId, actorId);
+  if (blocked) throw new CommandError('Agent 不可將 legacy Task 放進 active Goal 的 Project');
+}
+
 export function createTask(actorId: string, workspaceId: string, input: CreateTaskInput, database = db): string {
   requireActiveWorkspace(workspaceId, database);
   const isCommenter = getMemberRole(workspaceId, actorId, database) === 'Commenter';
@@ -184,6 +194,7 @@ export function createTask(actorId: string, workspaceId: string, input: CreateTa
   const projectId = useDefaults || input.projectId == null
     ? null
     : requireActiveProject(workspaceId, input.projectId, database);
+  if (projectId) requireAgentProjectAvailable(actorId, projectId, database);
   const id = randomUUID();
   appendEvent(
     'Task',
@@ -298,7 +309,8 @@ export function changeTaskAssignee(actorId: string, taskId: string, assignee: un
     const task = getTask(taskId, database)!;
     requireActiveAssignee(task.workspace_id, clean, database);
   }
-  appendEvent('Task', taskId, version, 'task.assignee_changed', { assigneeId: clean }, meta(actorId), database);
+  const append = database.isTransaction ? appendEventInTransaction : appendEvent;
+  append('Task', taskId, version, 'task.assignee_changed', { assigneeId: clean }, meta(actorId), database);
 }
 
 export function changeTaskDueDate(actorId: string, taskId: string, dueAt: unknown, database = db): void {
@@ -310,13 +322,16 @@ export function changeTaskDueDate(actorId: string, taskId: string, dueAt: unknow
 export function changeTaskProject(actorId: string, taskId: string, projectId: unknown, database = db): void {
   const { version } = loadEditableTask(taskId, database);
   const task = getTask(taskId, database)!;
+  if (task.goal_id) throw new CommandError('Goal Task 不可變更 Project');
   const clean = projectId == null ? null : requireActiveProject(task.workspace_id, projectId, database);
+  if (clean) requireAgentProjectAvailable(actorId, clean, database);
   appendEvent('Task', taskId, version, 'task.project_changed', { projectId: clean }, meta(actorId), database);
 }
 
 export function moveTask(actorId: string, taskId: string, targetWorkspaceId: string, database = db): MoveTaskResult {
   const task = getTask(taskId, database);
   if (!task) throw new CommandError('task 不存在');
+  if (task.goal_id) throw new CommandError('Goal Task 不可搬移 Workspace');
   const { state, version } = load(taskId, database);
   requireEditable(state);
 
@@ -364,12 +379,14 @@ export function archiveTask(actorId: string, taskId: string, database = db): voi
   ) {
     throw new CommandError('只有 user01 可以改變主工作區 task 狀態');
   }
-  appendEvent('Task', taskId, version, 'task.archived', {}, meta(actorId), database);
+  const append = database.isTransaction ? appendEventInTransaction : appendEvent;
+  append('Task', taskId, version, 'task.archived', {}, meta(actorId), database);
 }
 
 export function deleteTask(actorId: string, taskId: string, database = db): void {
   const { state, version } = load(taskId, database);
   if (!state.exists || state.deleted) throw new CommandError('task 不存在');
+  if (getTask(taskId, database)?.goal_id) throw new CommandError('Goal Task 不可刪除，請改用封存');
   requireTaskWorkspaceActive(taskId, database);
   appendEvent('Task', taskId, version, 'task.deleted', {}, meta(actorId), database);
 }
@@ -408,14 +425,15 @@ export function registerTaskProjections(): void {
       priority: string;
       assigneeId: string | null;
       dueAt: string | null;
+      deploymentNotRequired?: boolean;
     };
     database
       .prepare(
         `INSERT INTO tasks_read_model
-         (task_id, workspace_id, project_id, goal_id, title, description, status, priority, assignee_id, due_at, done_at, version, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+         (task_id, workspace_id, project_id, goal_id, title, description, status, priority, assignee_id, due_at, done_at, version, updated_at, deployment_not_required)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       )
-      .run(e.aggregate_id, p.workspaceId, p.projectId, p.goalId ?? null, p.title, p.description, p.status, p.priority, p.assigneeId, p.dueAt, e.aggregate_version, e.occurred_at);
+      .run(e.aggregate_id, p.workspaceId, p.projectId, p.goalId ?? null, p.title, p.description, p.status, p.priority, p.assigneeId, p.dueAt, e.aggregate_version, e.occurred_at, p.deploymentNotRequired === true ? 1 : 0);
   });
 
   const setCol = (col: string) => (e: StoredEvent, database: DatabaseSync, value: unknown) => {
@@ -493,6 +511,7 @@ export interface TaskRow {
   done_at: string | null;
   version: number;
   updated_at: string | null;
+  deployment_not_required: number;
 }
 
 function getTaskCreatorId(taskId: string, database: DatabaseSync): string | null {

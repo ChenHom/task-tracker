@@ -71,6 +71,7 @@ interface WireTaskRow {
   updated_at: string | null;
   goal_id?: string | null;
   project_id?: string | null;
+  deployment_not_required?: number;
 }
 
 function mapTask(row: WireTaskRow): TaskSnapshot {
@@ -85,6 +86,7 @@ function mapTask(row: WireTaskRow): TaskSnapshot {
     version: row.version,
     goalId: row.goal_id ?? null,
     projectId: row.project_id ?? null,
+    deploymentNotRequired: row.deployment_not_required === 1,
   };
 }
 
@@ -343,6 +345,24 @@ export class TaskTrackerClient {
     return JSON.parse(res.body) as { status: string; db: boolean; rev: string };
   }
 
+  async quotaSnapshot(): Promise<string> {
+    const res = await this.safeRequest('GET', '/api/quota');
+    if (res.status !== 200) throw new Error(`quotaSnapshot failed: HTTP ${res.status} ${res.body}`);
+    return res.body;
+  }
+
+  async prepareGoalRun(input: Record<string, unknown>): Promise<string> {
+    const goalId = String(input.goalId);
+    const res = await this.rawRequest('POST', `/api/goals/${encodeURIComponent(goalId)}/runs`, { ...input, action: 'prepare' }, this.coordinatorHeaders());
+    if (res.status !== 201) throw new Error(`prepareGoalRun failed: HTTP ${res.status} ${res.body}`);
+    return String((JSON.parse(res.body) as { runId: string }).runId);
+  }
+
+  async finishGoalRun(goalId: string, runId: string, input: Record<string, unknown>): Promise<void> {
+    const res = await this.rawRequest('POST', `/api/goals/${encodeURIComponent(goalId)}/runs`, { ...input, action: 'finish', runId }, this.coordinatorHeaders());
+    if (res.status !== 200) throw new Error(`finishGoalRun failed: HTTP ${res.status} ${res.body}`);
+  }
+
   async login(email: string, password: string): Promise<void> {
     const res = await this.safeRequest('POST', '/api/auth/login', { email, password });
     if (res.status !== 200) throw new Error(`login failed: HTTP ${res.status} ${res.body}`);
@@ -362,7 +382,9 @@ export class TaskTrackerClient {
       if (!task.goalId) return;
       const goal = await this.safeRequest('GET', `/api/goals/${encodeURIComponent(task.goalId)}`);
       if (goal.status !== 200) throw new Error(`getGoal failed: HTTP ${goal.status} ${goal.body}`);
-      task.goalStatus = (JSON.parse(goal.body) as { status: string }).status;
+      const goalRow = JSON.parse(goal.body) as { status: string; pause_requested: number };
+      task.goalStatus = goalRow.status;
+      task.goalPauseRequested = goalRow.pause_requested === 1;
     }));
     return tasks;
   }
@@ -419,6 +441,11 @@ export class TaskTrackerClient {
   async registerGoalWorktree(goalId: string, targetRepo: string, worktreePath: string): Promise<void> {
     const res = await this.rawRequest('POST', `/api/goals/${encodeURIComponent(goalId)}/worktrees`, { targetRepo, worktreePath }, this.coordinatorHeaders());
     if (res.status !== 200) throw new Error(`registerGoalWorktree failed: HTTP ${res.status} ${res.body}`);
+  }
+
+  async setGoalWorktreeDirty(goalId: string, worktreePath: string, dirty: boolean): Promise<void> {
+    const res = await this.rawRequest('PATCH', `/api/goals/${encodeURIComponent(goalId)}/worktrees`, { worktreePath, dirty }, this.coordinatorHeaders());
+    if (res.status !== 200) throw new Error(`setGoalWorktreeDirty failed: HTTP ${res.status} ${res.body}`);
   }
 
   async markGoalWorktreeIntegrated(goalId: string, worktreePath: string): Promise<void> {

@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { buildRunnerInvocation } from '../run';
 import {
+  classifySessionResult,
   extractJsonBlock,
   memberPrompt,
   ownerPrompt,
@@ -8,6 +9,15 @@ import {
   parseOwnerDecision,
   productionRunnerEnvironment,
 } from './runner';
+
+assert.deepStrictEqual(
+  classifySessionResult({ exitCode: 0, stdout: 'quota snapshot', stderr: '', err: null }),
+  { errored: false, quotaExhausted: false, errorCategory: null },
+);
+assert.deepStrictEqual(
+  classifySessionResult({ exitCode: 1, stdout: '', stderr: 'quota exceeded', err: new Error('exit 1') }),
+  { errored: true, quotaExhausted: true, errorCategory: 'quota' },
+);
 
 assert.deepStrictEqual(
   productionRunnerEnvironment({ PATH: '/bin', TASK_TRACKER_COORDINATOR_TOKEN: 'secret' }),
