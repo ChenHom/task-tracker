@@ -1281,11 +1281,12 @@ async function runTests() {
     const badgeOf = () => findElement(todoColumn(), node => node.classList.contains('badge-project'));
     assert.ok(findElement(todoColumn(), node => node.textContent === 'Badge task'), '總覽時應顯示卡片');
     assert.ok(badgeOf(), '總覽時卡片應顯示 Project 標籤');
-    assert.strictEqual(badgeOf().textContent, 'Badge Project');
+    assert.strictEqual(badgeOf()?.textContent, 'Badge Project');
 
     const projectSelect = findElement(kanbanContainer, node => node.id === 'project-filter-select');
+    assert.ok(projectSelect, 'Kanban 應顯示 Project filter');
     // MockElement 的 textContent 是一般欄位，renderKanbanCards 的 `textContent = ''` 清不掉子節點；真實 DOM 會清，這裡手動模擬
-    todoColumn().childNodes.length = 0;
+    todoColumn()!.childNodes.length = 0;
     projectSelect.value = 'badge-project-1';
     await projectSelect.eventListeners.change[0]();
     assert.ok(findElement(todoColumn(), node => node.textContent === 'Badge task'), '選定 Project 後卡片仍應顯示');
