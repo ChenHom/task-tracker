@@ -17,7 +17,8 @@ import { syncGlobalWorkspaces } from '../sidebar.js';
 // 後端 GET /api/tasks/:id 在無權限／不存在時回傳的原始錯誤字串，轉成通知卡片上的友善說明。
 const FRIENDLY_SOURCE_ERROR = {
   '權限不足': '你目前沒有查看此來源的權限',
-  'task 不存在': '來源已不存在'
+  'task 不存在': '來源已不存在',
+  'goal 不存在': '來源已不存在'
 };
 
 const PAGE_SIZE_OPTIONS = [10, 15];
@@ -171,6 +172,22 @@ function showSourceError(notificationId, message) {
  */
 async function openNotification(n) {
   if (n.source_goal_id && !n.source_task_id) {
+    let goal;
+    try {
+      goal = await api(`/api/goals/${n.source_goal_id}`);
+    } catch (err) {
+      showSourceError(n.notification_id, FRIENDLY_SOURCE_ERROR[err.message] || err.message);
+      return;
+    }
+
+    let ws = state.globalWorkspaces.find(w => w.workspace_id === goal.workspace_id);
+    if (!ws) {
+      await syncGlobalWorkspaces();
+      ws = state.globalWorkspaces.find(w => w.workspace_id === goal.workspace_id);
+    }
+    state.workspaceId = ws ? ws.workspace_id : null;
+    state.workspaceName = ws ? ws.name : null;
+
     if (n.read_at === null) markRead(n.notification_id);
     navigate(`#/goals/${n.source_goal_id}`);
     return;

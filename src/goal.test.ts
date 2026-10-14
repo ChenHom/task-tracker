@@ -67,6 +67,26 @@ const create = (objective: string, source: 'human' | 'owner_discovery' = 'human'
   ownerAgentId: 'owner-agent',
 }, db, repos);
 
+db.prepare("INSERT INTO workspaces_read_model (workspace_id, name, status, created_at) VALUES ('ws-owner-permission', 'Owner permission', 'active', 't')").run();
+db.prepare("INSERT INTO projects_read_model (project_id, workspace_id, name, description, status, target_repo, created_at, updated_at) VALUES ('project-owner-permission', 'ws-owner-permission', 'Owner permission', '', 'active', '/srv/app', 't', 't')").run();
+const createOwnerPermissionGoal = () => createGoal('human-1', {
+  workspaceId: 'ws-owner-permission', projectId: 'project-owner-permission', source: 'human',
+  objective: 'Owner permission', successCriteria: 'Owner Agent can coordinate', ownerAgentId: 'owner-agent',
+}, db, repos);
+assert.throws(createOwnerPermissionGoal, /Owner Agent 不是此 Workspace 的 Admin，coordinator 無法處理/,
+  'Owner Agent user 不在 Workspace 時應拒絕建立 Goal');
+db.prepare("INSERT INTO workspace_members_read_model VALUES ('ws-owner-permission', 'owner-user', 'Member', 't')").run();
+assert.throws(createOwnerPermissionGoal, /Owner Agent 不是此 Workspace 的 Admin，coordinator 無法處理/,
+  'Owner Agent user 只是 Member 時應拒絕建立 Goal');
+db.prepare("UPDATE workspace_members_read_model SET role = 'Admin' WHERE workspace_id = 'ws-owner-permission' AND user_id = 'owner-user'").run();
+const ownerPermissionGoal = createOwnerPermissionGoal();
+assert.strictEqual(getGoal(ownerPermissionGoal, db)?.status, 'Queued', 'Owner Agent user 是 Admin 時應成功建立 Goal');
+db.prepare("DELETE FROM workspace_members_read_model WHERE workspace_id = 'ws-owner-permission' AND user_id = 'owner-user'").run();
+assert.throws(() => startDiscussion('human-1', ownerPermissionGoal, db),
+  /Owner Agent 不是此 Workspace 的 Admin，coordinator 無法處理/,
+  '建立後 Owner Agent user 被移出 Workspace 時應拒絕開始 Goal');
+assert.strictEqual(getGoal(ownerPermissionGoal, db)?.status, 'Queued', '開始被拒後 Goal 狀態應維持 Queued');
+
 const first = create('A');
 const second = create('B');
 assert.throws(

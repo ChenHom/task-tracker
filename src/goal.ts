@@ -16,6 +16,7 @@ import { getUserIdByEmail } from './auth';
 import { MAIN_OWNER_EMAIL } from './mainWorkspacePolicy';
 import { archiveTask } from './task';
 import { getAgent } from './agent';
+import { getMemberRole, hasPermission } from './member';
 import { loadRepoRegistry, type RepoRegistry } from './repoRegistry';
 import { notifyWorkspaceHumanAdmins } from './notification';
 
@@ -108,6 +109,15 @@ function parseSource(value: unknown): GoalSource {
     throw new CommandError('Goal source 不合法');
   }
   return source;
+}
+
+function requireCoordinatorOwnerAgent(ownerAgentId: string, workspaceId: string, database: DatabaseSync): void {
+  const ownerAgent = getAgent(ownerAgentId, database);
+  if (ownerAgent?.role !== 'owner') throw new CommandError('ownerAgentId 必須是 Owner Agent');
+  const workspaceRole = getMemberRole(workspaceId, ownerAgent.user_id, database);
+  if (!workspaceRole || !hasPermission(workspaceRole, 'Admin')) {
+    throw new CommandError('Owner Agent 不是此 Workspace 的 Admin，coordinator 無法處理');
+  }
 }
 
 function reduce(state: GoalState, event: StoredEvent): GoalState {
@@ -325,7 +335,7 @@ export function createGoal(actorId: string, input: CreateGoalInput, database = d
   const successCriteria = requiredText(input.successCriteria, 'successCriteria', 5000);
   const dataScope = input.dataScope == null ? '' : requiredText(input.dataScope, 'dataScope', 5000);
   const ownerAgentId = requiredText(input.ownerAgentId, 'ownerAgentId', 200);
-  if (getAgent(ownerAgentId, database)?.role !== 'owner') throw new CommandError('ownerAgentId 必須是 Owner Agent');
+  requireCoordinatorOwnerAgent(ownerAgentId, workspaceId, database);
   const parentGoalId = optionalId(input.parentGoalId, 'parentGoalId');
   if (parentGoalId) {
     const parent = getGoal(parentGoalId, database);
@@ -378,8 +388,9 @@ export function createGoal(actorId: string, input: CreateGoalInput, database = d
 }
 
 export function startDiscussion(actorId: string, goalId: string, database = db): void {
-  const { state, version } = requireGoal(goalId, database);
+  const { row, state, version } = requireGoal(goalId, database);
   if (state.status !== 'Queued') throw new CommandError(`goal 狀態 ${state.status} 不可開始討論`);
+  requireCoordinatorOwnerAgent(row.owner_agent_id, row.workspace_id, database);
   appendEvent('Goal', goalId, version, 'goal.discussion_started', {}, meta(actorId), database);
 }
 

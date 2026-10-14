@@ -40,6 +40,7 @@ void (async () => {
     db.prepare("INSERT INTO workspaces_read_model (workspace_id, name, status, created_at) VALUES ('ws', 'Workspace', 'active', 't')").run();
     db.prepare("INSERT INTO workspace_members_read_model (workspace_id, user_id, role, joined_at) VALUES ('ws', 'owner', 'Owner', 't')").run();
     db.prepare("INSERT INTO workspace_members_read_model (workspace_id, user_id, role, joined_at) VALUES ('ws', 'human-member', 'Member', 't')").run();
+    db.prepare("INSERT INTO workspace_members_read_model (workspace_id, user_id, role, joined_at) VALUES ('ws', 'owner-agent-user', 'Admin', 't')").run();
     db.prepare("INSERT INTO workspace_members_read_model (workspace_id, user_id, role, joined_at) VALUES ('ws', 'member-agent-user', 'Member', 't')").run();
     db.prepare(`INSERT INTO agents
       (agent_id, user_id, email, name, role, skill_profile_json, primary_adapter, primary_model, status, created_at, updated_at)
@@ -86,6 +87,26 @@ void (async () => {
     }, db, new Map([
       ['/srv/app', { targetRepo: '/srv/app', checks: ['npm test'], deployment: 'not_required' }],
     ]));
+    const queuedGoalId = createGoal('owner', {
+      workspaceId: 'ws',
+      projectId: goalProjectId,
+      source: 'human',
+      objective: 'Protect human Goal start',
+      successCriteria: 'Only human accounts can start the Goal',
+      ownerAgentId: 'owner-agent',
+    }, db, new Map([
+      ['/srv/app', { targetRepo: '/srv/app', checks: ['npm test'], deployment: 'not_required' }],
+    ]));
+
+    const agentStart = await request('POST', `/api/goals/${queuedGoalId}/start`, 'member-agent-user');
+    assert.strictEqual(agentStart.status, 403, 'Agent start 應回 403');
+    assert.strictEqual(getGoal(queuedGoalId)?.status, 'Queued', 'Agent start 不得改變 Goal 狀態');
+    assert.strictEqual((db.prepare('SELECT COUNT(*) AS count FROM goal_heartbeats WHERE goal_id = ?').get(queuedGoalId) as { count: number }).count, 0,
+      'Agent start 不得新增 heartbeat');
+
+    const humanStart = await request('POST', `/api/goals/${queuedGoalId}/start`, 'human-member');
+    assert.strictEqual(humanStart.status, 200, '人類 Member 可啟動 Goal');
+
     startDiscussion('owner-agent-user', goalId);
     setDiscussionPhase('owner-agent-user', goalId, 'round_1');
     setDiscussionPhase('owner-agent-user', goalId, 'awaiting_lease');

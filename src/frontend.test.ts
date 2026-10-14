@@ -96,6 +96,18 @@ class MockElement {
         createForm.appendChild(wsInput);
         this.appendChild(createForm);
       }
+      if (val.includes('id="notif-filter"')) {
+        this.appendChild(new MockElement('select', { id: 'notif-filter' }));
+      }
+      if (val.includes('id="notif-page-size"')) {
+        this.appendChild(new MockElement('select', { id: 'notif-page-size' }));
+      }
+      if (val.includes('id="notif-list"')) {
+        this.appendChild(new MockElement('ul', { id: 'notif-list', class: 'notif-list' }));
+      }
+      if (val.includes('id="notif-pagination"')) {
+        this.appendChild(new MockElement('nav', { id: 'notif-pagination' }));
+      }
     }
   }
 
@@ -144,6 +156,11 @@ class MockElement {
 
   hasChildNodes() {
     return this.childNodes.length > 0;
+  }
+
+  contains(target: MockElement | null): boolean {
+    if (!target) return false;
+    return this === target || this.childNodes.some(child => child.contains(target));
   }
 
   addEventListener(event: string, callback: Function) {
@@ -248,6 +265,20 @@ const mockDocument: any = {
     node.textContent = text;
     return node;
   },
+  querySelector: (selector: string) => {
+    const match = selector.match(/^#([^ ]+) \.([^ ]+)$/);
+    const root = match ? mockDocument.getElementById(match[1]) : null;
+    return root && match ? root.querySelector(`.${match[2]}`) : null;
+  },
+  querySelectorAll: (selector: string) => {
+    const matches: MockElement[] = [];
+    const visit = (node: MockElement) => {
+      if (selector.startsWith('.') && node.classList.contains(selector.slice(1))) matches.push(node);
+      for (const child of node.childNodes) visit(child);
+    };
+    for (const root of bodyChildren) visit(root);
+    return matches;
+  },
   addEventListener: (event: string, callback: Function) => {
     listeners[event] = listeners[event] || [];
     listeners[event].push(callback);
@@ -302,6 +333,11 @@ const mockSessionStorage = {
   removeItem: (key: string) => sessionStorageMap.delete(key),
   clear: () => sessionStorageMap.clear()
 };
+const localStorageMap = new Map<string, string>();
+const mockLocalStorage = {
+  getItem: (key: string) => localStorageMap.get(key) ?? null,
+  setItem: (key: string, value: any) => localStorageMap.set(key, String(value))
+};
 
 // 2. Read and transform public/js/views/task-detail.js
 let code = readFileSync(join(__dirname, '../public/js/views/task-detail.js'), 'utf8');
@@ -330,12 +366,20 @@ let workspacesCode = readFileSync(join(__dirname, '../public/js/views/workspaces
 workspacesCode = workspacesCode.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
 workspacesCode = workspacesCode.replace(/export\s+const\s+WorkspacesView\s*=\s*/g, 'globalThis.WorkspacesView = ');
 
+// 2.8 Read and transform public/js/views/notifications.js
+let notificationsCode = readFileSync(join(__dirname, '../public/js/views/notifications.js'), 'utf8');
+notificationsCode = notificationsCode.replace(/import\s+[\s\S]*?\s+from\s+['"].*?['"];?/g, '');
+notificationsCode = notificationsCode.replace(/export\s+async\s+function\s+/g, 'async function ');
+notificationsCode = notificationsCode.replace(/export\s+function\s+/g, 'function ');
+notificationsCode = notificationsCode.replace(/export\s+const\s+NotificationsView\s*=\s*/g, 'globalThis.NotificationsView = ');
+
 // 3. Create sandbox
 const sandbox = {
   document: mockDocument,
   window: mockWindow,
   location: mockLocation,
   sessionStorage: mockSessionStorage,
+  localStorage: mockLocalStorage,
   alert: (msg?: any) => {},
   console: console,
   Event,
@@ -344,6 +388,8 @@ const sandbox = {
   state: {
     userEmail: 'test@test.com',
     workspaceId: 'ws-test-1',
+    workspaceName: 'Workspace A',
+    globalWorkspaces: [] as any[],
     clear: () => {}
   },
   hasRole: (role: string, minimum: string) => {
@@ -378,6 +424,8 @@ const sandbox = {
   Promise: Promise,
   setTimeout: setTimeout,
   clearTimeout: clearTimeout,
+  setInterval: () => 1,
+  clearInterval: () => {},
   globalThis: {} as any
 };
 
@@ -386,12 +434,14 @@ vm.runInContext(code, sandbox);
 vm.runInContext(kanbanCode, sandbox);
 vm.runInContext(goalsCode, sandbox);
 vm.runInContext(workspacesCode, sandbox);
+vm.runInContext(notificationsCode, sandbox);
 
 const openTaskDetailModal = sandbox.globalThis.openTaskDetailModal;
 const safeHttpUrl = sandbox.globalThis.safeHttpUrl;
 const renderRichText = sandbox.globalThis.renderRichText;
 const KanbanView = sandbox.globalThis.KanbanView;
 const WorkspacesView = sandbox.globalThis.WorkspacesView;
+const NotificationsView = sandbox.globalThis.NotificationsView;
 
 const localPartMention = renderRichText('@user02', [{
   user_id: 'user-02',
@@ -1355,6 +1405,93 @@ async function runTests() {
 
     // Cleanup from bodyChildren
     const idx = bodyChildren.indexOf(wsContainer);
+    if (idx !== -1) bodyChildren.splice(idx, 1);
+  }
+
+  // Test 11: Goal-only notifications resolve and select the Goal workspace before navigation.
+  {
+    const notification = {
+      notification_id: 'notif-goal-1',
+      source_goal_id: 'goal-b',
+      source_task_id: null,
+      source_comment_id: null,
+      snippet: 'Goal B updated',
+      created_at: '2026-10-14T00:00:00.000Z',
+      read_at: null
+    };
+    const notificationContainer = new MockElement('div');
+    bodyChildren.push(notificationContainer);
+    sandbox.state.workspaceId = 'workspace-a';
+    sandbox.state.workspaceName = 'Workspace A';
+    sandbox.state.globalWorkspaces = [
+      { workspace_id: 'workspace-a', name: 'Workspace A' },
+      { workspace_id: 'workspace-b', name: 'Workspace B' }
+    ];
+    const calls: Array<{ url: string; method?: string }> = [];
+    let navigatedHash = '';
+    sandbox.navigate = (hash?: string) => { navigatedHash = hash || ''; };
+    sandbox.api = async (url: string, options?: { method?: string }) => {
+      calls.push({ url, method: options?.method });
+      if (url.startsWith('/api/notifications?')) {
+        return { items: [notification], page: 1, pageSize: 15, totalCount: 1, totalPages: 1, unreadTotal: 1 };
+      }
+      if (url === '/api/goals/goal-b') return { goal_id: 'goal-b', workspace_id: 'workspace-b' };
+      if (url === '/api/notifications/notif-goal-1/read') return null;
+      throw new Error(`unexpected API call: ${url}`);
+    };
+
+    await NotificationsView.render(notificationContainer);
+    const card = mockDocument.getElementById('notif-card-notif-goal-1');
+    const body = card?.querySelector('.notif-body');
+    assert.ok(body?.onclick, 'Goal 通知卡片應可點擊');
+    await body.onclick();
+
+    assert.strictEqual(sandbox.state.workspaceId, 'workspace-b', '點開 Goal 通知應切到 Goal 所屬 Workspace');
+    assert.strictEqual(sandbox.state.workspaceName, 'Workspace B');
+    assert.strictEqual(navigatedHash, '#/goals/goal-b');
+    assert.ok(calls.some(call => call.url === '/api/notifications/notif-goal-1/read' && call.method === 'POST'), '通知應標為已讀');
+
+    const idx = bodyChildren.indexOf(notificationContainer);
+    if (idx !== -1) bodyChildren.splice(idx, 1);
+  }
+
+  // Test 12: A missing Goal keeps its notification card and does not navigate.
+  {
+    const notification = {
+      notification_id: 'notif-goal-missing',
+      source_goal_id: 'goal-missing',
+      source_task_id: null,
+      source_comment_id: null,
+      snippet: 'Missing Goal',
+      created_at: '2026-10-14T00:00:00.000Z',
+      read_at: null
+    };
+    const notificationContainer = new MockElement('div');
+    bodyChildren.push(notificationContainer);
+    sandbox.state.workspaceId = 'workspace-a';
+    let navigatedHash = '';
+    sandbox.navigate = (hash?: string) => { navigatedHash = hash || ''; };
+    sandbox.api = async (url: string) => {
+      if (url.startsWith('/api/notifications?')) {
+        return { items: [notification], page: 1, pageSize: 15, totalCount: 1, totalPages: 1, unreadTotal: 1 };
+      }
+      if (url === '/api/goals/goal-missing') throw new Error('goal 不存在');
+      throw new Error(`unexpected API call: ${url}`);
+    };
+
+    await NotificationsView.render(notificationContainer);
+    const card = mockDocument.getElementById('notif-card-notif-goal-missing');
+    const body = card?.querySelector('.notif-body');
+    assert.ok(body?.onclick, 'Goal 通知卡片應可點擊');
+    await body.onclick();
+
+    assert.strictEqual(navigatedHash, '', 'Goal API 回 404 時不應導頁');
+    assert.strictEqual(mockDocument.getElementById('notif-card-notif-goal-missing'), card, 'Goal API 回 404 時通知卡片應保留');
+    const error = card?.querySelector('.notif-error');
+    assert.strictEqual(error?.style.display, 'block', 'Goal API 回 404 時應顯示原因');
+    assert.ok(error?.textContent, 'Goal API 回 404 時應顯示非空白原因');
+
+    const idx = bodyChildren.indexOf(notificationContainer);
     if (idx !== -1) bodyChildren.splice(idx, 1);
   }
 

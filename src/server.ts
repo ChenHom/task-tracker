@@ -1032,7 +1032,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
     const userId = requirePermission(req, res, workspaceId, ACCESS_ROLE.writeProject);
     if (!userId) return;
-    if (action !== 'start' && !requireHumanGoalActor(userId, res)) return;
+    if (!requireHumanGoalActor(userId, res)) return;
     try {
       const body = action === 'resume'
         ? (await readJson(req).catch(() => null)) as { changeDescription?: unknown } | null
