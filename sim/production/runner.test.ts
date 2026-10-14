@@ -232,6 +232,22 @@ for (const [kind, reviewedHeadSha, worktreePath] of [
   assert.ok(boundedContext.length <= 12_100, `${kind} UNTRUSTED 區塊不得無限增長`);
   assert.ok(boundedContext.includes('comment-49'), `${kind} UNTRUSTED 區塊必須保留最新留言`);
   assert.match(boundedContext, /已省略 \d+ 則較舊留言/u, `${kind} UNTRUSTED 區塊必須明示省略留言數`);
+  assert.ok(
+    boundedContext.indexOf('comment-48') < boundedContext.indexOf('comment-49'),
+    `${kind} UNTRUSTED 區塊內的留言必須維持由舊到新的順序`,
+  );
+  const orderedPrompt = ownerPrompt({
+    taskId: `${kind}-ordered-task`,
+    acceptanceCriteria: 'ordered title',
+    comments: ['first-comment', 'second-comment', 'third-comment'],
+    reviewedHeadSha,
+    worktreePath,
+  });
+  assert.ok(
+    orderedPrompt.indexOf('#0 first-comment') < orderedPrompt.indexOf('#1 second-comment')
+      && orderedPrompt.indexOf('#1 second-comment') < orderedPrompt.indexOf('#2 third-comment'),
+    `${kind} 未截斷時留言順序必須與 listComments 相同（由舊到新）`,
+  );
 }
 
 // ── codex sandbox 契約 ──────────────────────────────────────────────

@@ -296,7 +296,7 @@ function ownerUntrustedContext(context: OwnerSessionRunnerContext): string {
       'TASK_TITLE',
       title,
       'COMMENTS',
-      selected.join('\n') || '（無）',
+      [...selected].reverse().join('\n') || '（無）', // 從最新往回挑，渲染時轉回由舊到新
       ...(omitted > 0 ? [`已省略 ${omitted} 則較舊留言`] : []),
       'END_UNTRUSTED_TASK_CONTEXT',
     ].join('\n');
