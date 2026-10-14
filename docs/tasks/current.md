@@ -105,6 +105,8 @@ gate 取不到 cookie 就 `略過一般 session` —— 整個 owner 巡檢直�
 
 **下一步是量測，不是實作**：恢復 gate 後看新建 task 是否回到每天 2 個以上、commit 是否回來。不是把 production coordinator 上線 —— 後者解的是 branch 衝突，那類 escalate 在 07-17 之後就幾乎不再發生（判準見 [production-sim-coordinator plan](../superpowers/plans/2026-07-22-production-sim-coordinator.md) 任務 11 開頭）。
 
+> 2026-10-14 更新：最近 10 天只新建 3 個 task，原因是沒有工作來源，不是程式壞掉。目標下修為**每 3 天至少新建 1 個 task**；工作來源改由 Goal 流程（discovery → Goal → Owner 派 Task）提供，production coordinator 以限時試跑取代 legacy sweep。
+
 ---
 
 ## Phase 8 — 建立使用者 + Seeder ✅
