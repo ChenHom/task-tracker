@@ -30,6 +30,12 @@
   flex-shrink: 0;
   white-space: nowrap;
 }
+/* 與 Project 選單（32px）置中對齊：28px 加上 2px 陰影，底邊剛好落在選單底線 */
+.kanban-filters > button {
+  height: 28px;
+  padding: 0 0.6rem;
+  font-size: 0.85rem;
+}
 .project-filter-label {
   font-weight: bold;
   display: flex;
