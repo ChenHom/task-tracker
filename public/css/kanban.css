@@ -228,7 +228,6 @@
 .badge-low { background-color: var(--priority-low); }
 .badge-medium { background-color: var(--priority-medium); }
 .badge-high { background-color: var(--priority-high); }
-.badge-project { background-color: rgba(139, 92, 246, 0.15); border-color: var(--pencil-color); }
 
 .task-card-people {
   display: flex;

@@ -1238,7 +1238,7 @@ async function runTests() {
     bodyChildren.length = 0;
   }
 
-  // 卡片 Project 標籤只在「所有專案」總覽顯示；選定單一 Project 時標題旁已有 Project 資訊。
+  // 卡片不顯示 Project 標籤（2026-10-14 使用者決定移除），總覽與選定單一 Project 時皆然。
   {
     const kanbanContainer = new MockElement('div');
     bodyChildren.length = 0;
@@ -1265,8 +1265,8 @@ async function runTests() {
     const todoColumn = () => mockDocument.getElementById('cards-Todo');
     const badgeOf = () => findElement(todoColumn(), node => node.classList.contains('badge-project'));
     assert.ok(findElement(todoColumn(), node => node.textContent === 'Badge task'), '總覽時應顯示卡片');
-    assert.ok(badgeOf(), '總覽時卡片應顯示 Project 標籤');
-    assert.strictEqual(badgeOf()?.textContent, 'Badge Project');
+    assert.strictEqual(badgeOf(), null, '總覽時卡片不應顯示 Project 標籤');
+    assert.strictEqual(findElement(todoColumn(), node => node.textContent === 'Badge Project'), null, '總覽時卡片不應出現 Project 名稱');
 
     const projectSelect = findElement(kanbanContainer, node => node.id === 'project-filter-select');
     assert.ok(projectSelect, 'Kanban 應顯示 Project filter');
