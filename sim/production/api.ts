@@ -64,6 +64,7 @@ interface WireTaskRow {
   task_id: string;
   workspace_id: string;
   title: string;
+  description?: string;
   status: TaskStatus;
   assignee_id: string | null;
   due_at: string | null;
@@ -79,6 +80,7 @@ function mapTask(row: WireTaskRow): TaskSnapshot {
     taskId: row.task_id,
     workspaceId: row.workspace_id,
     title: row.title,
+    description: row.description ?? '',
     status: row.status,
     assigneeId: row.assignee_id,
     dueAt: row.due_at,

@@ -2262,6 +2262,16 @@ async function runGitTests(): Promise<void> {
     );
     rmSync(join(wtA.path, 'unrelated-untracked.txt'));
 
+    // 修改既有 tracked 檔：porcelain 第一筆是 ` M path`（開頭空白），不能被 trim 吃掉而把路徑切成 `eature/foo.txt`。
+    {
+      writeFileSync(join(wtA.path, 'feature', 'foo.txt'), 'hello again\n');
+      const changes = await collectTaskChanges(wtA.path);
+      assert.deepStrictEqual(changes.map((c) => c.path), ['feature/foo.txt'], '修改 tracked 檔必須回報完整路徑');
+      assert.strictEqual(changes[0].status, 'modified');
+      assert.doesNotThrow(() => validateTaskChanges(changes, ['feature/']), 'tracked 檔修改在 allowedPrefixes 內必須通過');
+      g(['checkout', '--', 'feature/foo.txt'], wtA.path);
+    }
+
     // git diff --cached --check：故意製造 trailing whitespace，證明真的有跑這個檢查、
     // 而且檢查失敗時不得建立 commit。
     {

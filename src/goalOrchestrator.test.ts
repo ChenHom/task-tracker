@@ -63,6 +63,15 @@ async function main(): Promise<void> {
   const wrongSkill = makeGoal('frontend browser work');
   assert.throws(() => selectGoalParticipants(owner, wrongSkill, [{ agentId: a2, reason: 'x', assignment: 'x', selectedLoad: 0 }], db), /skill_profile/);
   cancelGoal(owner, wrongSkill, db);
+  // data_scope 寫的是禁止事項，提到 skill 名稱（security）不能讓沒有該 skill 的 Agent 被篩掉。
+  const scopeGoal = createGoal('human', {
+    workspaceId: 'ws', projectId: 'p', objective: 'plain work', successCriteria: 'passes',
+    dataScope: 'must not touch security settings', ownerAgentId: owner,
+  }, db, repos);
+  startDiscussion(owner, scopeGoal, db);
+  const scopeEligible = eligibleGoalParticipants(scopeGoal, db).map((item) => item.agent.agent_id);
+  assert.ok(scopeEligible.includes(a2) && scopeEligible.includes(a3), 'data_scope 提到的 skill 不得成為必要條件');
+  cancelGoal(owner, scopeGoal, db);
   db.prepare('UPDATE agents SET skill_profile_json = ? WHERE agent_id = ?').run(originalProfile.skill_profile_json, a2);
 
   const busyGoal = makeGoal('busy source');

@@ -211,7 +211,8 @@ export function eligibleGoalParticipants(goalId: string, database = db, includeB
     const profile = JSON.parse(agent.skill_profile_json) as { skills?: unknown };
     return Array.isArray(profile.skills) ? profile.skills.filter((skill): skill is string => typeof skill === 'string').map((skill) => skill.toLowerCase()) : [];
   }));
-  const goalText = `${goal.objective} ${goal.success_criteria} ${goal.data_scope}`.toLowerCase();
+  // data_scope 多半是禁止事項（「不得使用…API」），不能拿來推導必要 skill。
+  const goalText = `${goal.objective} ${goal.success_criteria}`.toLowerCase();
   const goalTokens = new Set(goalText.match(/[a-z][a-z0-9-]*/g) ?? []);
   const requiredSkills = [...knownSkills].filter((skill) => goalTokens.has(skill));
   return agents.flatMap((agent) => {

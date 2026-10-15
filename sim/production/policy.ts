@@ -33,6 +33,7 @@ export interface TaskSnapshot {
   taskId: string;
   workspaceId: string;
   title: string;
+  description?: string;
   status: TaskStatus;
   assigneeId: string | null;
   dueAt: string | null;
@@ -44,6 +45,8 @@ export interface TaskSnapshot {
   projectId?: string | null;
   targetRepo?: string | null;
   verificationChecks?: string[];
+  /** registry 為該 repo 設定的可修改路徑前綴；未設定則沿用預設。 */
+  allowedPrefixes?: string[];
   deployment?: 'task-tracker' | 'not_required' | null;
   deploymentNotRequired?: boolean;
   repoUnavailable?: boolean;

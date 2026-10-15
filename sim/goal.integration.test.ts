@@ -52,7 +52,7 @@ async function main(): Promise<void> {
     git(repo, 'commit', '-m', 'base');
     const baseSha = git(repo, 'rev-parse', 'HEAD');
     writeFileSync(registryPath, JSON.stringify({
-      [repo]: { checks: ['npm test'], deployment: 'not_required' },
+      [repo]: { checks: ['npm test', 'npm run typecheck'], deployment: 'not_required', allowedPrefixes: ['result.txt'] },
     }));
 
     const [{ db }, { resetProjections }, { seedUsers }, { getUserIdByEmail }, goalModule, taskModule, workspaceModule, memberModule, notificationModule, coordinatorModule, productionModule, serverModule] = await Promise.all([
@@ -153,7 +153,7 @@ async function main(): Promise<void> {
       dbPath: coordinatorDb,
       repoRoot: repo,
       coordinatorToken,
-      allowedPrefixes: ['result.txt'],
+      allowedPrefixes: ['sim/'], // 預設值；registry 的 allowedPrefixes 必須蓋過它，否則 result.txt 會被擋
       isServiceActive: async () => {
         // runOnce 清掉自己的 inherited credential；同 process 的 HTTP fixture 需恢復 server credential。
         process.env.TASK_TRACKER_COORDINATOR_TOKEN = coordinatorToken;
@@ -161,6 +161,9 @@ async function main(): Promise<void> {
       },
       runMemberSession: async (context) => {
         memberCalls++;
+        assert.deepStrictEqual(context.allowedPrefixes, ['result.txt'], 'registry allowedPrefixes 必須進 member context');
+        assert.deepStrictEqual(context.verificationCommandAllowlist, ['npm test'], 'registry checks 與全域 allowlist 取交集（npm run typecheck 不在全域 allowlist）');
+        assert.ok(context.acceptanceCriteria.includes('Implement goal') && context.acceptanceCriteria.includes('change file'), '驗收條件必須含 title 與 description');
         writeFileSync(join(context.worktreePath, 'result.txt'), 'delivered\n');
         return { exitCode: 0, output: { summary: 'implemented', changedPaths: ['result.txt'], verificationCommands: ['npm test'], blocker: null } };
       },

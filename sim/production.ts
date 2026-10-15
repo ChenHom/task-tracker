@@ -66,6 +66,7 @@ import {
   isAncestor,
   getCommitMessage,
   getHeadSha,
+  isAllowedVerificationCommand,
   type SystemdReadback,
   type GetSystemdReadback,
   type CheckHealth,
@@ -261,6 +262,7 @@ export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<Coordina
     }
     task.targetRepo = config.targetRepo;
     task.verificationChecks = config.checks;
+    task.allowedPrefixes = config.allowedPrefixes;
     task.deployment = task.deploymentNotRequired ? 'not_required' : config.deployment;
     deps.taskChecks?.set(task.taskId, config.checks);
   }
@@ -996,7 +998,9 @@ async function runLiveDispatchLoop(deps: ResolvedDeps, tickId: string): Promise<
     for (const action of actions) {
       try {
         const task = snapshot.tasks.find((candidate) => candidate.taskId === action.taskId);
-        const actionDeps = task?.goalId && task.targetRepo ? { ...deps, repoRoot: task.targetRepo } : deps;
+        const actionDeps = task?.goalId && task.targetRepo
+          ? { ...deps, repoRoot: task.targetRepo, allowedPrefixes: task.allowedPrefixes ?? deps.allowedPrefixes }
+          : deps;
         const outcome = await dispatchAction(actionDeps, action, snapshot, tickId, claimedAssigneesThisIteration);
         if (outcome === 'progressed') {
           summary.processed++;
@@ -1268,7 +1272,8 @@ async function applyMemberAttemptTransition(
   deps.tracer(action.taskId)('task.attempted', {
     outcome: result.outcome === 'progressed' ? 'ok' : 'fail',
     reason: result.outcome,
-    detail: `evidenceChanged=${result.evidenceChanged} noProgress=${transition.run.noProgressCount} ownerIntervened=${transition.run.ownerIntervened}`,
+    detail: `evidenceChanged=${result.evidenceChanged} noProgress=${transition.run.noProgressCount} ownerIntervened=${transition.run.ownerIntervened}`
+      + (result.evidence.rejectedReason ? ` rejectedReason=${result.evidence.rejectedReason.replace(/\s+/g, ' ').slice(0, 200)}` : ''),
   });
 
   if (transition.humanBlockedNotice) {
@@ -1523,7 +1528,9 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
       taskId: action.taskId,
       worktreePath,
       allowedPrefixes: deps.allowedPrefixes,
-      acceptanceCriteria: task.title,
+      // registry checks 取與全域 allowlist 的交集當 task 宣告的驗證指令，否則 prompt 會顯示「（無）」。
+      verificationCommandAllowlist: (deps.taskChecks.get(action.taskId) ?? []).filter(isAllowedVerificationCommand),
+      acceptanceCriteria: task.description ? `${task.title}\n\n${task.description}` : task.title,
       comments,
       previousBlocker,
       runner: memberRunner,

@@ -14,10 +14,14 @@ import { createHash } from 'node:crypto';
 
 const execFileAsync = promisify(execFile);
 
-/** 執行一個 git 子指令並回傳 trim 過的 stdout；非 0 exit code 會直接 throw。 */
-async function git(args: string[], cwd: string): Promise<string> {
+/**
+ * 執行一個 git 子指令並回傳 stdout（預設 trim）；非 0 exit code 會直接 throw。
+ * `raw: true` 不 trim——`status --porcelain` 的第一筆以空白開頭（` M path`），trim 會吃掉
+ * 它的 XY 欄位，讓後面的 slice(3) 把路徑切歪。
+ */
+async function git(args: string[], cwd: string, opts: { raw?: boolean } = {}): Promise<string> {
   const { stdout } = await execFileAsync('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 });
-  return stdout.trim();
+  return opts.raw ? stdout : stdout.trim();
 }
 
 // 匯出給 sim/production/migrate.ts（任務 9）：manifest 的唯讀 branch 描述（是否已經
@@ -139,7 +143,7 @@ export interface ChangedPath {
 
 /** 讀取 worktree 目前所有未 commit 的變更（含 untracked），供 validateTaskChanges 檢查。 */
 export async function collectTaskChanges(worktree: string): Promise<ChangedPath[]> {
-  const stdout = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'], worktree);
+  const stdout = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'], worktree, { raw: true });
   const entries = stdout.split('\0').filter((entry) => entry.length > 0);
   const changes: ChangedPath[] = [];
   let i = 0;
