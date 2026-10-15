@@ -10,6 +10,7 @@ export interface AgentRunResult {
   exitStatus: number | null;
   errorCategory: string | null;
   sideEffectState: 'none' | 'changed' | 'unknown';
+  errorDetail?: string;
 }
 export interface AgentAdapter {
   name: string;
