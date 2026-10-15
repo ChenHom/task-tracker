@@ -4,7 +4,7 @@ import { getUserIdByEmail } from './auth';
 import { resetProjections } from './eventStore';
 import { cancelGoal, createGoal, getGoal, registerGoalProjections, resumeGoal, reviseGoal, startDiscussion } from './goal';
 import {
-  advanceGoalDiscussion, createFollowupGoal, eligibleGoalParticipants, getGoalSynthesis, materializeGoalTasks, saveFollowupCandidate, selectGoalParticipants, storeGoalSynthesis, verifyGoalDelivery,
+  advanceGoalDiscussion, createFollowupGoal, eligibleGoalParticipants, getGoalSynthesis, materializeGoalTasks, saveFollowupCandidate, selectGoalParticipants, storeGoalSynthesis, validateGoalSynthesis, verifyGoalDelivery,
   type DiscussionOutput,
 } from './goalOrchestrator';
 import { runMigrations } from './schema';
@@ -172,6 +172,16 @@ async function main(): Promise<void> {
   assert.strictEqual(await advanceGoalDiscussion(solo, deps), 'awaiting_lease');
   assert.deepStrictEqual({ ...db.prepare("SELECT status, reason FROM goal_rounds WHERE goal_id = ? AND round = 'round_2'").get(solo) },
     { status: 'skipped', reason: 'insufficient_peers' });
+  const validPlan = { summary: 's', decisionRationale: 'r', changeScope: 'c', uncertainties: [], evidenceRefs: ['x'],
+    taskPlans: [{ title: 'T', description: 'D', assigneeId: a2, dependsOn: [], deploymentNotRequired: true, acceptanceCriteria: 'pass', rollbackCondition: 'fail' }] };
+  const badPlan = (patch: Record<string, unknown>) => ({ ...validPlan, taskPlans: [{ ...validPlan.taskPlans[0], ...patch }] });
+  assert.throws(() => validateGoalSynthesis(badPlan({ deploymentNotRequired: 'false' }), 'ws', db),
+    /Owner synthesis 格式不合法：taskPlans\[0\]\.deploymentNotRequired 必須是 boolean/);
+  assert.throws(() => validateGoalSynthesis({ ...validPlan, taskPlans: [validPlan.taskPlans[0], { ...validPlan.taskPlans[0], dependsOn: 'a' }] }, 'ws', db),
+    /Owner synthesis 格式不合法：taskPlans\[1\]\.dependsOn 必須是非空字串陣列/);
+  assert.throws(() => validateGoalSynthesis(badPlan({ title: 42 }), 'ws', db), /Owner synthesis 格式不合法：taskPlans\[0\]\.title 必須是字串/);
+  assert.throws(() => validateGoalSynthesis({ ...validPlan, evidenceRefs: [''] }, 'ws', db), /Owner synthesis 格式不合法：evidenceRefs/);
+  assert.doesNotThrow(() => validateGoalSynthesis(validPlan, 'ws', db));
   const soloPlan = { summary: 'solo', decisionRationale: '採納唯一有效方案', changeScope: 'src/', uncertainties: [], taskPlans: [{ title: 'T', description: 'D', assigneeId: a2, dependsOn: [], deploymentNotRequired: false, acceptanceCriteria: 'pass', rollbackCondition: 'fail' }], evidenceRefs: ['x'] };
   storeGoalSynthesis(solo, soloPlan, db); const soloTaskIds = materializeGoalTasks(owner, solo, db);
   db.prepare("UPDATE tasks_read_model SET status = 'Done' WHERE goal_id = ?").run(solo);
