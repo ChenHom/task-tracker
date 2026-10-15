@@ -34,6 +34,17 @@ try {
     [repo]: { checks: ['python3 -m pytest', 'git diff --check'], deployment: 'not_required' },
   }));
   assert.deepStrictEqual(loadRepoRegistry(registryPath).get(canonical)?.checks, ['python3 -m pytest', 'git diff --check'], 'Python repo 可用 pytest');
+
+  writeFileSync(registryPath, JSON.stringify({
+    [repo]: { checks: ['npm test'], deployment: 'not_required', allowedPrefixes: ['src/', 'tests/', 'pyproject.toml'] },
+  }));
+  assert.deepStrictEqual(loadRepoRegistry(registryPath).get(canonical)?.allowedPrefixes, ['src/', 'tests/', 'pyproject.toml'], 'allowedPrefixes 應原樣載入');
+  assert.strictEqual(registry.get(canonical)?.allowedPrefixes, undefined, '未設定時不帶 allowedPrefixes');
+
+  for (const bad of [[], 'src/', [1], [''], ['/etc'], ['../x'], ['src/../x'], ['..']]) {
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', allowedPrefixes: bad } }));
+    assert.throws(() => loadRepoRegistry(registryPath), /allowedPrefixes 不合法/, `不合法 allowedPrefixes 應拒絕：${JSON.stringify(bad)}`);
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

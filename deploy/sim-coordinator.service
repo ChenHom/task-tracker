@@ -7,5 +7,7 @@ Requires=task-tracker.service
 Type=oneshot
 WorkingDirectory=/home/hom/code/task-tracker
 ExecStart=/home/hom/.nvm/versions/node/v24.3.0/bin/npx tsx sim/production.ts --once --live
-Environment=PATH=/home/hom/.nvm/versions/node/v24.3.0/bin:/home/hom/.local/bin:/usr/local/bin:/usr/bin:/bin
+# ponytail: 讓外部 Python repo 的 `python3 -m pytest` 解析到該 repo 的 venv（系統 python3 沒有 pytest）；
+# 上限是全機只能有一個 Python venv，第二個 Python repo 出現時改成 registry per-repo 設定。
+Environment=PATH=/home/hom/services/stock/tw-day-trading/.venv/bin:/home/hom/.nvm/versions/node/v24.3.0/bin:/home/hom/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-%h/.config/task-tracker/coordinator.env
