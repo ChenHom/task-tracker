@@ -16,7 +16,7 @@ import { runMigrations } from '../src/schema';
 import { changeTaskStatus, createTask, registerTaskProjections } from '../src/task';
 import { registerNotificationProjections } from '../src/notification';
 import type { RepoRegistry } from '../src/repoRegistry';
-import { goalCoordinatorCliExitCode, handleGoalCoordinatorError, parseJsonOutput, runGoalCoordinatorOnce, selectPendingGoalId } from './goalCoordinator';
+import { boundedOwnerInput, goalCoordinatorCliExitCode, handleGoalCoordinatorError, parseJsonOutput, runGoalCoordinatorOnce, selectPendingGoalId } from './goalCoordinator';
 
 const repo = mkdtempSync(join(tmpdir(), 'goal-coordinator-'));
 const db = new DatabaseSync(':memory:');
@@ -2275,4 +2275,18 @@ main().then(testFairGoalScheduling).then(testStaleOwnerRunBlocksForHumanResume).
   .then(testProductionBlockedEvidenceWakesGoalOnce).then(testBlockedReassignmentInvalidOutputRecovery).then(testTransitionHeartbeats).then(testPreemptedGoalResumesDiscussion)
   .then(testResumedSynthesisReconcilesExistingTasks).then(testDiscussionTokenTotals).then(testGoalCheckpointCrashRecovery)
   .then(testOwnerCheckpointAtomicity).then(testBlockedEvidenceSkippedAfterTaskAdvanced).then(testOwnerProseOutputParsing)
+  .then(testOwnerPromptBudget)
   .then(() => console.log('goalCoordinator.test.ts OK'));
+
+// 925ef0b0 的 owner_synthesis：9 個欄位各自 ≤4,000 字，總和卻超過 16,000，coordinator 每輪都丟「超過安全上限」
+function testOwnerPromptBudget(): void {
+  const dataScope = '硬性限制：不得使用券商正式環境 API。'.repeat(50);
+  const { prompt, sourceTexts } = boundedOwnerInput('收斂 Goal 並直接產生實作 Task。只回 JSON。', {
+    goal: 'objective', successCriteria: '1. pytest 全數通過', dataScope,
+    comments: 'c'.repeat(3_800), contributions: 'x'.repeat(9_500), repoSources: 'r'.repeat(23_000), participations: 'p'.repeat(1_400),
+    verificationFailures: 'v'.repeat(4_500),
+  });
+  assert.ok(prompt.length <= 16_000, `prompt 必須在安全上限內，實際 ${prompt.length}`);
+  assert.strictEqual(sourceTexts[2], dataScope, '短欄位（dataScope）必須保留全文');
+  assert.ok(sourceTexts[4].length < 4_000 && sourceTexts[5].length < 4_000, '只截長欄位');
+}
