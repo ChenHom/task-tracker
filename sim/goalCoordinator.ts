@@ -133,7 +133,8 @@ async function ownerJsonRun(input: {
         status: 'uncertain', actualInputTokens: null, actualOutputTokens: null, actualCost: null, credibleBilling: false,
         outcome: null, errorCategory: 'crash_recovery', evidenceRef: null, sideEffectState: 'unknown',
       }, database);
-      throw new CommandError(`${input.phase} 前次執行逾時且副作用不確定`);
+      // 前次程序可能崩潰（例如撞到 database is locked），交給人類確認後以新 revision 恢復
+      throw new TerminalOwnerDiscussionRunError(new Error(`${input.phase} 前次執行逾時且副作用不確定`));
     }
     if (run.status !== 'pending') throw new CommandError(`${input.phase} 已有終態 Run`);
   }
@@ -696,20 +697,27 @@ export function goalCoordinatorCliExitCode(startedAwaitingLease: boolean, status
   return startedAwaitingLease && status === 'awaiting_lease' ? 1 : 0;
 }
 
-export function selectPendingGoalId(database = appDb): string | undefined {
+// Owner run 停在 running 超過 15 分鐘：程序在 finishRun 前崩潰，heartbeat 不會再變回 pending。
+// ponytail: 只喚醒 Owner 自己的 run（ownerJsonRun 會把它收成 Blocked）；參與者 run 卡住要另外處理
+const STALE_OWNER_RUN = `(h.status = 'pending' OR (h.status = 'running' AND EXISTS (
+  SELECT 1 FROM goal_runs r WHERE r.heartbeat_id = h.heartbeat_id AND r.agent_id = g.owner_agent_id
+    AND r.status = 'running' AND r.started_at < ?)))`;
+
+export function selectPendingGoalId(database = appDb, now = Date.now()): string | undefined {
+  const staleBefore = new Date(now - 15 * 60 * 1000).toISOString();
   const candidates = database.prepare(
     `SELECT DISTINCT h.goal_id FROM goal_heartbeats h JOIN goals_read_model g ON g.goal_id = h.goal_id
-      WHERE h.status = 'pending' AND h.phase IN (${GOAL_WAKE_PHASES})`,
-  ).all() as unknown as Array<{ goal_id: string }>;
+      WHERE ${STALE_OWNER_RUN} AND h.phase IN (${GOAL_WAKE_PHASES})`,
+  ).all(staleBefore) as unknown as Array<{ goal_id: string }>;
   for (const candidate of candidates) skipOrphanGoalHeartbeats(candidate.goal_id, database);
   return (database.prepare(
     `SELECT h.goal_id FROM goal_heartbeats h JOIN goals_read_model g ON g.goal_id = h.goal_id
-      WHERE h.status = 'pending' AND h.phase IN (${GOAL_WAKE_PHASES})
+      WHERE ${STALE_OWNER_RUN} AND h.phase IN (${GOAL_WAKE_PHASES})
         AND (g.status IN ('Queued', 'Discussing', 'Executing', 'Verifying')
           OR (g.status = 'Done' AND h.phase = 'followup'))
       GROUP BY h.goal_id
       ORDER BY MAX(h.last_processed_seq), MIN(h.rowid) LIMIT 1`,
-  ).get() as { goal_id: string } | undefined)?.goal_id;
+  ).get(staleBefore) as { goal_id: string } | undefined)?.goal_id;
 }
 
 if (require.main === module) {
