@@ -183,10 +183,16 @@ async function main(): Promise<void> {
   selectGoalParticipants(owner, failed, [{ agentId: a2, reason: 'first', assignment: 'first scope', selectedLoad: 0 }], db);
   assert.strictEqual(await advanceGoalDiscussion(failed, failing), 'reconciled');
   assert.strictEqual(getGoal(failed, db)?.revision, 2);
+  assert.strictEqual((db.prepare("SELECT outcome FROM goal_runs WHERE goal_id = ? AND status = 'failed'").get(failed) as { outcome: string }).outcome, 'Error', '非 CommandError 只記錯誤類別，不記訊息內容');
   selectGoalParticipants(owner, failed, [{ agentId: a3, reason: 'changed', assignment: 'changed scope', selectedLoad: 0 }], db);
   assert.strictEqual(await advanceGoalDiscussion(failed, failing), 'blocked');
   assert.strictEqual(getGoal(failed, db)?.status, 'Blocked');
   assert.strictEqual((db.prepare('SELECT COUNT(*) AS n FROM goal_runs').get() as { n: number }).n, 7, '每次模型呼叫前都建立 Run');
+  const badStance = makeGoal('bad-stance');
+  selectGoalParticipants(owner, badStance, [{ agentId: a2, reason: 'first', assignment: 'first scope', selectedLoad: 0 }], db);
+  assert.strictEqual(await advanceGoalDiscussion(badStance, { ...deps, invoke: async () => ({ stance: 'agree', claim: 'c', reason: 'r', evidenceRefs: [] }) }), 'reconciled');
+  assert.strictEqual((db.prepare("SELECT outcome FROM goal_runs WHERE goal_id = ? AND status = 'failed'").get(badStance) as { outcome: string }).outcome, 'Contribution stance 不合法', '失敗 Run 必須留下可診斷的原因');
+  cancelGoal('human', badStance, db);
   resumeGoal('human', failed, '改用可用的 API reviewer', db);
   assert.deepStrictEqual(
     { phase: getGoal(failed, db)?.discussion_phase, revision: getGoal(failed, db)?.revision },
