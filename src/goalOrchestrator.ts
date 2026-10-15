@@ -295,7 +295,9 @@ async function runContribution(
   } catch (error) {
     finishRun(runId, {
       status: 'failed', actualInputTokens: null, actualOutputTokens: null, actualCost: null, credibleBilling: false,
-      outcome: null, errorCategory: 'discussion', evidenceRef: null, sideEffectState: 'none',
+      // 只記自家 CommandError 訊息（如「stance 不合法」），不記模型輸出內容
+      outcome: error instanceof CommandError ? error.message.slice(0, 200) : (error as Error)?.name ?? 'error',
+      errorCategory: 'discussion', evidenceRef: null, sideEffectState: 'none',
     }, database);
     return 'terminal';
   }

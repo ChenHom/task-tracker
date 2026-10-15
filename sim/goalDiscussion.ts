@@ -66,8 +66,11 @@ export function buildGoalDiscussionPacket(input: {
     ...sources.map((source) => `SOURCE ${source.path}\n${source.content}`),
     'END_UNTRUSTED_REPO_DATA',
     // 沒寫格式時模型會回 Markdown 條列、stance 自創值（例如 support），整輪 Contribution 全數無效
-    '只回傳一個 JSON object，不要 Markdown、程式碼區塊或其他文字：{"stance":"analysis","claim":"...","reason":"...","evidenceRefs":["..."]}',
-    'stance 只能是 analysis、agree、concern、correction 其中之一；concern 與 correction 的 evidenceRefs 不可為空。',
+    `只回傳一個 JSON object，不要 Markdown、程式碼區塊或其他文字：{"stance":"${input.round === 'round_1' ? 'analysis' : 'agree'}","claim":"...","reason":"...","evidenceRefs":["..."]}`,
+    // stance 規則以 addContribution 為準：round_1 只收 analysis，round_2 只收 agree／concern／correction
+    input.round === 'round_1'
+      ? 'stance 必須是 analysis（第一輪只做獨立分析）。'
+      : 'stance 只能是 agree、concern、correction 其中之一；concern 與 correction 的 evidenceRefs 不可為空。',
   ].join('\n');
   if (body.length > DISCUSSION_MAX_PROMPT_CHARS) throw new CommandError('goal discussion prompt 超過安全上限');
   return {
