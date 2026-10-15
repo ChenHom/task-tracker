@@ -539,17 +539,33 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
         validateBeforeStore: true, retryUnparsable: true,
       };
       const retryable = (error: unknown) => error instanceof InvalidGoalSynthesisError || error instanceof InvalidOwnerOutputError;
-      let ownerRun: Awaited<ReturnType<typeof ownerJsonRun>>;
-      try {
-        ownerRun = await ownerJsonRun(synthesisInput, deps, database);
-      } catch (error) {
-        if (!retryable(error)) throw error;
+      const primaryRunFailed = (triggerRef: string) => database.prepare(
+        `SELECT 1 FROM goal_heartbeats h JOIN goal_runs r ON r.heartbeat_id = h.heartbeat_id
+          WHERE h.scope_id = ? AND h.phase = 'owner_synthesis' AND h.agent_id = ? AND h.revision = ?
+            AND h.trigger_ref = ? AND r.attempt = 'primary' AND r.status = 'failed'`,
+      ).get(goalId, goal.owner_agent_id, goal.revision, triggerRef) !== undefined;
+      const runRetry = async () => {
+        const retryInput = { ...synthesisInput, triggerRef: `invalid-output-retry:${goal.version}` };
+        // 重試 Run 已失敗（含重試途中中斷後再進入）：不再呼叫 AI，直接 Blocked
+        if (primaryRunFailed(retryInput.triggerRef)) throw new TerminalOwnerDiscussionRunError(new Error('Owner synthesis 重試 Run 已失敗'));
         try {
-          ownerRun = await ownerJsonRun({ ...synthesisInput, triggerRef: `invalid-output-retry:${goal.version}` }, deps, database);
+          return await ownerJsonRun(retryInput, deps, database);
         } catch (retryError) {
           // 第二次仍不合格才 Blocked；Terminal 沿用具體欄位訊息當 Blocked reason
           if (retryable(retryError)) throw new TerminalOwnerDiscussionRunError(retryError);
           throw retryError;
+        }
+      };
+      let ownerRun: Awaited<ReturnType<typeof ownerJsonRun>>;
+      if (primaryRunFailed(synthesisInput.triggerRef)) {
+        // 第一次已失敗但重試沒走完（程序中斷）：從重試 checkpoint 續跑，不重跑第一次
+        ownerRun = await runRetry();
+      } else {
+        try {
+          ownerRun = await ownerJsonRun(synthesisInput, deps, database);
+        } catch (error) {
+          if (!retryable(error)) throw error;
+          ownerRun = await runRetry();
         }
       }
       const output = ownerRun.output;
