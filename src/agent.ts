@@ -1,3 +1,5 @@
+import { existsSync, realpathSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { db } from './db';
 import { getUserIdByEmail } from './auth';
@@ -166,13 +168,14 @@ export interface AgentPatch {
   primaryModel?: unknown;
   fallbackAdapter?: unknown;
   fallbackModel?: unknown;
+  repoAccess?: unknown;
 }
 
 export function updateAgent(agentId: string, patch: AgentPatch, database = db): void {
   const current = getAgent(agentId, database);
   if (!current) throw new CommandError('agent 不存在');
   const keys = Object.keys(patch);
-  if (keys.length === 0 || keys.some((key) => !['status', 'primaryAdapter', 'primaryModel', 'fallbackAdapter', 'fallbackModel'].includes(key))) {
+  if (keys.length === 0 || keys.some((key) => !['status', 'primaryAdapter', 'primaryModel', 'fallbackAdapter', 'fallbackModel', 'repoAccess'].includes(key))) {
     throw new CommandError('不支援的 Agent PATCH 欄位');
   }
 
@@ -181,6 +184,19 @@ export function updateAgent(agentId: string, patch: AgentPatch, database = db): 
   let primaryModel = current.primary_model;
   let fallbackAdapter = current.fallback_adapter;
   let fallbackModel = current.fallback_model;
+  let repoAccess = current.repo_access_json;
+  if ('repoAccess' in patch) {
+    // ponytail: 用 Agent 對 repo 的權限近似工作配比（人頭數），需要依實際工作量配比時再做排程權重
+    const list = patch.repoAccess;
+    if (!Array.isArray(list) || list.length === 0 || list.some((repo) => typeof repo !== 'string')) {
+      throw new CommandError('repoAccess 必須是非空字串陣列');
+    }
+    repoAccess = JSON.stringify([...new Set((list as string[]).map((repo) => {
+      if (repo === '*') return repo;
+      if (!isAbsolute(repo) || !existsSync(repo)) throw new CommandError(`repoAccess 路徑不合法：${repo}`);
+      return realpathSync(repo);
+    }))]);
+  }
   if ('status' in patch) {
     if (patch.status !== 'active' && patch.status !== 'paused' && patch.status !== 'error') {
       throw new CommandError('Agent status 不合法');
@@ -211,6 +227,6 @@ export function updateAgent(agentId: string, patch: AgentPatch, database = db): 
 
   database.prepare(
     `UPDATE agents SET status = ?, primary_adapter = ?, primary_model = ?,
-       fallback_adapter = ?, fallback_model = ?, updated_at = ? WHERE agent_id = ?`,
-  ).run(status, primaryAdapter, primaryModel, fallbackAdapter, fallbackModel, new Date().toISOString(), agentId);
+       fallback_adapter = ?, fallback_model = ?, repo_access_json = ?, updated_at = ? WHERE agent_id = ?`,
+  ).run(status, primaryAdapter, primaryModel, fallbackAdapter, fallbackModel, repoAccess, new Date().toISOString(), agentId);
 }

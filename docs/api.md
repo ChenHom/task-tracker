@@ -114,7 +114,7 @@ HTTP `401`。
 | Goal action | POST | `/api/goals/:id/start\|pause\|resume\|cancel` | Member | `200` |
 | Goal worktree | POST/PATCH | `/api/goals/:id/worktrees` | Admin + coordinator token | register / mark integrated |
 | Agents | GET | `/api/workspaces/:id/agents` | Viewer | six formal Agent resources |
-| Agent | PATCH | `/api/workspaces/:id/agents/:agentId` | Admin | status/route update |
+| Agent | PATCH | `/api/workspaces/:id/agents/:agentId` | Admin | status/route/repoAccess update |
 | Comments | GET/POST | `/api/tasks/:id/comments` | Viewer / Commenter | list / `201` |
 | Comment | PATCH | `/api/comments/:id` | Commenter + author | `200` |
 | Attachments | GET/POST | `/api/tasks/:id/attachments` | Viewer / Member | list / `201` |
