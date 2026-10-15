@@ -247,6 +247,67 @@ async function testOwnerScopingInvalidOutputRecovery(): Promise<void> {
   }
 }
 
+async function testOwnerSynthesisInvalidOutputRecovery(): Promise<void> {
+  const toSynthesis = (database: DatabaseSync, goalId: string) => {
+    startDiscussion('fair-owner', goalId, database);
+    setDiscussionPhase('fair-owner', goalId, 'round_1', database);
+    setDiscussionPhase('fair-owner', goalId, 'awaiting_lease', database);
+  };
+  const badPlan = (title: string) => {
+    const good = schedulingPlan(title);
+    return { ...good, taskPlans: [{ ...good.taskPlans[0], deploymentNotRequired: 'false' }] };
+  };
+
+  {
+    const { database, createGoal } = createSchedulingFixture('/x7/recover');
+    try {
+      const goalId = createGoal('tests malformed then valid synthesis');
+      toSynthesis(database, goalId);
+      let ownerCalls = 0;
+      assert.strictEqual(await runGoalCoordinatorOnce(goalId, {
+        database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+        invokeJson: async () => {
+          ownerCalls += 1;
+          return ownerCalls === 1 ? badPlan('first') : schedulingPlan('second');
+        },
+      }), 'Executing');
+      assert.strictEqual(ownerCalls, 2);
+      assert.strictEqual(getGoal(goalId, database)?.status, 'Executing');
+      assert.strictEqual((database.prepare('SELECT title FROM tasks_read_model WHERE goal_id = ?').get(goalId) as { title: string }).title, 'second');
+    } finally {
+      database.close();
+    }
+  }
+
+  {
+    const { database, createGoal } = createSchedulingFixture('/x7/twice');
+    try {
+      const goalId = createGoal('tests malformed synthesis twice');
+      toSynthesis(database, goalId);
+      let ownerCalls = 0;
+      let terminalError: unknown;
+      const deps = {
+        database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+        invokeJson: async () => { ownerCalls += 1; return badPlan('bad'); },
+      };
+      try {
+        await runGoalCoordinatorOnce(goalId, deps);
+      } catch (error) {
+        terminalError = error;
+      }
+      assert.strictEqual(ownerCalls, 2, 'invalid synthesis 最多重試一次');
+      assert.strictEqual(handleGoalCoordinatorError(goalId, terminalError, database), true);
+      assert.strictEqual(getGoal(goalId, database)?.status, 'Blocked');
+      const blockedReason = (database.prepare("SELECT json_extract(payload_json, '$.reason') AS reason FROM event_store WHERE aggregate_id = ? AND event_type = 'goal.blocked'").get(goalId) as { reason: string }).reason;
+      assert.match(blockedReason, /Owner synthesis 格式不合法：taskPlans\[0\]\.deploymentNotRequired 必須是 boolean/);
+      assert.strictEqual(await runGoalCoordinatorOnce(goalId, deps), 'Blocked');
+      assert.strictEqual(ownerCalls, 2, 'Blocked Goal 不得第三次呼叫 Owner');
+    } finally {
+      database.close();
+    }
+  }
+}
+
 async function testOwnerCommentFailureDoesNotBlockGoal(): Promise<void> {
   {
     const { database, createGoal } = createSchedulingFixture('/y9/owner-comment-failure');
@@ -1723,12 +1784,12 @@ async function main(): Promise<void> {
       "SELECT COUNT(*) AS n FROM goal_stage_outputs o JOIN goal_heartbeats h ON h.heartbeat_id = o.heartbeat_id WHERE h.goal_id = ? AND h.phase = 'owner_synthesis'",
     ).get(malformedInitial) as { n: number }).n, 0, 'malformed initial synthesis 不得留下 stage output');
     assert.strictEqual(handleGoalCoordinatorError(malformedInitial, malformedInitialError, db), true, 'malformed initial synthesis 應是 terminal Owner output failure');
-    assert.strictEqual(malformedInitialCalls, 1);
+    assert.strictEqual(malformedInitialCalls, 2, 'synthesis 不合格重試一次後才 Blocked');
     assert.strictEqual(getGoal(malformedInitial, db)?.status, 'Blocked');
     assert.strictEqual(getGoalSynthesis(malformedInitial, 1, db), null, 'invalid synthesis 不得寫入 domain synthesis');
     assert.strictEqual((db.prepare('SELECT goal_id FROM repo_leases WHERE target_repo = ?').get(repo) as { goal_id: string }).goal_id, malformedInitial, 'Blocked synthesis 依設計保留 lease');
     assert.strictEqual(await runGoalCoordinatorOnce(malformedInitial, malformedDeps), 'Blocked');
-    assert.strictEqual(malformedInitialCalls, 1, 'malformed synthesis 不得重複 invoke');
+    assert.strictEqual(malformedInitialCalls, 2, 'malformed synthesis 不得重複 invoke');
 
     cancelGoal('human', malformedInitial, db);
     const malformedCorrection = createGoal('human', {
@@ -1769,12 +1830,12 @@ async function main(): Promise<void> {
       "SELECT COUNT(*) AS n FROM goal_stage_outputs o JOIN goal_heartbeats h ON h.heartbeat_id = o.heartbeat_id WHERE h.goal_id = ? AND h.phase = 'owner_synthesis' AND h.revision = 2",
     ).get(malformedCorrection) as { n: number }).n, 0, 'malformed correction synthesis 不得留下 stage output');
     assert.strictEqual(handleGoalCoordinatorError(malformedCorrection, malformedCorrectionError, db), true, 'malformed correction synthesis 應是 terminal Owner output failure');
-    assert.strictEqual(malformedCorrectionCalls, 1);
+    assert.strictEqual(malformedCorrectionCalls, 2);
     assert.strictEqual(getGoal(malformedCorrection, db)?.status, 'Blocked');
     assert.strictEqual(getGoalSynthesis(malformedCorrection, 2, db), null);
     assert.strictEqual((db.prepare('SELECT goal_id FROM repo_leases WHERE target_repo = ?').get(repo) as { goal_id: string }).goal_id, malformedCorrection);
     assert.strictEqual(await runGoalCoordinatorOnce(malformedCorrection, malformedCorrectionDeps), 'Blocked');
-    assert.strictEqual(malformedCorrectionCalls, 1, 'malformed correction 不得重複 invoke');
+    assert.strictEqual(malformedCorrectionCalls, 2, 'malformed correction 不得重複 invoke');
 
     cancelGoal('human', malformedCorrection, db);
     const deterministicInvalidCases = [
@@ -1821,7 +1882,7 @@ async function main(): Promise<void> {
       assert.strictEqual(getGoal(invalidGoal, db)?.status, 'Blocked');
       assert.strictEqual((db.prepare('SELECT goal_id FROM repo_leases WHERE target_repo = ?').get(repo) as { goal_id: string }).goal_id, invalidGoal);
       assert.strictEqual(await runGoalCoordinatorOnce(invalidGoal, invalidCaseDeps), 'Blocked');
-      assert.strictEqual(invalidCaseCalls, 1, `${invalidCase.name} 不得重新 invoke`);
+      assert.strictEqual(invalidCaseCalls, 2, `${invalidCase.name} 重試一次後不得再 invoke`);
       cancelGoal('human', invalidGoal, db);
     }
 
@@ -2121,7 +2182,7 @@ async function testOwnerProseOutputParsing(): Promise<void> {
   }
 }
 
-main().then(testFairGoalScheduling).then(testStaleOwnerRunBlocksForHumanResume).then(testOwnerScopingInvalidOutputRecovery).then(testOwnerCommentFailureDoesNotBlockGoal)
+main().then(testFairGoalScheduling).then(testStaleOwnerRunBlocksForHumanResume).then(testOwnerScopingInvalidOutputRecovery).then(testOwnerSynthesisInvalidOutputRecovery).then(testOwnerCommentFailureDoesNotBlockGoal)
   .then(testProductionBlockedEvidenceWakesGoalOnce).then(testBlockedReassignmentInvalidOutputRecovery).then(testTransitionHeartbeats).then(testPreemptedGoalResumesDiscussion)
   .then(testResumedSynthesisReconcilesExistingTasks).then(testDiscussionTokenTotals).then(testGoalCheckpointCrashRecovery)
   .then(testOwnerCheckpointAtomicity).then(testBlockedEvidenceSkippedAfterTaskAdvanced).then(testOwnerProseOutputParsing)

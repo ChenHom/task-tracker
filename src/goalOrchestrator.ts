@@ -66,18 +66,23 @@ function clean(value: unknown, field: string): string {
 
 export class InvalidGoalSynthesisError extends CommandError {}
 
+// 前綴不可改（測試與 Blocked reason 都比對它）；後綴只放欄位名與型別要求，不放模型輸出內容
+const INVALID_SYNTHESIS = 'Owner synthesis 格式不合法';
+
 function synthesisText(value: unknown, field: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new InvalidGoalSynthesisError(`${field} 不可為空`);
   return value.trim();
 }
 
 export function validateGoalSynthesis(output: unknown, workspaceId: string, database = db, goalId?: string): SynthesisOutput {
-  if (!output || typeof output !== 'object' || Array.isArray(output)) throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+  if (!output || typeof output !== 'object' || Array.isArray(output)) throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：根層必須是 JSON object`);
   const value = output as Record<string, unknown>;
-  if (!Array.isArray(value.taskPlans) || !Array.isArray(value.evidenceRefs) || !Array.isArray(value.uncertainties)
-    || value.uncertainties.some((item) => typeof item !== 'string' || !item.trim())
-    || value.evidenceRefs.some((ref) => typeof ref !== 'string' || !ref.trim())) {
-    throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+  if (!Array.isArray(value.taskPlans)) throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：taskPlans 必須是陣列`);
+  if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.some((ref) => typeof ref !== 'string' || !ref.trim())) {
+    throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：evidenceRefs 必須是非空字串陣列`);
+  }
+  if (!Array.isArray(value.uncertainties) || value.uncertainties.some((item) => typeof item !== 'string' || !item.trim())) {
+    throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：uncertainties 必須是非空字串陣列`);
   }
   const archiveTaskIds = value.archiveTaskIds == null ? [] : value.archiveTaskIds;
   if (!Array.isArray(archiveTaskIds) || archiveTaskIds.some((id) => typeof id !== 'string' || !id.trim())
@@ -92,11 +97,13 @@ export function validateGoalSynthesis(output: unknown, workspaceId: string, data
       AND task_id NOT IN (SELECT value FROM json_each(?)) LIMIT 1`,
   ).get(goalId, JSON.stringify(archiveTaskIds));
   if (value.taskPlans.length === 0 && !retainedTask) throw new InvalidGoalSynthesisError('synthesis 必須包含 Task');
-  const taskPlans = value.taskPlans.map((item) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+  const taskPlans = value.taskPlans.map((item, index) => {
+    const at = `taskPlans[${index}]`;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at} 必須是 object`);
     const plan = item as Record<string, unknown>;
-    if ([plan.title, plan.description, plan.assigneeId, plan.acceptanceCriteria, plan.rollbackCondition]
-      .some((field) => typeof field !== 'string')) throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+    for (const field of ['title', 'description', 'assigneeId', 'acceptanceCriteria', 'rollbackCondition']) {
+      if (typeof plan[field] !== 'string') throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.${field} 必須是字串`);
+    }
     const title = synthesisText(plan.title, 'Task title');
     const description = synthesisText(plan.description, 'Task description');
     const assigneeId = synthesisText(plan.assigneeId, 'Task assignee');
@@ -106,9 +113,11 @@ export function validateGoalSynthesis(output: unknown, workspaceId: string, data
     }
     if (!Array.isArray(plan.dependsOn)
       || plan.dependsOn.some((dependency) => typeof dependency !== 'string' || !dependency.trim())) {
-      throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+      throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.dependsOn 必須是非空字串陣列`);
     }
-    if (typeof plan.deploymentNotRequired !== 'boolean') throw new InvalidGoalSynthesisError('Owner synthesis 格式不合法');
+    if (typeof plan.deploymentNotRequired !== 'boolean') {
+      throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.deploymentNotRequired 必須是 boolean`);
+    }
     return {
       title,
       description,

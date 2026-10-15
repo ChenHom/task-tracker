@@ -250,13 +250,9 @@ function synthesis(value: JsonObject, goalId: string, workspaceId: string, datab
   return validateGoalSynthesis(value, workspaceId, database, goalId);
 }
 
+// 不在這裡包成 Terminal：owner_synthesis 要先拿到 InvalidGoalSynthesisError 才能重試一次，第二次失敗才包
 function validateSynthesis(value: JsonObject, goalId: string, workspaceId: string, database: DatabaseSync): void {
-  try {
-    synthesis(value, goalId, workspaceId, database);
-  } catch (error) {
-    if (error instanceof InvalidGoalSynthesisError) throw new TerminalOwnerDiscussionRunError(error);
-    throw error;
-  }
+  synthesis(value, goalId, workspaceId, database);
 }
 
 function throwIfInvalidSynthesis(error: unknown): never {
@@ -529,7 +525,7 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
       const instruction = reason === '驗收失敗'
         ? '根據目前 Task 狀態與驗收失敗證據，產生修正或 rollback Task。'
         : '收斂 Goal 並直接產生實作 Task。';
-      const ownerRun = await ownerJsonRun({
+      const synthesisInput = {
         goalId, phase: 'owner_synthesis', triggerRef: `lease:${goal.version}`, sourceRefs: contextSourceRefs(),
         ...boundedOwnerInput(`${instruction}只回 JSON {"summary":"...","decisionRationale":"採納與拒絕理由","changeScope":"修改範圍","uncertainties":[],"archiveTaskIds":[],"taskPlans":[{"title":"...","description":"...","assigneeId":"...","dependsOn":[],"deploymentNotRequired":false,"acceptanceCriteria":"...","rollbackCondition":"..."}],"evidenceRefs":["..."]}`, {
           ...commonContext(),
@@ -539,8 +535,23 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
           verificationFailures: failures,
           synthesisReason: reason,
         }),
-        validate: (value) => validateSynthesis(value, goalId, goal.workspace_id, database), validateBeforeStore: true,
-      }, deps, database);
+        validate: (value: JsonObject) => validateSynthesis(value, goalId, goal.workspace_id, database),
+        validateBeforeStore: true, retryUnparsable: true,
+      };
+      const retryable = (error: unknown) => error instanceof InvalidGoalSynthesisError || error instanceof InvalidOwnerOutputError;
+      let ownerRun: Awaited<ReturnType<typeof ownerJsonRun>>;
+      try {
+        ownerRun = await ownerJsonRun(synthesisInput, deps, database);
+      } catch (error) {
+        if (!retryable(error)) throw error;
+        try {
+          ownerRun = await ownerJsonRun({ ...synthesisInput, triggerRef: `invalid-output-retry:${goal.version}` }, deps, database);
+        } catch (retryError) {
+          // 第二次仍不合格才 Blocked；Terminal 沿用具體欄位訊息當 Blocked reason
+          if (retryable(retryError)) throw new TerminalOwnerDiscussionRunError(retryError);
+          throw retryError;
+        }
+      }
       const output = ownerRun.output;
       synthesisOwnerRun = ownerRun;
       synthesisOutput = synthesis(output, goalId, goal.workspace_id, database);
