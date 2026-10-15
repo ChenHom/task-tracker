@@ -6153,7 +6153,8 @@ async function runGoalAttemptTests(): Promise<void> {
       },
     };
     const runIds: string[] = [];
-    for (const taskId of ['b1-task-1', 'b1-task-2']) {
+    // 第三次是同一 tick 再派一次 b1-task-1（無進展重試或 owner 退回後重跑）
+    for (const taskId of ['b1-task-1', 'b1-task-2', 'b1-task-1']) {
       await trackGoalRunAttempt({
         recorder: { ...recorder, prepareRun: async (input) => { const id = await recorder.prepareRun(input); runIds.push(id); return id; } },
         goalId: 'goal-b1', taskId, agentId: 'agent-b1', phase: 'implementation', adapter: 'codex', model: 'm', attempt: 'primary',
@@ -6161,9 +6162,9 @@ async function runGoalAttemptTests(): Promise<void> {
         invoke: async () => ({ exitCode: 0 }),
       });
     }
-    assert.notStrictEqual(runIds[0], runIds[1], '同一 tick 的兩個 Task 不得共用同一個 run');
+    assert.strictEqual(new Set(runIds).size, 3, '同一 tick 的不同 Task、或同一 Task 再派一次，都不得共用同一個 run');
     const heartbeats = database.prepare("SELECT status FROM goal_heartbeats WHERE goal_id = 'goal-b1'").all() as Array<{ status: string }>;
-    assert.deepStrictEqual(heartbeats.map((row) => row.status), ['succeeded', 'succeeded'], '每個 Task 各有一個 succeeded heartbeat');
+    assert.deepStrictEqual(heartbeats.map((row) => row.status), ['succeeded', 'succeeded', 'succeeded'], '每次派工各有一個 succeeded heartbeat');
   } finally {
     database.close();
   }

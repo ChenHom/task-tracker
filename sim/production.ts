@@ -1305,9 +1305,11 @@ export async function applyMemberAttemptTransition(
 /**
  * Goal Run 的 heartbeat 依 (scope, phase, agent, revision, triggerRef) 去重：只用 tick id 時，
  * 同一 tick 同一 Agent 的第二個 Task 會撿到第一個 Task 已完成的 run，finishRun 因此失敗。
+ * 一個 tick 也可能跑很久、對同一個 Task 派好幾次（無進展重試、owner 退回），所以每次派工再加一段隨機值。
+ * ponytail: 不追求崩潰後接回同一個 run——殘留的 running implementation／owner_review run 只是帳，不擋任何流程。
  */
 export function goalRunTriggerRef(workerId: string | number | null, taskId: string): string {
-  return `${workerId}:${taskId}`;
+  return `${workerId}:${taskId}:${randomUUID().slice(0, 8)}`;
 }
 
 function goalRunRecorder(client: TaskTrackerClient, goalId: string): GoalRunRecorder {
