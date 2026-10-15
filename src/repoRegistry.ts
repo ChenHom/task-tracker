@@ -18,6 +18,7 @@ const ALLOWED_CHECKS = new Set([
   'npm run typecheck',
   'npx tsc --noEmit',
   'git diff --check',
+  'python3 -m pytest',
 ]);
 
 interface RawRepoConfig {

@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { realpathSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import {
   eligibleMemberAgents,
@@ -49,10 +50,16 @@ assert.deepStrictEqual(
 );
 assert.throws(() => updateAgent(member.agent_id, { status: 'deleted' }, db), /status/);
 assert.throws(() => updateAgent(member.agent_id, { primaryAdapter: 'shell' }, db), /adapter/);
+updateAgent(member.agent_id, { repoAccess: [process.cwd(), process.cwd()] }, db);
+assert.deepStrictEqual(JSON.parse(getAgent(member.agent_id, db)!.repo_access_json), [realpathSync(process.cwd())], 'repoAccess 正規化並去重');
+assert.throws(() => updateAgent(member.agent_id, { repoAccess: [] }, db), /repoAccess/);
+assert.throws(() => updateAgent(member.agent_id, { repoAccess: ['relative/repo'] }, db), /repoAccess/);
+assert.throws(() => updateAgent(member.agent_id, { repoAccess: ['/no/such/repo'] }, db), /repoAccess/);
 
 syncAgents(db);
 assert.strictEqual(listAgents(db).length, 6, '同步必須 idempotent 且保留人工 route 修改');
 assert.strictEqual(getAgent(member.agent_id, db)?.primary_adapter, 'agy');
+assert.deepStrictEqual(JSON.parse(getAgent(member.agent_id, db)!.repo_access_json), [realpathSync(process.cwd())], '同步保留人工 repoAccess');
 
 db.prepare('INSERT INTO workspaces_read_model (workspace_id, name, status, created_at) VALUES (?, ?, ?, ?)')
   .run('ws-agents', 'Agents', 'active', 't');

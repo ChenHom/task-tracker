@@ -29,6 +29,11 @@ try {
     [repo]: { checks: ['rm -rf .'], deployment: 'not_required' },
   }));
   assert.throws(() => loadRepoRegistry(registryPath), /check 不允許/, '任意 shell 指令不可進 registry');
+
+  writeFileSync(registryPath, JSON.stringify({
+    [repo]: { checks: ['python3 -m pytest', 'git diff --check'], deployment: 'not_required' },
+  }));
+  assert.deepStrictEqual(loadRepoRegistry(registryPath).get(canonical)?.checks, ['python3 -m pytest', 'git diff --check'], 'Python repo 可用 pytest');
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
