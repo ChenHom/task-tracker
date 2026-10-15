@@ -16,7 +16,7 @@ import { runMigrations } from '../src/schema';
 import { changeTaskStatus, createTask, registerTaskProjections } from '../src/task';
 import { registerNotificationProjections } from '../src/notification';
 import type { RepoRegistry } from '../src/repoRegistry';
-import { goalCoordinatorCliExitCode, handleGoalCoordinatorError, runGoalCoordinatorOnce, selectPendingGoalId } from './goalCoordinator';
+import { goalCoordinatorCliExitCode, handleGoalCoordinatorError, parseJsonOutput, runGoalCoordinatorOnce, selectPendingGoalId } from './goalCoordinator';
 
 const repo = mkdtempSync(join(tmpdir(), 'goal-coordinator-'));
 const db = new DatabaseSync(':memory:');
@@ -2040,8 +2040,89 @@ async function main(): Promise<void> {
   }
 }
 
+async function testBlockedEvidenceSkippedAfterTaskAdvanced(): Promise<void> {
+  for (const status of ['Review', 'Done', 'Archived']) {
+    const { database, createGoal } = createSchedulingFixture(`/a3/${status}`);
+    try {
+      const goalId = prepareExecutingGoal(database, createGoal, `stale blocker ${status}`);
+      const taskId = (database.prepare('SELECT task_id FROM tasks_read_model WHERE goal_id = ?').get(goalId) as { task_id: string }).task_id;
+      let ownerCalls = 0; // 只算 task_blocked；全部 Task 結束後的 verifying 不在此測試範圍
+      const deps = {
+        database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+        invokeJson: async ({ phase }: { phase: string }) => {
+          if (phase === 'task_blocked') ownerCalls += 1;
+          return { action: 'block', reason: 'should not be asked' };
+        },
+      };
+      // 假 task.blocked：recordDeliveryEvidence 時 Task 還在 Doing，Owner 處理前 Task 已往前走
+      recordDeliveryEvidence(taskId, { kind: 'task.blocked', ref: `stale-${status}`, detail: 'progressed' }, database);
+      database.prepare('UPDATE tasks_read_model SET status = ? WHERE task_id = ?').run(status, taskId);
+      assert.notStrictEqual(selectPendingGoalId(database), goalId, `${status} 的 Task 的 task.blocked 不應喚醒 Goal`);
+      await runGoalCoordinatorOnce(goalId, deps).catch(() => undefined);
+      assert.strictEqual(ownerCalls, 0, `${status} 的 Task 的 task.blocked 不得交給 Owner`);
+      assert.strictEqual(
+        (database.prepare("SELECT status FROM goal_heartbeats WHERE goal_id = ? AND phase = 'task_blocked'").get(goalId) as { status: string }).status,
+        'skipped',
+      );
+    } finally {
+      database.close();
+    }
+  }
+}
+
+async function testOwnerProseOutputParsing(): Promise<void> {
+  assert.deepStrictEqual(parseJsonOutput('我的判斷如下：\n```json\n{"action":"block","reason":"x"}\n```'), { action: 'block', reason: 'x' });
+  assert.deepStrictEqual(parseJsonOutput('說明\n{"action":"block","reason":"y"}'), { action: 'block', reason: 'y' });
+  assert.deepStrictEqual(parseJsonOutput('```json\n{"a":1}\n```'), { a: 1 });
+  assert.throws(() => parseJsonOutput('我認為應該改派，但沒有給 JSON'), (error) => error instanceof CommandError && /找不到 JSON object/.test(error.message));
+
+  const { database, createGoal } = createSchedulingFixture('/prose/task-blocked');
+  try {
+    const goalId = prepareExecutingGoal(database, createGoal, 'prose owner output');
+    const taskId = (database.prepare('SELECT task_id FROM tasks_read_model WHERE goal_id = ?').get(goalId) as { task_id: string }).task_id;
+    recordDeliveryEvidence(taskId, { kind: 'task.blocked', ref: 'prose-1', detail: 'dependency down' }, database);
+    const outputs = ['我看過了，這個 Task 應該改派。', '我看過了：\n```json\n{"action":"block","reason":"dependency down"}\n```'];
+    let ownerCalls = 0;
+    // 與 invokeLiveJson 相同：解析在 invokeJson 內做，所以失敗會在 ownerJsonRun 的 invokeJson 呼叫中丟出
+    const deps = {
+      database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+      invokeJson: async ({ prompt }: { prompt: string }) => {
+        assert.match(prompt, /只回傳一個 JSON object，不要 Markdown、程式碼區塊或其他文字/);
+        return { output: parseJsonOutput(outputs[ownerCalls++]), tokenTotal: null };
+      },
+    };
+    assert.strictEqual(await runGoalCoordinatorOnce(goalId, deps), 'Blocked', '純文字輸出要重試，第二次的 prose+JSON 要能解析');
+    assert.strictEqual(ownerCalls, 2);
+    assert.strictEqual(
+      (database.prepare("SELECT json_extract(payload_json, '$.reason') AS reason FROM event_store WHERE aggregate_id = ? AND event_type = 'goal.blocked'").get(goalId) as { reason: string }).reason,
+      'dependency down', 'Blocked 原因必須來自第二次（可解析）的 Owner 輸出'
+    );
+  } finally {
+    database.close();
+  }
+
+  // 兩次都沒有 JSON：仍是 Terminal（Goal 轉 Blocked），但已經用掉一次重試
+  const second = createSchedulingFixture('/prose/task-blocked-twice');
+  try {
+    const goalId = prepareExecutingGoal(second.database, second.createGoal, 'prose twice');
+    const taskId = (second.database.prepare('SELECT task_id FROM tasks_read_model WHERE goal_id = ?').get(goalId) as { task_id: string }).task_id;
+    recordDeliveryEvidence(taskId, { kind: 'task.blocked', ref: 'prose-2', detail: 'dependency down' }, second.database);
+    let ownerCalls = 0;
+    const deps = {
+      database: second.database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+      invokeJson: async () => { ownerCalls += 1; return { output: parseJsonOutput('只有文字'), tokenTotal: null }; },
+    };
+    const error = await runGoalCoordinatorOnce(goalId, deps).then(() => null, (e: unknown) => e);
+    assert.strictEqual(ownerCalls, 2, '解析失敗要先重試一次');
+    assert.ok(handleGoalCoordinatorError(goalId, error, second.database), '重試後仍失敗才是 Terminal');
+    assert.strictEqual(getGoal(goalId, second.database)?.status, 'Blocked');
+  } finally {
+    second.database.close();
+  }
+}
+
 main().then(testFairGoalScheduling).then(testStaleOwnerRunBlocksForHumanResume).then(testOwnerScopingInvalidOutputRecovery).then(testOwnerCommentFailureDoesNotBlockGoal)
   .then(testProductionBlockedEvidenceWakesGoalOnce).then(testBlockedReassignmentInvalidOutputRecovery).then(testTransitionHeartbeats).then(testPreemptedGoalResumesDiscussion)
   .then(testResumedSynthesisReconcilesExistingTasks).then(testDiscussionTokenTotals).then(testGoalCheckpointCrashRecovery)
-  .then(testOwnerCheckpointAtomicity)
+  .then(testOwnerCheckpointAtomicity).then(testBlockedEvidenceSkippedAfterTaskAdvanced).then(testOwnerProseOutputParsing)
   .then(() => console.log('goalCoordinator.test.ts OK'));

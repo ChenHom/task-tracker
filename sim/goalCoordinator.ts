@@ -23,6 +23,7 @@ import { changeTaskAssignee, getTask } from '../src/task';
 import type { RepoRegistry } from '../src/repoRegistry';
 import { buildGoalDiscussionPacket, readGoalRepoSources, runGoalDiscussion, type GoalRepoSource } from './goalDiscussion';
 import { runSafeDiscussionSession, SAFE_DISCUSSION_ROUTE } from './run';
+import { extractJsonBlock } from './production/runner';
 import { DISCUSSION_MAX_PROMPT_CHARS, sanitizeUntrustedText } from './notificationSecurity';
 import { initializeGoalCoordinatorProjections } from './goalCoordinatorSetup';
 
@@ -57,10 +58,12 @@ function invocationOutput(result: JsonObject | { output: JsonObject; tokenTotal?
   return { output: result as JsonObject, tokenTotal: null };
 }
 
-function parseJsonOutput(output: string): JsonObject {
-  const clean = output.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  const value = JSON.parse(clean) as unknown;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new CommandError('Owner 輸出不是 JSON object');
+// 模型常在 JSON 前面加說明文字；找不到可解析的 JSON object 時丟 InvalidOwnerOutputError，讓呼叫端的重試迴圈接手
+export function parseJsonOutput(output: string): JsonObject {
+  const value = extractJsonBlock(output);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new InvalidOwnerOutputError('Owner 輸出找不到 JSON object'); // 訊息會進 Run outcome，不放模型輸出內容
+  }
   return value as JsonObject;
 }
 
@@ -97,6 +100,8 @@ async function ownerJsonRun(input: {
   goalId: string; phase: string; prompt: string; sourceTexts: string[]; triggerRef?: string;
   sourceRefs?: string[];
   validate?: (output: JsonObject) => void; validateBeforeStore?: boolean;
+  // invokeJson 丟出的 InvalidOwnerOutputError（輸出解析失敗）不包成 Terminal，交給呼叫端既有的重試迴圈
+  retryUnparsable?: boolean;
 }, deps: GoalCoordinatorDeps, database: DatabaseSync): Promise<{
   output: JsonObject; heartbeatId: string; runId: string; tokenTotal: number | null; outcome: string; evidenceRef: string;
 }> {
@@ -194,7 +199,7 @@ async function ownerJsonRun(input: {
       status: 'failed', actualInputTokens: null, actualOutputTokens: null, actualCost: null, credibleBilling: false,
       outcome: null, errorCategory: 'discussion', evidenceRef: null, sideEffectState: 'none',
     }, database);
-    if (!outputReceived) throw new TerminalOwnerDiscussionRunError(error);
+    if (!outputReceived && !(input.retryUnparsable && error instanceof InvalidOwnerOutputError)) throw new TerminalOwnerDiscussionRunError(error);
     throw error;
   }
 }
@@ -369,7 +374,7 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
     const ownerAgentId = goal.owner_agent_id;
     const blockedInput = {
       goalId, phase: 'task_blocked', triggerRef: blockedTask.trigger_ref, sourceRefs: contextSourceRefs(),
-      ...boundedOwnerInput('Task 已卡住，請決定改派或將 Goal 轉 Blocked。只回 JSON：{"action":"reassign","taskId":"...","assigneeId":"..."}或{"action":"block","reason":"..."}', {
+      ...boundedOwnerInput('Task 已卡住，請決定改派或將 Goal 轉 Blocked。只回傳一個 JSON object，不要 Markdown、程式碼區塊或其他文字：{"action":"reassign","taskId":"...","assigneeId":"..."}或{"action":"block","reason":"..."}', {
         ...commonContext(), taskId: blockedTask.task_id, blocker: blockedTask.payload_json,
       }),
       validate: (value: JsonObject) => {
@@ -388,7 +393,7 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
           throw new InvalidOwnerOutputError('task.blocked 缺少 Blocked 原因');
         }
       },
-      validateBeforeStore: true,
+      validateBeforeStore: true, retryUnparsable: true,
     };
     let ownerRun: Awaited<ReturnType<typeof ownerJsonRun>>;
     try {
@@ -468,7 +473,7 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
         } : null,
         candidates: candidates.map((agent) => ({ id: agent.agent_id, skill: JSON.parse(agent.skill_profile_json), load: loads.get(agent.agent_id) })),
       }),
-      validate: (value: JsonObject) => { selections(value, candidateIds); }, validateBeforeStore: true,
+      validate: (value: JsonObject) => { selections(value, candidateIds); }, validateBeforeStore: true, retryUnparsable: true,
     };
     const select = async (triggerRef?: string) => {
       const ownerRun = await ownerJsonRun({ ...scopingInput, triggerRef }, deps, database);
@@ -585,6 +590,7 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
           throw new InvalidOwnerOutputError('Owner 驗收缺少 evidence');
         }
       },
+      retryUnparsable: true,
     };
     let verificationOwnerRun: Awaited<ReturnType<typeof ownerJsonRun>>;
     try {
@@ -644,6 +650,14 @@ function skipOrphanGoalHeartbeats(goalId: string, database: DatabaseSync): void 
         AND (revision < ? OR (? IN ('Executing','Verifying','Done','Cancelled')
           AND phase IN ('owner_scoping','round_1','round_2','owner_synthesis')))`,
   ).run(new Date().toISOString(), goalId, goal.revision, goal.status);
+  // task.blocked 證據對應的 Task 之後已進 Review／Done／Archived，代表卡關已解除，不必再叫 Owner 處理
+  database.prepare(
+    `UPDATE goal_heartbeats SET status = 'skipped', updated_at = ?
+      WHERE goal_id = ? AND status = 'pending' AND phase = 'task_blocked'
+        AND EXISTS (SELECT 1 FROM tasks_read_model t
+          WHERE t.goal_id = goal_heartbeats.goal_id AND t.status IN ('Review','Done','Archived')
+            AND goal_heartbeats.trigger_ref LIKE 'evidence:' || t.task_id || ':%')`,
+  ).run(new Date().toISOString(), goalId);
 }
 
 function markGoalProcessed(goalId: string, database: DatabaseSync): void {

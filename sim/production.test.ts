@@ -147,7 +147,11 @@ import {
   type CutoverManifest,
 } from './production/migrate';
 import type { MemberSnapshot, AuditEventSnapshot } from './production/api';
-import { assignAndStartDoing, coordinatorChildEnvironment, execAllowlistedCommand, withAction } from './production';
+import { DatabaseSync } from 'node:sqlite';
+import { runMigrations } from '../src/schema';
+import { enqueueHeartbeat, finishRun, markRunRunning, prepareRun, type FinishRunInput, type PrepareRunInput } from '../src/goalRun';
+import { trackGoalRunAttempt } from './goalUsage';
+import { applyMemberAttemptTransition, assignAndStartDoing, coordinatorChildEnvironment, execAllowlistedCommand, goalRunTriggerRef, productionMemberAdapter, withAction } from './production';
 
 assert.deepStrictEqual(coordinatorChildEnvironment({ PATH: '/bin', TASK_TRACKER_COORDINATOR_TOKEN: 'secret' }), { PATH: '/bin' });
 
@@ -6075,9 +6079,100 @@ async function runMigrateTests(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Goal Task attempt：假 task.blocked 與同 tick 多 Task 的 heartbeat 去重
+// ---------------------------------------------------------------------------
+async function runGoalAttemptTests(): Promise<void> {
+  // A1：從 human_blocked 恢復且這次 progressed 的 attempt（phase 仍是 human_blocked，只有計數歸零）
+  // 不得再記 task.blocked；沒有進展的 attempt 仍要記。
+  const attemptResult = (evidenceChanged: boolean): MemberSessionResult => ({
+    outcome: evidenceChanged ? 'progressed' : 'retryable_failure',
+    exitCode: 0,
+    output: { summary: 'done', changedPaths: [], verificationCommands: [], blocker: evidenceChanged ? null : 'still stuck' },
+    evidence: {
+      commitSha: null, commitChangedPaths: [], verificationPassed: false, verificationRanCommands: [],
+      reviewTransitionConfirmed: false, reviewStatus: null, summaryCommentId: null, blockerRepeated: false, rejectedReason: null,
+    },
+    evidenceChanged,
+  });
+  for (const evidenceChanged of [true, false]) {
+    const db = openCoordinatorState(':memory:');
+    try {
+      const recorded: Array<{ taskId: string; kind: string; detail: string }> = [];
+      const deps = {
+        db,
+        ownerClient: {
+          listComments: async () => [],
+          recordDeliveryEvidence: async (taskId: string, input: { kind: string; detail: string }) => { recorded.push({ taskId, ...input }); },
+          postCommentOnce: async () => 'comment-1',
+        },
+        now: () => NOW,
+        tracer: () => () => undefined,
+      } as never;
+      const run = makeTaskRun({ taskId: 'a1-task', workspaceId: 'ws-a1', phase: 'human_blocked', ownerIntervened: true, noProgressCount: 3, evidenceFingerprint: 'old' });
+      const task = makeTask({ taskId: 'a1-task', workspaceId: 'ws-a1', status: 'Doing', goalId: 'goal-a1', goalStatus: 'Executing' });
+      const transition = await applyMemberAttemptTransition(deps, { taskId: 'a1-task', workspaceId: 'ws-a1' } as never, run, attemptResult(evidenceChanged), task);
+      assert.strictEqual(transition.run.phase, 'human_blocked', 'policy 的 phase 語意不變：progressed 只歸零計數');
+      if (evidenceChanged) {
+        assert.deepStrictEqual(recorded, [], '從 human_blocked 恢復且 progressed 的 attempt 不得記錄 task.blocked evidence');
+      } else {
+        assert.strictEqual(recorded.length, 1, '沒有進展的 attempt 仍要記 task.blocked');
+        assert.strictEqual(recorded[0].kind, 'task.blocked');
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  // B4：runner 丟例外時，原始錯誤（截到 200 字）要跟著結果出去，不能只剩 errorCategory "runner"
+  const failing = await productionMemberAdapter(
+    { runner: 'codex', model: 'm' },
+    async () => { throw new Error(`run 不存在或狀態不可完成${'x'.repeat(300)}`); },
+    {} as never, () => 'same', false,
+  ).run({ prompt: '', cwd: '', model: 'm' });
+  assert.strictEqual(failing.errorCategory, 'runner');
+  assert.match(failing.errorDetail ?? '', /run 不存在或狀態不可完成/);
+  assert.ok((failing.errorDetail ?? '').length <= 200, 'errorDetail 要截到 200 字');
+
+  // B1：同一 tick 同一 Agent 的兩個 Goal Task 要各自拿到自己的 heartbeat／run，第二個 Task 的 finishRun 才不會失敗。
+  const database = new DatabaseSync(':memory:');
+  runMigrations(database);
+  try {
+    const recorder = {
+      quotaSnapshot: async () => '{}',
+      prepareRun: async (input: Record<string, unknown>) => {
+        const heartbeatId = enqueueHeartbeat({
+          scopeId: input.goalId, goalId: input.goalId, phase: input.phase, agentId: input.agentId, revision: 1, triggerRef: input.triggerRef,
+        }, database);
+        const runId = prepareRun({ ...input, heartbeatId } as unknown as PrepareRunInput, database);
+        markRunRunning(runId, database);
+        return runId;
+      },
+      finishRun: async (runId: string, input: Record<string, unknown>) => {
+        finishRun(runId, { ...input, actualCost: null, credibleBilling: false, evidenceRef: null } as unknown as FinishRunInput, database);
+      },
+    };
+    const runIds: string[] = [];
+    for (const taskId of ['b1-task-1', 'b1-task-2']) {
+      await trackGoalRunAttempt({
+        recorder: { ...recorder, prepareRun: async (input) => { const id = await recorder.prepareRun(input); runIds.push(id); return id; } },
+        goalId: 'goal-b1', taskId, agentId: 'agent-b1', phase: 'implementation', adapter: 'codex', model: 'm', attempt: 'primary',
+        triggerRef: goalRunTriggerRef('tick-1', taskId), prompt: 'x', estimatedOutputTokens: 1,
+        invoke: async () => ({ exitCode: 0 }),
+      });
+    }
+    assert.notStrictEqual(runIds[0], runIds[1], '同一 tick 的兩個 Task 不得共用同一個 run');
+    const heartbeats = database.prepare("SELECT status FROM goal_heartbeats WHERE goal_id = 'goal-b1'").all() as Array<{ status: string }>;
+    assert.deepStrictEqual(heartbeats.map((row) => row.status), ['succeeded', 'succeeded'], '每個 Task 各有一個 succeeded heartbeat');
+  } finally {
+    database.close();
+  }
+}
+
 async function main(): Promise<void> {
   await runG1Tests();
   await runF5Tests();
+  await runGoalAttemptTests();
   await runCoordinatorEnvironmentTest();
   await runApiTests();
   await runGitTests();

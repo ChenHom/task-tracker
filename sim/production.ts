@@ -1260,7 +1260,7 @@ async function dispatchAssignMember(
  * 這個 Critical bug的核心：不管失敗發生在哪一步，都必須流進同一套會累計、會升級、
  * 最終會留下人類看得到的訊號的狀態機，不能有任何一條路徑悄悄繞過它。
  */
-async function applyMemberAttemptTransition(
+export async function applyMemberAttemptTransition(
   deps: ResolvedDeps,
   action: CoordinatorAction,
   run: TaskRun,
@@ -1290,7 +1290,9 @@ async function applyMemberAttemptTransition(
       run: { ...transition.run, evidenceFingerprint: taskEvidenceFingerprint(evidenceAfterNotice) },
     };
   }
-  if (task.goalId && transition.run.phase === 'human_blocked') {
+  // 從 human_blocked 恢復且這次有進展的 attempt，phase 仍是 human_blocked（policy 只歸零計數）；
+  // 這時不能再記 task.blocked，否則 Owner 會被叫去處理一個其實已經往 Review 前進的 Task。
+  if (task.goalId && transition.run.phase === 'human_blocked' && !result.evidenceChanged) {
     await deps.ownerClient.recordDeliveryEvidence(action.taskId, {
       kind: 'task.blocked', ref: transition.run.evidenceFingerprint || 'human_blocked',
       detail: result.output.blocker || result.evidence.rejectedReason || result.outcome,
@@ -1298,6 +1300,14 @@ async function applyMemberAttemptTransition(
   }
 
   return transition;
+}
+
+/**
+ * Goal Run 的 heartbeat 依 (scope, phase, agent, revision, triggerRef) 去重：只用 tick id 時，
+ * 同一 tick 同一 Agent 的第二個 Task 會撿到第一個 Task 已完成的 run，finishRun 因此失敗。
+ */
+export function goalRunTriggerRef(workerId: string | number | null, taskId: string): string {
+  return `${workerId}:${taskId}`;
 }
 
 function goalRunRecorder(client: TaskTrackerClient, goalId: string): GoalRunRecorder {
@@ -1354,7 +1364,8 @@ export function productionMemberAdapter(
       } catch (error) {
         const classification = classifyAdapterResult({ exitCode: 1, stdout: '', stderr: String(error) });
         if (classification.errorCategory === 'runner' && fingerprint() === before) classification.sideEffectState = 'none';
-        return { ...classification, output: '', sessionId: null, usage: null };
+        // 例外文字只留在這裡，外層只看得到 errorCategory（常常只剩 "runner"），所以截斷後帶出去
+        return { ...classification, output: '', sessionId: null, usage: null, errorDetail: String(error).slice(0, 200) };
       }
     },
   };
@@ -1456,11 +1467,12 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
       ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
     const fallback = deps.useAgentRoutes && fallbackRoute
       ? createMemberSessionRunner(fallbackRoute) : null;
+    const triggerRef = goalRunTriggerRef(workingRun.workerId, task.taskId);
     const tracked = (attempt: 'primary' | 'fallback', route: typeof primaryRoute, runner: MemberSessionRunner): MemberSessionRunner => async (context) =>
       trackGoalRunAttempt({
         recorder: goalRunRecorder(deps.ownerClient, task.goalId!), goalId: task.goalId!, taskId: task.taskId,
         agentId: agent.agentId, phase: 'implementation', adapter: route.runner, model: route.model,
-        attempt, triggerRef: String(workingRun.workerId), prompt: JSON.stringify(context), estimatedOutputTokens: 1000,
+        attempt, triggerRef, prompt: JSON.stringify(context), estimatedOutputTokens: 1000,
         invoke: () => runner(context),
       });
     const trackedPrimary = tracked('primary', primaryRoute, primary);
@@ -1475,14 +1487,16 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
         createPreflightRunPersister({
           recorder: goalRunRecorder(deps.ownerClient, task.goalId!),
           goalId: task.goalId!, taskId: task.taskId, agentId: agent.agentId, phase: 'implementation',
-          triggerRef: String(workingRun.workerId),
+          triggerRef,
           routes: {
             primary: { adapter: primaryRoute.runner, model: primaryRoute.model },
             fallback: fallbackRoute ? { adapter: fallbackRoute.runner, model: fallbackRoute.model } : null,
           },
         }),
       );
-      if (!result.output) throw new Error(`member adapter ${result.attempt} failed: ${result.errorCategory ?? 'unknown'}`);
+      if (!result.output) {
+        throw new Error(`member adapter ${result.attempt} failed: ${result.errorCategory ?? 'unknown'}${result.errorDetail ? ` (${result.errorDetail})` : ''}`);
+      }
       return JSON.parse(result.output) as MemberSessionRunnerResult;
     };
   }
@@ -1615,11 +1629,12 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
       ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
     const fallback = deps.useAgentRoutes && fallbackRoute
       ? createOwnerSessionRunner(fallbackRoute) : null;
+    const triggerRef = goalRunTriggerRef(run.workerId, currentTask.taskId);
     const tracked = (attempt: 'primary' | 'fallback', route: typeof primaryRoute, runner: OwnerSessionRunner): OwnerSessionRunner => async (context) =>
       trackGoalRunAttempt({
         recorder: goalRunRecorder(deps.ownerClient, currentTask.goalId!), goalId: currentTask.goalId!, taskId: currentTask.taskId,
         agentId: agent.agentId, phase: 'owner_review', adapter: route.runner, model: route.model,
-        attempt, triggerRef: String(run.workerId), prompt: JSON.stringify(context), estimatedOutputTokens: 500,
+        attempt, triggerRef, prompt: JSON.stringify(context), estimatedOutputTokens: 500,
         invoke: () => runner(context),
       });
     const trackedPrimary = tracked('primary', primaryRoute, primary);
