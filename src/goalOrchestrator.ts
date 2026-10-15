@@ -506,7 +506,8 @@ export function createFollowupGoal(ownerAgentId: string, parentGoalId: string, i
     if (existing) throw new ConflictError('follow-up 指紋重複');
     const childGoalId = createGoal(ownerAgentId, {
       workspaceId: parent.workspace_id, projectId: parent.project_id, parentGoalId,
-      source: 'followup', objective, successCriteria, ownerAgentId,
+      // data_scope 放的是硬性限制（例如不得用券商正式 API），follow-up 沒有自己的欄位，必須沿用父 Goal
+      source: 'followup', objective, successCriteria, dataScope: parent.data_scope || undefined, ownerAgentId,
     }, database, repos);
     database.prepare(
       `INSERT INTO goal_followups (parent_goal_id, success_criteria, evidence_fingerprint, child_goal_id, created_at)

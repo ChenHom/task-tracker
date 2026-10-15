@@ -156,8 +156,10 @@ async function main(): Promise<void> {
   }, db), 'saved');
   assert.strictEqual((db.prepare('SELECT COUNT(*) AS n FROM goals_read_model WHERE parent_goal_id = ?').get(normal) as { n: number }).n, 0,
     '保存候選不得建立 Goal');
+  db.prepare("UPDATE goals_read_model SET data_scope = 'must not use production broker API' WHERE goal_id = ?").run(normal);
   const child = createFollowupGoal(owner, normal, { objective: 'follow', successCriteria: 'new pass', reason: 'new evidence', evidenceRefs: ['commit:new'] }, db, repos);
   assert.strictEqual(getGoal(child, db)?.parent_goal_id, normal);
+  assert.strictEqual(getGoal(child, db)?.data_scope, 'must not use production broker API', 'follow-up 必須沿用父 Goal 的 data_scope');
   assert.throws(() => createFollowupGoal(owner, normal, { objective: 'follow', successCriteria: 'new pass', reason: 'again', evidenceRefs: ['commit:new'] }, db, repos), /重複/);
   cancelGoal(owner, child, db);
   const autonomousBlocker = makeGoal('active autonomous');
