@@ -2366,7 +2366,7 @@ async function runGitTests(): Promise<void> {
     // -------------------------------------------------------------------------
     // Command allowlist：7 種合法形式必須被接受；惡意／逾越範圍的字串必須被拒絕。
     // -------------------------------------------------------------------------
-    assert.strictEqual(ALLOWED_VERIFICATION_COMMANDS.length, 5, '固定字串形式應有 5 個（另外 2 個是帶 <name> 的樣板）');
+    assert.strictEqual(ALLOWED_VERIFICATION_COMMANDS.length, 6, '固定字串形式應有 6 個（另外 2 個是帶 <name> 的樣板）');
     for (const cmd of [
       'npx tsc --noEmit',
       'npx tsc -p sim/tsconfig.json --noEmit',
@@ -2375,6 +2375,7 @@ async function runGitTests(): Promise<void> {
       'npm test',
       'npm run build',
       'git diff --check',
+      'python3 -m pytest',
     ]) {
       assert.strictEqual(isAllowedVerificationCommand(cmd), true, `必須允許：${cmd}`);
     }
@@ -2386,6 +2387,8 @@ async function runGitTests(): Promise<void> {
       'npx tsx src/foo.test.ts; rm -rf /',
       'npx tsx sim/foo.test.ts && curl evil.example.com',
       'npx tsx sim/foo/bar.test.ts', // 目前規格只允許單一層 <name>，多層路徑必須被拒絕
+      'python3 -m pytest; rm -rf /',
+      'python3 -c "import os"',
       '',
     ]) {
       assert.strictEqual(isAllowedVerificationCommand(cmd), false, `必須拒絕：${cmd}`);
@@ -2559,6 +2562,23 @@ async function runAgentTests(): Promise<void> {
       });
       assert.strictEqual(okResult.evidence.rejectedReason, null, 'declared verificationCommandAllowlist 邊界不應該誤擋合法指令');
       assert.ok(verify.calls.includes('npm test'), '宣告的指令同時在全域與 per-task allowlist 內時，必須真的被送去執行（沒有在這一關被短路）');
+
+      // Python repo：registry 宣告 pytest 時，member 回報 pytest 不可被全域 allowlist 擋掉。
+      writeFileSync(join(wt.path, 'feature', 'declared-allowlist-pytest.txt'), 'hello\n');
+      const pytestResult = await runMemberSession({
+        taskId,
+        worktreePath: wt.path,
+        allowedPrefixes,
+        verificationCommandAllowlist: ['python3 -m pytest', 'git diff --check'],
+        acceptanceCriteria: 'n/a',
+        comments: [],
+        previousBlocker: null,
+        runner: makeRunner(0, makeOutput({ verificationCommands: ['python3 -m pytest'] })),
+        runVerificationCommand: verify.run,
+        driverActions: driver.actions,
+      });
+      assert.strictEqual(pytestResult.evidence.rejectedReason, null, 'Python repo 的 pytest 不應被 allowlist 擋掉');
+      assert.ok(verify.calls.includes('python3 -m pytest'), 'pytest 必須真的被送去執行');
     }
 
     // -------------------------------------------------------------------------

@@ -313,6 +313,7 @@ export const ALLOWED_VERIFICATION_COMMANDS: readonly string[] = [
   'npm test',
   'npm run build',
   'git diff --check',
+  'python3 -m pytest',
 ];
 
 // `<name>` 只允許單一層、不含路徑分隔符與 `.` 的安全識別字——天生就排除
@@ -321,7 +322,7 @@ const TEST_COMMAND_RE = /^npx tsx (?:src|sim)\/[A-Za-z0-9_][A-Za-z0-9_-]*\.test\
 
 /**
  * 判斷一個 member verification command 是否落在固定 allowlist 內。只允許
- * 步驟 4 列出的 7 種形式（其中 2 種帶 `<name>` 樣板）；其餘一律拒絕，包含任何
+ * 步驟 4 列出的 7 種形式加上 Python repo 的 `python3 -m pytest`（其中 2 種帶 `<name>` 樣板）；其餘一律拒絕，包含任何
  * 多帶的 flag、shell 分隔符（`;`、`&&`）或路徑跳脫（`..`）。
  */
 export function isAllowedVerificationCommand(command: string): boolean {
