@@ -109,6 +109,45 @@ function finishSchedulingTasks(goalId: string, database: DatabaseSync): void {
   }
 }
 
+async function testStaleOwnerRunBlocksForHumanResume(): Promise<void> {
+  const { database, createGoal } = createSchedulingFixture('/stale/owner-run');
+  try {
+    const goalId = createGoal('stale owner scoping');
+    startDiscussion('fair-owner', goalId, database);
+    const heartbeatId = enqueueHeartbeat({ scopeId: goalId, goalId, phase: 'owner_scoping', agentId: 'fair-owner', revision: 1, triggerRef: 'phase' }, database);
+    const runId = prepareRun({
+      heartbeatId, goalId, agentId: 'fair-owner', phase: 'owner_scoping', adapter: 'claude', model: 'm',
+      attempt: 'primary', estimatedInputTokens: 1, estimatedOutputTokens: 1, estimateBasis: 'test', estimateConfidence: 'high', quotaSnapshotJson: '{}',
+    }, database);
+    markRunRunning(runId, database);
+    assert.strictEqual(selectPendingGoalId(database), undefined, '剛開始執行的 run 不得被當成卡住');
+    database.prepare('UPDATE goal_runs SET started_at = ? WHERE run_id = ?').run(new Date(Date.now() - 16 * 60 * 1000).toISOString(), runId);
+    assert.strictEqual(selectPendingGoalId(database), goalId, '程序崩潰留下的 running run 超過 15 分鐘必須重新喚醒 Goal');
+
+    let ownerCalls = 0;
+    let terminalError: unknown;
+    try {
+      await runGoalCoordinatorOnce(goalId, {
+        database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+        invokeJson: async () => { ownerCalls += 1; throw new Error('不應呼叫 Owner'); },
+      });
+    } catch (error) {
+      terminalError = error;
+    }
+    assert.strictEqual(ownerCalls, 0, '副作用不確定時不得自動重跑 Owner');
+    assert.strictEqual((database.prepare('SELECT status, error_category FROM goal_runs WHERE run_id = ?').get(runId) as { status: string; error_category: string }).error_category, 'crash_recovery');
+    assert.strictEqual(handleGoalCoordinatorError(goalId, terminalError, database), true, '卡住的 Owner run 必須轉成 Blocked');
+    assert.strictEqual(getGoal(goalId, database)?.status, 'Blocked');
+    assert.strictEqual(selectPendingGoalId(database), undefined, 'Blocked 後不得再被喚醒');
+
+    resumeGoal('human-admin', goalId, '修正 runner 後重試', database);
+    assert.strictEqual(getGoal(goalId, database)?.revision, 2);
+    assert.strictEqual(selectPendingGoalId(database), goalId, '人類恢復後新 revision 必須重新排 owner_scoping');
+  } finally {
+    database.close();
+  }
+}
+
 async function testOwnerScopingInvalidOutputRecovery(): Promise<void> {
   {
     const { database, createGoal } = createSchedulingFixture('/x6/invalid-twice');
@@ -2001,7 +2040,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().then(testFairGoalScheduling).then(testOwnerScopingInvalidOutputRecovery).then(testOwnerCommentFailureDoesNotBlockGoal)
+main().then(testFairGoalScheduling).then(testStaleOwnerRunBlocksForHumanResume).then(testOwnerScopingInvalidOutputRecovery).then(testOwnerCommentFailureDoesNotBlockGoal)
   .then(testProductionBlockedEvidenceWakesGoalOnce).then(testBlockedReassignmentInvalidOutputRecovery).then(testTransitionHeartbeats).then(testPreemptedGoalResumesDiscussion)
   .then(testResumedSynthesisReconcilesExistingTasks).then(testDiscussionTokenTotals).then(testGoalCheckpointCrashRecovery)
   .then(testOwnerCheckpointAtomicity)
