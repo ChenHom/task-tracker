@@ -306,6 +306,95 @@ async function testOwnerSynthesisInvalidOutputRecovery(): Promise<void> {
       database.close();
     }
   }
+
+  // 模擬 coordinator 在重試完成前中斷後重新進入：預先造出 owner_synthesis 的 Run 狀態
+  const seedSynthesisRun = (database: DatabaseSync, goalId: string, prefix: 'lease' | 'invalid-output-retry', state: 'failed' | { storedOutput: object }) => {
+    const goal = getGoal(goalId, database)!;
+    const heartbeatId = enqueueHeartbeat({
+      scopeId: goalId, goalId, phase: 'owner_synthesis', agentId: 'fair-owner', revision: goal.revision, triggerRef: `${prefix}:${goal.version}`,
+    }, database);
+    const runId = prepareRun({
+      heartbeatId, goalId, agentId: 'fair-owner', phase: 'owner_synthesis', adapter: 'claude', model: 'm', attempt: 'primary',
+      estimatedInputTokens: 1, estimatedOutputTokens: 1, estimateBasis: 'test', estimateConfidence: 'high', quotaSnapshotJson: '{}',
+    }, database);
+    markRunRunning(runId, database);
+    if (state === 'failed') {
+      finishRun(runId, {
+        status: 'failed', actualInputTokens: null, actualOutputTokens: null, actualCost: null, credibleBilling: false,
+        outcome: null, errorCategory: 'discussion', evidenceRef: null, sideEffectState: 'none',
+      }, database);
+    } else {
+      database.prepare('INSERT INTO goal_stage_outputs (heartbeat_id, output_json, created_at) VALUES (?, ?, ?)')
+        .run(heartbeatId, JSON.stringify(state.storedOutput), new Date().toISOString());
+      database.prepare("UPDATE goal_heartbeats SET status = 'pending' WHERE heartbeat_id = ?").run(heartbeatId);
+    }
+  };
+
+  {
+    const { database, createGoal } = createSchedulingFixture('/x7/resume-retry');
+    try {
+      const goalId = createGoal('tests resume from retry checkpoint');
+      toSynthesis(database, goalId);
+      acquireRepoLease('fair-owner', goalId, database); // 進入 owner_synthesis；triggerRef 的 version 取此時的值
+      seedSynthesisRun(database, goalId, 'lease', 'failed');
+      let ownerCalls = 0;
+      assert.strictEqual(await runGoalCoordinatorOnce(goalId, {
+        database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+        invokeJson: async () => { ownerCalls += 1; return schedulingPlan('resumed'); },
+      }), 'Executing');
+      assert.strictEqual(ownerCalls, 1, '第一次已失敗時只能呼叫重試一次');
+      assert.strictEqual((database.prepare('SELECT title FROM tasks_read_model WHERE goal_id = ?').get(goalId) as { title: string }).title, 'resumed');
+    } finally {
+      database.close();
+    }
+  }
+
+  {
+    const { database, createGoal } = createSchedulingFixture('/x7/retry-failed');
+    try {
+      const goalId = createGoal('tests retry already failed');
+      toSynthesis(database, goalId);
+      acquireRepoLease('fair-owner', goalId, database); // 進入 owner_synthesis；triggerRef 的 version 取此時的值
+      seedSynthesisRun(database, goalId, 'lease', 'failed');
+      seedSynthesisRun(database, goalId, 'invalid-output-retry', 'failed');
+      let ownerCalls = 0;
+      const deps = {
+        database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+        invokeJson: async () => { ownerCalls += 1; return schedulingPlan('never'); },
+      };
+      let terminalError: unknown;
+      try {
+        await runGoalCoordinatorOnce(goalId, deps);
+      } catch (error) {
+        terminalError = error;
+      }
+      assert.strictEqual(handleGoalCoordinatorError(goalId, terminalError, database), true, '重試已失敗必須轉成 Blocked');
+      assert.strictEqual(getGoal(goalId, database)?.status, 'Blocked');
+      assert.strictEqual(ownerCalls, 0);
+    } finally {
+      database.close();
+    }
+  }
+
+  {
+    const { database, createGoal } = createSchedulingFixture('/x7/retry-stored');
+    try {
+      const goalId = createGoal('tests retry stored output before materialize');
+      toSynthesis(database, goalId);
+      acquireRepoLease('fair-owner', goalId, database); // 進入 owner_synthesis；triggerRef 的 version 取此時的值
+      seedSynthesisRun(database, goalId, 'lease', 'failed');
+      seedSynthesisRun(database, goalId, 'invalid-output-retry', { storedOutput: schedulingPlan('stored') });
+      let ownerCalls = 0;
+      assert.strictEqual(await runGoalCoordinatorOnce(goalId, {
+        database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+        invokeJson: async () => { ownerCalls += 1; return schedulingPlan('never'); },
+      }), 'Executing');
+      assert.strictEqual(ownerCalls, 0, '重試已有合法輸出時不得再呼叫 Owner');
+      assert.strictEqual((database.prepare('SELECT title FROM tasks_read_model WHERE goal_id = ?').get(goalId) as { title: string }).title, 'stored');
+    } finally {
+      database.close();
+    }
+  }
 }
 
 async function testOwnerCommentFailureDoesNotBlockGoal(): Promise<void> {
