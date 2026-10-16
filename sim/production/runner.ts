@@ -27,7 +27,7 @@
  * 「看起來合法」的預設決策——agent.ts:356 解構後會直接使用 decision.action，
  * 不會先檢查 exitCode。
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -411,7 +411,25 @@ export function assertSessionUsable(label: string, session: AiSessionResult): vo
 function confinedFor(route: ModelRoute, mainRepo: string | undefined, writable: boolean, bashAllow: string[], denyRead?: string[]): ClaudeConfined | undefined {
   if (route.runner !== 'claude') return undefined;
   if (!mainRepo) throw new Error('claude route 必須提供 mainRepo 才能啟用 confined session');
+  const leaked = protectedPathInGitHistory(mainRepo, ['.env', ...(denyRead ?? [])]);
+  if (leaked) {
+    throw new Error(`拒讀路徑曾進過 git 歷史（${leaked}）：成員可用 git show <rev>:<path> 讀出內容，拒絕啟動 confined session`);
+  }
   return { writable, mainRepo, bashAllow, ...(denyRead ? { denyRead } : {}) };
+}
+
+/**
+ * denyRead 只擋檔案路徑；成員的唯讀 git（git show/log/diff）可直接讀 `<rev>:<path>` 的 blob。
+ * 拒讀路徑只要在任何 ref 的歷史中出現過就回傳該路徑（呼叫端 fail closed）。沒有 .git 就沒有可讀的 blob；
+ * 其他 git 錯誤一律往外丟，不放行。
+ */
+export function protectedPathInGitHistory(mainRepo: string, paths: string[]): string | null {
+  if (!existsSync(join(mainRepo, '.git'))) return null;
+  for (const path of paths) {
+    const hit = execFileSync('git', ['-C', mainRepo, 'log', '--all', '-1', '--format=%H', '--', `:(literal)${path}`], { encoding: 'utf8' }).trim();
+    if (hit) return path;
+  }
+  return null;
 }
 
 // 成員除了 task 的驗證指令外，只開唯讀 git；commit／merge 都由 driver 做。

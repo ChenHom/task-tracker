@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -380,6 +381,28 @@ async function claudeConfinedRunnerTests(): Promise<void> {
       taskId: 'task-confined-owner-deny', acceptanceCriteria: 'ac', comments: [], reviewedHeadSha: 'abc', worktreePath: worktree,
     });
     assert.ok(JSON.parse(argv()[argv().indexOf('--settings') + 1]).sandbox.filesystem.denyRead.includes('/srv/target-repo/Sinopac.pfx'), 'owner 也要拒讀');
+
+    // 拒讀路徑若曾進過 git 歷史，git show <rev>:<path> 能繞過檔案拒讀：confined session 必須 fail closed
+    const histRepo = join(dir, 'hist-repo');
+    mkdirSync(histRepo);
+    const g = (...args: string[]) => execFileSync('git', ['-C', histRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' });
+    g('init', '-q');
+    writeFileSync(join(histRepo, 'README.md'), 'r');
+    g('add', 'README.md'); g('commit', '-qm', 'init');
+    const histMember = (denyRead?: string[]) => createMemberSessionRunner(claudeRoute, histRepo, denyRead ? { denyRead } : {})({
+      taskId: 'task-confined-hist', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'], verificationCommandAllowlist: [], worktreePath: worktree,
+    });
+    await histMember(['secret.pfx']);
+    assert.ok(argv().includes('--restricted'), '歷史乾淨時照常啟動');
+    writeFileSync(join(histRepo, 'secret.pfx'), 'cert');
+    g('add', 'secret.pfx'); g('commit', '-qm', 'oops'); g('rm', '-q', 'secret.pfx'); g('commit', '-qm', 'remove');
+    await assert.rejects(histMember(['secret.pfx']), /git 歷史（secret\.pfx）/, '已刪除但留在歷史中的拒讀路徑也要擋');
+    await assert.rejects(createOwnerSessionRunner(claudeRoute, histRepo, { denyRead: ['secret.pfx'] })({
+      taskId: 'task-confined-hist-owner', acceptanceCriteria: 'ac', comments: [], reviewedHeadSha: 'abc', worktreePath: worktree,
+    }), /git 歷史/, 'owner 同樣 fail closed');
+    writeFileSync(join(histRepo, '.env'), 'K=V');
+    g('add', '-f', '.env'); g('commit', '-qm', 'env');
+    await assert.rejects(histMember(), /git 歷史（\.env）/, '.env 即使沒列在 denyRead 也要檢查');
 
     // codex 成員：repoSandbox.network 真的決定 network_access（預設維持 true）
     writeFileSync(join(dir, 'codex'), [
