@@ -2035,8 +2035,32 @@ export interface ClaudeConfined {
   denyRead?: string[];
 }
 
+/**
+ * 目標 repo 的 venv（有 .venv/pyvenv.cfg 才算）：受限 session 的 Bash 自己決定 PATH，`python3` 永遠是系統 Python，
+ * 而 blockReadsOutsideWorkingDirectories 又擋掉 cwd 以外所有讀取，venv 與它指向的 python 安裝都讀不到。
+ * 回傳 venv 的 python 絕對路徑，與需要放行讀取的兩個目錄：venv 本身、venv python 的安裝根目錄。
+ * 安裝根目錄取 realpath(.venv/bin/python) 往上兩層（<root>/bin/pythonX.Y → <root>）；venv 的 python
+ * 連結壞了就退回 pyvenv.cfg 的 `home =`（指向 <root>/bin）。根目錄只剩一層（例如 /usr）就不放行：系統目錄本來就可讀。
+ */
+export function claudeVenv(mainRepo: string): { python: string; readRoots: string[] } | null {
+  const dir = join(mainRepo, '.venv');
+  let cfg: string;
+  try { cfg = readFileSync(join(dir, 'pyvenv.cfg'), 'utf8'); } catch { return null; }
+  let bin: string | undefined;
+  try { bin = dirname(realpathSync(join(dir, 'bin', 'python'))); } catch {
+    bin = /^home\s*=\s*(.+?)\s*$/mu.exec(cfg)?.[1];
+  }
+  const root = bin && isAbsolute(bin) && basename(bin) === 'bin' ? dirname(bin) : undefined;
+  return {
+    python: join(dir, 'bin', 'python'),
+    readRoots: [dir, ...(root && root.split(sep).filter(Boolean).length >= 2 ? [root] : [])],
+  };
+}
+
 export function claudeConfinedArgs(confined: ClaudeConfined, cwd?: string): string[] {
   const { writable, mainRepo, bashAllow } = confined;
+  // owner 唯讀、沒有 Bash，不需要 venv；成員才放行讀取
+  const venv = writable ? claudeVenv(mainRepo) : null;
   const relative = ['.env', ...(confined.denyRead ?? []).filter((path) => path !== '.env')];
   // session 在 <mainRepo>/sim-work/tasks/<id> 執行：同一相對路徑在 worktree 裡若也有一份（被追蹤或產生出來），也要擋。
   const roots = cwd && cwd !== mainRepo ? [mainRepo, cwd] : [mainRepo];
@@ -2054,7 +2078,7 @@ export function claudeConfinedArgs(confined: ClaudeConfined, cwd?: string): stri
       failIfUnavailable: true,
       autoAllowBashIfSandboxed: false,
       allowUnsandboxedCommands: false,
-      filesystem: { denyRead: denyPaths },
+      filesystem: { denyRead: denyPaths, ...(venv ? { allowRead: venv.readRoots } : {}) },
       network: { allowedDomains: [] as string[] },
     },
     autoMemoryEnabled: false,

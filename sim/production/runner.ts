@@ -31,7 +31,7 @@ import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { buildRunnerInvocation, isQuotaExhaustion, parseReportedTokenTotal, type ClaudeConfined, type ModelRoute } from '../run';
+import { buildRunnerInvocation, claudeVenv, isQuotaExhaustion, parseReportedTokenTotal, type ClaudeConfined, type ModelRoute } from '../run';
 import { classifyAdapterResult } from '../goalAdapters';
 import { sanitizeUntrustedText } from '../notificationSecurity';
 import type { Tracer } from '../trace';
@@ -282,7 +282,18 @@ ${workCommands.map((c) => `- ${c}`).join('\n')}`
 受限模式的 claude 成員目前沒有登記額外的工作指令，只能執行上面的驗證指令與唯讀 git。`;
 }
 
-export function memberPrompt(context: MemberSessionRunnerContext): string {
+// 受限 claude session 的 `python3` 是系統 Python（沒有 pytest 等套件）；有 venv 時教成員改用 venv 的 python 絕對路徑。
+function venvPythonSection(venvPython: string | undefined): string {
+  return venvPython
+    ? `
+
+這個 session 裡的 \`python3\` 是系統 Python，沒有專案套件。執行測試、回測與報表時，用 ${venvPython} 取代 \`python3\`，
+例如 \`${venvPython} -m pytest\`、\`${venvPython} app.py backtest run ...\`。
+最後 JSON 的 verificationCommands 仍照上面的清單列原本的 \`python3 -m pytest\`：driver 會用正確的環境重跑，不要寫 venv 路徑。`
+    : '';
+}
+
+export function memberPrompt(context: MemberSessionRunnerContext, venvPython?: string): string {
   return `你是 task ${context.taskId} 的實作者。
 
 工作目錄：${context.worktreePath}
@@ -298,7 +309,7 @@ ${context.comments.map((c, i) => `#${i} ${c}`).join('\n') || '（無）'}
 回報用驗證指令：最後 JSON 的 verificationCommands 只能列這些：
 ${context.verificationCommandAllowlist.map((c) => `- ${c}`).join('\n') || '（無）'}
 
-${workCommandsSection(context.workCommands)}
+${workCommandsSection(context.workCommands)}${venvPythonSection(venvPython)}
 
 規則：
 - 不要執行任何 git 寫入操作（add／commit／merge／branch／checkout）；commit 由 driver 代勞。
@@ -451,8 +462,14 @@ export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE, main
     const label = `member-${context.taskId.slice(0, 8)}`;
     const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
     try {
-      const confined = confinedFor(route, mainRepo, true, [...context.verificationCommandAllowlist, ...(context.workCommands ?? []), ...MEMBER_READONLY_GIT], repoSandbox.denyRead);
-      const session = await runAiSession(label, route, memberPrompt(context), cwd, MEMBER_SANDBOX, context.taskId, confined, repoSandbox.network);
+      const bashAllow = [...context.verificationCommandAllowlist, ...(context.workCommands ?? []), ...MEMBER_READONLY_GIT];
+      const confined = confinedFor(route, mainRepo, true, bashAllow, repoSandbox.denyRead);
+      // 有 venv 時，每條 `python3 ...` 另加一份 venv python 絕對路徑的版本（受限 session 的 python3 是系統 Python）
+      const venvPython = confined && mainRepo ? claudeVenv(mainRepo)?.python : undefined;
+      if (confined && venvPython) {
+        confined.bashAllow = bashAllow.flatMap((cmd) => (cmd.startsWith('python3 ') ? [cmd, `${venvPython}${cmd.slice('python3'.length)}`] : [cmd]));
+      }
+      const session = await runAiSession(label, route, memberPrompt(context, venvPython), cwd, MEMBER_SANDBOX, context.taskId, confined, repoSandbox.network);
       assertSessionUsable(label, session);
       const raw = extractJsonBlock(session.text);
       if (raw === null) {
