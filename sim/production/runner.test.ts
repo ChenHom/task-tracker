@@ -440,6 +440,7 @@ async function claudeConfinedRunnerTests(): Promise<void> {
     const venvRepo = join(dir, 'venv-repo');
     const install = join(realpathSync(dir), 'uv', 'cpython-3.11.13-linux-x86_64-gnu');
     mkdirSync(join(install, 'bin'), { recursive: true });
+    mkdirSync(join(install, 'lib', 'python3.11'), { recursive: true }); // 真的 Python 安裝才有，claudeVenv 用它判斷
     writeFileSync(join(install, 'bin', 'python3.11'), '');
     mkdirSync(join(venvRepo, '.venv', 'bin'), { recursive: true });
     symlinkSync(join(install, 'bin', 'python3.11'), join(venvRepo, '.venv', 'bin', 'python'));
