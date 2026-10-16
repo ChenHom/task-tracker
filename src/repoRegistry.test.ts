@@ -45,6 +45,34 @@ try {
     writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', allowedPrefixes: bad } }));
     assert.throws(() => loadRepoRegistry(registryPath), /allowedPrefixes 不合法/, `不合法 allowedPrefixes 應拒絕：${JSON.stringify(bad)}`);
   }
+
+  const withExtra = (extra: Record<string, unknown>) => writeFileSync(registryPath, JSON.stringify({
+    [repo]: { checks: ['npm test'], deployment: 'not_required', ...extra },
+  }));
+  withExtra({
+    seedFiles: [{ from: 'data/research.db', to: 'data/_run.db' }],
+    workCommands: ['python3 scripts/backtest.py', 'python3 -m research.report --fast'],
+  });
+  const seeded = loadRepoRegistry(registryPath).get(canonical);
+  assert.deepStrictEqual(seeded?.seedFiles, [{ from: 'data/research.db', to: 'data/_run.db' }], 'seedFiles 應原樣載入');
+  assert.deepStrictEqual(seeded?.workCommands, ['python3 scripts/backtest.py', 'python3 -m research.report --fast'], 'workCommands 應原樣載入');
+  assert.strictEqual(registry.get(canonical)?.seedFiles, undefined, '未設定時不帶 seedFiles');
+  assert.strictEqual(registry.get(canonical)?.workCommands, undefined, '未設定時不帶 workCommands');
+
+  for (const bad of [
+    [], 'data/x', [{ from: 'a' }], [{ to: 'a' }], [{ from: 'a', to: 1 }], [{ from: '', to: 'b' }], ['a'], [null],
+    [{ from: '/etc/passwd', to: 'data/x' }], [{ from: 'data/x', to: '/tmp/x' }],
+    [{ from: '../x', to: 'data/x' }], [{ from: 'data/x', to: 'a/../../x' }], [{ from: 'ok', to: '..' }],
+  ]) {
+    withExtra({ seedFiles: bad });
+    assert.throws(() => loadRepoRegistry(registryPath), /seedFiles 不合法/, `不合法 seedFiles 應拒絕：${JSON.stringify(bad)}`);
+  }
+  for (const bad of [
+    [], 'make', [1], [''], ['  '], ['a; rm -rf .'], ['a | b'], ['a && b'], ['echo $HOME'], ['echo `id`'], ['a > out'], ['a < in'], ['a\nb'], ['a\rb'],
+  ]) {
+    withExtra({ workCommands: bad });
+    assert.throws(() => loadRepoRegistry(registryPath), /workCommands 不合法/, `不合法 workCommands 應拒絕：${JSON.stringify(bad)}`);
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

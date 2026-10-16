@@ -17,7 +17,7 @@ import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { loadRepoRegistry, type RegisteredRepo } from '../src/repoRegistry';
+import { loadRepoRegistry, type RegisteredRepo, type SeedFile } from '../src/repoRegistry';
 
 import {
   openCoordinatorState,
@@ -67,6 +67,7 @@ import {
   getCommitMessage,
   getHeadSha,
   isAllowedVerificationCommand,
+  seedWorktreeFiles,
   type SystemdReadback,
   type GetSystemdReadback,
   type CheckHealth,
@@ -263,6 +264,8 @@ export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<Coordina
     task.targetRepo = config.targetRepo;
     task.verificationChecks = config.checks;
     task.allowedPrefixes = config.allowedPrefixes;
+    task.seedFiles = config.seedFiles;
+    task.workCommands = config.workCommands;
     task.deployment = task.deploymentNotRequired ? 'not_required' : config.deployment;
     deps.taskChecks?.set(task.taskId, config.checks);
   }
@@ -719,6 +722,10 @@ interface ResolvedDeps {
   repoRoot: string;
   now: () => Date;
   allowedPrefixes: string[];
+  /** 以下三項只在 Goal task 的 actionDeps 上有值（見 runOnce 的 action 迴圈）。 */
+  seedFiles?: SeedFile[];
+  workCommands?: string[];
+  goalDataScope?: string;
   runOwnerSession?: OwnerSessionRunner;
   runMemberSession?: MemberSessionRunner;
   useAgentRoutes: boolean;
@@ -999,7 +1006,10 @@ async function runLiveDispatchLoop(deps: ResolvedDeps, tickId: string): Promise<
       try {
         const task = snapshot.tasks.find((candidate) => candidate.taskId === action.taskId);
         const actionDeps = task?.goalId && task.targetRepo
-          ? { ...deps, repoRoot: task.targetRepo, allowedPrefixes: task.allowedPrefixes ?? deps.allowedPrefixes }
+          ? {
+            ...deps, repoRoot: task.targetRepo, allowedPrefixes: task.allowedPrefixes ?? deps.allowedPrefixes,
+            seedFiles: task.seedFiles, workCommands: task.workCommands, goalDataScope: task.goalDataScope,
+          }
           : deps;
         const outcome = await dispatchAction(actionDeps, action, snapshot, tickId, claimedAssigneesThisIteration);
         if (outcome === 'progressed') {
@@ -1537,6 +1547,12 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     },
   };
 
+  // 研究類 Goal 的資料檔多半 gitignored，worktree 裡沒有；跑 session 前照 registry 補進去。
+  if (task.goalId && deps.seedFiles?.length) {
+    const seeded = await seedWorktreeFiles(deps.repoRoot, worktreePath, deps.seedFiles);
+    // 失敗只記 trace（沿用 gate.skipped＝略過），不中斷 session。
+    for (const problem of seeded.problems) deps.tracer(action.taskId)('gate.skipped', { reason: 'seed_files_failed', detail: problem });
+  }
   if (task.goalId) await deps.ownerClient.setGoalWorktreeDirty(task.goalId, worktreePath, true);
   let result: MemberSessionResult;
   try {
@@ -1548,6 +1564,8 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
       verificationCommandAllowlist: (deps.taskChecks.get(action.taskId) ?? []).filter(isAllowedVerificationCommand),
       acceptanceCriteria: task.description ? `${task.title}\n\n${task.description}` : task.title,
       comments,
+      workCommands: deps.workCommands,
+      dataScope: deps.goalDataScope,
       previousBlocker,
       runner: memberRunner,
       runVerificationCommand: deps.runVerificationCommand,
@@ -1659,6 +1677,7 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
     comments,
     reviewedHeadSha,
     worktreePath: taskWorktreePath(deps.repoRoot, action.taskId),
+    dataScope: deps.goalDataScope,
     runner: ownerRunner,
   });
 

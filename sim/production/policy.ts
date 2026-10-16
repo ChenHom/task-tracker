@@ -6,6 +6,7 @@
 // 不牽涉任何檔案／網路 I/O。
 import { createHash } from 'node:crypto';
 import type { TaskRun, WorkPhase } from './types';
+import type { SeedFile } from '../../src/repoRegistry'; // 只取型別，不引入 repoRegistry 的 I/O
 
 // ---------------------------------------------------------------------------
 // 固定 workspace allowlist：正式環境只服務這兩個 workspace。
@@ -47,6 +48,11 @@ export interface TaskSnapshot {
   verificationChecks?: string[];
   /** registry 為該 repo 設定的可修改路徑前綴；未設定則沿用預設。 */
   allowedPrefixes?: string[];
+  /** registry 的 seedFiles／workCommands，原樣帶進成員 session（同 allowedPrefixes）。 */
+  seedFiles?: SeedFile[];
+  workCommands?: string[];
+  /** Goal 的 data_scope（資料範圍與硬性限制）；由 api.ts 讀 Goal 時一併帶入。 */
+  goalDataScope?: string;
   deployment?: 'task-tracker' | 'not_required' | null;
   deploymentNotRequired?: boolean;
   repoUnavailable?: boolean;

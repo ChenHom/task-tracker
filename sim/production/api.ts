@@ -386,8 +386,9 @@ export class TaskTrackerClient {
       if (!task.goalId) return;
       const goal = await this.safeRequest('GET', `/api/goals/${encodeURIComponent(task.goalId)}`);
       if (goal.status !== 200) throw new Error(`getGoal failed: HTTP ${goal.status} ${goal.body}`);
-      const goalRow = JSON.parse(goal.body) as { status: string; pause_requested: number };
+      const goalRow = JSON.parse(goal.body) as { status: string; pause_requested: number; data_scope?: string };
       task.goalStatus = goalRow.status;
+      task.goalDataScope = goalRow.data_scope ?? '';
       task.goalPauseRequested = goalRow.pause_requested === 1;
     }));
     return tasks;
