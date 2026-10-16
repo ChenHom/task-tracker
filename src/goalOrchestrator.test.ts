@@ -184,6 +184,11 @@ async function main(): Promise<void> {
   assert.throws(() => validateGoalSynthesis(badPlan({ title: 42 }), 'ws', db), /Owner synthesis 格式不合法：taskPlans\[0\]\.title 必須是字串/);
   assert.throws(() => validateGoalSynthesis({ ...validPlan, evidenceRefs: [''] }, 'ws', db), /Owner synthesis 格式不合法：evidenceRefs/);
   assert.doesNotThrow(() => validateGoalSynthesis(validPlan, 'ws', db));
+  assert.throws(() => validateGoalSynthesis(badPlan({ assigneeId: owner }), 'ws', db),
+    /Owner synthesis 格式不合法：taskPlans\[0\]\.assigneeId 不得是 Owner/, 'Owner 只規劃，不得被指派 Task');
+  assert.throws(() => validateGoalSynthesis(badPlan({ assigneeId: owner }), 'ws', db, solo),
+    /assigneeId 不得是 Owner/, '帶 goalId 時同樣拒絕');
+  assert.throws(() => storeGoalSynthesis(solo, badPlan({ assigneeId: owner }), db), /assigneeId 不得是 Owner/, '寫入 synthesis 前同樣拒絕');
   const soloPlan = { summary: 'solo', decisionRationale: '採納唯一有效方案', changeScope: 'src/', uncertainties: [], taskPlans: [{ title: 'T', description: 'D', assigneeId: a2, dependsOn: [], deploymentNotRequired: false, acceptanceCriteria: 'pass', rollbackCondition: 'fail' }], evidenceRefs: ['x'] };
   storeGoalSynthesis(solo, soloPlan, db); const soloTaskIds = materializeGoalTasks(owner, solo, db);
   db.prepare("UPDATE tasks_read_model SET status = 'Done' WHERE goal_id = ?").run(solo);

@@ -7,6 +7,7 @@
 import { request as httpRequest } from 'node:http';
 import { URL } from 'node:url';
 import type { CommentSnapshot, NotificationSnapshot, TaskSnapshot, TaskStatus } from './policy';
+import type { AgentEffort } from '../../src/agent';
 
 export type { CommentSnapshot, NotificationSnapshot, TaskSnapshot };
 
@@ -157,6 +158,7 @@ export interface AgentRouteSnapshot {
   status: string;
   primaryAdapter: 'claude' | 'codex' | 'agy';
   primaryModel: string;
+  effort: AgentEffort | null;
   fallbackAdapter: 'claude' | 'codex' | 'agy' | null;
   fallbackModel: string | null;
 }
@@ -417,6 +419,7 @@ export class TaskTrackerClient {
     return (JSON.parse(res.body) as Array<Record<string, unknown>>).map((row) => ({
       agentId: String(row.agent_id), role: String(row.role), status: String(row.status),
       primaryAdapter: row.primary_adapter as AgentRouteSnapshot['primaryAdapter'], primaryModel: String(row.primary_model),
+      effort: (row.effort ?? null) as AgentEffort | null,
       fallbackAdapter: (row.fallback_adapter ?? null) as AgentRouteSnapshot['fallbackAdapter'],
       fallbackModel: row.fallback_model == null ? null : String(row.fallback_model),
     }));

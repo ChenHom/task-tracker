@@ -1406,6 +1406,31 @@ assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--settings')
 assert.strictEqual(safeInvocation.args[safeInvocation.args.indexOf('--setting-sources') + 1], '');
 assert.ok(safeInvocation.args.includes('--no-session-persistence'), 'safe discussion 不應把內容寫入持久 session');
 assert.ok(!safeInvocation.args.some((arg) => /curl|Bash|Read|Write|Git/u.test(arg)));
+// effort：有帶才附加參數，沒帶時 argv 與過去完全相同
+const claudeBase = buildRunnerInvocation({ runner: 'claude', model: 'claude-test' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log', tools: 'T' });
+const claudeEffort = buildRunnerInvocation({ runner: 'claude', model: 'claude-test', effort: 'xhigh' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log', tools: 'T' });
+assert.deepStrictEqual(claudeBase.args, ['-p', 'p', '--model', 'claude-test', '--allowedTools', 'T'], '沒有 effort 時 claude 參數不變');
+assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', '--effort', 'xhigh', '--allowedTools', 'T']);
+const codexBase = buildRunnerInvocation({ runner: 'codex', model: 'gpt-test' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log' });
+const codexEffort = buildRunnerInvocation({ runner: 'codex', model: 'gpt-test', effort: 'low' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log' });
+assert.ok(!codexBase.args.some((arg) => /effort/u.test(arg)), '沒有 effort 時 codex 不得出現 effort 參數');
+assert.deepStrictEqual(
+  codexEffort.args,
+  [...codexBase.args.slice(0, codexBase.args.indexOf('-m') + 2), '-c', 'model_reasoning_effort=low', ...codexBase.args.slice(codexBase.args.indexOf('-m') + 2)],
+  'codex effort 以 -c model_reasoning_effort=<值> 緊接在 -m 後面',
+);
+assert.deepStrictEqual(
+  buildRunnerInvocation({ runner: 'agy', model: 'm', effort: 'max' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log' }).args,
+  buildRunnerInvocation({ runner: 'agy', model: 'm' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log' }).args,
+  'agy 沒有 effort 參數，忽略',
+);
+assert.strictEqual(
+  buildRunnerInvocation({ runner: 'claude', model: 'claude-test', effort: 'high' }, 'p', {
+    cwd: '/tmp/e', logFile: '/tmp/e.log', tools: SAFE_DISCUSSION_TOOLS, safeDiscussion: true, settings: '/tmp/s.json',
+  }).args.join(' ').includes('--effort high --tools'),
+  true,
+  'safe discussion 保留所有限制，只多一個 --effort',
+);
 assert.strictEqual(
   buildAttachmentDiscussionTools({ files: [] }),
   'Read(manifest.json)',
@@ -2454,6 +2479,24 @@ async function runAsyncPolicyTests(): Promise<void> {
     () => runSafeDiscussionSession({ route: { runner: 'codex', model: 'gpt-test' }, prompt: 'x', sourceTexts: [] }),
     /safe discussion route 只允許 Claude/,
   );
+  {
+    // 用假的 claude 執行檔回顯 argv，確認 route.effort 一路傳到 CLI（不呼叫真的 AI CLI）
+    const fakeBin = mkdtempSync(join(tmpdir(), 'fake-claude-'));
+    writeFileSync(join(fakeBin, 'claude'), '#!/bin/sh\nprintf \'%s\\n\' "$@"\n', { mode: 0o755 });
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${savedPath}`;
+    try {
+      const withEffort = await runSafeDiscussionSession({ route: { runner: 'claude', model: 'claude-x', effort: 'max' }, prompt: 'x', sourceTexts: [] });
+      const withoutEffort = await runSafeDiscussionSession({ route: { runner: 'claude', model: 'claude-x' }, prompt: 'x', sourceTexts: [] });
+      const argv = (withEffort.output ?? '').split('\n');
+      assert.strictEqual(argv[argv.indexOf('--effort') + 1], 'max', 'safe discussion 要把 route.effort 傳給 claude');
+      assert.ok(argv.includes('--no-session-persistence') && argv.includes('--setting-sources'), 'safe discussion 限制不變');
+      assert.ok(!(withoutEffort.output ?? '').split('\n').includes('--effort'), '沒有 effort 時不附加參數');
+    } finally {
+      process.env.PATH = savedPath;
+      rmSync(fakeBin, { recursive: true, force: true });
+    }
+  }
   let internalInvocation: {
     runner: string;
     model: string;

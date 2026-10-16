@@ -111,6 +111,14 @@ export function validateGoalSynthesis(output: unknown, workspaceId: string, data
     if (!database.prepare('SELECT 1 FROM workspace_members_read_model WHERE workspace_id = ? AND user_id = ?').get(workspaceId, assigneeId)) {
       throw new InvalidGoalSynthesisError('Task assignee 必須是 Workspace member');
     }
+    // Owner 只規劃與提供方向，不實作 task（Agent 的 agent_id 就是 user_id）
+    if (database.prepare(
+      `SELECT 1 FROM agents WHERE role = 'owner' AND (user_id = ? OR agent_id = ?)
+       UNION ALL SELECT 1 FROM goals_read_model g JOIN agents a ON a.agent_id = g.owner_agent_id
+        WHERE g.goal_id = ? AND (a.user_id = ? OR a.agent_id = ?)`,
+    ).get(assigneeId, assigneeId, goalId ?? '', assigneeId, assigneeId)) {
+      throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.assigneeId 不得是 Owner`);
+    }
     if (!Array.isArray(plan.dependsOn)
       || plan.dependsOn.some((dependency) => typeof dependency !== 'string' || !dependency.trim())) {
       throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.dependsOn 必須是非空字串陣列`);

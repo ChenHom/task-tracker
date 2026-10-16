@@ -13,6 +13,7 @@ import { createTracer, createFileSink, formatTraceRecord, type Tracer, type Trac
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { SAFE_DISCUSSION_ROUTE } from '../src/safeDiscussionRoute';
+import type { AgentEffort } from '../src/agent';
 export { SAFE_DISCUSSION_ROUTE } from '../src/safeDiscussionRoute';
 import {
   createNotificationTelemetryRecorder,
@@ -124,6 +125,8 @@ export type Runner = 'claude' | 'codex' | 'agy';
 export interface ModelRoute {
   runner: Runner;
   model: string;
+  // 推理強度（Agent 的 primary route 才會帶）；省略 = CLI 預設。agy 沒有對應參數，會忽略。
+  effort?: AgentEffort;
 }
 
 export interface Member {
@@ -2037,7 +2040,7 @@ export function buildRunnerInvocation(
   },
 ): RunnerInvocation {
   if (route.runner === 'claude') {
-    const args = ['-p', prompt, '--model', route.model];
+    const args = ['-p', prompt, '--model', route.model, ...(route.effort ? ['--effort', route.effort] : [])];
     if (opts.safeDiscussion) {
       args.push('--tools', opts.claudeTools ?? opts.tools ?? '', '--allowedTools', opts.tools ?? '');
       if (opts.settings) args.push('--settings', opts.settings);
@@ -2059,6 +2062,7 @@ export function buildRunnerInvocation(
         // network_access 是 workspace-write 專屬設定；read-only 下沒有意義，不要附加。
         ...(sandbox === 'workspace-write' ? ['-c', 'sandbox_workspace_write.network_access=true'] : []),
         '-m', route.model,
+        ...(route.effort ? ['-c', `model_reasoning_effort=${route.effort}`] : []),
         ...(opts.captureLastMessage === false ? [] : ['--output-last-message', `${opts.logFile}.last`]),
         prompt],
     };
@@ -2187,8 +2191,9 @@ function runSession(
   model: string,
   prompt: string,
   opts: SessionOptions,
+  effort?: AgentEffort,
 ): Promise<SessionResult> {
-  const primary = { runner, model };
+  const primary: ModelRoute = { runner, model, ...(effort ? { effort } : {}) };
   return runSessionAttempt(label, primary, prompt, opts, 0).then(async (result) => {
     if (!shouldFallbackToModel(result, !!opts.fallback)) return result;
     const fallback = opts.fallback!;
@@ -2341,6 +2346,7 @@ export async function runSafeDiscussionSession(input: SafeDiscussionSessionInput
         captureContent: false,
         env,
       },
+      input.route.effort,
     );
   } finally {
     rmSync(workingDir, { recursive: true, force: true });

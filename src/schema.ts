@@ -151,6 +151,7 @@ export function runMigrations(db: DatabaseSync): void {
       repo_access_json      TEXT NOT NULL DEFAULT '["*"]',
       primary_adapter       TEXT NOT NULL,
       primary_model         TEXT NOT NULL,
+      effort                TEXT,
       fallback_adapter      TEXT,
       fallback_model        TEXT,
       status                TEXT NOT NULL,
@@ -468,6 +469,12 @@ export function runMigrations(db: DatabaseSync): void {
 
   try {
     db.prepare(`ALTER TABLE agents ADD COLUMN repo_access_json TEXT NOT NULL DEFAULT '["*"]'`).run();
+  } catch {
+    // 冪等 migration：欄位已存在時略過。
+  }
+
+  try {
+    db.prepare('ALTER TABLE agents ADD COLUMN effort TEXT').run();
   } catch {
     // 冪等 migration：欄位已存在時略過。
   }

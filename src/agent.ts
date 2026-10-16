@@ -8,6 +8,9 @@ import { CommandError } from './eventStore';
 export type AgentRole = 'owner' | 'member';
 export type AgentStatus = 'active' | 'paused' | 'error';
 export type AgentAdapterName = 'claude' | 'codex' | 'agy';
+// 推理強度只套用在 primary route；null = 用 CLI 預設。
+export const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type AgentEffort = (typeof AGENT_EFFORTS)[number];
 
 export interface AgentRow {
   agent_id: string;
@@ -19,6 +22,7 @@ export interface AgentRow {
   repo_access_json: string;
   primary_adapter: AgentAdapterName;
   primary_model: string;
+  effort: AgentEffort | null;
   fallback_adapter: AgentAdapterName | null;
   fallback_model: string | null;
   status: AgentStatus;
@@ -166,6 +170,7 @@ export interface AgentPatch {
   status?: unknown;
   primaryAdapter?: unknown;
   primaryModel?: unknown;
+  effort?: unknown;
   fallbackAdapter?: unknown;
   fallbackModel?: unknown;
   repoAccess?: unknown;
@@ -175,13 +180,14 @@ export function updateAgent(agentId: string, patch: AgentPatch, database = db): 
   const current = getAgent(agentId, database);
   if (!current) throw new CommandError('agent 不存在');
   const keys = Object.keys(patch);
-  if (keys.length === 0 || keys.some((key) => !['status', 'primaryAdapter', 'primaryModel', 'fallbackAdapter', 'fallbackModel', 'repoAccess'].includes(key))) {
+  if (keys.length === 0 || keys.some((key) => !['status', 'primaryAdapter', 'primaryModel', 'effort', 'fallbackAdapter', 'fallbackModel', 'repoAccess'].includes(key))) {
     throw new CommandError('不支援的 Agent PATCH 欄位');
   }
 
   let status = current.status;
   let primaryAdapter = current.primary_adapter;
   let primaryModel = current.primary_model;
+  let effort = current.effort;
   let fallbackAdapter = current.fallback_adapter;
   let fallbackModel = current.fallback_model;
   let repoAccess = current.repo_access_json;
@@ -211,6 +217,12 @@ export function updateAgent(agentId: string, patch: AgentPatch, database = db): 
     primaryAdapter = adapter(patch.primaryAdapter, 'primary');
     primaryModel = requiredText(patch.primaryModel, 'primaryModel');
   }
+  if ('effort' in patch) {
+    if (patch.effort !== null && !AGENT_EFFORTS.includes(patch.effort as AgentEffort)) {
+      throw new CommandError(`effort 必須是 ${AGENT_EFFORTS.join('|')} 或 null`);
+    }
+    effort = patch.effort as AgentEffort | null;
+  }
   const changesFallback = 'fallbackAdapter' in patch || 'fallbackModel' in patch;
   if (changesFallback) {
     if (patch.fallbackAdapter == null && patch.fallbackModel == null) {
@@ -226,7 +238,7 @@ export function updateAgent(agentId: string, patch: AgentPatch, database = db): 
   }
 
   database.prepare(
-    `UPDATE agents SET status = ?, primary_adapter = ?, primary_model = ?,
+    `UPDATE agents SET status = ?, primary_adapter = ?, primary_model = ?, effort = ?,
        fallback_adapter = ?, fallback_model = ?, repo_access_json = ?, updated_at = ? WHERE agent_id = ?`,
-  ).run(status, primaryAdapter, primaryModel, fallbackAdapter, fallbackModel, repoAccess, new Date().toISOString(), agentId);
+  ).run(status, primaryAdapter, primaryModel, effort, fallbackAdapter, fallbackModel, repoAccess, new Date().toISOString(), agentId);
 }
