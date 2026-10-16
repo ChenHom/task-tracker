@@ -420,13 +420,14 @@ function confinedFor(route: ModelRoute, mainRepo: string | undefined, writable: 
 
 /**
  * denyRead 只擋檔案路徑；成員的唯讀 git（git show/log/diff）可直接讀 `<rev>:<path>` 的 blob。
- * 拒讀路徑只要在任何 ref 的歷史中出現過就回傳該路徑（呼叫端 fail closed）。沒有 .git 就沒有可讀的 blob；
+ * 拒讀路徑只要在任何 ref 或 reflog 的歷史中出現過就回傳該路徑（呼叫端 fail closed）；
+ * 只走 --all 的話，被 reset／rebase 掉的 commit 仍可用 `master@{1}:<path>` 讀出，所以加 --reflog。沒有 .git 就沒有可讀的 blob；
  * 其他 git 錯誤一律往外丟，不放行。
  */
 export function protectedPathInGitHistory(mainRepo: string, paths: string[]): string | null {
   if (!existsSync(join(mainRepo, '.git'))) return null;
   for (const path of paths) {
-    const hit = execFileSync('git', ['-C', mainRepo, 'log', '--all', '-1', '--format=%H', '--', `:(literal)${path}`], { encoding: 'utf8' }).trim();
+    const hit = execFileSync('git', ['-C', mainRepo, 'log', '--all', '--reflog', '-1', '--format=%H', '--', `:(literal)${path}`], { encoding: 'utf8' }).trim();
     if (hit) return path;
   }
   return null;

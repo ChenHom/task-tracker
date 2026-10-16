@@ -404,6 +404,21 @@ async function claudeConfinedRunnerTests(): Promise<void> {
     g('add', '-f', '.env'); g('commit', '-qm', 'env');
     await assert.rejects(histMember(), /git 歷史（\.env）/, '.env 即使沒列在 denyRead 也要檢查');
 
+    // commit 被 reset 掉後 refs 已走不到，但 reflog（master@{1}）還能 git show 出內容：也要擋
+    const reflogRepo = join(dir, 'reflog-repo');
+    mkdirSync(reflogRepo);
+    const gr = (...args: string[]) => execFileSync('git', ['-C', reflogRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' });
+    gr('init', '-q');
+    writeFileSync(join(reflogRepo, 'README.md'), 'r');
+    gr('add', 'README.md'); gr('commit', '-qm', 'init');
+    writeFileSync(join(reflogRepo, 'token.key'), 'k');
+    gr('add', 'token.key'); gr('commit', '-qm', 'oops'); gr('reset', '-q', '--hard', 'HEAD~1');
+    assert.strictEqual(gr('log', '--all', '-1', '--format=%H', '--', ':(literal)token.key').trim(), '', '前提：只剩 reflog 可達，--all 看不到');
+    const reflogMember = createMemberSessionRunner(claudeRoute, reflogRepo, { denyRead: ['token.key'] })({
+      taskId: 'task-confined-reflog', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'], verificationCommandAllowlist: [], worktreePath: worktree,
+    });
+    await assert.rejects(reflogMember, /git 歷史（token\.key）/, '只剩 reflog 可達的拒讀路徑也要擋');
+
     // codex 成員：repoSandbox.network 真的決定 network_access（預設維持 true）
     writeFileSync(join(dir, 'codex'), [
       '#!/bin/sh',
