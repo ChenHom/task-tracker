@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRunnerInvocation } from '../run';
@@ -435,6 +435,55 @@ async function claudeConfinedRunnerTests(): Promise<void> {
     writeFileSync(join(aliasRepo, 'Sinopac.pfx'), 'cert-bytes');
     assert.strictEqual(ga('log', '--all', '--reflog', '-1', '--format=%H', '--', ':(literal)Sinopac.pfx').trim(), '', '前提：路徑從未進過歷史');
     await assert.rejects(aliasMember(), /git 歷史（Sinopac\.pfx）/, '同一份內容曾以別名 commit 過也要擋');
+
+    // 目標 repo 有 venv：python3 指令多一份 venv python 絕對路徑的版本、settings 放行讀取、prompt 說明；沒有 venv 時完全不變
+    const venvRepo = join(dir, 'venv-repo');
+    const install = join(realpathSync(dir), 'uv', 'cpython-3.11.13-linux-x86_64-gnu');
+    mkdirSync(join(install, 'bin'), { recursive: true });
+    mkdirSync(join(install, 'lib', 'python3.11'), { recursive: true }); // 真的 Python 安裝才有，claudeVenv 用它判斷
+    writeFileSync(join(install, 'bin', 'python3.11'), '');
+    mkdirSync(join(venvRepo, '.venv', 'bin'), { recursive: true });
+    symlinkSync(join(install, 'bin', 'python3.11'), join(venvRepo, '.venv', 'bin', 'python'));
+    writeFileSync(join(venvRepo, '.venv', 'pyvenv.cfg'), `home = ${join(install, 'bin')}\n`);
+    const py = join(venvRepo, '.venv', 'bin', 'python');
+    const venvContext = {
+      taskId: 'task-confined-venv', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['tests/'],
+      verificationCommandAllowlist: ['python3 -m pytest', 'git diff --check'], worktreePath: worktree,
+      workCommands: ['python3 app.py backtest run'],
+    };
+    await createMemberSessionRunner(claudeRoute, venvRepo)(venvContext);
+    const venvArgv = argv();
+    assert.deepStrictEqual(venvArgv.slice(venvArgv.indexOf('--allowedTools') + 1), [
+      'Edit(./**)',
+      'Bash(python3 -m pytest)', 'Bash(python3 -m pytest *)',
+      `Bash(${py} -m pytest)`, `Bash(${py} -m pytest *)`,
+      'Bash(git diff --check)', 'Bash(git diff --check *)',
+      'Bash(python3 app.py backtest run)', 'Bash(python3 app.py backtest run *)',
+      `Bash(${py} app.py backtest run)`, `Bash(${py} app.py backtest run *)`,
+      'Bash(git status)', 'Bash(git status *)', 'Bash(git log)', 'Bash(git log *)', 'Bash(git show)', 'Bash(git show *)',
+      'Bash(git merge-base)', 'Bash(git merge-base *)', 'Bash(git diff)', 'Bash(git diff *)',
+    ], '每條 python3 指令（驗證與 workCommands）各加一份 venv python 版本，其餘不動');
+    assert.deepStrictEqual(JSON.parse(venvArgv[venvArgv.indexOf('--settings') + 1]).sandbox.filesystem.allowRead, [join(venvRepo, '.venv'), install]);
+    const promptOf = (args: string[]) => args.slice(args.indexOf('-p') + 1, args.indexOf('--model')).join('\n'); // fake claude 逐行寫 argv，prompt 會被拆開
+    const venvPrompt = promptOf(venvArgv);
+    assert.ok(venvPrompt.includes('系統 Python') && venvPrompt.includes(`${py} -m pytest`) && venvPrompt.includes(`${py} app.py backtest run ...`), 'prompt 要說明改用 venv python');
+    assert.ok(venvPrompt.includes('- python3 -m pytest') && venvPrompt.includes('列原本的 `python3 -m pytest`'), 'verificationCommands 仍列原本的 python3 指令');
+    // 沒有 venv：argv 與 prompt 都沒有 venv 相關內容
+    await createMemberSessionRunner(claudeRoute, main)(venvContext);
+    const noVenvArgv = argv();
+    assert.ok(!noVenvArgv.some((arg) => arg.includes('.venv')), '沒有 venv 時 argv 不出現 .venv');
+    assert.ok(!JSON.parse(noVenvArgv[noVenvArgv.indexOf('--settings') + 1]).sandbox.filesystem.allowRead);
+    assert.ok(!promptOf(noVenvArgv).includes('系統 Python'));
+    assert.ok(!memberPrompt(venvContext).includes('系統 Python'), 'memberPrompt 不帶 venvPython 時不變');
+    // codex 成員不需要這段（也不走 confined settings）
+    writeFileSync(join(dir, 'codex'), [
+      '#!/bin/sh',
+      'printf \'%s\\n\' "$@" > "$FAKE_ARGV_FILE"',
+      'printf \'```json\\n{"summary":"s","changedPaths":[],"verificationCommands":[],"blocker":null}\\n```\\n\'',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    await createMemberSessionRunner({ runner: 'codex', model: 'gpt-x' }, venvRepo)(venvContext);
+    assert.ok(!argv().some((arg) => arg.includes('.venv') || arg.includes('系統 Python')), 'codex 成員 prompt／argv 不出現 venv 說明');
 
     // codex 成員：repoSandbox.network 真的決定 network_access（預設維持 true）
     writeFileSync(join(dir, 'codex'), [

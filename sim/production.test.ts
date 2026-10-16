@@ -6448,8 +6448,11 @@ async function runIntegrationConflictTests(): Promise<void> {
       const session = await f.memberSession((wt) => writeFileSync(join(wt, 'src', 'app.txt'), 'top\nmaster version\nbottom\n'));
       assert.strictEqual(session.outcome, 'progressed', JSON.stringify(session.evidence));
       upsertTaskCheckpoint(f.db, { ...getTaskRun(f.db, TASK_ID)!, phase: 'review', headSha: f.g(['rev-parse', 'HEAD'], f.worktree) }, NOW);
-      assert.strictEqual(await f.review(), 'no_change');
+      // fixture 的 Owner 回的是無效決策（accept 沒引用 head SHA）：不能再當 no_change 讓下個 tick 重審
+      assert.strictEqual(await f.review(), 'progressed');
       assert.strictEqual(f.ownerCalls(), 1, '沒有衝突時照常跑 Owner session');
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked', '無效的 Owner 決策要停下來交給人');
+      assert.ok(f.board.comments.some((c) => c.content.includes('@user09') && c.content.includes('head SHA')), '通知要寫出無效原因');
     } finally {
       f.cleanup();
     }
@@ -6538,6 +6541,105 @@ async function runIntegrationConflictTests(): Promise<void> {
       assert.ok(f.board.comments.some((c) => c.content.includes('【整合衝突】') && c.content.includes('src/app.txt')));
       assert.ok(f.traces.some((t) => t.event === 'ci.checked' && t.args.reason === 'integration_conflict' && t.args.outcome === 'fail'));
       assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'doing');
+    } finally {
+      f.cleanup();
+    }
+  }
+
+  // ---- 7) Owner 回 intervene（非 accept／reject）：轉 human_blocked、@user09 留言、之後不再重跑 Owner；人工留言後才恢復 ----
+  {
+    const f = await setup('clean');
+    try {
+      let calls = 0;
+      let nextAction: 'intervene' | 'reject' = 'intervene';
+      const longRationale = `pytest 沒有真的跑過 ${'很長的理由'.repeat(600)}`;
+      (f.deps as unknown as { runOwnerSession: unknown }).runOwnerSession = async () => {
+        calls++;
+        return { exitCode: 0, decision: { action: nextAction, rationale: nextAction === 'reject' ? '請補測試' : longRationale, evidenceCommentIds: [] } };
+      };
+      // 下一個 tick 的 coordinator 規劃：證據照 board 上實際的狀態組（與 gatherSnapshot 同形）
+      const nextTickReviews = () => {
+        const run = getTaskRun(f.db, TASK_ID)!;
+        const last = f.board.comments.at(-1) ?? null;
+        const task = makeTask({ taskId: TASK_ID, workspaceId: CANONICAL_WORKSPACE_ID, status: f.board.status as TaskStatus, assigneeId: 'member-1' });
+        const evidence = makeEvidence({ taskId: TASK_ID, status: f.board.status as TaskStatus, assigneeId: 'member-1', commentCount: f.board.comments.length, lastCommentId: last?.commentId ?? null, lastCommentAt: last?.createdAt ?? null });
+        return selectCoordinatorActions(baseSnapshot({ tasks: [task], taskRuns: { [TASK_ID]: run }, taskEvidence: { [TASK_ID]: evidence } }), NOW)
+          .filter((a) => a.kind === 'owner_review' && a.taskId === TASK_ID).length;
+      };
+      assert.strictEqual(nextTickReviews(), 1, '前提：Review 且沒被擋時會排入 owner_review');
+
+      assert.strictEqual(await f.review(), 'progressed');
+      assert.strictEqual(calls, 1);
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked');
+      assert.strictEqual(f.board.status, 'Review', 'task 維持 Review');
+      assert.deepStrictEqual(f.board.patches, [], '不動看板狀態');
+      assert.strictEqual(f.board.comments.length, 1);
+      const notice = f.board.comments[0].content;
+      assert.ok(notice.startsWith('@user09 ') && notice.includes('intervene') && notice.includes('pytest 沒有真的跑過'), notice);
+      assert.ok(notice.includes('已截斷') && notice.length < 1_800, `rationale 要截斷：${notice.length}`);
+      assert.ok(notice.includes('action_key: human_blocked_notice:'));
+      assert.ok(f.traces.some((t) => t.event === 'task.phase_changed' && t.args.to === 'human_blocked'));
+      assert.strictEqual(nextTickReviews(), 0, '證據沒變：下一個 tick 不得再排 owner_review');
+      assert.strictEqual(calls, 1, 'Owner 沒有被再叫');
+
+      // 人工留言：證據變了，恢復審查；Owner 這次 reject → 照舊退回 Doing
+      f.board.comments.push({ commentId: 'human-1', taskId: TASK_ID, userId: 'user09', content: '請用 .venv/bin/python 跑 pytest', createdAt: '2026-07-23T01:00:00.000Z' });
+      assert.strictEqual(nextTickReviews(), 1, '有人留言後必須恢復');
+      nextAction = 'reject';
+      assert.strictEqual(await f.review(), 'progressed');
+      assert.strictEqual(calls, 2);
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'doing');
+      assert.strictEqual(f.board.status, 'Doing');
+
+      // 恢復後 Owner 又回 intervene：新的留言（不是被舊 key 吃掉）、再次停下
+      f.board.status = 'Review';
+      nextAction = 'intervene';
+      assert.strictEqual(await f.review(), 'progressed');
+      assert.strictEqual(calls, 3);
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked');
+      assert.strictEqual(f.board.comments.filter((c) => c.content.startsWith('@user09 Owner')).length, 2, '第二次 intervene 要有新的通知');
+      assert.strictEqual(nextTickReviews(), 0);
+    } finally {
+      f.cleanup();
+    }
+  }
+
+  // ---- 7c) 上次在貼通知前崩潰，留下 pending 的 action 列：停下之前要讀回並補貼通知，不能無聲 human_blocked ----
+  {
+    const f = await setup('clean');
+    try {
+      (f.deps as unknown as { runOwnerSession: unknown }).runOwnerSession = async () =>
+        ({ exitCode: 0, decision: { action: 'intervene', rationale: '需要人', evidenceCommentIds: [] } });
+      const run = getTaskRun(f.db, TASK_ID)!;
+      const key = `human_blocked_notice:${TASK_ID}:owner:${run.headSha ?? 'none'}:${f.board.comments.length}`;
+      beginAction(f.db, { actionKey: key, taskId: TASK_ID, kind: 'human_blocked_notice' }, new Date(NOW));
+      assert.strictEqual(await f.review(), 'progressed');
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked');
+      assert.ok(f.board.comments.some((c) => c.content.includes(`action_key: ${key}`)), 'pending 列被略過時要補貼通知');
+    } finally {
+      f.cleanup();
+    }
+  }
+
+  // ---- 7b) Owner 審查期間有人留言：那則留言不能被吞進 fingerprint；不停下，下次帶著它重審 ----
+  {
+    const f = await setup('clean');
+    try {
+      let calls = 0;
+      (f.deps as unknown as { runOwnerSession: unknown }).runOwnerSession = async () => {
+        calls++;
+        if (calls === 1) {
+          f.board.comments.push({ commentId: 'human-during', taskId: TASK_ID, userId: 'user09', content: '我剛補了說明', createdAt: '2026-07-23T00:30:00.000Z' });
+        }
+        return { exitCode: 0, decision: { action: 'intervene', rationale: '需要人', evidenceCommentIds: [] } };
+      };
+      assert.strictEqual(await f.review(), 'no_change', '有 Owner 沒看過的留言時不得停下');
+      assert.notStrictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked');
+      assert.ok(f.traces.some((t) => t.event === 'gate.skipped' && t.args.reason === 'unseen_comments'));
+      // 下一次審查：Owner 這次看得到那則留言；沒有新留言就照常停下
+      assert.strictEqual(await f.review(), 'progressed');
+      assert.strictEqual(calls, 2, 'Owner 要帶著新留言重審一次');
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked');
     } finally {
       f.cleanup();
     }

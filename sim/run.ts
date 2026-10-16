@@ -10,7 +10,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createTracer, createFileSink, formatTraceRecord, type Tracer, type TraceSink } from './trace';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { SAFE_DISCUSSION_ROUTE } from '../src/safeDiscussionRoute';
 import type { AgentEffort } from '../src/agent';
@@ -2035,8 +2035,49 @@ export interface ClaudeConfined {
   denyRead?: string[];
 }
 
+/**
+ * 目標 repo 的 venv（有 .venv/pyvenv.cfg 才算）：受限 session 的 Bash 自己決定 PATH，`python3` 永遠是系統 Python，
+ * 而 blockReadsOutsideWorkingDirectories 又擋掉 cwd 以外所有讀取，venv 與它指向的 python 安裝都讀不到。
+ * 回傳 venv 的 python 絕對路徑，與需要放行讀取的兩個目錄：venv 本身、venv python 的安裝根目錄。
+ * 安裝根目錄取 realpath(.venv/bin/python) 往上兩層（<root>/bin/pythonX.Y → <root>）；venv 的 python
+ * 連結壞了就退回 pyvenv.cfg 的 `home =`（指向 <root>/bin）。根目錄只剩一層（例如 /usr）就不放行：系統目錄本來就可讀。
+ */
+export function claudeVenv(mainRepo: string): { python: string; readRoots: string[] } | null {
+  const dir = join(mainRepo, '.venv');
+  // allowRead 會沿著 symlink 開放目標：.venv 本身若是 symlink（例如指到 home），整個不放行
+  try { if (!lstatSync(dir).isDirectory()) return null; } catch { return null; }
+  let cfg: string;
+  try { cfg = readFileSync(join(dir, 'pyvenv.cfg'), 'utf8'); } catch { return null; }
+  let bin: string | undefined;
+  try { bin = dirname(realpathSync(join(dir, 'bin', 'python'))); } catch {
+    bin = /^home\s*=\s*(.+?)\s*$/mu.exec(cfg)?.[1];
+  }
+  const root = bin && isAbsolute(bin) && basename(bin) === 'bin' ? dirname(bin) : undefined;
+  return {
+    python: join(dir, 'bin', 'python'),
+    readRoots: [dir, ...(root && isPythonInstallRoot(root, mainRepo) ? [root] : [])],
+  };
+}
+
+/**
+ * venv 的 symlink 與 pyvenv.cfg 是 repo 可控的資料：推出來的根目錄必須真的像 Python 安裝（有 lib/python3*），
+ * 而且不能是 home、mainRepo 或它們的上層——否則一個 `home = /home/u/bin` 就把整個家目錄開放給 sandbox。
+ */
+function isPythonInstallRoot(root: string, mainRepo: string): boolean {
+  if (root.split(sep).filter(Boolean).length < 2) return false;
+  const covers = (path: string) => path === root || path.startsWith(`${root}${sep}`);
+  if (covers(homedir()) || covers(mainRepo)) return false;
+  try {
+    return readdirSync(join(root, 'lib')).some((name) => name.startsWith('python3'));
+  } catch {
+    return false;
+  }
+}
+
 export function claudeConfinedArgs(confined: ClaudeConfined, cwd?: string): string[] {
   const { writable, mainRepo, bashAllow } = confined;
+  // owner 唯讀、沒有 Bash，不需要 venv；成員才放行讀取
+  const venv = writable ? claudeVenv(mainRepo) : null;
   const relative = ['.env', ...(confined.denyRead ?? []).filter((path) => path !== '.env')];
   // session 在 <mainRepo>/sim-work/tasks/<id> 執行：同一相對路徑在 worktree 裡若也有一份（被追蹤或產生出來），也要擋。
   const roots = cwd && cwd !== mainRepo ? [mainRepo, cwd] : [mainRepo];
@@ -2054,7 +2095,7 @@ export function claudeConfinedArgs(confined: ClaudeConfined, cwd?: string): stri
       failIfUnavailable: true,
       autoAllowBashIfSandboxed: false,
       allowUnsandboxedCommands: false,
-      filesystem: { denyRead: denyPaths },
+      filesystem: { denyRead: denyPaths, ...(venv ? { allowRead: venv.readRoots } : {}) },
       network: { allowedDomains: [] as string[] },
     },
     autoMemoryEnabled: false,

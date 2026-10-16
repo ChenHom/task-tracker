@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import './notificationTelemetry.test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
@@ -1471,6 +1471,83 @@ assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', 
     buildRunnerInvocation(codexRoute, 'p', base).args,
     'codex argv 不變',
   );
+  // 目標 repo 有 venv：sandbox.filesystem.allowRead 只多放 <main>/.venv 與 venv python 的安裝根目錄（不開整個 home／mainRepo）
+  const venvTmp = realpathSync(mkdtempSync(join(tmpdir(), 'venv-allow-read-')));
+  try {
+    const install = join(venvTmp, 'uv', 'python', 'cpython-3.11.13-linux-x86_64-gnu');
+    mkdirSync(join(install, 'bin'), { recursive: true });
+    mkdirSync(join(install, 'lib', 'python3.11'), { recursive: true });
+    writeFileSync(join(install, 'bin', 'python3.11'), '');
+    const venvRepo = join(venvTmp, 'repo');
+    mkdirSync(join(venvRepo, '.venv', 'bin'), { recursive: true });
+    symlinkSync(join(install, 'bin', 'python3.11'), join(venvRepo, '.venv', 'bin', 'python'));
+    writeFileSync(join(venvRepo, '.venv', 'pyvenv.cfg'), `home = ${join(install, 'bin')}\nversion_info = 3.11.13\n`);
+    const settingsOf = (args: string[]) => JSON.parse(args[args.indexOf('--settings') + 1]);
+    const withVenv = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: venvRepo, bashAllow: [] } });
+    const venvSettings = settingsOf(withVenv.args);
+    assert.deepStrictEqual(venvSettings.sandbox.filesystem.allowRead, [join(venvRepo, '.venv'), install], 'allowRead = venv + python 安裝根目錄（realpath 的 bin 往上一層），不含 mainRepo 或上層 uv 目錄');
+    assert.deepStrictEqual(venvSettings.sandbox.filesystem.denyRead, [`${venvRepo}/.env`, '/tmp/e/.env'], 'denyRead 不受影響');
+    assert.strictEqual(venvSettings.permissions.blockReadsOutsideWorkingDirectories, true, '讀取限制維持開啟');
+    // owner 唯讀、沒有 Bash：不放行
+    const venvOwner = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: false, mainRepo: venvRepo, bashAllow: [] } });
+    assert.ok(!('allowRead' in settingsOf(venvOwner.args).sandbox.filesystem), 'owner 不放行 venv');
+    const allowReadOf = () => settingsOf(buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: venvRepo, bashAllow: [] } }).args).sandbox.filesystem.allowRead;
+    // 推出來的根目錄若涵蓋 HOME（例如 venv python 在 ~/bin），不得放行：否則整個家目錄都進 allowRead
+    const savedHome = process.env.HOME;
+    process.env.HOME = join(install, 'fake-home');
+    try {
+      assert.deepStrictEqual(allowReadOf(), [join(venvRepo, '.venv')], '涵蓋 HOME 的根目錄不得放行');
+    } finally {
+      process.env.HOME = savedHome;
+    }
+    // 根目錄沒有 lib/python3*：不像 Python 安裝，不放行
+    rmSync(join(install, 'lib'), { recursive: true });
+    assert.deepStrictEqual(allowReadOf(), [join(venvRepo, '.venv')], '沒有 lib/python3* 的根目錄不得放行');
+    // 根目錄是 mainRepo 的上層（python 放在 <tmp>/bin、repo 在 <tmp>/repo）：不得放行
+    mkdirSync(join(venvTmp, 'bin'), { recursive: true });
+    mkdirSync(join(venvTmp, 'lib', 'python3.11'), { recursive: true });
+    writeFileSync(join(venvTmp, 'bin', 'python3.11'), '');
+    rmSync(join(venvRepo, '.venv', 'bin', 'python'));
+    symlinkSync(join(venvTmp, 'bin', 'python3.11'), join(venvRepo, '.venv', 'bin', 'python'));
+    assert.deepStrictEqual(allowReadOf(), [join(venvRepo, '.venv')], '涵蓋 mainRepo 的根目錄不得放行');
+    // python 連結壞掉：退回 pyvenv.cfg 的 home；安裝已不存在（沒有 lib/python3*）就只放行 venv
+    rmSync(join(venvRepo, '.venv', 'bin', 'python'));
+    symlinkSync(join(install, 'bin', 'python3.11'), join(venvRepo, '.venv', 'bin', 'python'));
+    rmSync(install, { recursive: true });
+    assert.deepStrictEqual(allowReadOf(), [join(venvRepo, '.venv')], '連結壞掉且安裝不存在時只放行 venv');
+    // venv python 其實是系統 Python（根目錄只剩一層，例如 /usr）：只放行 venv 本身
+    rmSync(join(venvRepo, '.venv', 'bin', 'python'));
+    symlinkSync('/bin/sh', join(venvRepo, '.venv', 'bin', 'python'));
+    assert.deepStrictEqual(
+      settingsOf(buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: venvRepo, bashAllow: [] } }).args).sandbox.filesystem.allowRead,
+      [join(venvRepo, '.venv')],
+      '系統 Python 不放行 /usr 之類的根目錄',
+    );
+    // 只有 .venv 目錄、沒有 pyvenv.cfg 不算 venv
+    rmSync(join(venvRepo, '.venv', 'pyvenv.cfg'));
+    assert.ok(!('allowRead' in settingsOf(buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: venvRepo, bashAllow: [] } }).args).sandbox.filesystem), '沒有 pyvenv.cfg 不放行');
+  } finally {
+    rmSync(venvTmp, { recursive: true, force: true });
+  }
+  // .venv 本身是 symlink（例如指到 home）：allowRead 會沿著 symlink 開放目標，整個不放行
+  const linkTmp = realpathSync(mkdtempSync(join(tmpdir(), 'venv-symlink-')));
+  try {
+    const install = join(linkTmp, 'py', 'cpython-3.11.13');
+    mkdirSync(join(install, 'bin'), { recursive: true });
+    mkdirSync(join(install, 'lib', 'python3.11'), { recursive: true });
+    writeFileSync(join(install, 'bin', 'python3.11'), '');
+    const realVenv = join(linkTmp, 'elsewhere', 'venv');
+    mkdirSync(join(realVenv, 'bin'), { recursive: true });
+    symlinkSync(join(install, 'bin', 'python3.11'), join(realVenv, 'bin', 'python'));
+    writeFileSync(join(realVenv, 'pyvenv.cfg'), `home = ${join(install, 'bin')}\n`);
+    const linkRepo = join(linkTmp, 'repo');
+    mkdirSync(linkRepo);
+    symlinkSync(realVenv, join(linkRepo, '.venv'));
+    const linked = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: linkRepo, bashAllow: [] } });
+    assert.ok(!('allowRead' in JSON.parse(linked.args[linked.args.indexOf('--settings') + 1]).sandbox.filesystem), '.venv 是 symlink 時不得放行任何路徑');
+  } finally {
+    rmSync(linkTmp, { recursive: true, force: true });
+  }
 }
 // codex network：未設定／true 維持 network_access=true；只有明確 false 才關網路；read-only 仍不附加
 {
