@@ -98,6 +98,7 @@ import {
   runDiscordOutboxTick,
   assertNoFatalCoordinatorError,
   integrationConflictDetail,
+  HUMAN_BLOCKED_ACTION_KIND,
   type AcceptanceCheckResult,
   type IntegrationCommandRunner,
   type SendDiscordMessage,
@@ -1738,6 +1739,36 @@ export async function sendBackIntegrationConflict(
   return 'progressed';
 }
 
+const OWNER_BLOCK_RATIONALE_MAX_CHARS = 1_500;
+
+/**
+ * owner_review 收到 accept／reject 以外的決策（intervene、classify、dispatch…）時，driver 沒有對應的動作可做。
+ * 以前回 no_change、task 留在 Review，每個 tick 都重跑一次 Owner session（同一個 intervene 理由反覆燒 AI）。
+ * 現在：貼一則 @user09 留言（含 Owner 的 rationale），task 維持 Review 但 run 轉 human_blocked，
+ * evidenceFingerprint 記成貼完留言後的板面證據；policy 的 isBlockedTask 因此在有人留言或出現人工變更之前不再排入 owner_review。
+ * 恢復：證據一變（留言、狀態、指派、期限）就會再排一次 owner_review，Owner 讀得到新留言；
+ * 回 reject 則照舊退回 Doing（phase 改回 doing），accept 則走驗收；仍非 accept／reject 就用新的 key 再停一次。
+ * 通知 key 含 head 與留言數，同一次決策重送不重複留言，人留言後的下一次 intervene 則是新的一則。
+ */
+async function blockOnUnhandledOwnerDecision(
+  deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun, task: TaskSnapshot,
+  commentCount: number, decisionAction: string, rationale: string,
+): Promise<'progressed'> {
+  const key = `${HUMAN_BLOCKED_ACTION_KIND}:${action.taskId}:owner:${run.headSha ?? 'none'}:${commentCount}`;
+  const shown = rationale.length > OWNER_BLOCK_RATIONALE_MAX_CHARS ? `${rationale.slice(0, OWNER_BLOCK_RATIONALE_MAX_CHARS)}…（已截斷）` : rationale;
+  const content =
+    `@user09 Owner 對這個 task 的審查回了「${decisionAction}」，不是 accept 或 reject，driver 沒有對應動作，需要人工介入。\n` +
+    `Owner 的說明：${shown}\n` +
+    `task 維持 Review；在你留言或出現尚未記錄的人工 task 變更之前，不會再呼叫 Owner。留言後會帶著新留言重新審查一次。\n` +
+    `action_key: ${key}`;
+  await withAction(deps, key, HUMAN_BLOCKED_ACTION_KIND, action.taskId, async () => {
+    await deps.ownerClient.postCommentOnce(action.taskId, content, key);
+  });
+  const evidenceAfterNotice = await buildTaskEvidence(deps.ownerClient, task);
+  checkpointAndTrace(deps, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'human_blocked', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: run.headSha, evidenceFingerprint: taskEvidenceFingerprint(evidenceAfterNotice), noProgressCount: run.noProgressCount, ownerIntervened: run.ownerIntervened }, `owner 回 ${decisionAction}，等人工處理`);
+  return 'progressed';
+}
+
 export async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun, snapshot: CoordinatorSnapshot): Promise<'progressed' | 'no_change'> {
   assertNoFatalCoordinatorError(getFatalError(deps.db, action.taskId));
 
@@ -1816,7 +1847,9 @@ export async function dispatchOwnerReview(deps: ResolvedDeps, action: Coordinato
     return 'progressed';
   }
 
-  if (ownerResult.decision.action !== 'accept') return 'no_change';
+  if (ownerResult.decision.action !== 'accept') {
+    return blockOnUnhandledOwnerDecision(deps, action, run, currentTask, comments.length, ownerResult.decision.action, ownerResult.decision.rationale);
+  }
 
   const snapshotTask = snapshot.tasks.find((task) => task.taskId === action.taskId);
   const deployResult = await runDeployAcceptance({
