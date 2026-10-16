@@ -6603,6 +6603,30 @@ async function runIntegrationConflictTests(): Promise<void> {
       f.cleanup();
     }
   }
+
+  // ---- 7b) Owner 審查期間有人留言：那則留言不能被吞進 fingerprint；不停下，下次帶著它重審 ----
+  {
+    const f = await setup('clean');
+    try {
+      let calls = 0;
+      (f.deps as unknown as { runOwnerSession: unknown }).runOwnerSession = async () => {
+        calls++;
+        if (calls === 1) {
+          f.board.comments.push({ commentId: 'human-during', taskId: TASK_ID, userId: 'user09', content: '我剛補了說明', createdAt: '2026-07-23T00:30:00.000Z' });
+        }
+        return { exitCode: 0, decision: { action: 'intervene', rationale: '需要人', evidenceCommentIds: [] } };
+      };
+      assert.strictEqual(await f.review(), 'no_change', '有 Owner 沒看過的留言時不得停下');
+      assert.notStrictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked');
+      assert.ok(f.traces.some((t) => t.event === 'gate.skipped' && t.args.reason === 'unseen_comments'));
+      // 下一次審查：Owner 這次看得到那則留言；沒有新留言就照常停下
+      assert.strictEqual(await f.review(), 'progressed');
+      assert.strictEqual(calls, 2, 'Owner 要帶著新留言重審一次');
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked');
+    } finally {
+      f.cleanup();
+    }
+  }
 }
 
 async function main(): Promise<void> {

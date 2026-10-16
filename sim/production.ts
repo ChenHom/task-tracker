@@ -1753,7 +1753,7 @@ const OWNER_BLOCK_RATIONALE_MAX_CHARS = 1_500;
 async function blockOnUnhandledOwnerDecision(
   deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun, task: TaskSnapshot,
   commentCount: number, decisionAction: string, rationale: string,
-): Promise<'progressed'> {
+): Promise<'progressed' | 'no_change'> {
   const key = `${HUMAN_BLOCKED_ACTION_KIND}:${action.taskId}:owner:${run.headSha ?? 'none'}:${commentCount}`;
   const shown = rationale.length > OWNER_BLOCK_RATIONALE_MAX_CHARS ? `${rationale.slice(0, OWNER_BLOCK_RATIONALE_MAX_CHARS)}…（已截斷）` : rationale;
   const content =
@@ -1765,6 +1765,15 @@ async function blockOnUnhandledOwnerDecision(
     await deps.ownerClient.postCommentOnce(action.taskId, content, key);
   });
   const evidenceAfterNotice = await buildTaskEvidence(deps.ownerClient, task);
+  // Owner 審查期間有人留言：Owner 沒看過那則留言，不能把它記進 fingerprint 吞掉（否則它永遠觸發不了恢復）。
+  // 不停下，維持 Review，下個 tick 帶著新留言重新審查。
+  if (evidenceAfterNotice.commentCount > commentCount + 1) {
+    deps.tracer(action.taskId)('gate.skipped', {
+      reason: 'unseen_comments',
+      detail: `Owner 審查期間新增 ${evidenceAfterNotice.commentCount - commentCount - 1} 則留言，下個 tick 重新審查`,
+    });
+    return 'no_change';
+  }
   checkpointAndTrace(deps, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'human_blocked', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: run.headSha, evidenceFingerprint: taskEvidenceFingerprint(evidenceAfterNotice), noProgressCount: run.noProgressCount, ownerIntervened: run.ownerIntervened }, `owner 回 ${decisionAction}，等人工處理`);
   return 'progressed';
 }
