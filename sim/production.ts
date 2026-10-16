@@ -1464,11 +1464,11 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.agentId === task.assigneeId);
     if (!agent || agent.status !== 'active') throw new Error('Goal Task assignee 沒有 active Agent route');
     const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
-    const primary = deps.useAgentRoutes ? createMemberSessionRunner(primaryRoute) : memberRunner;
+    const primary = deps.useAgentRoutes ? createMemberSessionRunner(primaryRoute, deps.repoRoot) : memberRunner;
     const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
       ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
     const fallback = deps.useAgentRoutes && fallbackRoute
-      ? createMemberSessionRunner(fallbackRoute) : null;
+      ? createMemberSessionRunner(fallbackRoute, deps.repoRoot) : null;
     const triggerRef = goalRunTriggerRef(workingRun.workerId, task.taskId);
     const tracked = (attempt: 'primary' | 'fallback', route: typeof primaryRoute, runner: MemberSessionRunner): MemberSessionRunner => async (context) =>
       trackGoalRunAttempt({
@@ -1626,11 +1626,11 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.role === 'owner');
     if (!agent || agent.status !== 'active') throw new Error('Goal Owner 沒有 active Agent route');
     const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
-    const primary = deps.useAgentRoutes ? createOwnerSessionRunner(primaryRoute) : ownerRunner;
+    const primary = deps.useAgentRoutes ? createOwnerSessionRunner(primaryRoute, deps.repoRoot) : ownerRunner;
     const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
       ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
     const fallback = deps.useAgentRoutes && fallbackRoute
-      ? createOwnerSessionRunner(fallbackRoute) : null;
+      ? createOwnerSessionRunner(fallbackRoute, deps.repoRoot) : null;
     const triggerRef = goalRunTriggerRef(run.workerId, currentTask.taskId);
     const tracked = (attempt: 'primary' | 'fallback', route: typeof primaryRoute, runner: OwnerSessionRunner): OwnerSessionRunner => async (context) =>
       trackGoalRunAttempt({

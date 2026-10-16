@@ -31,7 +31,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { buildRunnerInvocation, isQuotaExhaustion, parseReportedTokenTotal, type ModelRoute } from '../run';
+import { buildRunnerInvocation, isQuotaExhaustion, parseReportedTokenTotal, type ClaudeConfined, type ModelRoute } from '../run';
 import { classifyAdapterResult } from '../goalAdapters';
 import { sanitizeUntrustedText } from '../notificationSecurity';
 import type { Tracer } from '../trace';
@@ -121,6 +121,7 @@ function runAiSession(
   cwd: string,
   sandbox: 'read-only' | 'workspace-write',
   taskId: string,
+  claudeConfined?: ClaudeConfined,
 ): Promise<AiSessionResult> {
   mkdirSync(LOG_DIR, { recursive: true });
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/gu, '-')}-${label}.log`);
@@ -128,7 +129,7 @@ function runAiSession(
   // 與 trace 綁在一起（見 docs/sim-trace.md〈session_id 的粒度〉）。
   const trace = sessionTraceFactory?.({ taskId, sessionId: basename(logFile), actor: label.split('-')[0], model: route.model });
   trace?.('session.started', { detail: `${label} ${route.runner}/${route.model} sandbox=${sandbox}` });
-  const invocation = buildRunnerInvocation(route, prompt, { cwd, logFile, sandbox });
+  const invocation = buildRunnerInvocation(route, prompt, { cwd, logFile, sandbox, claudeConfined });
   return new Promise((resolve) => {
     const child = execFile(
       invocation.command,
@@ -373,12 +374,24 @@ export function assertSessionUsable(label: string, session: AiSessionResult): vo
   }
 }
 
-export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE): MemberSessionRunner {
+// claude 沒有 codex 那種內建 sandbox，正式路徑一律用 --restricted + sandbox 把寫入限制在 cwd。
+// route 是 claude 卻沒給 mainRepo 時直接 throw（fail closed），不退回無約束的舊參數。
+function confinedFor(route: ModelRoute, mainRepo: string | undefined, writable: boolean, bashAllow: string[]): ClaudeConfined | undefined {
+  if (route.runner !== 'claude') return undefined;
+  if (!mainRepo) throw new Error('claude route 必須提供 mainRepo 才能啟用 confined session');
+  return { writable, mainRepo, bashAllow };
+}
+
+// 成員除了 task 的驗證指令外，只開唯讀 git；commit／merge 都由 driver 做。
+const MEMBER_READONLY_GIT = ['git status', 'git log', 'git show', 'git merge-base', 'git diff'];
+
+export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE, mainRepo?: string): MemberSessionRunner {
   return async (context) => {
     const label = `member-${context.taskId.slice(0, 8)}`;
     const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
     try {
-      const session = await runAiSession(label, route, memberPrompt(context), cwd, MEMBER_SANDBOX, context.taskId);
+      const confined = confinedFor(route, mainRepo, true, [...context.verificationCommandAllowlist, ...MEMBER_READONLY_GIT]);
+      const session = await runAiSession(label, route, memberPrompt(context), cwd, MEMBER_SANDBOX, context.taskId, confined);
       assertSessionUsable(label, session);
       const raw = extractJsonBlock(session.text);
       if (raw === null) {
@@ -391,12 +404,12 @@ export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE): Mem
   };
 }
 
-export function createOwnerSessionRunner(route: ModelRoute = OWNER_ROUTE): OwnerSessionRunner {
+export function createOwnerSessionRunner(route: ModelRoute = OWNER_ROUTE, mainRepo?: string): OwnerSessionRunner {
   return async (context) => {
     const label = `owner-${context.taskId.slice(0, 8)}`;
     const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
     try {
-      const session = await runAiSession(label, route, ownerPrompt(context), cwd, OWNER_SANDBOX, context.taskId);
+      const session = await runAiSession(label, route, ownerPrompt(context), cwd, OWNER_SANDBOX, context.taskId, confinedFor(route, mainRepo, false, []));
       assertSessionUsable(label, session);
       const raw = extractJsonBlock(session.text);
       if (raw === null) {
