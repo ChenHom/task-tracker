@@ -367,6 +367,37 @@ async function claudeConfinedRunnerTests(): Promise<void> {
     assert.strictEqual(owner[owner.indexOf('--tools') + 1], 'Read,Glob,Grep', 'owner 唯讀');
     assert.ok(!owner.includes('--allowedTools'), 'owner 不帶 Write/Edit/Bash 規則');
 
+    // repoSandbox.denyRead 真的帶進 claude settings；.env 仍在最前面
+    await createMemberSessionRunner(claudeRoute, main, { network: false, denyRead: ['Sinopac.pfx'] })({
+      taskId: 'task-confined-deny', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'],
+      verificationCommandAllowlist: [], worktreePath: worktree,
+    });
+    const denied = JSON.parse(argv()[argv().indexOf('--settings') + 1]);
+    assert.deepStrictEqual(denied.sandbox.filesystem.denyRead, ['/srv/target-repo/.env', '/srv/target-repo/Sinopac.pfx']);
+    assert.ok(denied.permissions.deny.includes('Read(//srv/target-repo/Sinopac.pfx)'));
+    await createOwnerSessionRunner(claudeRoute, main, { denyRead: ['Sinopac.pfx'] })({
+      taskId: 'task-confined-owner-deny', acceptanceCriteria: 'ac', comments: [], reviewedHeadSha: 'abc', worktreePath: worktree,
+    });
+    assert.ok(JSON.parse(argv()[argv().indexOf('--settings') + 1]).sandbox.filesystem.denyRead.includes('/srv/target-repo/Sinopac.pfx'), 'owner 也要拒讀');
+
+    // codex 成員：repoSandbox.network 真的決定 network_access（預設維持 true）
+    writeFileSync(join(dir, 'codex'), [
+      '#!/bin/sh',
+      'printf \'%s\\n\' "$@" > "$FAKE_ARGV_FILE"',
+      'printf \'```json\\n{"summary":"s","changedPaths":[],"verificationCommands":[],"blocker":null}\\n```\\n\'',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    const codexRoute = { runner: 'codex', model: 'gpt-x' } as const;
+    const codexMember = async (taskId: string, sandbox?: { network?: boolean }) =>
+      createMemberSessionRunner(codexRoute, main, sandbox)({
+        taskId, acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'], verificationCommandAllowlist: [], worktreePath: worktree,
+      });
+    await codexMember('task-confined-cx-default');
+    assert.ok(argv().includes('sandbox_workspace_write.network_access=true'), '未設定 repoSandbox 維持開網路');
+    await codexMember('task-confined-cx-closed', { network: false });
+    assert.ok(argv().includes('sandbox_workspace_write.network_access=false'), 'network=false 要帶進 codex argv');
+    assert.ok(!argv().includes('sandbox_workspace_write.network_access=true'));
+
     // fail closed：claude route 沒給 mainRepo 不得退回無約束的舊參數
     await assert.rejects(
       () => createMemberSessionRunner(claudeRoute)({

@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     const baseSha = git(repo, 'rev-parse', 'HEAD');
     writeFileSync(registryPath, JSON.stringify({
       [repo]: { checks: ['npm test', 'npm run typecheck'], deployment: 'not_required', allowedPrefixes: ['result.txt'],
-        seedFiles: [{ from: 'data/research.db', to: 'data/_run.db' }], workCommands: ['python3 scripts/backtest.py'] },
+        seedFiles: [{ from: 'data/research.db', to: 'data/_run.db' }], workCommands: ['python3 scripts/backtest.py'], network: false, denyRead: ['Sinopac.pfx'] },
     }));
 
     const [{ db }, { resetProjections }, { seedUsers }, { getUserIdByEmail }, goalModule, taskModule, workspaceModule, memberModule, notificationModule, coordinatorModule, productionModule, serverModule] = await Promise.all([
@@ -152,6 +152,7 @@ async function main(): Promise<void> {
     let ownerCalls = 0;
     let ciCalls = 0;
     let completionBatchCalls = 0;
+    let sandboxSeen = 0;
     const runProduction = () => productionModule.runOnce({
       live: true,
       baseUrl,
@@ -159,6 +160,17 @@ async function main(): Promise<void> {
       repoRoot: repo,
       coordinatorToken,
       allowedPrefixes: ['sim/'], // 預設值；registry 的 allowedPrefixes 必須蓋過它，否則 result.txt 會被擋
+      gatherSnapshot: async (gatherDeps: Parameters<typeof productionModule.gatherSnapshot>[0]) => {
+        const snapshot = await productionModule.gatherSnapshot(gatherDeps);
+        const goalTask = snapshot.tasks.find((candidate) => candidate.taskId === task.task_id);
+        // registry 的 network / denyRead 必須進 Goal task snapshot（再由 depsForTask 帶給 runner）
+        if (goalTask && goalTask.status !== 'Done') {
+          assert.strictEqual(goalTask.sandboxNetwork, false, 'registry network=false 必須進 snapshot');
+          assert.deepStrictEqual(goalTask.denyRead, ['Sinopac.pfx'], 'registry denyRead 必須進 snapshot');
+          sandboxSeen++;
+        }
+        return snapshot;
+      },
       isServiceActive: async () => {
         // runOnce 清掉自己的 inherited credential；同 process 的 HTTP fixture 需恢復 server credential。
         process.env.TASK_TRACKER_COORDINATOR_TOKEN = coordinatorToken;
@@ -203,6 +215,7 @@ async function main(): Promise<void> {
     assert.strictEqual(git(repo, 'rev-parse', `sim/task/${task.task_id}`), committedHead, '重跑不可重複建立 task commit');
     assert.strictEqual((await runProduction()).exitCode, 1, 'CI 重跑通過後、完成 checkpoint crash 前 Task 應已 Done');
     assert.strictEqual((await runProduction()).exitCode, 0, 'Done checkpoint 重跑必須是冪等 no-op');
+    assert.ok(sandboxSeen > 0, 'gatherSnapshot 包裝必須至少驗證過一次 Goal task');
     assert.strictEqual(memberCalls, 1, 'checkpoint 重跑不可再次呼叫 member runner');
     assert.strictEqual(ciCalls, 2, 'CI checkpoint 只允許 crash 一次、成功一次');
     assert.strictEqual(git(repo, 'rev-list', '--count', `${baseSha}..master`), '2', '只有 task commit 與單一 merge commit');

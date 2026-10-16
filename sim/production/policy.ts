@@ -53,6 +53,9 @@ export interface TaskSnapshot {
   workCommands?: string[];
   /** Goal 的 data_scope（資料範圍與硬性限制）；由 api.ts 讀 Goal 時一併帶入。 */
   goalDataScope?: string;
+  /** registry 的 network / denyRead，原樣帶給成員與 owner session 的 sandbox。 */
+  sandboxNetwork?: boolean;
+  denyRead?: string[];
   deployment?: 'task-tracker' | 'not_required' | null;
   deploymentNotRequired?: boolean;
   repoUnavailable?: boolean;

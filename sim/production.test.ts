@@ -152,9 +152,25 @@ import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
 import { enqueueHeartbeat, finishRun, markRunRunning, prepareRun, type FinishRunInput, type PrepareRunInput } from '../src/goalRun';
 import { trackGoalRunAttempt } from './goalUsage';
-import { applyMemberAttemptTransition, assignAndStartDoing, coordinatorChildEnvironment, execAllowlistedCommand, goalRunTriggerRef, productionMemberAdapter, withAction } from './production';
+import { applyMemberAttemptTransition, assignAndStartDoing, coordinatorChildEnvironment, depsForTask, execAllowlistedCommand, goalRunTriggerRef, productionMemberAdapter, withAction } from './production';
 
 assert.deepStrictEqual(coordinatorChildEnvironment({ PATH: '/bin', TASK_TRACKER_COORDINATOR_TOKEN: 'secret' }), { PATH: '/bin' });
+
+// registry 的 network / denyRead 只在 Goal task 帶到 actionDeps；其餘 task 與未設定時維持全域 deps
+{
+  const globalDeps = { repoRoot: '/global', allowedPrefixes: ['sim/'] } as unknown as Parameters<typeof depsForTask>[0];
+  const goalTask = { taskId: 't', goalId: 'g', targetRepo: '/ext/repo', allowedPrefixes: ['src/'], sandboxNetwork: false, denyRead: ['Sinopac.pfx'] } as unknown as TaskSnapshot;
+  const scoped = depsForTask(globalDeps, goalTask);
+  assert.strictEqual(scoped.repoRoot, '/ext/repo');
+  assert.deepStrictEqual(scoped.allowedPrefixes, ['src/']);
+  assert.strictEqual(scoped.sandboxNetwork, false);
+  assert.deepStrictEqual(scoped.denyRead, ['Sinopac.pfx']);
+  const unset = depsForTask(globalDeps, { taskId: 't', goalId: 'g', targetRepo: '/ext/repo' } as unknown as TaskSnapshot);
+  assert.strictEqual(unset.sandboxNetwork, undefined, 'registry 沒設定就不帶，runner 走預設');
+  assert.strictEqual(unset.denyRead, undefined);
+  assert.strictEqual(depsForTask(globalDeps, { taskId: 't', sandboxNetwork: false, denyRead: ['x'] } as unknown as TaskSnapshot), globalDeps, '非 Goal task 完全不動 deps');
+  assert.strictEqual(depsForTask(globalDeps, undefined), globalDeps);
+}
 
 async function runG1Tests(): Promise<void> {
   const db = openCoordinatorState(':memory:');

@@ -1449,12 +1449,44 @@ assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', 
     '--settings', JSON.stringify(expectedSettings),
     '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config',
   ], 'owner 唯讀 confined argv：沒有 Write/Edit/Bash 規則，bashAllow 被忽略');
+  // denyRead：.env 永遠擋；額外路徑同時進 permission（//<MAIN>/<path>）與 sandbox（<MAIN>/<path>）；重複列 .env 不會出現兩次
+  const extra = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: main, bashAllow: [], denyRead: ['Sinopac.pfx', 'keys/api.key', '.env'] } });
+  const extraSettings = JSON.parse(extra.args[extra.args.indexOf('--settings') + 1]);
+  assert.deepStrictEqual(extraSettings.permissions.deny, [
+    'Read(//srv/target-repo/.env)', 'Read(//srv/target-repo/Sinopac.pfx)', 'Read(//srv/target-repo/keys/api.key)', 'WebFetch', 'WebSearch', 'Agent',
+  ]);
+  assert.deepStrictEqual(extraSettings.sandbox.filesystem.denyRead, ['/srv/target-repo/.env', '/srv/target-repo/Sinopac.pfx', '/srv/target-repo/keys/api.key']);
+  const emptyDeny = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: main, bashAllow: ['npm test', 'git diff'], denyRead: [] } });
+  assert.deepStrictEqual(emptyDeny.args, member.args, 'denyRead 空陣列／未設定時 argv 與舊版完全相同');
   // codex 不受 claudeConfined 影響
   const codexRoute = { runner: 'codex', model: 'gpt-test' } as const;
   assert.deepStrictEqual(
     buildRunnerInvocation(codexRoute, 'p', { ...base, claudeConfined: { writable: true, mainRepo: main, bashAllow: [] } }).args,
     buildRunnerInvocation(codexRoute, 'p', base).args,
     'codex argv 不變',
+  );
+}
+// codex network：未設定／true 維持 network_access=true；只有明確 false 才關網路；read-only 仍不附加
+{
+  const codexRoute = { runner: 'codex', model: 'gpt-test' } as const;
+  const base = { cwd: '/tmp/e', logFile: '/tmp/e.log' };
+  const networkArg = (args: string[]) => args.filter((arg) => arg.startsWith('sandbox_workspace_write.network_access='));
+  assert.deepStrictEqual(networkArg(buildRunnerInvocation(codexRoute, 'p', base).args), ['sandbox_workspace_write.network_access=true'], '未設定 network = 開（現行行為）');
+  assert.deepStrictEqual(networkArg(buildRunnerInvocation(codexRoute, 'p', { ...base, network: true }).args), ['sandbox_workspace_write.network_access=true']);
+  const closed = buildRunnerInvocation(codexRoute, 'p', { ...base, network: false });
+  assert.deepStrictEqual(networkArg(closed.args), ['sandbox_workspace_write.network_access=false']);
+  assert.strictEqual(closed.args[closed.args.indexOf('sandbox_workspace_write.network_access=false') - 1], '-c', '以 -c 傳入');
+  assert.deepStrictEqual(
+    closed.args.map((arg) => arg.replace('network_access=false', 'network_access=true')),
+    buildRunnerInvocation(codexRoute, 'p', base).args,
+    'network=false 只改那一個值，其餘 argv 不變',
+  );
+  assert.deepStrictEqual(networkArg(buildRunnerInvocation(codexRoute, 'p', { ...base, sandbox: 'read-only', network: false }).args), [], 'read-only 不附加 network_access');
+  // claude 不吃 network（confined 本來就擋網路）
+  const claudeRoute = { runner: 'claude', model: 'claude-test' } as const;
+  assert.deepStrictEqual(
+    buildRunnerInvocation(claudeRoute, 'p', { ...base, tools: 'T', network: false }).args,
+    buildRunnerInvocation(claudeRoute, 'p', { ...base, tools: 'T' }).args,
   );
 }
 const codexBase = buildRunnerInvocation({ runner: 'codex', model: 'gpt-test' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log' });

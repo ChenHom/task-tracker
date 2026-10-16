@@ -83,7 +83,7 @@ import {
   type MemberSessionRunnerContext,
   type MemberSessionRunnerResult,
 } from './production/agent';
-import { createOwnerSessionRunner, createMemberSessionRunner, setSessionTraceFactory } from './production/runner';
+import { createOwnerSessionRunner, createMemberSessionRunner, setSessionTraceFactory, type RepoSandbox } from './production/runner';
 import { createPreflightRunPersister, trackGoalRunAttempt, type GoalRunRecorder } from './goalUsage';
 import { buildAdapterInvocation, classifyAdapterResult, executeWithSingleFallback, type AgentAdapter, type AdapterInput } from './goalAdapters';
 import {
@@ -266,6 +266,8 @@ export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<Coordina
     task.allowedPrefixes = config.allowedPrefixes;
     task.seedFiles = config.seedFiles;
     task.workCommands = config.workCommands;
+    task.sandboxNetwork = config.network;
+    task.denyRead = config.denyRead;
     task.deployment = task.deploymentNotRequired ? 'not_required' : config.deployment;
     deps.taskChecks?.set(task.taskId, config.checks);
   }
@@ -726,6 +728,9 @@ interface ResolvedDeps {
   seedFiles?: SeedFile[];
   workCommands?: string[];
   goalDataScope?: string;
+  /** Goal task 專用：由 actionDeps 依 registry 覆寫，其餘路徑維持 undefined（行為不變）。 */
+  sandboxNetwork?: boolean;
+  denyRead?: string[];
   runOwnerSession?: OwnerSessionRunner;
   runMemberSession?: MemberSessionRunner;
   useAgentRoutes: boolean;
@@ -742,6 +747,21 @@ interface ResolvedDeps {
   /** 取得綁好本 tick base 的 tracer；taskId 省略即 tick 層級事件。見 docs/sim-trace.md。 */
   tracer: (taskId?: string | null) => Tracer;
   taskChecks: Map<string, string[]>;
+}
+
+// Goal task 改用 registry 登記的 repo 設定（repoRoot、allowedPrefixes、sandbox）；其餘 task 沿用全域 deps。
+export function depsForTask(deps: ResolvedDeps, task: TaskSnapshot | undefined): ResolvedDeps {
+  return task?.goalId && task.targetRepo
+    ? {
+      ...deps, repoRoot: task.targetRepo, allowedPrefixes: task.allowedPrefixes ?? deps.allowedPrefixes,
+      seedFiles: task.seedFiles, workCommands: task.workCommands, goalDataScope: task.goalDataScope,
+      sandboxNetwork: task.sandboxNetwork, denyRead: task.denyRead,
+    }
+    : deps;
+}
+
+function repoSandbox(deps: ResolvedDeps): RepoSandbox {
+  return { network: deps.sandboxNetwork, denyRead: deps.denyRead };
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,12 +1025,7 @@ async function runLiveDispatchLoop(deps: ResolvedDeps, tickId: string): Promise<
     for (const action of actions) {
       try {
         const task = snapshot.tasks.find((candidate) => candidate.taskId === action.taskId);
-        const actionDeps = task?.goalId && task.targetRepo
-          ? {
-            ...deps, repoRoot: task.targetRepo, allowedPrefixes: task.allowedPrefixes ?? deps.allowedPrefixes,
-            seedFiles: task.seedFiles, workCommands: task.workCommands, goalDataScope: task.goalDataScope,
-          }
-          : deps;
+        const actionDeps = depsForTask(deps, task);
         const outcome = await dispatchAction(actionDeps, action, snapshot, tickId, claimedAssigneesThisIteration);
         if (outcome === 'progressed') {
           summary.processed++;
@@ -1474,11 +1489,11 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.agentId === task.assigneeId);
     if (!agent || agent.status !== 'active') throw new Error('Goal Task assignee 沒有 active Agent route');
     const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
-    const primary = deps.useAgentRoutes ? createMemberSessionRunner(primaryRoute, deps.repoRoot) : memberRunner;
+    const primary = deps.useAgentRoutes ? createMemberSessionRunner(primaryRoute, deps.repoRoot, repoSandbox(deps)) : memberRunner;
     const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
       ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
     const fallback = deps.useAgentRoutes && fallbackRoute
-      ? createMemberSessionRunner(fallbackRoute, deps.repoRoot) : null;
+      ? createMemberSessionRunner(fallbackRoute, deps.repoRoot, repoSandbox(deps)) : null;
     const triggerRef = goalRunTriggerRef(workingRun.workerId, task.taskId);
     const tracked = (attempt: 'primary' | 'fallback', route: typeof primaryRoute, runner: MemberSessionRunner): MemberSessionRunner => async (context) =>
       trackGoalRunAttempt({
@@ -1644,11 +1659,11 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.role === 'owner');
     if (!agent || agent.status !== 'active') throw new Error('Goal Owner 沒有 active Agent route');
     const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
-    const primary = deps.useAgentRoutes ? createOwnerSessionRunner(primaryRoute, deps.repoRoot) : ownerRunner;
+    const primary = deps.useAgentRoutes ? createOwnerSessionRunner(primaryRoute, deps.repoRoot, repoSandbox(deps)) : ownerRunner;
     const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
       ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
     const fallback = deps.useAgentRoutes && fallbackRoute
-      ? createOwnerSessionRunner(fallbackRoute, deps.repoRoot) : null;
+      ? createOwnerSessionRunner(fallbackRoute, deps.repoRoot, repoSandbox(deps)) : null;
     const triggerRef = goalRunTriggerRef(run.workerId, currentTask.taskId);
     const tracked = (attempt: 'primary' | 'fallback', route: typeof primaryRoute, runner: OwnerSessionRunner): OwnerSessionRunner => async (context) =>
       trackGoalRunAttempt({
