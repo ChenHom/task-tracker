@@ -27,8 +27,8 @@
  * 「看起來合法」的預設決策——agent.ts:356 解構後會直接使用 decision.action，
  * 不會先檢查 exitCode。
  */
-import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { buildRunnerInvocation, isQuotaExhaustion, parseReportedTokenTotal, type ClaudeConfined, type ModelRoute } from '../run';
@@ -122,6 +122,7 @@ function runAiSession(
   sandbox: 'read-only' | 'workspace-write',
   taskId: string,
   claudeConfined?: ClaudeConfined,
+  network?: boolean,
 ): Promise<AiSessionResult> {
   mkdirSync(LOG_DIR, { recursive: true });
   const logFile = join(LOG_DIR, `${new Date().toISOString().replace(/[:.]/gu, '-')}-${label}.log`);
@@ -129,7 +130,7 @@ function runAiSession(
   // 與 trace 綁在一起（見 docs/sim-trace.md〈session_id 的粒度〉）。
   const trace = sessionTraceFactory?.({ taskId, sessionId: basename(logFile), actor: label.split('-')[0], model: route.model });
   trace?.('session.started', { detail: `${label} ${route.runner}/${route.model} sandbox=${sandbox}` });
-  const invocation = buildRunnerInvocation(route, prompt, { cwd, logFile, sandbox, claudeConfined });
+  const invocation = buildRunnerInvocation(route, prompt, { cwd, logFile, sandbox, claudeConfined, network });
   return new Promise((resolve) => {
     const child = execFile(
       invocation.command,
@@ -407,22 +408,51 @@ export function assertSessionUsable(label: string, session: AiSessionResult): vo
 
 // claude 沒有 codex 那種內建 sandbox，正式路徑一律用 --restricted + sandbox 把寫入限制在 cwd。
 // route 是 claude 卻沒給 mainRepo 時直接 throw（fail closed），不退回無約束的舊參數。
-function confinedFor(route: ModelRoute, mainRepo: string | undefined, writable: boolean, bashAllow: string[]): ClaudeConfined | undefined {
+function confinedFor(route: ModelRoute, mainRepo: string | undefined, writable: boolean, bashAllow: string[], denyRead?: string[]): ClaudeConfined | undefined {
   if (route.runner !== 'claude') return undefined;
   if (!mainRepo) throw new Error('claude route 必須提供 mainRepo 才能啟用 confined session');
-  return { writable, mainRepo, bashAllow };
+  const leaked = protectedPathInGitHistory(mainRepo, ['.env', ...(denyRead ?? [])]);
+  if (leaked) {
+    throw new Error(`拒讀路徑曾進過 git 歷史（${leaked}）：成員可用 git show <rev>:<path> 讀出內容，拒絕啟動 confined session`);
+  }
+  return { writable, mainRepo, bashAllow, ...(denyRead ? { denyRead } : {}) };
+}
+
+/**
+ * denyRead 只擋檔案路徑；成員的唯讀 git（git show/log/diff）可直接讀 `<rev>:<path>` 的 blob。
+ * 拒讀路徑只要在任何 ref 或 reflog 的歷史中出現過就回傳該路徑（呼叫端 fail closed）；
+ * 只走 --all 的話，被 reset／rebase 掉的 commit 仍可用 `master@{1}:<path>` 讀出，所以加 --reflog。
+ * 憑證也可能曾以別的檔名 commit 過：對目前存在的拒讀檔算 blob 雜湊，物件庫裡已有同一個 blob 就擋
+ * （不論檔名、reflog 是否過期，只要還沒被 gc 掉都抓得到）。沒有 .git 就沒有可讀的 blob；其他 git 錯誤一律往外丟，不放行。
+ * ponytail: 只比對「目前內容」；舊版、內容不同的憑證若以別名進過歷史仍抓不到，要徹底隔離得讓 agent 改用沒有讀取權的 OS 使用者。
+ */
+export function protectedPathInGitHistory(mainRepo: string, paths: string[]): string | null {
+  if (!existsSync(join(mainRepo, '.git'))) return null;
+  for (const path of paths) {
+    const hit = execFileSync('git', ['-C', mainRepo, 'log', '--all', '--reflog', '-1', '--format=%H', '--', `:(literal)${path}`], { encoding: 'utf8' }).trim();
+    if (hit) return path;
+    const file = join(mainRepo, path);
+    if (existsSync(file) && statSync(file).isFile()) {
+      const blob = execFileSync('git', ['-C', mainRepo, 'hash-object', '--', path], { encoding: 'utf8' }).trim();
+      if (spawnSync('git', ['-C', mainRepo, 'cat-file', '-e', blob]).status === 0) return path;
+    }
+  }
+  return null;
 }
 
 // 成員除了 task 的驗證指令外，只開唯讀 git；commit／merge 都由 driver 做。
 const MEMBER_READONLY_GIT = ['git status', 'git log', 'git show', 'git merge-base', 'git diff'];
 
-export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE, mainRepo?: string): MemberSessionRunner {
+// repoSandbox 來自 repo registry：network=false 讓 codex 不開網路；denyRead 讓 claude 額外拒讀 mainRepo 內的路徑。
+export interface RepoSandbox { network?: boolean; denyRead?: string[] }
+
+export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE, mainRepo?: string, repoSandbox: RepoSandbox = {}): MemberSessionRunner {
   return async (context) => {
     const label = `member-${context.taskId.slice(0, 8)}`;
     const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
     try {
-      const confined = confinedFor(route, mainRepo, true, [...context.verificationCommandAllowlist, ...(context.workCommands ?? []), ...MEMBER_READONLY_GIT]);
-      const session = await runAiSession(label, route, memberPrompt(context), cwd, MEMBER_SANDBOX, context.taskId, confined);
+      const confined = confinedFor(route, mainRepo, true, [...context.verificationCommandAllowlist, ...(context.workCommands ?? []), ...MEMBER_READONLY_GIT], repoSandbox.denyRead);
+      const session = await runAiSession(label, route, memberPrompt(context), cwd, MEMBER_SANDBOX, context.taskId, confined, repoSandbox.network);
       assertSessionUsable(label, session);
       const raw = extractJsonBlock(session.text);
       if (raw === null) {
@@ -435,12 +465,12 @@ export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE, main
   };
 }
 
-export function createOwnerSessionRunner(route: ModelRoute = OWNER_ROUTE, mainRepo?: string): OwnerSessionRunner {
+export function createOwnerSessionRunner(route: ModelRoute = OWNER_ROUTE, mainRepo?: string, repoSandbox: RepoSandbox = {}): OwnerSessionRunner {
   return async (context) => {
     const label = `owner-${context.taskId.slice(0, 8)}`;
     const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
     try {
-      const session = await runAiSession(label, route, ownerPrompt(context), cwd, OWNER_SANDBOX, context.taskId, confinedFor(route, mainRepo, false, []));
+      const session = await runAiSession(label, route, ownerPrompt(context), cwd, OWNER_SANDBOX, context.taskId, confinedFor(route, mainRepo, false, [], repoSandbox.denyRead), repoSandbox.network);
       assertSessionUsable(label, session);
       const raw = extractJsonBlock(session.text);
       if (raw === null) {

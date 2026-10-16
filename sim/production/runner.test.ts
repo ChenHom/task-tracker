@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -357,7 +358,7 @@ async function claudeConfinedRunnerTests(): Promise<void> {
       'Bash(git status)', 'Bash(git status *)', 'Bash(git log)', 'Bash(git log *)', 'Bash(git show)', 'Bash(git show *)',
       'Bash(git merge-base)', 'Bash(git merge-base *)', 'Bash(git diff)', 'Bash(git diff *)',
     ], 'bashAllow = verificationCommandAllowlist + workCommands + 唯讀 git');
-    assert.ok(member[member.indexOf('--settings') + 1].includes('"denyRead":["/srv/target-repo/.env"]'), 'mainRepo 要進 settings');
+    assert.deepStrictEqual(JSON.parse(member[member.indexOf('--settings') + 1]).sandbox.filesystem.denyRead, ['/srv/target-repo/.env', `${worktree}/.env`], 'mainRepo 與 worktree 都要進 settings');
 
     await createOwnerSessionRunner(claudeRoute, main)({
       taskId: 'task-confined-owner', acceptanceCriteria: 'ac', comments: [], reviewedHeadSha: 'abc', worktreePath: worktree,
@@ -366,6 +367,92 @@ async function claudeConfinedRunnerTests(): Promise<void> {
     assert.ok(owner.includes('--restricted'));
     assert.strictEqual(owner[owner.indexOf('--tools') + 1], 'Read,Glob,Grep', 'owner 唯讀');
     assert.ok(!owner.includes('--allowedTools'), 'owner 不帶 Write/Edit/Bash 規則');
+
+    // repoSandbox.denyRead 真的帶進 claude settings；.env 仍在最前面
+    await createMemberSessionRunner(claudeRoute, main, { network: false, denyRead: ['Sinopac.pfx'] })({
+      taskId: 'task-confined-deny', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'],
+      verificationCommandAllowlist: [], worktreePath: worktree,
+    });
+    const denied = JSON.parse(argv()[argv().indexOf('--settings') + 1]);
+    assert.deepStrictEqual(denied.sandbox.filesystem.denyRead, ['/srv/target-repo/.env', '/srv/target-repo/Sinopac.pfx', `${worktree}/.env`, `${worktree}/Sinopac.pfx`]);
+    assert.ok(denied.permissions.deny.includes(`Read(/${worktree}/Sinopac.pfx)`), 'worktree 裡的同名路徑也要拒讀');
+    assert.ok(denied.permissions.deny.includes('Read(//srv/target-repo/Sinopac.pfx)'));
+    await createOwnerSessionRunner(claudeRoute, main, { denyRead: ['Sinopac.pfx'] })({
+      taskId: 'task-confined-owner-deny', acceptanceCriteria: 'ac', comments: [], reviewedHeadSha: 'abc', worktreePath: worktree,
+    });
+    assert.ok(JSON.parse(argv()[argv().indexOf('--settings') + 1]).sandbox.filesystem.denyRead.includes('/srv/target-repo/Sinopac.pfx'), 'owner 也要拒讀');
+
+    // 拒讀路徑若曾進過 git 歷史，git show <rev>:<path> 能繞過檔案拒讀：confined session 必須 fail closed
+    const histRepo = join(dir, 'hist-repo');
+    mkdirSync(histRepo);
+    const g = (...args: string[]) => execFileSync('git', ['-C', histRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' });
+    g('init', '-q');
+    writeFileSync(join(histRepo, 'README.md'), 'r');
+    g('add', 'README.md'); g('commit', '-qm', 'init');
+    const histMember = (denyRead?: string[]) => createMemberSessionRunner(claudeRoute, histRepo, denyRead ? { denyRead } : {})({
+      taskId: 'task-confined-hist', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'], verificationCommandAllowlist: [], worktreePath: worktree,
+    });
+    await histMember(['secret.pfx']);
+    assert.ok(argv().includes('--restricted'), '歷史乾淨時照常啟動');
+    writeFileSync(join(histRepo, 'secret.pfx'), 'cert');
+    g('add', 'secret.pfx'); g('commit', '-qm', 'oops'); g('rm', '-q', 'secret.pfx'); g('commit', '-qm', 'remove');
+    await assert.rejects(histMember(['secret.pfx']), /git 歷史（secret\.pfx）/, '已刪除但留在歷史中的拒讀路徑也要擋');
+    await assert.rejects(createOwnerSessionRunner(claudeRoute, histRepo, { denyRead: ['secret.pfx'] })({
+      taskId: 'task-confined-hist-owner', acceptanceCriteria: 'ac', comments: [], reviewedHeadSha: 'abc', worktreePath: worktree,
+    }), /git 歷史/, 'owner 同樣 fail closed');
+    writeFileSync(join(histRepo, '.env'), 'K=V');
+    g('add', '-f', '.env'); g('commit', '-qm', 'env');
+    await assert.rejects(histMember(), /git 歷史（\.env）/, '.env 即使沒列在 denyRead 也要檢查');
+
+    // commit 被 reset 掉後 refs 已走不到，但 reflog（master@{1}）還能 git show 出內容：也要擋
+    const reflogRepo = join(dir, 'reflog-repo');
+    mkdirSync(reflogRepo);
+    const gr = (...args: string[]) => execFileSync('git', ['-C', reflogRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' });
+    gr('init', '-q');
+    writeFileSync(join(reflogRepo, 'README.md'), 'r');
+    gr('add', 'README.md'); gr('commit', '-qm', 'init');
+    writeFileSync(join(reflogRepo, 'token.key'), 'k');
+    gr('add', 'token.key'); gr('commit', '-qm', 'oops'); gr('reset', '-q', '--hard', 'HEAD~1');
+    assert.strictEqual(gr('log', '--all', '-1', '--format=%H', '--', ':(literal)token.key').trim(), '', '前提：只剩 reflog 可達，--all 看不到');
+    const reflogMember = createMemberSessionRunner(claudeRoute, reflogRepo, { denyRead: ['token.key'] })({
+      taskId: 'task-confined-reflog', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'], verificationCommandAllowlist: [], worktreePath: worktree,
+    });
+    await assert.rejects(reflogMember, /git 歷史（token\.key）/, '只剩 reflog 可達的拒讀路徑也要擋');
+
+    // 憑證曾以別的檔名 commit 過：路徑查不到，但同一個 blob 還在物件庫 → 也要擋；內容不同則照常啟動
+    const aliasRepo = join(dir, 'alias-repo');
+    mkdirSync(aliasRepo);
+    const ga = (...args: string[]) => execFileSync('git', ['-C', aliasRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' });
+    ga('init', '-q');
+    writeFileSync(join(aliasRepo, 'old-name.pfx'), 'cert-bytes');
+    ga('add', 'old-name.pfx'); ga('commit', '-qm', 'old'); ga('rm', '-q', 'old-name.pfx'); ga('commit', '-qm', 'rm');
+    const aliasMember = () => createMemberSessionRunner(claudeRoute, aliasRepo, { denyRead: ['Sinopac.pfx'] })({
+      taskId: 'task-confined-alias', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'], verificationCommandAllowlist: [], worktreePath: worktree,
+    });
+    writeFileSync(join(aliasRepo, 'Sinopac.pfx'), 'other-bytes');
+    await aliasMember();
+    assert.ok(argv().includes('--restricted'), '內容沒進過歷史時照常啟動');
+    writeFileSync(join(aliasRepo, 'Sinopac.pfx'), 'cert-bytes');
+    assert.strictEqual(ga('log', '--all', '--reflog', '-1', '--format=%H', '--', ':(literal)Sinopac.pfx').trim(), '', '前提：路徑從未進過歷史');
+    await assert.rejects(aliasMember(), /git 歷史（Sinopac\.pfx）/, '同一份內容曾以別名 commit 過也要擋');
+
+    // codex 成員：repoSandbox.network 真的決定 network_access（預設維持 true）
+    writeFileSync(join(dir, 'codex'), [
+      '#!/bin/sh',
+      'printf \'%s\\n\' "$@" > "$FAKE_ARGV_FILE"',
+      'printf \'```json\\n{"summary":"s","changedPaths":[],"verificationCommands":[],"blocker":null}\\n```\\n\'',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    const codexRoute = { runner: 'codex', model: 'gpt-x' } as const;
+    const codexMember = async (taskId: string, sandbox?: { network?: boolean }) =>
+      createMemberSessionRunner(codexRoute, main, sandbox)({
+        taskId, acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'], verificationCommandAllowlist: [], worktreePath: worktree,
+      });
+    await codexMember('task-confined-cx-default');
+    assert.ok(argv().includes('sandbox_workspace_write.network_access=true'), '未設定 repoSandbox 維持開網路');
+    await codexMember('task-confined-cx-closed', { network: false });
+    assert.ok(argv().includes('sandbox_workspace_write.network_access=false'), 'network=false 要帶進 codex argv');
+    assert.ok(!argv().includes('sandbox_workspace_write.network_access=true'));
 
     // fail closed：claude route 沒給 mainRepo 不得退回無約束的舊參數
     await assert.rejects(

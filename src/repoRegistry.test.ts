@@ -73,6 +73,36 @@ try {
     withExtra({ workCommands: bad });
     assert.throws(() => loadRepoRegistry(registryPath), /workCommands 不合法/, `不合法 workCommands 應拒絕：${JSON.stringify(bad)}`);
   }
+  // network / denyRead：選填、原樣載入；未設定時不帶欄位（預設行為不變）
+  assert.strictEqual(registry.get(canonical)?.network, undefined, '未設定時不帶 network');
+  assert.strictEqual(registry.get(canonical)?.denyRead, undefined, '未設定時不帶 denyRead');
+  writeFileSync(registryPath, JSON.stringify({
+    [repo]: { checks: ['npm test'], deployment: 'not_required', network: false, denyRead: ['Sinopac.pfx', 'secrets/api.key'] },
+  }));
+  const hardened = loadRepoRegistry(registryPath).get(canonical);
+  assert.strictEqual(hardened?.network, false, 'network=false 應原樣載入');
+  assert.deepStrictEqual(hardened?.denyRead, ['Sinopac.pfx', 'secrets/api.key'], 'denyRead 應原樣載入');
+  writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', network: true } }));
+  assert.strictEqual(loadRepoRegistry(registryPath).get(canonical)?.network, true, 'network=true 也合法');
+
+  for (const bad of ['false', 0, null, 'no']) {
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', network: bad } }));
+    assert.throws(() => loadRepoRegistry(registryPath), /network 不合法/, `不合法 network 應拒絕：${JSON.stringify(bad)}`);
+  }
+  for (const bad of [[], 'a.pfx', [1], [''], ['/etc/passwd'], ['../x'], ['a/../x'], ['..'], ['*.pfx'], ['keys/*'], ['a?'], ['k[0]']]) {
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', denyRead: bad } }));
+    assert.throws(() => loadRepoRegistry(registryPath), /denyRead 不合法/, `不合法 denyRead 應拒絕：${JSON.stringify(bad)}`);
+  }
+  // claudeOnly：選填、原樣載入；未設定時不帶欄位（預設不限 adapter）
+  assert.strictEqual(registry.get(canonical)?.claudeOnly, undefined, '未設定時不帶 claudeOnly');
+  for (const claudeOnly of [false, true]) {
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', claudeOnly } }));
+    assert.strictEqual(loadRepoRegistry(registryPath).get(canonical)?.claudeOnly, claudeOnly, `claudeOnly=${claudeOnly} 應原樣載入`);
+  }
+  for (const bad of ['false', 0, null, 'no']) {
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', claudeOnly: bad } }));
+    assert.throws(() => loadRepoRegistry(registryPath), /claudeOnly 不合法/, `不合法 claudeOnly 應拒絕：${JSON.stringify(bad)}`);
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

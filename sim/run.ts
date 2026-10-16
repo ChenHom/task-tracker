@@ -2031,15 +2031,21 @@ export interface ClaudeConfined {
   mainRepo: string;
   /** 允許的 Bash 指令前綴；每條展開成 `Bash(cmd)` 與 `Bash(cmd *)`。只在 writable 時有效。 */
   bashAllow: string[];
+  /** 除了 `.env`（永遠擋）之外，額外拒讀的 mainRepo 相對路徑（來自 repo registry 的 denyRead）。 */
+  denyRead?: string[];
 }
 
-export function claudeConfinedArgs(confined: ClaudeConfined): string[] {
+export function claudeConfinedArgs(confined: ClaudeConfined, cwd?: string): string[] {
   const { writable, mainRepo, bashAllow } = confined;
+  const relative = ['.env', ...(confined.denyRead ?? []).filter((path) => path !== '.env')];
+  // session 在 <mainRepo>/sim-work/tasks/<id> 執行：同一相對路徑在 worktree 裡若也有一份（被追蹤或產生出來），也要擋。
+  const roots = cwd && cwd !== mainRepo ? [mainRepo, cwd] : [mainRepo];
+  const denyPaths = roots.flatMap((root) => relative.map((path) => `${root}/${path}`));
   // permission 規則的絕對路徑要 `//` 開頭；sandbox 路徑只用單一 `/`。
   const settings = {
     permissions: {
       defaultMode: 'dontAsk',
-      deny: [`Read(/${mainRepo}/.env)`, 'WebFetch', 'WebSearch', 'Agent'],
+      deny: [...denyPaths.map((path) => `Read(/${path})`), 'WebFetch', 'WebSearch', 'Agent'],
       disableBypassPermissionsMode: 'disable',
       blockReadsOutsideWorkingDirectories: true,
     },
@@ -2048,7 +2054,7 @@ export function claudeConfinedArgs(confined: ClaudeConfined): string[] {
       failIfUnavailable: true,
       autoAllowBashIfSandboxed: false,
       allowUnsandboxedCommands: false,
-      filesystem: { denyRead: [`${mainRepo}/.env`] },
+      filesystem: { denyRead: denyPaths },
       network: { allowedDomains: [] as string[] },
     },
     autoMemoryEnabled: false,
@@ -2085,6 +2091,8 @@ export function buildRunnerInvocation(
     claudeTools?: string;
     settings?: string;
     claudeConfined?: ClaudeConfined;
+    // 只對 codex workspace-write 有效：false 時關掉網路；省略（legacy）維持開啟。
+    network?: boolean;
   },
 ): RunnerInvocation {
   if (route.runner === 'claude') {
@@ -2094,7 +2102,7 @@ export function buildRunnerInvocation(
       if (opts.settings) args.push('--settings', opts.settings);
       args.push('--setting-sources', '', '--no-session-persistence');
     } else if (opts.claudeConfined) {
-      args.push(...claudeConfinedArgs(opts.claudeConfined));
+      args.push(...claudeConfinedArgs(opts.claudeConfined, opts.cwd));
     } else {
       args.push('--allowedTools', opts.tools ?? '');
     }
@@ -2110,7 +2118,7 @@ export function buildRunnerInvocation(
       args: ['exec', '--ephemeral', '--skip-git-repo-check', '-C', opts.cwd,
         '-s', sandbox,
         // network_access 是 workspace-write 專屬設定；read-only 下沒有意義，不要附加。
-        ...(sandbox === 'workspace-write' ? ['-c', 'sandbox_workspace_write.network_access=true'] : []),
+        ...(sandbox === 'workspace-write' ? ['-c', `sandbox_workspace_write.network_access=${opts.network === false ? 'false' : 'true'}`] : []),
         '-m', route.model,
         ...(route.effort ? ['-c', `model_reasoning_effort=${route.effort}`] : []),
         ...(opts.captureLastMessage === false ? [] : ['--output-last-message', `${opts.logFile}.last`]),

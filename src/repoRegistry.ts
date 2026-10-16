@@ -14,6 +14,22 @@ export interface RegisteredRepo {
   seedFiles?: SeedFile[];
   /** 成員工作時可執行的建置／測試／研究指令；claude 成員的 Bash 白名單會加上這些，codex 只在 prompt 列出。 */
   workCommands?: string[];
+  /**
+   * false = 該 repo 的 codex 成員 workspace-write 不開網路（預設 true，維持現況）。
+   * codex 的 sandbox 可讀整台機器，網路一開就能把讀到的憑證外流；claude confined 本來就擋網路，不受影響。
+   */
+  network?: boolean;
+  /**
+   * 相對於 repo 主工作樹、claude confined session 額外拒讀的具體路徑（`.env` 永遠會擋，不必列）。
+   * 不接受萬用字元。codex 無法逐檔拒讀，這個欄位對它沒有作用——codex 要靠 network=false 防外流。
+   */
+  denyRead?: string[];
+  /**
+   * true = 含憑證的 repo 只允許 claude confined 路線（預設 false，維持現況）。codex 的 sandbox 可讀整台機器、
+   * 無法逐檔拒讀，agy（--mode accept-edits）也不吃 denyRead／network；network=false 還擋不住它們把憑證寫進
+   * 回報留言或會被 commit 的檔案，所以 codex、agy 一律不派。
+   */
+  claudeOnly?: boolean;
 }
 
 export interface SeedFile {
@@ -38,6 +54,9 @@ interface RawRepoConfig {
   allowedPrefixes?: unknown;
   seedFiles?: unknown;
   workCommands?: unknown;
+  network?: unknown;
+  denyRead?: unknown;
+  claudeOnly?: unknown;
 }
 
 /** 非空字串陣列；每項必須是相對路徑（不以 `/` 開頭、不含 `..` 段）。 */
@@ -60,6 +79,11 @@ function isValidSeedFiles(value: unknown): value is SeedFile[] {
 function isValidWorkCommands(value: unknown): value is string[] {
   return Array.isArray(value) && value.length > 0 && value.every((command) =>
     typeof command === 'string' && command.trim().length > 0 && !/[;|&$`<>\r\n]/u.test(command));
+}
+
+/** denyRead 同樣是相對路徑，且只收具體路徑：sandbox denyRead 是否支援萬用字元未查證，寧可拒絕也不要靜默失效。 */
+function isValidDenyReadList(value: unknown): value is string[] {
+  return isValidPrefixList(value) && value.every((path) => !/[*?[\]]/u.test(path));
 }
 
 export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_PATH): RepoRegistry {
@@ -85,7 +109,7 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
     if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
       throw new CommandError(`repo 設定不合法：${rawPath}`);
     }
-    const { checks, deployment, allowedPrefixes, seedFiles, workCommands } = rawConfig as RawRepoConfig;
+    const { checks, deployment, allowedPrefixes, seedFiles, workCommands, network, denyRead, claudeOnly } = rawConfig as RawRepoConfig;
     if (!Array.isArray(checks) || checks.length === 0 || checks.some((check) => typeof check !== 'string')) {
       throw new CommandError(`repo checks 不合法：${rawPath}`);
     }
@@ -104,11 +128,23 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
     if (workCommands !== undefined && !isValidWorkCommands(workCommands)) {
       throw new CommandError(`repo workCommands 不合法：${rawPath}`);
     }
+    if (network !== undefined && typeof network !== 'boolean') {
+      throw new CommandError(`repo network 不合法：${rawPath}`);
+    }
+    if (denyRead !== undefined && !isValidDenyReadList(denyRead)) {
+      throw new CommandError(`repo denyRead 不合法：${rawPath}`);
+    }
+    if (claudeOnly !== undefined && typeof claudeOnly !== 'boolean') {
+      throw new CommandError(`repo claudeOnly 不合法：${rawPath}`);
+    }
     registry.set(targetRepo, {
       targetRepo, checks: [...checks], deployment,
       ...(allowedPrefixes ? { allowedPrefixes: [...allowedPrefixes] } : {}),
       ...(seedFiles ? { seedFiles: seedFiles.map(({ from, to }) => ({ from, to })) } : {}),
       ...(workCommands ? { workCommands: [...workCommands] } : {}),
+      ...(network !== undefined ? { network } : {}),
+      ...(denyRead ? { denyRead: [...denyRead] } : {}),
+      ...(claudeOnly !== undefined ? { claudeOnly } : {}),
     });
   }
   return registry;
