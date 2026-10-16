@@ -2022,6 +2022,52 @@ export interface RunnerInvocation {
   args: string[];
 }
 
+// 正式路徑（sim-coordinator）專用的 claude 約束：--restricted + sandbox，把寫入限制在 cwd。
+// 只有帶這個選項時 claude 分支才會長這樣；legacy sweep 不帶，參數維持不變。
+export interface ClaudeConfined {
+  /** true = 成員（可寫 cwd）；false = owner_review（只讀）。 */
+  writable: boolean;
+  /** 目標 repo 主工作樹的絕對路徑；其 .env 明確拒讀（worktree 在它底下，.env 不在 cwd 內）。 */
+  mainRepo: string;
+  /** 允許的 Bash 指令前綴；每條展開成 `Bash(cmd)` 與 `Bash(cmd *)`。只在 writable 時有效。 */
+  bashAllow: string[];
+}
+
+export function claudeConfinedArgs(confined: ClaudeConfined): string[] {
+  const { writable, mainRepo, bashAllow } = confined;
+  // permission 規則的絕對路徑要 `//` 開頭；sandbox 路徑只用單一 `/`。
+  const settings = {
+    permissions: {
+      defaultMode: 'dontAsk',
+      deny: [`Read(/${mainRepo}/.env)`, 'WebFetch', 'WebSearch', 'Agent'],
+      disableBypassPermissionsMode: 'disable',
+      blockReadsOutsideWorkingDirectories: true,
+    },
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true,
+      autoAllowBashIfSandboxed: false,
+      allowUnsandboxedCommands: false,
+      filesystem: { denyRead: [`${mainRepo}/.env`] },
+      network: { allowedDomains: [] as string[] },
+    },
+    autoMemoryEnabled: false,
+  };
+  const rules = writable
+    ? ['Edit(./**)', 'Write(./**)', ...bashAllow.flatMap((cmd) => [`Bash(${cmd})`, `Bash(${cmd} *)`])]
+    : [];
+  return [
+    '--restricted',
+    '--tools', writable ? 'Read,Write,Edit,Glob,Grep,Bash' : 'Read,Glob,Grep',
+    '--settings', JSON.stringify(settings),
+    '--permission-mode', 'dontAsk',
+    '--permission-prompts', 'none',
+    '--strict-mcp-config',
+    // variadic 參數放最後，不會吃掉前面的 flag
+    ...(rules.length ? ['--allowedTools', ...rules] : []),
+  ];
+}
+
 export function buildRunnerInvocation(
   route: ModelRoute,
   prompt: string,
@@ -2037,6 +2083,7 @@ export function buildRunnerInvocation(
     safeDiscussion?: boolean;
     claudeTools?: string;
     settings?: string;
+    claudeConfined?: ClaudeConfined;
   },
 ): RunnerInvocation {
   if (route.runner === 'claude') {
@@ -2045,6 +2092,8 @@ export function buildRunnerInvocation(
       args.push('--tools', opts.claudeTools ?? opts.tools ?? '', '--allowedTools', opts.tools ?? '');
       if (opts.settings) args.push('--settings', opts.settings);
       args.push('--setting-sources', '', '--no-session-persistence');
+    } else if (opts.claudeConfined) {
+      args.push(...claudeConfinedArgs(opts.claudeConfined));
     } else {
       args.push('--allowedTools', opts.tools ?? '');
     }

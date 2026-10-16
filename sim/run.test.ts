@@ -1411,6 +1411,52 @@ const claudeBase = buildRunnerInvocation({ runner: 'claude', model: 'claude-test
 const claudeEffort = buildRunnerInvocation({ runner: 'claude', model: 'claude-test', effort: 'xhigh' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log', tools: 'T' });
 assert.deepStrictEqual(claudeBase.args, ['-p', 'p', '--model', 'claude-test', '--allowedTools', 'T'], '沒有 effort 時 claude 參數不變');
 assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', '--effort', 'xhigh', '--allowedTools', 'T']);
+// claudeConfined（只有正式路徑帶）：--restricted + sandbox，寫入限制在 cwd
+{
+  const main = '/srv/target-repo';
+  const route = { runner: 'claude', model: 'claude-test', effort: 'high' } as const;
+  const base = { cwd: '/tmp/e', logFile: '/tmp/e.log', tools: 'T' };
+  const expectedSettings = {
+    permissions: {
+      defaultMode: 'dontAsk',
+      deny: [`Read(//srv/target-repo/.env)`, 'WebFetch', 'WebSearch', 'Agent'],
+      disableBypassPermissionsMode: 'disable',
+      blockReadsOutsideWorkingDirectories: true,
+    },
+    sandbox: {
+      enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false,
+      filesystem: { denyRead: ['/srv/target-repo/.env'] },
+      network: { allowedDomains: [] },
+    },
+    autoMemoryEnabled: false,
+  };
+  const member = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: main, bashAllow: ['npm test', 'git diff'] } });
+  assert.strictEqual(member.command, 'claude');
+  assert.deepStrictEqual(member.args, [
+    '-p', 'p', '--model', 'claude-test', '--effort', 'high',
+    '--restricted', '--tools', 'Read,Write,Edit,Glob,Grep,Bash',
+    '--settings', JSON.stringify(expectedSettings),
+    '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config',
+    '--allowedTools', 'Edit(./**)', 'Write(./**)', 'Bash(npm test)', 'Bash(npm test *)', 'Bash(git diff)', 'Bash(git diff *)',
+  ], '成員 confined argv');
+  assert.deepStrictEqual(JSON.parse(member.args[member.args.indexOf('--settings') + 1]), expectedSettings, 'settings 要同時含 //<MAIN>/.env（permission）與 <MAIN>/.env（sandbox）');
+  assert.ok(!member.args.includes('--output-format'), '輸出維持純文字，extractJsonBlock 才抓得到最後的 JSON 區塊');
+  assert.ok(!member.args.includes('T'), 'confined 不沿用呼叫端傳的 tools 白名單');
+  const owner = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: false, mainRepo: main, bashAllow: ['npm test'] } });
+  assert.deepStrictEqual(owner.args, [
+    '-p', 'p', '--model', 'claude-test', '--effort', 'high',
+    '--restricted', '--tools', 'Read,Glob,Grep',
+    '--settings', JSON.stringify(expectedSettings),
+    '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config',
+  ], 'owner 唯讀 confined argv：沒有 Write/Edit/Bash 規則，bashAllow 被忽略');
+  // codex 不受 claudeConfined 影響
+  const codexRoute = { runner: 'codex', model: 'gpt-test' } as const;
+  assert.deepStrictEqual(
+    buildRunnerInvocation(codexRoute, 'p', { ...base, claudeConfined: { writable: true, mainRepo: main, bashAllow: [] } }).args,
+    buildRunnerInvocation(codexRoute, 'p', base).args,
+    'codex argv 不變',
+  );
+}
 const codexBase = buildRunnerInvocation({ runner: 'codex', model: 'gpt-test' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log' });
 const codexEffort = buildRunnerInvocation({ runner: 'codex', model: 'gpt-test', effort: 'low' }, 'p', { cwd: '/tmp/e', logFile: '/tmp/e.log' });
 assert.ok(!codexBase.args.some((arg) => /effort/u.test(arg)), '沒有 effort 時 codex 不得出現 effort 參數');

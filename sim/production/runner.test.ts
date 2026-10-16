@@ -1,10 +1,13 @@
 import assert from 'node:assert';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildRunnerInvocation } from '../run';
 import {
   assertSessionUsable,
   classifySessionResult,
+  createMemberSessionRunner,
+  createOwnerSessionRunner,
   extractJsonBlock,
   memberPrompt,
   ownerPrompt,
@@ -279,4 +282,75 @@ assert.ok(
   'codex 分支不吃工具白名單——別再拿它當防護',
 );
 
-console.log('sim/production/runner.test.ts OK');
+// ── claude confined：runner 真的把約束帶進 CLI argv ─────────────────
+// 用假的 claude 執行檔把 argv 寫進檔案（不呼叫真的 AI CLI）。這是 sim-coordinator 的
+// runner 工廠（production.ts 以 deps.repoRoot 傳入 mainRepo）的測試入口。
+async function claudeConfinedRunnerTests(): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'fake-claude-runner-'));
+  const argvFile = join(dir, 'argv.txt');
+  const worktree = join(dir, 'worktree');
+  mkdirSync(worktree);
+  writeFileSync(join(dir, 'claude'), [
+    '#!/bin/sh',
+    'printf \'%s\\n\' "$@" > "$FAKE_ARGV_FILE"',
+    'if printf \'%s\' "$*" | grep -q Write; then',
+    '  printf \'```json\\n{"summary":"s","changedPaths":[],"verificationCommands":[],"blocker":null}\\n```\\n\'',
+    'else',
+    '  printf \'```json\\n{"action":"accept","rationale":"r","evidenceCommentIds":[]}\\n```\\n\'',
+    'fi',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, FAKE_ARGV_FILE: process.env.FAKE_ARGV_FILE };
+  process.env.PATH = `${dir}:${saved.PATH}`;
+  process.env.FAKE_ARGV_FILE = argvFile;
+  const argv = () => readFileSync(argvFile, 'utf8').split('\n').slice(0, -1);
+  const main = '/srv/target-repo';
+  const claudeRoute = { runner: 'claude', model: 'claude-x' } as const;
+  try {
+    await createMemberSessionRunner(claudeRoute, main)({
+      taskId: 'task-confined-member', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'],
+      verificationCommandAllowlist: ['npm test'], worktreePath: worktree,
+    });
+    const member = argv();
+    assert.ok(member.includes('--restricted'), '成員 claude session 要帶 --restricted');
+    assert.strictEqual(member[member.indexOf('--tools') + 1], 'Read,Write,Edit,Glob,Grep,Bash');
+    const memberRules = member.slice(member.indexOf('--allowedTools') + 1);
+    assert.deepStrictEqual(memberRules, [
+      'Edit(./**)', 'Write(./**)',
+      'Bash(npm test)', 'Bash(npm test *)',
+      'Bash(git status)', 'Bash(git status *)', 'Bash(git log)', 'Bash(git log *)', 'Bash(git show)', 'Bash(git show *)',
+      'Bash(git merge-base)', 'Bash(git merge-base *)', 'Bash(git diff)', 'Bash(git diff *)',
+    ], 'bashAllow = verificationCommandAllowlist + 唯讀 git');
+    assert.ok(member[member.indexOf('--settings') + 1].includes('"denyRead":["/srv/target-repo/.env"]'), 'mainRepo 要進 settings');
+
+    await createOwnerSessionRunner(claudeRoute, main)({
+      taskId: 'task-confined-owner', acceptanceCriteria: 'ac', comments: [], reviewedHeadSha: 'abc', worktreePath: worktree,
+    });
+    const owner = argv();
+    assert.ok(owner.includes('--restricted'));
+    assert.strictEqual(owner[owner.indexOf('--tools') + 1], 'Read,Glob,Grep', 'owner 唯讀');
+    assert.ok(!owner.includes('--allowedTools'), 'owner 不帶 Write/Edit/Bash 規則');
+
+    // fail closed：claude route 沒給 mainRepo 不得退回無約束的舊參數
+    await assert.rejects(
+      () => createMemberSessionRunner(claudeRoute)({
+        taskId: 'task-no-main', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: [], verificationCommandAllowlist: [], worktreePath: worktree,
+      }),
+      /mainRepo/,
+    );
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(dir, { recursive: true, force: true });
+    // runAiSession 的 log 固定寫在 sim-logs/production-sessions；清掉本測試產生的兩個
+    const logDir = join(__dirname, '../../sim-logs/production-sessions');
+    for (const name of readdirSync(logDir)) {
+      if (/-(member|owner)-task-con\.log$/u.test(name)) rmSync(join(logDir, name), { force: true });
+    }
+  }
+}
+
+claudeConfinedRunnerTests().then(() => {
+  console.log('sim/production/runner.test.ts OK');
+});
