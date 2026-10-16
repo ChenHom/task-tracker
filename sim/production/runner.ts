@@ -27,8 +27,8 @@
  * 「看起來合法」的預設決策——agent.ts:356 解構後會直接使用 decision.action，
  * 不會先檢查 exitCode。
  */
-import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { buildRunnerInvocation, isQuotaExhaustion, parseReportedTokenTotal, type ClaudeConfined, type ModelRoute } from '../run';
@@ -421,14 +421,21 @@ function confinedFor(route: ModelRoute, mainRepo: string | undefined, writable: 
 /**
  * denyRead 只擋檔案路徑；成員的唯讀 git（git show/log/diff）可直接讀 `<rev>:<path>` 的 blob。
  * 拒讀路徑只要在任何 ref 或 reflog 的歷史中出現過就回傳該路徑（呼叫端 fail closed）；
- * 只走 --all 的話，被 reset／rebase 掉的 commit 仍可用 `master@{1}:<path>` 讀出，所以加 --reflog。沒有 .git 就沒有可讀的 blob；
- * 其他 git 錯誤一律往外丟，不放行。
+ * 只走 --all 的話，被 reset／rebase 掉的 commit 仍可用 `master@{1}:<path>` 讀出，所以加 --reflog。
+ * 憑證也可能曾以別的檔名 commit 過：對目前存在的拒讀檔算 blob 雜湊，物件庫裡已有同一個 blob 就擋
+ * （不論檔名、reflog 是否過期，只要還沒被 gc 掉都抓得到）。沒有 .git 就沒有可讀的 blob；其他 git 錯誤一律往外丟，不放行。
+ * ponytail: 只比對「目前內容」；舊版、內容不同的憑證若以別名進過歷史仍抓不到，要徹底隔離得讓 agent 改用沒有讀取權的 OS 使用者。
  */
 export function protectedPathInGitHistory(mainRepo: string, paths: string[]): string | null {
   if (!existsSync(join(mainRepo, '.git'))) return null;
   for (const path of paths) {
     const hit = execFileSync('git', ['-C', mainRepo, 'log', '--all', '--reflog', '-1', '--format=%H', '--', `:(literal)${path}`], { encoding: 'utf8' }).trim();
     if (hit) return path;
+    const file = join(mainRepo, path);
+    if (existsSync(file) && statSync(file).isFile()) {
+      const blob = execFileSync('git', ['-C', mainRepo, 'hash-object', '--', path], { encoding: 'utf8' }).trim();
+      if (spawnSync('git', ['-C', mainRepo, 'cat-file', '-e', blob]).status === 0) return path;
+    }
   }
   return null;
 }

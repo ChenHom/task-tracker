@@ -419,6 +419,23 @@ async function claudeConfinedRunnerTests(): Promise<void> {
     });
     await assert.rejects(reflogMember, /git 歷史（token\.key）/, '只剩 reflog 可達的拒讀路徑也要擋');
 
+    // 憑證曾以別的檔名 commit 過：路徑查不到，但同一個 blob 還在物件庫 → 也要擋；內容不同則照常啟動
+    const aliasRepo = join(dir, 'alias-repo');
+    mkdirSync(aliasRepo);
+    const ga = (...args: string[]) => execFileSync('git', ['-C', aliasRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { encoding: 'utf8' });
+    ga('init', '-q');
+    writeFileSync(join(aliasRepo, 'old-name.pfx'), 'cert-bytes');
+    ga('add', 'old-name.pfx'); ga('commit', '-qm', 'old'); ga('rm', '-q', 'old-name.pfx'); ga('commit', '-qm', 'rm');
+    const aliasMember = () => createMemberSessionRunner(claudeRoute, aliasRepo, { denyRead: ['Sinopac.pfx'] })({
+      taskId: 'task-confined-alias', acceptanceCriteria: 'ac', comments: [], allowedPrefixes: ['sim/'], verificationCommandAllowlist: [], worktreePath: worktree,
+    });
+    writeFileSync(join(aliasRepo, 'Sinopac.pfx'), 'other-bytes');
+    await aliasMember();
+    assert.ok(argv().includes('--restricted'), '內容沒進過歷史時照常啟動');
+    writeFileSync(join(aliasRepo, 'Sinopac.pfx'), 'cert-bytes');
+    assert.strictEqual(ga('log', '--all', '--reflog', '-1', '--format=%H', '--', ':(literal)Sinopac.pfx').trim(), '', '前提：路徑從未進過歷史');
+    await assert.rejects(aliasMember(), /git 歷史（Sinopac\.pfx）/, '同一份內容曾以別名 commit 過也要擋');
+
     // codex 成員：repoSandbox.network 真的決定 network_access（預設維持 true）
     writeFileSync(join(dir, 'codex'), [
       '#!/bin/sh',
