@@ -209,13 +209,18 @@ export interface RunDeployAcceptanceInput {
 export type DeployAcceptanceResult =
   | { kind: 'fatal_blocked'; fatal: FatalCoordinatorError }
   | { kind: 'branch_ci_failed'; detail: string }
-  | { kind: 'integration_conflict'; detail: string }
+  | { kind: 'integration_conflict'; detail: string; conflictFiles: string[] }
   | { kind: 'integration_command_failed'; command: string; detail: string }
   | { kind: 'task_specific_acceptance_failed'; detail: string }
   | { kind: 'deploy_precondition_failed'; detail: string }
   | { kind: 'deployed'; mergeSha: string; deployObservedOutOfBand: boolean }
   | { kind: 'deploy_indeterminate'; targetSha: string; detail: string }
   | { kind: 'deploy_failed_post_merge'; mergeSha: string; reason: string };
+
+/** ci.checked(integration_conflict) 的 detail：衝突檔清單，沒有清單就退回 git 的錯誤訊息。 */
+export function integrationConflictDetail(conflictFiles: string[], fallback: string | null): string {
+  return conflictFiles.length > 0 ? `conflict files: ${conflictFiles.join(', ')}` : (fallback ?? 'merge conflict');
+}
 
 /**
  * 計畫步驟 3 的固定 acceptance sequence：
@@ -250,7 +255,14 @@ export async function runDeployAcceptance(input: RunDeployAcceptanceInput): Prom
   const integration = await createIntegrationWorktree(input.repoRoot, input.taskId, input.taskBranch);
   if (integration.conflict) {
     await removeIntegrationWorktree(input.repoRoot, integration);
-    return { kind: 'integration_conflict', detail: integration.conflictDetail ?? 'merge conflict' };
+    // 審查前已先檢查過一次；走到這裡代表審查期間 master 又前進（競態），同樣留 trace。
+    input.trace?.('ci.checked', {
+      outcome: 'fail',
+      reason: 'integration_conflict',
+      evidence: { kind: 'git', ref: input.taskBranch },
+      detail: integrationConflictDetail(integration.conflictFiles, integration.conflictDetail),
+    });
+    return { kind: 'integration_conflict', detail: integration.conflictDetail ?? 'merge conflict', conflictFiles: integration.conflictFiles };
   }
 
   try {

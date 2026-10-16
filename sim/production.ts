@@ -67,6 +67,9 @@ import {
   isAncestor,
   getCommitMessage,
   getHeadSha,
+  createIntegrationWorktree,
+  removeIntegrationWorktree,
+  mergeMasterIntoTaskWorktree,
   isAllowedVerificationCommand,
   seedWorktreeFiles,
   type SystemdReadback,
@@ -94,6 +97,7 @@ import {
   resolveRollbackWait,
   runDiscordOutboxTick,
   assertNoFatalCoordinatorError,
+  integrationConflictDetail,
   type AcceptanceCheckResult,
   type IntegrationCommandRunner,
   type SendDiscordMessage,
@@ -1679,11 +1683,79 @@ function persistFatalError(db: DatabaseSync, fatal: FatalCoordinatorError, now: 
   failAction(db, key, JSON.stringify(fatal), now);
 }
 
-async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun, snapshot: CoordinatorSnapshot): Promise<'progressed' | 'no_change'> {
+/** 留言裡的檔案清單：最多列 30 個，其餘只記數量。 */
+function bulletList(files: string[]): string {
+  return files.slice(0, 30).map((file) => `- ${file}`).join('\n') + (files.length > 30 ? `\n- …另外 ${files.length - 30} 個` : '');
+}
+
+/**
+ * task branch 無法乾淨合進 master：由 driver 在 task worktree 把 master 合進來（衝突時保留標記與 MERGE_HEAD），
+ * task 退回 Doing 並留言請成員解衝突；成員 session 結束後 commitTaskChanges 會把解好的結果 commit 成 merge commit。
+ * 不跑 Owner session。上限靠既有狀態機：同一個 head 對同一個 master 退回過一次又衝突、或 driver 合併失敗，
+ * 都當成一次無進展（failMemberBeforeSession），連續累計後走 Owner 介入／human_blocked 並 @user09。
+ * 乾淨合併（審查前偵測到衝突之後 master 又變了）則由 driver 直接 commit，task 留在 Review 等下個 tick 重新審查。
+ */
+export async function sendBackIntegrationConflict(
+  deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun, task: TaskSnapshot,
+): Promise<'progressed' | 'no_change'> {
+  const masterSha = await getHeadSha(deps.repoRoot, 'master');
+  const key = `integration_conflict:${action.taskId}:${run.headSha ?? 'none'}:${masterSha}`;
+  const stuck = (detail: string) => failMemberBeforeSession(deps, action, run, task, detail, detail, detail);
+  if (getAction(deps.db, key)?.status === 'completed') {
+    await stuck(`整合衝突：head ${run.headSha ?? 'none'} 對 master ${masterSha} 已退回過一次，成員沒有解掉就又回到 Review`);
+    return 'no_change';
+  }
+
+  const merged = await mergeMasterIntoTaskWorktree(taskWorktreePath(deps.repoRoot, action.taskId), action.taskId, masterSha);
+  if (merged.kind === 'failed' || (merged.kind === 'merged' && merged.headSha === run.headSha)) {
+    await stuck(`整合衝突：driver 無法把 master 合進 task branch：${merged.kind === 'failed' ? merged.detail : 'master 已在 task branch 內卻仍偵測到衝突'}`);
+    return 'no_change';
+  }
+  if (merged.kind === 'merged') {
+    deps.tracer(action.taskId)('commit.recorded', { outcome: 'ok', evidence: { kind: 'git', ref: merged.headSha }, detail: `driver 把 master ${masterSha} 合進 task branch` });
+    if (task.goalId) {
+      await deps.ownerClient.recordDeliveryEvidence(action.taskId, { kind: 'commit.recorded', ref: merged.headSha, detail: `merge master ${masterSha}` });
+    }
+    checkpointAndTrace(deps, { taskId: action.taskId, workspaceId: action.workspaceId, phase: run.phase, workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: merged.headSha, evidenceFingerprint: run.evidenceFingerprint, noProgressCount: run.noProgressCount, ownerIntervened: run.ownerIntervened }, 'driver 合併 master，留在 Review 重新審查');
+    return 'progressed';
+  }
+
+  const content =
+    `【整合衝突】這個 task branch 無法乾淨合進目前的 master，已退回 Doing。\n` +
+    `master 在你分出去之後有新的 commit，改到這些檔案：\n${bulletList(merged.masterChangedFiles)}\n` +
+    `master 最近的 commit：\n${bulletList(merged.masterCommits)}\n` +
+    `衝突檔（需要你解）：\n${bulletList(merged.conflictFiles)}\n` +
+    `driver 已在你的 worktree 執行 git merge --no-ff --no-commit ${masterSha}，衝突標記與 MERGE_HEAD 留在 worktree 裡。\n` +
+    `請以 master 為基礎編輯上述檔案，解掉所有衝突標記（<<<<<<<、=======、>>>>>>>），保留 master 已有的行為並維持本 task 要求的改動；` +
+    `不要執行任何 git 寫入指令（add／commit／merge／checkout），commit 由 driver 做。\n` +
+    `action_key: ${key}`;
+  await withAction(deps, key, 'integration_conflict', action.taskId, async () => {
+    await deps.ownerClient.postCommentOnce(action.taskId, content, key);
+    const current = await deps.ownerClient.getTask(action.taskId);
+    if (current.status !== 'Doing') await deps.ownerClient.patchTaskField(action.taskId, 'status', 'Doing');
+  });
+  checkpointAndTrace(deps, { taskId: action.taskId, workspaceId: action.workspaceId, phase: 'doing', workerId: run.workerId, branch: run.branch, baseSha: run.baseSha, headSha: run.headSha, evidenceFingerprint: run.evidenceFingerprint, noProgressCount: run.noProgressCount, ownerIntervened: run.ownerIntervened }, 'master 衝突，退回 doing 請成員解衝突');
+  return 'progressed';
+}
+
+export async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun, snapshot: CoordinatorSnapshot): Promise<'progressed' | 'no_change'> {
   assertNoFatalCoordinatorError(getFatalError(deps.db, action.taskId));
 
   const reviewedHeadSha = run.headSha ?? '';
   const currentTask = await deps.ownerClient.getTask(action.taskId);
+  const taskBranch = run.branch ?? taskBranchName(action.taskId);
+
+  // 審查前先確認 task branch 能乾淨合進目前 master：有衝突就不跑 Owner session（否則每個 tick 都燒一次 AI 再撞同一個衝突）。
+  const preCheck = await createIntegrationWorktree(deps.repoRoot, action.taskId, taskBranch);
+  await removeIntegrationWorktree(deps.repoRoot, preCheck);
+  if (preCheck.conflict) {
+    deps.tracer(action.taskId)('ci.checked', {
+      outcome: 'fail', reason: 'integration_conflict', evidence: { kind: 'git', ref: taskBranch },
+      detail: integrationConflictDetail(preCheck.conflictFiles, preCheck.conflictDetail),
+    });
+    return sendBackIntegrationConflict(deps, action, run, currentTask);
+  }
+
   let ownerRunner = deps.runOwnerSession!;
   if (currentTask.goalId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.role === 'owner');
@@ -1746,7 +1818,6 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
 
   if (ownerResult.decision.action !== 'accept') return 'no_change';
 
-  const taskBranch = run.branch ?? taskBranchName(action.taskId);
   const snapshotTask = snapshot.tasks.find((task) => task.taskId === action.taskId);
   const deployResult = await runDeployAcceptance({
     taskId: action.taskId,
@@ -1855,8 +1926,11 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
       }
       return 'no_change';
     }
+    case 'integration_conflict':
+      // 審查前已檢查過；走到這裡是審查期間 master 又前進（競態）。同樣退回成員，不留給下個 tick 重跑 Owner。
+      return sendBackIntegrationConflict(deps, action, run, currentTask);
     default:
-      // fatal_blocked／branch_ci_failed／integration_conflict／integration_command_failed／
+      // fatal_blocked／branch_ci_failed／integration_command_failed／
       // task_specific_acceptance_failed／deploy_precondition_failed：下一個 tick 重試。
       return 'no_change';
   }

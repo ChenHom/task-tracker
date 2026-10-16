@@ -188,7 +188,7 @@ export async function seedWorktreeFiles(
 // 安全變更收集／驗證
 // ---------------------------------------------------------------------------
 
-export type ChangedPathStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'unknown';
+export type ChangedPathStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'conflicted' | 'unknown';
 
 export interface ChangedPath {
   /** 相對於 worktree 根目錄的路徑（永遠用 `/` 分隔）。 */
@@ -212,6 +212,7 @@ export async function collectTaskChanges(worktree: string): Promise<ChangedPath[
 
     let status: ChangedPathStatus;
     if (xy === '??') status = 'untracked';
+    else if (xy.includes('U') || xy === 'AA' || xy === 'DD') status = 'conflicted'; // merge 中的 unmerged path
     else if (xy.includes('R')) status = 'renamed';
     else if (xy.includes('C')) status = 'copied';
     else if (xy.includes('D')) status = 'deleted';
@@ -237,6 +238,38 @@ export async function collectTaskChanges(worktree: string): Promise<ChangedPath[
     changes.push({ path, status, isSymlink });
   }
   return changes;
+}
+
+/** task worktree 目前是否卡在 merge 中途（有 MERGE_HEAD）。 */
+export async function isMergeInProgress(worktree: string): Promise<boolean> {
+  try {
+    await execFileAsync('git', ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], { cwd: worktree });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * merge 中途時，濾掉「內容跟 MERGE_HEAD（master）一模一樣、而且不是未解衝突」的路徑——那些是 master
+ * 帶進來的變更，不是成員這次的改動，不該被 allowedPrefixes／禁止路徑規則擋下，也不該被 `git add`。
+ * 沒有 MERGE_HEAD 時原樣回傳。
+ */
+export async function withoutMergeInheritedChanges(worktree: string, changes: ChangedPath[]): Promise<ChangedPath[]> {
+  if (!(await isMergeInProgress(worktree))) return changes;
+  const own: ChangedPath[] = [];
+  for (const change of changes) {
+    if (change.status === 'conflicted') {
+      own.push(change);
+      continue;
+    }
+    try {
+      await execFileAsync('git', ['diff', '--quiet', 'MERGE_HEAD', '--', change.path], { cwd: worktree });
+    } catch {
+      own.push(change); // exit 1：跟 master 不同，是成員自己的改動
+    }
+  }
+  return own;
 }
 
 const FORBIDDEN_PATH_SEGMENTS = new Set(['data', 'node_modules']);
@@ -311,7 +344,9 @@ export async function commitTaskChanges(
   title: string,
   paths: string[],
 ): Promise<string> {
-  if (paths.length === 0) {
+  // merge 中途（衝突已由成員解掉）時，master 帶進來的變更已經在 index 裡，paths 可以是空的。
+  const merging = await isMergeInProgress(worktree);
+  if (paths.length === 0 && !merging) {
     throw new Error('commitTaskChanges: paths must not be empty');
   }
 
@@ -334,13 +369,16 @@ export async function commitTaskChanges(
     }
   }
 
-  await execFileAsync('git', ['add', '--', ...paths], { cwd: worktree });
+  if (paths.length > 0) await execFileAsync('git', ['add', '--', ...paths], { cwd: worktree });
 
   try {
-    await execFileAsync('git', ['diff', '--cached', '--check'], { cwd: worktree });
+    // merge 中途只檢查成員自己的路徑（master 帶進來的內容不是這次要負責的）；仍含衝突標記的檔案會在這裡被擋下。
+    if (!merging || paths.length > 0) {
+      await execFileAsync('git', ['diff', '--cached', '--check', ...(merging ? ['--', ...paths] : [])], { cwd: worktree });
+    }
   } catch (err) {
     throw new Error(
-      `commitTaskChanges: "git diff --cached --check" failed for task ${taskId} (whitespace error in staged changes)`,
+      `commitTaskChanges: "git diff --cached --check" failed for task ${taskId} (whitespace error or leftover conflict marker in staged changes)`,
       { cause: err },
     );
   }
@@ -632,6 +670,8 @@ export interface IntegrationWorktree {
   path: string;
   conflict: boolean;
   conflictDetail: string | null;
+  /** 衝突時的 unmerged path 清單（git 沒給路徑的失敗為空）。 */
+  conflictFiles: string[];
 }
 
 function integrationWorktreePath(repoRoot: string, taskId: string): string {
@@ -700,14 +740,72 @@ export async function createIntegrationWorktree(
   try {
     await git(['merge', '--no-ff', '--no-commit', taskBranch], worktreePath);
   } catch (err) {
+    const conflictFiles = await listUnmergedPaths(worktreePath);
     try {
       await execFileAsync('git', ['merge', '--abort'], { cwd: worktreePath });
     } catch {
       // best-effort：即使 abort 也失敗，removeIntegrationWorktree 仍會強制清掉整個目錄。
     }
-    return { path: worktreePath, conflict: true, conflictDetail: (err as Error).message };
+    return { path: worktreePath, conflict: true, conflictDetail: (err as Error).message, conflictFiles };
   }
-  return { path: worktreePath, conflict: false, conflictDetail: null };
+  return { path: worktreePath, conflict: false, conflictDetail: null, conflictFiles: [] };
+}
+
+async function listUnmergedPaths(cwd: string): Promise<string[]> {
+  try {
+    return (await git(['diff', '--name-only', '--diff-filter=U'], cwd)).split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export type MasterMergeResult =
+  | { kind: 'merged'; headSha: string }
+  | { kind: 'conflict'; conflictFiles: string[]; masterChangedFiles: string[]; masterCommits: string[] }
+  | { kind: 'failed'; detail: string };
+
+/**
+ * 由 driver 在 task worktree 裡執行 `git merge --no-ff --no-commit <masterSha>`，讓 master 的變更進到
+ * task branch：
+ *   - 乾淨合併：driver 直接 commit（帶 Task-Id trailer），回傳新的 head。
+ *   - 有衝突：保留衝突標記與 MERGE_HEAD（不 abort），交給成員解；之後由 commitTaskChanges 產生 merge commit。
+ *   - 其他失敗（worktree 有未 commit 的追蹤檔變更、git 本身出錯）：不留任何 merge 狀態，回傳 failed。
+ * 冪等：worktree 已經在 merge 中途（上一次呼叫留下的）就直接沿用，不重做。
+ */
+export async function mergeMasterIntoTaskWorktree(
+  worktree: string,
+  taskId: string,
+  masterSha: string,
+): Promise<MasterMergeResult> {
+  const info = async (): Promise<{ masterChangedFiles: string[]; masterCommits: string[] }> => {
+    const base = await git(['merge-base', 'HEAD', masterSha], worktree);
+    return {
+      masterChangedFiles: (await git(['diff', '--name-only', base, masterSha], worktree)).split('\n').filter(Boolean),
+      masterCommits: (await git(['log', '--format=%h %s', '-n', '5', `${base}..${masterSha}`], worktree)).split('\n').filter(Boolean),
+    };
+  };
+  const conflictResult = async (): Promise<MasterMergeResult> =>
+    ({ kind: 'conflict', conflictFiles: await listUnmergedPaths(worktree), ...(await info()) });
+
+  if (await isMergeInProgress(worktree)) return conflictResult();
+  if (await isAncestor(worktree, masterSha, 'HEAD')) return { kind: 'merged', headSha: await git(['rev-parse', 'HEAD'], worktree) };
+  if ((await git(['status', '--porcelain', '--untracked-files=no'], worktree)).length > 0) {
+    return { kind: 'failed', detail: 'task worktree 有未 commit 的變更，無法合併 master' };
+  }
+
+  try {
+    await git(['merge', '--no-ff', '--no-commit', masterSha], worktree);
+  } catch (err) {
+    if ((await listUnmergedPaths(worktree)).length > 0) return conflictResult();
+    try {
+      await execFileAsync('git', ['merge', '--abort'], { cwd: worktree });
+    } catch {
+      // best-effort：沒有 merge 狀態時 abort 本來就會失敗。
+    }
+    return { kind: 'failed', detail: (err as Error).message };
+  }
+  await git(['commit', '-m', `merge master into ${await git(['symbolic-ref', '--short', 'HEAD'], worktree)}\n\nTask-Id: ${taskId}`], worktree);
+  return { kind: 'merged', headSha: await git(['rev-parse', 'HEAD'], worktree) };
 }
 
 /** 清掉 createIntegrationWorktree 建立的暫時 worktree；不論成功或衝突都必須呼叫。 */

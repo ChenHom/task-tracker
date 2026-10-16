@@ -19,7 +19,7 @@
 // 也不 import 任何 SQLite／HTTP 模組。
 import type { ActionOutcome } from './types';
 import type { TaskStatus } from './policy';
-import { collectTaskChanges, validateTaskChanges, commitTaskChanges, isAllowedVerificationCommand } from './git';
+import { collectTaskChanges, validateTaskChanges, commitTaskChanges, isAllowedVerificationCommand, withoutMergeInheritedChanges } from './git';
 
 // ---------------------------------------------------------------------------
 // 步驟 3：結構化 session output（計畫給定的形狀，逐字照抄，不得偏離）。
@@ -247,9 +247,11 @@ export async function runMemberSession(input: RunMemberSessionInput): Promise<Me
   }
 
   let commitSha: string;
-  const commitChangedPaths = realChanges.map((c) => c.path);
+  // merge 中途（driver 把 master 合進來、成員解衝突）時，master 帶進來的變更不是成員的改動，不驗證也不 add。
+  const ownChanges = await withoutMergeInheritedChanges(input.worktreePath, realChanges);
+  const commitChangedPaths = ownChanges.map((c) => c.path);
   try {
-    validateTaskChanges(realChanges, input.allowedPrefixes);
+    validateTaskChanges(ownChanges, input.allowedPrefixes);
     const title = input.commitTitle ?? (output.summary.trim() || `member session for ${input.taskId}`);
     commitSha = await commitTaskChanges(input.worktreePath, input.taskId, title, commitChangedPaths);
   } catch (err) {
