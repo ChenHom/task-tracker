@@ -46,7 +46,7 @@
 
 五組各 4 / 4 / 3 / 2 / 1 個事件，合計 14。
 
-### `ci.checked` 的三種來源，用 `reason` 區分
+### `ci.checked` 的四種來源，用 `reason` 區分
 
 CI 不是單一檢查。production 側走注入點 `deps.runBranchCi`（預設實作在 `production.ts:710`，就是 `npm test`），實際呼叫分三處：
 
@@ -55,6 +55,7 @@ CI 不是單一檢查。production 側走注入點 `deps.runBranchCi`（預設�
 | `branch_ci` | `coordinator.ts:231` | 分支 CI |
 | `integration` | `coordinator.ts:244` | `npm test` / `npm run build` / `git diff --check`（清單在 `:160`） |
 | `task_specific` | `coordinator.ts:250` | task 專屬驗收 |
+| `integration_conflict` | `production.ts` `dispatchOwnerReview`（審查前預檢）、`coordinator.ts` `runDeployAcceptance`（審查後 master 又前進的保險） | task branch 合不進 master；`outcome` 一律 `fail`，`detail` 列衝突檔。之後 driver 把 master 合進 task worktree、task 退回 Doing（`action_log.kind` = `integration_conflict`） |
 
 **不要掛 `state.ts:377` 的 `storeCiRun`**——它連同 `lookupCiRun`（`:387`）、`ciCacheKey`（`git.ts:301`）與 `ci_runs` 表都是死碼，只有測試碰過。詳見〈已知細節與待確認〉。
 

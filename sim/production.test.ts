@@ -152,7 +152,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
 import { enqueueHeartbeat, finishRun, markRunRunning, prepareRun, type FinishRunInput, type PrepareRunInput } from '../src/goalRun';
 import { trackGoalRunAttempt } from './goalUsage';
-import { applyMemberAttemptTransition, assignAndStartDoing, coordinatorChildEnvironment, depsForTask, execAllowlistedCommand, goalRunTriggerRef, productionMemberAdapter, resolveGoalRoutes, withAction } from './production';
+import { applyMemberAttemptTransition, assignAndStartDoing, dispatchOwnerReview, sendBackIntegrationConflict, coordinatorChildEnvironment, depsForTask, execAllowlistedCommand, goalRunTriggerRef, productionMemberAdapter, resolveGoalRoutes, withAction } from './production';
 
 assert.deepStrictEqual(coordinatorChildEnvironment({ PATH: '/bin', TASK_TRACKER_COORDINATOR_TOKEN: 'secret' }), { PATH: '/bin' });
 
@@ -3623,12 +3623,14 @@ async function runDeployTests(): Promise<void> {
       const masterBefore = g(['rev-parse', 'master']);
       const integrationRunner = makeCountingIntegrationRunner();
       let readbackCalls = 0;
+      const conflictTraces: Array<{ event: string; args: Record<string, unknown> }> = [];
 
       const result = await runDeployAcceptance({
         taskId,
         repoRoot,
         taskBranch: branch,
         existingFatalError: null,
+        trace: (event, args) => conflictTraces.push({ event, args: args as Record<string, unknown> }),
         runBranchCi: async () => ({ passed: true, detail: 'ok' }),
         runIntegrationCommand: integrationRunner.fn,
         runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
@@ -3643,6 +3645,11 @@ async function runDeployTests(): Promise<void> {
       });
 
       assert.strictEqual(result.kind, 'integration_conflict');
+      assert.deepStrictEqual(result.kind === 'integration_conflict' ? result.conflictFiles : null, ['feature/conflict-target.txt']);
+      const conflictCi = conflictTraces.find((t) => t.event === 'ci.checked' && t.args.reason === 'integration_conflict');
+      assert.ok(conflictCi, 'runDeployAcceptance 的 integration_conflict 保險分支必須留 ci.checked trace');
+      assert.strictEqual(conflictCi.args.outcome, 'fail');
+      assert.match(String(conflictCi.args.detail), /feature\/conflict-target\.txt/);
       assert.strictEqual(g(['rev-parse', 'master']), masterBefore, 'integration conflict 之後 master 完全不得前進');
       assert.strictEqual(integrationRunner.calls.length, 0, '衝突偵測到後不得執行任何 integration command');
       assert.strictEqual(readbackCalls, 0, '衝突之後不得讀取 systemd readback');
@@ -6281,6 +6288,262 @@ async function runGoalAttemptTests(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 審查前整合衝突：不跑 Owner session，driver 把 master 合進 task worktree、退回 Doing 請成員解衝突
+// ---------------------------------------------------------------------------
+async function runIntegrationConflictTests(): Promise<void> {
+  const TASK_ID = 'conflict-task';
+  const WORKSPACE_ID = 'ws-conflict';
+
+  /** master 與 task branch 都改了 src/app.txt 同一行（kind=conflict），或 master 只動別的檔案（kind=clean）。 */
+  async function setup(kind: 'conflict' | 'clean', onBranchCi?: (repoRoot: string) => void) {
+    const { repoRoot, g } = initDeployTestRepo();
+    mkdirSync(join(repoRoot, 'src'));
+    writeFileSync(join(repoRoot, 'src', 'app.txt'), 'top\nshared\nbottom\n');
+    g(['add', 'src/app.txt']);
+    g(['commit', '-q', '-m', 'base']);
+    const baseSha = g(['rev-parse', 'master']);
+    const worktree = (await ensureTaskWorktree(repoRoot, TASK_ID, baseSha)).path;
+    writeFileSync(join(worktree, 'src', 'app.txt'), 'top\ntask version\nbottom\n');
+    g(['add', 'src/app.txt'], worktree);
+    g(['commit', '-q', '-m', `task change\n\nTask-Id: ${TASK_ID}`], worktree);
+    const headSha = g(['rev-parse', 'HEAD'], worktree);
+    // master 前進：docs/master-only.txt 在 allowedPrefixes（src/）之外，用來驗證 master 帶進來的檔案不會被當成成員的越界改動。
+    mkdirSync(join(repoRoot, 'docs'));
+    writeFileSync(join(repoRoot, 'docs', 'master-only.txt'), 'from master \n');
+    if (kind === 'conflict') writeFileSync(join(repoRoot, 'src', 'app.txt'), 'top\nmaster version\nbottom\n');
+    g(['add', '-A', 'docs', 'src']);
+    g(['commit', '-q', '-m', 'master moves on']);
+
+    const board = { status: 'Review', comments: [] as CommentSnapshot[], patches: [] as string[] };
+    const ownerClient = {
+      getTask: async () => makeTask({ taskId: TASK_ID, workspaceId: WORKSPACE_ID, status: board.status as TaskStatus, assigneeId: 'member-1' }),
+      listComments: async () => board.comments,
+      postCommentOnce: async (_taskId: string, content: string, key: string) => {
+        const found = board.comments.find((c) => c.content.includes(key));
+        if (found) return found.commentId;
+        const commentId = `c-${board.comments.length + 1}`;
+        board.comments.push({ commentId, taskId: TASK_ID, userId: 'owner', content, createdAt: `2026-07-23T00:00:0${board.comments.length}.000Z` });
+        return commentId;
+      },
+      patchTaskField: async (_taskId: string, field: string, value: string) => {
+        board.patches.push(`${field}=${value}`);
+        board.status = value;
+        return { status: value };
+      },
+      recordDeliveryEvidence: async () => undefined,
+    };
+    const db = openCoordinatorState(':memory:');
+    const traces: Array<{ event: string; args: Record<string, unknown> }> = [];
+    let ownerCalls = 0;
+    const deps = {
+      db, ownerClient, repoRoot, now: () => NOW, allowedPrefixes: ['src/'], useAgentRoutes: false,
+      tracer: () => (event: string, args: Record<string, unknown>) => traces.push({ event, args }),
+      runOwnerSession: async (context: { reviewedHeadSha: string }) => {
+        ownerCalls++;
+        // 預設引用不到 head（decision 無效、no_change）；onBranchCi 有給時才真的 accept
+        return { exitCode: 0, decision: { action: 'accept' as const, rationale: onBranchCi ? `ok ${context.reviewedHeadSha}` : 'no head cited', evidenceCommentIds: [] } };
+      },
+      runBranchCi: async () => {
+        onBranchCi?.(repoRoot);
+        return { passed: true, detail: 'ok' };
+      },
+      runIntegrationCommand: async () => ({ exitCode: 0, output: 'ok' }),
+      runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }),
+      getSystemdReadback: async () => makeReadback(),
+      checkHealth: async () => makeHealth(),
+      runTaskLiveAcceptance: async () => ({ passed: true, detail: 'ok' }),
+      sleep: noSleep,
+    } as unknown as Parameters<typeof dispatchOwnerReview>[0];
+    upsertTaskCheckpoint(db, {
+      taskId: TASK_ID, workspaceId: WORKSPACE_ID, phase: 'review', workerId: null, branch: taskBranchName(TASK_ID),
+      baseSha, headSha, evidenceFingerprint: '', noProgressCount: 0, ownerIntervened: false,
+    }, NOW);
+    const action = { kind: 'owner_review' as const, taskId: TASK_ID, workspaceId: WORKSPACE_ID, assigneeId: 'member-1', reason: 'test' };
+    const snapshot = baseSnapshot({ tasks: [makeTask({ taskId: TASK_ID, workspaceId: WORKSPACE_ID, status: 'Review', deployment: 'not_required' })] });
+    const review = () => dispatchOwnerReview(deps, action, getTaskRun(db, TASK_ID)!, snapshot);
+    const sendBack = () => sendBackIntegrationConflict(deps, action, getTaskRun(db, TASK_ID)!, makeTask({ taskId: TASK_ID, workspaceId: WORKSPACE_ID, status: 'Review' }));
+    const memberSession = (edit: (worktreePath: string) => void) => runMemberSession({
+      taskId: TASK_ID, worktreePath: worktree, allowedPrefixes: ['src/'], acceptanceCriteria: 'x', comments: board.comments.map((c) => c.content),
+      previousBlocker: null,
+      runner: async (context) => {
+        edit(context.worktreePath);
+        return { exitCode: 0, output: { summary: 'resolved conflict', changedPaths: ['src/app.txt'], verificationCommands: ['npx tsc --noEmit'], blocker: null } };
+      },
+      runVerificationCommand: async () => ({ exitCode: 0, output: 'ok' }),
+      driverActions: {
+        confirmReviewTransition: async () => { board.status = 'Review'; return 'Review' as TaskStatus; },
+        createSummaryComment: async () => ({ commentId: 'summary-1' }),
+      },
+    });
+    return { repoRoot, g, worktree, headSha, board, db, traces, deps, review, sendBack, memberSession, ownerCalls: () => ownerCalls, cleanup: () => { db.close(); rmSync(repoRoot, { recursive: true, force: true }); } };
+  }
+  const mergeHead = (f: { g: (args: string[], cwd?: string) => string; worktree: string }): string | null => {
+    try { return f.g(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], f.worktree); } catch { return null; }
+  };
+
+  // ---- 1) 審查前偵測到衝突：Owner session 不跑；task 回 Doing、留言、worktree 留下衝突標記與 MERGE_HEAD ----
+  {
+    const f = await setup('conflict');
+    try {
+      const masterBefore = f.g(['rev-parse', 'master']);
+      assert.strictEqual(await f.review(), 'progressed');
+      assert.strictEqual(f.ownerCalls(), 0, '審查前偵測到衝突時不得呼叫 Owner session');
+      assert.strictEqual(f.board.status, 'Doing');
+      assert.deepStrictEqual(f.board.patches, ['status=Doing'], '單欄位 PATCH 一次');
+      assert.strictEqual(f.board.comments.length, 1);
+      const comment = f.board.comments[0].content;
+      for (const expected of ['【整合衝突】', 'docs/master-only.txt', 'src/app.txt', 'master moves on', '不要執行任何 git 寫入', 'action_key: integration_conflict:']) {
+        assert.ok(comment.includes(expected), `留言必須含 ${expected}：\n${comment}`);
+      }
+      assert.ok(mergeHead(f), 'worktree 必須保留 MERGE_HEAD');
+      assert.match(readFileSync(join(f.worktree, 'src', 'app.txt'), 'utf8'), /<<<<<<< /, 'worktree 必須保留衝突標記');
+      assert.strictEqual(readFileSync(join(f.worktree, 'docs', 'master-only.txt'), 'utf8'), 'from master \n', 'master 的其他變更要一起合進 worktree');
+      const ci = f.traces.find((t) => t.event === 'ci.checked');
+      assert.ok(ci, '必須留 ci.checked trace');
+      assert.deepStrictEqual([ci.args.outcome, ci.args.reason], ['fail', 'integration_conflict']);
+      assert.match(String(ci.args.detail), /src\/app\.txt/);
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'doing');
+      assert.strictEqual(f.g(['rev-parse', 'master']), masterBefore, 'master 不得被動到');
+      assert.strictEqual(existsSync(join(f.repoRoot, 'sim-work', 'integration', TASK_ID)), false, '臨時 integration worktree 必須清掉');
+
+      // ---- 2) 成員解掉衝突：driver commit 成 merge commit，回到 Review，最後可以整合 ----
+      const masterSha = f.g(['rev-parse', 'master']);
+      const session = await f.memberSession((wt) => {
+        writeFileSync(join(wt, 'src', 'app.txt'), 'top\nmerged version\nbottom\n');
+        writeFileSync(join(wt, 'src', 'helper.txt'), 'new helper\n'); // 解衝突時新增的檔案（未追蹤）也要算成員的改動
+      });
+      assert.strictEqual(session.outcome, 'progressed', JSON.stringify(session.evidence));
+      assert.strictEqual(f.board.status, 'Review');
+      const parents = f.g(['rev-list', '--parents', '-n', '1', 'HEAD'], f.worktree).split(' ').slice(1);
+      assert.strictEqual(parents.length, 2, '解完衝突的 commit 必須是 merge commit');
+      assert.ok(parents.includes(f.headSha) && parents.includes(masterSha));
+      assert.strictEqual(mergeHead(f), null);
+      assert.strictEqual(f.g(['status', '--porcelain'], f.worktree), '');
+      assert.ok(f.g(['log', '-1', '--format=%B'], f.worktree).includes(`Task-Id: ${TASK_ID}`));
+      assert.deepStrictEqual([...session.evidence.commitChangedPaths].sort(), ['src/app.txt', 'src/helper.txt'], 'master 帶進來的檔案不算成員的改動；成員新建的未追蹤檔要算');
+      const integration = await createIntegrationWorktree(f.repoRoot, TASK_ID, taskBranchName(TASK_ID));
+      await removeIntegrationWorktree(f.repoRoot, integration);
+      assert.strictEqual(integration.conflict, false, '解完後必須能乾淨整合');
+      const accepted = await runDeployAcceptance({
+        taskId: TASK_ID, repoRoot: f.repoRoot, taskBranch: taskBranchName(TASK_ID), existingFatalError: null, deployment: 'not_required',
+        runBranchCi: async () => ({ passed: true, detail: 'ok' }), runIntegrationCommand: makeCountingIntegrationRunner().fn,
+        runTaskSpecificAcceptance: async () => ({ passed: true, detail: 'ok' }), getSystemdReadback: async () => makeReadback(),
+        checkHealth: async () => makeHealth(), runTaskLiveAcceptance: async () => ({ passed: true, detail: 'ok' }), now: () => 0, sleep: noSleep,
+      });
+      assert.strictEqual(accepted.kind, 'deployed');
+      assert.strictEqual(f.g(['show', 'master:src/app.txt']), 'top\nmerged version\nbottom');
+      assert.strictEqual(f.g(['show', 'master:src/helper.txt']), 'new helper', '新建檔案必須一路合進 master');
+    } finally {
+      f.cleanup();
+    }
+  }
+
+  // ---- 2b) 解完衝突後下一次審查：預檢通過，Owner session 才會被呼叫 ----
+  {
+    const f = await setup('conflict');
+    try {
+      await f.review();
+      // 成員整份採用 master 的版本（內容跟 MERGE_HEAD 完全一樣，仍要被當成已解的衝突檔 add 進 merge commit）
+      const session = await f.memberSession((wt) => writeFileSync(join(wt, 'src', 'app.txt'), 'top\nmaster version\nbottom\n'));
+      assert.strictEqual(session.outcome, 'progressed', JSON.stringify(session.evidence));
+      upsertTaskCheckpoint(f.db, { ...getTaskRun(f.db, TASK_ID)!, phase: 'review', headSha: f.g(['rev-parse', 'HEAD'], f.worktree) }, NOW);
+      assert.strictEqual(await f.review(), 'no_change');
+      assert.strictEqual(f.ownerCalls(), 1, '沒有衝突時照常跑 Owner session');
+    } finally {
+      f.cleanup();
+    }
+  }
+
+  // ---- 3) 衝突標記沒解：commit 失敗、HEAD 不動、累計 noProgress，最後 Owner 介入再到 human_blocked ----
+  {
+    const f = await setup('conflict');
+    try {
+      await f.review();
+      const headBefore = f.g(['rev-parse', 'HEAD'], f.worktree);
+      let run = getTaskRun(f.db, TASK_ID)!;
+      const evidence = makeEvidence({ taskId: TASK_ID, status: 'Doing' });
+      const expected = [[1, false, 'doing'], [2, true, 'doing'], [3, true, 'human_blocked']] as const;
+      for (const [count, intervened, phase] of expected) {
+        const session = await f.memberSession(() => undefined); // 什麼都沒解
+        assert.strictEqual(session.outcome, 'retryable_failure');
+        assert.match(session.evidence.rejectedReason ?? '', /check|conflict/i, '標記沒解必須是 commit 階段的失敗');
+        assert.strictEqual(f.g(['rev-parse', 'HEAD'], f.worktree), headBefore, '沒解完不得產生 commit');
+        assert.ok(mergeHead(f), 'MERGE_HEAD 必須還在');
+        const transition = recordMemberSessionAttempt(run, session, evidence);
+        run = transition.run;
+        assert.deepStrictEqual([run.noProgressCount, run.ownerIntervened, run.phase], [count, intervened, phase]);
+        assert.strictEqual(transition.humanBlockedNotice !== null, phase === 'human_blocked');
+      }
+      // 之後補解掉就能 commit（staged 殘留的標記不會被放行，解掉才過）
+      const fixed = await f.memberSession((wt) => writeFileSync(join(wt, 'src', 'app.txt'), 'top\nmerged version\nbottom\n'));
+      assert.strictEqual(fixed.outcome, 'progressed');
+    } finally {
+      f.cleanup();
+    }
+  }
+
+  // ---- 4) 同一個 head 對同一個 master 反覆衝突：不重做、不重複留言，走無進展狀態機直到 human_blocked ----
+  {
+    const f = await setup('conflict');
+    try {
+      await f.review();
+      for (const [count, phase] of [[1, 'review'], [2, 'review'], [3, 'human_blocked']] as const) {
+        f.board.status = 'Review'; // 成員沒解就被人搬回 Review
+        const before = getTaskRun(f.db, TASK_ID)!;
+        upsertTaskCheckpoint(f.db, { ...before, phase: before.phase === 'doing' ? 'review' : before.phase }, NOW);
+        assert.strictEqual(await f.review(), 'no_change');
+        const run = getTaskRun(f.db, TASK_ID)!;
+        assert.deepStrictEqual([run.noProgressCount, run.phase], [count, phase]);
+        assert.strictEqual(f.ownerCalls(), 0, 'Owner session 從頭到尾都不得被呼叫');
+      }
+      assert.strictEqual(f.board.comments.filter((c) => c.content.includes('【整合衝突】')).length, 1, '同一組 head／master 只留一則整合衝突留言');
+      assert.ok(f.board.comments.some((c) => c.content.includes('@user09')), 'human_blocked 後必須通知人');
+    } finally {
+      f.cleanup();
+    }
+  }
+
+  // ---- 5) master 乾淨前進（沒有衝突）：driver 自動 merge，不退回，task 留在 Review ----
+  {
+    const f = await setup('clean');
+    try {
+      assert.strictEqual(await f.sendBack(), 'progressed');
+      assert.strictEqual(f.board.status, 'Review');
+      assert.deepStrictEqual(f.board.patches, []);
+      assert.strictEqual(f.board.comments.length, 0, '乾淨合併不打擾成員');
+      const parents = f.g(['rev-list', '--parents', '-n', '1', 'HEAD'], f.worktree).split(' ').slice(1);
+      assert.strictEqual(parents.length, 2, 'driver 直接 commit 成 merge commit');
+      assert.strictEqual(mergeHead(f), null);
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.headSha, f.g(['rev-parse', 'HEAD'], f.worktree), 'run 的 head 要追上新的 merge commit');
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'review');
+      assert.strictEqual(f.ownerCalls(), 0);
+    } finally {
+      f.cleanup();
+    }
+  }
+
+  // ---- 6) 保險：預檢通過、Owner accept 之後 master 又前進造成衝突（競態）：同樣留 trace、退回 Doing，不留給下個 tick 重跑 Owner ----
+  {
+    const f = await setup('clean', (repoRoot) => {
+      writeFileSync(join(repoRoot, 'src', 'app.txt'), 'top\nmaster raced\nbottom\n');
+      f.g(['add', 'src/app.txt']);
+      f.g(['commit', '-q', '-m', 'master races ahead']);
+    });
+    try {
+      assert.strictEqual(await f.review(), 'progressed');
+      assert.strictEqual(f.ownerCalls(), 1, '預檢當下沒有衝突，Owner 照常審查一次');
+      assert.strictEqual(f.board.status, 'Doing');
+      assert.ok(mergeHead(f), 'worktree 必須保留 MERGE_HEAD');
+      assert.ok(f.board.comments.some((c) => c.content.includes('【整合衝突】') && c.content.includes('src/app.txt')));
+      assert.ok(f.traces.some((t) => t.event === 'ci.checked' && t.args.reason === 'integration_conflict' && t.args.outcome === 'fail'));
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'doing');
+    } finally {
+      f.cleanup();
+    }
+  }
+}
+
 async function main(): Promise<void> {
   await runG1Tests();
   await runF5Tests();
@@ -6292,6 +6555,7 @@ async function main(): Promise<void> {
   await runAgentTests();
   runCoordinatorTests();
   await runDeployTests();
+  await runIntegrationConflictTests();
   await runCompletionTests();
   await runDiscordOutboxTests();
   await runMigrateTests();
