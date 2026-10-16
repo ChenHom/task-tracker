@@ -10,6 +10,15 @@ export interface RegisteredRepo {
   deployment: DeploymentPolicy;
   /** member 可修改的相對路徑前綴；未設定時由呼叫端沿用預設（task-tracker 自己的 sim/ src/ public/）。 */
   allowedPrefixes?: string[];
+  /** Goal Task 開工前，把 repo 主工作樹的檔案複製進 worktree（`to` 必須是 gitignored 路徑，目標已存在就不覆蓋）。 */
+  seedFiles?: SeedFile[];
+  /** 成員工作時可執行的建置／測試／研究指令；claude 成員的 Bash 白名單會加上這些，codex 只在 prompt 列出。 */
+  workCommands?: string[];
+}
+
+export interface SeedFile {
+  from: string;
+  to: string;
 }
 
 export type RepoRegistry = ReadonlyMap<string, RegisteredRepo>;
@@ -27,12 +36,30 @@ interface RawRepoConfig {
   checks?: unknown;
   deployment?: unknown;
   allowedPrefixes?: unknown;
+  seedFiles?: unknown;
+  workCommands?: unknown;
 }
 
 /** 非空字串陣列；每項必須是相對路徑（不以 `/` 開頭、不含 `..` 段）。 */
 function isValidPrefixList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length > 0 && value.every((prefix) =>
     typeof prefix === 'string' && prefix.length > 0 && !prefix.startsWith('/') && !prefix.split('/').includes('..'));
+}
+
+function isRelativePath(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !value.startsWith('/') && !value.split('/').includes('..');
+}
+
+function isValidSeedFiles(value: unknown): value is SeedFile[] {
+  return Array.isArray(value) && value.length > 0 && value.every((seed) =>
+    Boolean(seed) && typeof seed === 'object' && !Array.isArray(seed)
+    && isRelativePath((seed as SeedFile).from) && isRelativePath((seed as SeedFile).to));
+}
+
+/** 非空字串陣列；指令會被拼進 claude 的 `Bash(cmd)` 規則，所以不得含 shell 控制字元或換行。 */
+function isValidWorkCommands(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((command) =>
+    typeof command === 'string' && command.trim().length > 0 && !/[;|&$`<>\r\n]/u.test(command));
 }
 
 export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_PATH): RepoRegistry {
@@ -58,7 +85,7 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
     if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
       throw new CommandError(`repo 設定不合法：${rawPath}`);
     }
-    const { checks, deployment, allowedPrefixes } = rawConfig as RawRepoConfig;
+    const { checks, deployment, allowedPrefixes, seedFiles, workCommands } = rawConfig as RawRepoConfig;
     if (!Array.isArray(checks) || checks.length === 0 || checks.some((check) => typeof check !== 'string')) {
       throw new CommandError(`repo checks 不合法：${rawPath}`);
     }
@@ -71,9 +98,17 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
     if (allowedPrefixes !== undefined && !isValidPrefixList(allowedPrefixes)) {
       throw new CommandError(`repo allowedPrefixes 不合法：${rawPath}`);
     }
+    if (seedFiles !== undefined && !isValidSeedFiles(seedFiles)) {
+      throw new CommandError(`repo seedFiles 不合法：${rawPath}`);
+    }
+    if (workCommands !== undefined && !isValidWorkCommands(workCommands)) {
+      throw new CommandError(`repo workCommands 不合法：${rawPath}`);
+    }
     registry.set(targetRepo, {
       targetRepo, checks: [...checks], deployment,
       ...(allowedPrefixes ? { allowedPrefixes: [...allowedPrefixes] } : {}),
+      ...(seedFiles ? { seedFiles: seedFiles.map(({ from, to }) => ({ from, to })) } : {}),
+      ...(workCommands ? { workCommands: [...workCommands] } : {}),
     });
   }
   return registry;

@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,11 +48,15 @@ async function main(): Promise<void> {
     git(repo, 'config', 'user.name', 'Goal Test');
     git(repo, 'config', 'user.email', 'goal@test.local');
     writeFileSync(join(repo, 'README.md'), 'base\n');
-    git(repo, 'add', 'README.md');
+    writeFileSync(join(repo, '.gitignore'), 'data/\n');
+    git(repo, 'add', 'README.md', '.gitignore');
     git(repo, 'commit', '-m', 'base');
+    mkdirSync(join(repo, 'data'));
+    writeFileSync(join(repo, 'data', 'research.db'), 'main-research-db'); // gitignored，只能靠 seedFiles 進 worktree
     const baseSha = git(repo, 'rev-parse', 'HEAD');
     writeFileSync(registryPath, JSON.stringify({
-      [repo]: { checks: ['npm test', 'npm run typecheck'], deployment: 'not_required', allowedPrefixes: ['result.txt'] },
+      [repo]: { checks: ['npm test', 'npm run typecheck'], deployment: 'not_required', allowedPrefixes: ['result.txt'],
+        seedFiles: [{ from: 'data/research.db', to: 'data/_run.db' }], workCommands: ['python3 scripts/backtest.py'] },
     }));
 
     const [{ db }, { resetProjections }, { seedUsers }, { getUserIdByEmail }, goalModule, taskModule, workspaceModule, memberModule, notificationModule, coordinatorModule, productionModule, serverModule] = await Promise.all([
@@ -101,6 +105,7 @@ async function main(): Promise<void> {
     const repos = new Map([[repo, { targetRepo: repo, checks: ['npm test'], deployment: 'not_required' as const }]]);
     const goalId = goalModule.createGoal('human', {
       workspaceId: 'ws', projectId: 'p', objective: 'ship', successCriteria: 'merged and verified', ownerAgentId: owner,
+      dataScope: '先複製 data/research.db 到 data/_run.db；不得使用券商正式 API',
     }, db, repos);
     const synthesis = {
       summary: 'one task', decisionRationale: '採納可驗證的最小修改', changeScope: 'result.txt', uncertainties: [],
@@ -163,12 +168,16 @@ async function main(): Promise<void> {
         memberCalls++;
         assert.deepStrictEqual(context.allowedPrefixes, ['result.txt'], 'registry allowedPrefixes 必須進 member context');
         assert.deepStrictEqual(context.verificationCommandAllowlist, ['npm test'], 'registry checks 與全域 allowlist 取交集（npm run typecheck 不在全域 allowlist）');
+        assert.strictEqual(context.dataScope, '先複製 data/research.db 到 data/_run.db；不得使用券商正式 API', 'Goal dataScope 必須進 member context');
+        assert.deepStrictEqual(context.workCommands, ['python3 scripts/backtest.py'], 'registry workCommands 必須進 member context');
+        assert.strictEqual(readFileSync(join(context.worktreePath, 'data/_run.db'), 'utf8'), 'main-research-db', 'seedFiles 必須在 session 前複製進 worktree');
         assert.ok(context.acceptanceCriteria.includes('Implement goal') && context.acceptanceCriteria.includes('change file'), '驗收條件必須含 title 與 description');
         writeFileSync(join(context.worktreePath, 'result.txt'), 'delivered\n');
         return { exitCode: 0, output: { summary: 'implemented', changedPaths: ['result.txt'], verificationCommands: ['npm test'], blocker: null } };
       },
       runOwnerSession: async (context) => {
         ownerCalls++;
+        assert.ok(context.dataScope?.includes('不得使用券商正式 API'), 'Goal dataScope 必須進 owner_review context');
         if (ownerCalls === 1) throw new Error('simulated crash after commit checkpoint');
         return { exitCode: 0, decision: { action: 'accept' as const, rationale: `accepted ${context.reviewedHeadSha}`, evidenceCommentIds: [] } };
       },

@@ -8,8 +8,8 @@
 // （command injection）。
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, lstatSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { dirname, join, relative, isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 
 const execFileAsync = promisify(execFile);
@@ -125,6 +125,63 @@ export async function ensureTaskWorktree(repoRoot: string, taskId: string, baseS
   await git(['worktree', 'add', '-b', branch, worktreePath, baseSha], repoRoot);
   const headSha = await git(['rev-parse', 'HEAD'], worktreePath);
   return { taskId, branch, path: worktreePath, baseSha, headSha };
+}
+
+export interface SeedResult {
+  /** 實際複製的 `to` 路徑。 */
+  copied: string[];
+  /** 被拒絕或失敗的項目，附原因；呼叫端記 trace，不中斷 session。 */
+  problems: string[];
+}
+
+function isInside(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * 把 registry 的 seedFiles 從 repo 主工作樹複製進 task worktree（例如 gitignored 的研究資料庫，
+ * 否則 `--restricted` 的 claude 讀不到、codex 也得自己找路徑）。
+ *
+ * - `<to>` 已存在不覆蓋（成員可能已修改）；`<from>` 不存在或不是一般檔案就略過。
+ * - `<to>` 必須被 git 忽略：否則成員下一次 commit 會把大型資料檔帶進 branch，直接拒絕。
+ * - `<from>`／`<to>` 解析後都必須仍在 repo／worktree 之內（擋 symlink 逃逸）。
+ * 任何一項失敗只記進 problems，不 throw。
+ */
+export async function seedWorktreeFiles(
+  repoRoot: string,
+  worktreePath: string,
+  seeds: ReadonlyArray<{ from: string; to: string }>,
+): Promise<SeedResult> {
+  const result: SeedResult = { copied: [], problems: [] };
+  for (const { from, to } of seeds) {
+    try {
+      const source = join(repoRoot, from);
+      const dest = join(worktreePath, to);
+      if (lstatSync(dest, { throwIfNoEntry: false })) continue; // 含 dangling symlink
+      if (!existsSync(source)) continue;
+      if (!isInside(realpathSync(repoRoot), realpathSync(source)) || !statSync(source).isFile()) {
+        result.problems.push(`${from}: 不是 repo 內的一般檔案，略過`);
+        continue;
+      }
+      try {
+        await execFileAsync('git', ['check-ignore', '-q', '--', to], { cwd: worktreePath });
+      } catch {
+        result.problems.push(`${to}: 未被 git 忽略（會被追蹤或無法判定），拒絕複製`);
+        continue;
+      }
+      mkdirSync(dirname(dest), { recursive: true });
+      if (!isInside(realpathSync(worktreePath), realpathSync(dirname(dest)))) {
+        result.problems.push(`${to}: 父目錄解析後跳出 worktree，拒絕複製`);
+        continue;
+      }
+      copyFileSync(source, dest);
+      result.copied.push(to);
+    } catch (err) {
+      result.problems.push(`${to}: 複製失敗：${(err as Error).message}`);
+    }
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------

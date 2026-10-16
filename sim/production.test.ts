@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { mkdtempSync, existsSync, writeFileSync, symlinkSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, writeFileSync, symlinkSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -78,6 +78,7 @@ import {
   taskBranchName,
   taskWorktreePath,
   ensureTaskWorktree,
+  seedWorktreeFiles,
   collectTaskChanges,
   validateTaskChanges,
   commitTaskChanges,
@@ -2431,6 +2432,74 @@ async function runGitTests(): Promise<void> {
     // 直接刪除整個目錄即可，不會影響本專案自己的 repo／worktree。
     // -------------------------------------------------------------------------
     rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+// =============================================================================
+// seedWorktreeFiles：registry seedFiles 複製進 task worktree
+// =============================================================================
+
+async function runSeedFilesTests(): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), 'sim-seed-files-'));
+  const repoRoot = join(root, 'repo');
+  const outside = join(root, 'outside.db');
+  const g = (args: string[], cwd: string = repoRoot): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  try {
+    mkdirSync(repoRoot);
+    g(['init', '-q', '-b', 'master']);
+    g(['config', 'user.email', 'seed-test@example.com']);
+    g(['config', 'user.name', 'Seed Test']);
+    writeFileSync(join(repoRoot, '.gitignore'), 'data/\n');
+    writeFileSync(join(repoRoot, 'README.md'), 'root\n');
+    g(['add', '.gitignore', 'README.md']);
+    g(['commit', '-q', '-m', 'init']);
+    mkdirSync(join(repoRoot, 'data'));
+    writeFileSync(join(repoRoot, 'data', 'research.db'), 'main-db');
+    writeFileSync(outside, 'secret');
+    symlinkSync(outside, join(repoRoot, 'data', 'link.db'));
+    const wt = await ensureTaskWorktree(repoRoot, 'seed-task', g(['rev-parse', 'HEAD']));
+
+    // 目標不存在、來源存在、目標被 git 忽略：複製，並建立父目錄。
+    const first = await seedWorktreeFiles(repoRoot, wt.path, [{ from: 'data/research.db', to: 'data/_run.db' }]);
+    assert.deepStrictEqual(first, { copied: ['data/_run.db'], problems: [] });
+    assert.strictEqual(readFileSync(join(wt.path, 'data/_run.db'), 'utf8'), 'main-db');
+    assert.strictEqual(g(['status', '--porcelain'], wt.path), '', '複製進來的 gitignored 檔不得出現在 git status');
+
+    // 目標已存在（成員可能已改過）：不覆蓋。
+    writeFileSync(join(wt.path, 'data/_run.db'), 'member-edited');
+    const again = await seedWorktreeFiles(repoRoot, wt.path, [{ from: 'data/research.db', to: 'data/_run.db' }]);
+    assert.deepStrictEqual(again, { copied: [], problems: [] });
+    assert.strictEqual(readFileSync(join(wt.path, 'data/_run.db'), 'utf8'), 'member-edited', '已存在的目標不可被覆蓋');
+
+    // 來源不存在：安靜略過。
+    assert.deepStrictEqual(
+      await seedWorktreeFiles(repoRoot, wt.path, [{ from: 'data/missing.db', to: 'data/_other.db' }]),
+      { copied: [], problems: [] },
+    );
+    assert.strictEqual(existsSync(join(wt.path, 'data/_other.db')), false);
+
+    // 目標不會被 git 忽略（commit 會把資料檔帶進 branch）：拒絕並回報。
+    const tracked = await seedWorktreeFiles(repoRoot, wt.path, [{ from: 'data/research.db', to: 'docs/big.db' }]);
+    assert.deepStrictEqual(tracked.copied, []);
+    assert.match(tracked.problems[0] ?? '', /docs\/big\.db.*未被 git 忽略/u);
+    assert.strictEqual(existsSync(join(wt.path, 'docs/big.db')), false, '被拒絕時不得留下檔案');
+
+    // 來源是指向 repo 外的 symlink：拒絕。
+    const escaped = await seedWorktreeFiles(repoRoot, wt.path, [{ from: 'data/link.db', to: 'data/_link.db' }]);
+    assert.deepStrictEqual(escaped.copied, []);
+    assert.match(escaped.problems[0] ?? '', /data\/link\.db/u);
+    assert.strictEqual(existsSync(join(wt.path, 'data/_link.db')), false);
+
+    // 一項失敗不影響後面的項目。
+    const mixed = await seedWorktreeFiles(repoRoot, wt.path, [
+      { from: 'data/research.db', to: 'docs/big.db' },
+      { from: 'data/research.db', to: 'data/second.db' },
+    ]);
+    assert.deepStrictEqual(mixed.copied, ['data/second.db']);
+    assert.strictEqual(mixed.problems.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -6177,6 +6246,7 @@ async function main(): Promise<void> {
   await runCoordinatorEnvironmentTest();
   await runApiTests();
   await runGitTests();
+  await runSeedFilesTests();
   await runAgentTests();
   runCoordinatorTests();
   await runDeployTests();

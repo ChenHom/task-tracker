@@ -57,6 +57,10 @@ export interface MemberSessionRunnerContext {
   allowedPrefixes: string[];
   verificationCommandAllowlist: readonly string[];
   worktreePath: string;
+  /** registry 的 workCommands：工作時可執行的建置／測試／研究指令（prompt 列出；claude 另進 Bash 白名單）。 */
+  workCommands?: readonly string[];
+  /** Goal 的 data_scope（不可信文字，由 runner 清理後放進 prompt）；非 Goal task 或為空則不帶。 */
+  dataScope?: string;
 }
 
 export interface MemberSessionRunnerResult {
@@ -142,6 +146,8 @@ export interface RunMemberSessionInput {
   verificationCommandAllowlist?: readonly string[];
   acceptanceCriteria: string;
   comments: string[];
+  workCommands?: readonly string[];
+  dataScope?: string;
   /** 上一次 attempt 回報的 blocker（沒有上一次就傳 null），用來偵測重複 blocker。 */
   previousBlocker: string | null;
   runner: MemberSessionRunner;
@@ -183,6 +189,8 @@ export async function runMemberSession(input: RunMemberSessionInput): Promise<Me
     allowedPrefixes: input.allowedPrefixes,
     verificationCommandAllowlist: declaredAllowlist,
     worktreePath: input.worktreePath,
+    ...(input.workCommands?.length ? { workCommands: input.workCommands } : {}),
+    ...(input.dataScope ? { dataScope: input.dataScope } : {}),
   };
 
   const { exitCode, output } = await input.runner(context);
@@ -319,6 +327,8 @@ export interface OwnerSessionRunnerContext {
   reviewedHeadSha: string;
   /** 唯讀：Owner runner 不應該、也不被允許修改這裡的任何檔案。 */
   worktreePath: string;
+  /** Goal 的 data_scope（不可信文字）；非 Goal task 或為空則不帶。 */
+  dataScope?: string;
 }
 
 export interface OwnerSessionRunnerResult {
@@ -339,6 +349,7 @@ export interface RunOwnerSessionInput {
   comments: string[];
   reviewedHeadSha: string;
   worktreePath: string;
+  dataScope?: string;
   runner: OwnerSessionRunner;
 }
 
@@ -365,6 +376,7 @@ export async function runOwnerSession(input: RunOwnerSessionInput): Promise<Owne
     comments: input.comments,
     reviewedHeadSha: input.reviewedHeadSha,
     worktreePath: input.worktreePath,
+    ...(input.dataScope ? { dataScope: input.dataScope } : {}),
   };
 
   const { exitCode, decision } = await input.runner(context);
