@@ -1833,7 +1833,10 @@ export async function dispatchOwnerReview(deps: ResolvedDeps, action: Coordinato
     runner: ownerRunner,
   });
 
-  if (!ownerResult.valid || !ownerResult.decision) return 'no_change';
+  if (!ownerResult.valid || !ownerResult.decision) {
+    // 無效決策（accept 沒引用 head SHA、唯讀 session 改了檔）一樣不能每個 tick 重審：停下來交給人
+    return blockOnUnhandledOwnerDecision(deps, action, run, currentTask, comments.length, 'invalid', ownerResult.rejectedReason ?? 'Owner 決策無效');
+  }
 
   if (ownerResult.decision.action === 'reject') {
     const key = `reject:${action.taskId}:${reviewedHeadSha}`;

@@ -6448,8 +6448,11 @@ async function runIntegrationConflictTests(): Promise<void> {
       const session = await f.memberSession((wt) => writeFileSync(join(wt, 'src', 'app.txt'), 'top\nmaster version\nbottom\n'));
       assert.strictEqual(session.outcome, 'progressed', JSON.stringify(session.evidence));
       upsertTaskCheckpoint(f.db, { ...getTaskRun(f.db, TASK_ID)!, phase: 'review', headSha: f.g(['rev-parse', 'HEAD'], f.worktree) }, NOW);
-      assert.strictEqual(await f.review(), 'no_change');
+      // fixture 的 Owner 回的是無效決策（accept 沒引用 head SHA）：不能再當 no_change 讓下個 tick 重審
+      assert.strictEqual(await f.review(), 'progressed');
       assert.strictEqual(f.ownerCalls(), 1, '沒有衝突時照常跑 Owner session');
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked', '無效的 Owner 決策要停下來交給人');
+      assert.ok(f.board.comments.some((c) => c.content.includes('@user09') && c.content.includes('head SHA')), '通知要寫出無效原因');
     } finally {
       f.cleanup();
     }
