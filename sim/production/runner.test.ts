@@ -357,7 +357,7 @@ async function claudeConfinedRunnerTests(): Promise<void> {
       'Bash(git status)', 'Bash(git status *)', 'Bash(git log)', 'Bash(git log *)', 'Bash(git show)', 'Bash(git show *)',
       'Bash(git merge-base)', 'Bash(git merge-base *)', 'Bash(git diff)', 'Bash(git diff *)',
     ], 'bashAllow = verificationCommandAllowlist + workCommands + 唯讀 git');
-    assert.ok(member[member.indexOf('--settings') + 1].includes('"denyRead":["/srv/target-repo/.env"]'), 'mainRepo 要進 settings');
+    assert.deepStrictEqual(JSON.parse(member[member.indexOf('--settings') + 1]).sandbox.filesystem.denyRead, ['/srv/target-repo/.env', `${worktree}/.env`], 'mainRepo 與 worktree 都要進 settings');
 
     await createOwnerSessionRunner(claudeRoute, main)({
       taskId: 'task-confined-owner', acceptanceCriteria: 'ac', comments: [], reviewedHeadSha: 'abc', worktreePath: worktree,
@@ -373,7 +373,8 @@ async function claudeConfinedRunnerTests(): Promise<void> {
       verificationCommandAllowlist: [], worktreePath: worktree,
     });
     const denied = JSON.parse(argv()[argv().indexOf('--settings') + 1]);
-    assert.deepStrictEqual(denied.sandbox.filesystem.denyRead, ['/srv/target-repo/.env', '/srv/target-repo/Sinopac.pfx']);
+    assert.deepStrictEqual(denied.sandbox.filesystem.denyRead, ['/srv/target-repo/.env', '/srv/target-repo/Sinopac.pfx', `${worktree}/.env`, `${worktree}/Sinopac.pfx`]);
+    assert.ok(denied.permissions.deny.includes(`Read(/${worktree}/Sinopac.pfx)`), 'worktree 裡的同名路徑也要拒讀');
     assert.ok(denied.permissions.deny.includes('Read(//srv/target-repo/Sinopac.pfx)'));
     await createOwnerSessionRunner(claudeRoute, main, { denyRead: ['Sinopac.pfx'] })({
       taskId: 'task-confined-owner-deny', acceptanceCriteria: 'ac', comments: [], reviewedHeadSha: 'abc', worktreePath: worktree,

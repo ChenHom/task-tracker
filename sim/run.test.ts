@@ -1419,13 +1419,13 @@ assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', 
   const expectedSettings = {
     permissions: {
       defaultMode: 'dontAsk',
-      deny: [`Read(//srv/target-repo/.env)`, 'WebFetch', 'WebSearch', 'Agent'],
+      deny: [`Read(//srv/target-repo/.env)`, `Read(//tmp/e/.env)`, 'WebFetch', 'WebSearch', 'Agent'],
       disableBypassPermissionsMode: 'disable',
       blockReadsOutsideWorkingDirectories: true,
     },
     sandbox: {
       enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false,
-      filesystem: { denyRead: ['/srv/target-repo/.env'] },
+      filesystem: { denyRead: ['/srv/target-repo/.env', '/tmp/e/.env'] },
       network: { allowedDomains: [] },
     },
     autoMemoryEnabled: false,
@@ -1453,9 +1453,15 @@ assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', 
   const extra = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: main, bashAllow: [], denyRead: ['Sinopac.pfx', 'keys/api.key', '.env'] } });
   const extraSettings = JSON.parse(extra.args[extra.args.indexOf('--settings') + 1]);
   assert.deepStrictEqual(extraSettings.permissions.deny, [
-    'Read(//srv/target-repo/.env)', 'Read(//srv/target-repo/Sinopac.pfx)', 'Read(//srv/target-repo/keys/api.key)', 'WebFetch', 'WebSearch', 'Agent',
+    'Read(//srv/target-repo/.env)', 'Read(//srv/target-repo/Sinopac.pfx)', 'Read(//srv/target-repo/keys/api.key)',
+    'Read(//tmp/e/.env)', 'Read(//tmp/e/Sinopac.pfx)', 'Read(//tmp/e/keys/api.key)', 'WebFetch', 'WebSearch', 'Agent',
+  ], '主工作樹與 session cwd（worktree）裡的同名路徑都要擋');
+  assert.deepStrictEqual(extraSettings.sandbox.filesystem.denyRead, [
+    '/srv/target-repo/.env', '/srv/target-repo/Sinopac.pfx', '/srv/target-repo/keys/api.key', '/tmp/e/.env', '/tmp/e/Sinopac.pfx', '/tmp/e/keys/api.key',
   ]);
-  assert.deepStrictEqual(extraSettings.sandbox.filesystem.denyRead, ['/srv/target-repo/.env', '/srv/target-repo/Sinopac.pfx', '/srv/target-repo/keys/api.key']);
+  // cwd 就是 mainRepo 時不重複列
+  const sameRoot = buildRunnerInvocation(route, 'p', { ...base, cwd: main, claudeConfined: { writable: true, mainRepo: main, bashAllow: [] } });
+  assert.deepStrictEqual(JSON.parse(sameRoot.args[sameRoot.args.indexOf('--settings') + 1]).sandbox.filesystem.denyRead, ['/srv/target-repo/.env']);
   const emptyDeny = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: main, bashAllow: ['npm test', 'git diff'], denyRead: [] } });
   assert.deepStrictEqual(emptyDeny.args, member.args, 'denyRead 空陣列／未設定時 argv 與舊版完全相同');
   // codex 不受 claudeConfined 影響

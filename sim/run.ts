@@ -2035,9 +2035,12 @@ export interface ClaudeConfined {
   denyRead?: string[];
 }
 
-export function claudeConfinedArgs(confined: ClaudeConfined): string[] {
+export function claudeConfinedArgs(confined: ClaudeConfined, cwd?: string): string[] {
   const { writable, mainRepo, bashAllow } = confined;
-  const denyPaths = ['.env', ...(confined.denyRead ?? []).filter((path) => path !== '.env')].map((path) => `${mainRepo}/${path}`);
+  const relative = ['.env', ...(confined.denyRead ?? []).filter((path) => path !== '.env')];
+  // session 在 <mainRepo>/sim-work/tasks/<id> 執行：同一相對路徑在 worktree 裡若也有一份（被追蹤或產生出來），也要擋。
+  const roots = cwd && cwd !== mainRepo ? [mainRepo, cwd] : [mainRepo];
+  const denyPaths = roots.flatMap((root) => relative.map((path) => `${root}/${path}`));
   // permission 規則的絕對路徑要 `//` 開頭；sandbox 路徑只用單一 `/`。
   const settings = {
     permissions: {
@@ -2099,7 +2102,7 @@ export function buildRunnerInvocation(
       if (opts.settings) args.push('--settings', opts.settings);
       args.push('--setting-sources', '', '--no-session-persistence');
     } else if (opts.claudeConfined) {
-      args.push(...claudeConfinedArgs(opts.claudeConfined));
+      args.push(...claudeConfinedArgs(opts.claudeConfined, opts.cwd));
     } else {
       args.push('--allowedTools', opts.tools ?? '');
     }
