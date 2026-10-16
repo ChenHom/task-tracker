@@ -93,15 +93,15 @@ try {
     writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', denyRead: bad } }));
     assert.throws(() => loadRepoRegistry(registryPath), /denyRead 不合法/, `不合法 denyRead 應拒絕：${JSON.stringify(bad)}`);
   }
-  // allowCodex：選填、原樣載入；未設定時不帶欄位（預設允許 codex）
-  assert.strictEqual(registry.get(canonical)?.allowCodex, undefined, '未設定時不帶 allowCodex');
-  for (const allowCodex of [false, true]) {
-    writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', allowCodex } }));
-    assert.strictEqual(loadRepoRegistry(registryPath).get(canonical)?.allowCodex, allowCodex, `allowCodex=${allowCodex} 應原樣載入`);
+  // claudeOnly：選填、原樣載入；未設定時不帶欄位（預設不限 adapter）
+  assert.strictEqual(registry.get(canonical)?.claudeOnly, undefined, '未設定時不帶 claudeOnly');
+  for (const claudeOnly of [false, true]) {
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', claudeOnly } }));
+    assert.strictEqual(loadRepoRegistry(registryPath).get(canonical)?.claudeOnly, claudeOnly, `claudeOnly=${claudeOnly} 應原樣載入`);
   }
   for (const bad of ['false', 0, null, 'no']) {
-    writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', allowCodex: bad } }));
-    assert.throws(() => loadRepoRegistry(registryPath), /allowCodex 不合法/, `不合法 allowCodex 應拒絕：${JSON.stringify(bad)}`);
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { checks: ['npm test'], deployment: 'not_required', claudeOnly: bad } }));
+    assert.throws(() => loadRepoRegistry(registryPath), /claudeOnly 不合法/, `不合法 claudeOnly 應拒絕：${JSON.stringify(bad)}`);
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

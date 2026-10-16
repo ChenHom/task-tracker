@@ -172,27 +172,30 @@ assert.deepStrictEqual(coordinatorChildEnvironment({ PATH: '/bin', TASK_TRACKER_
   assert.strictEqual(depsForTask(globalDeps, undefined), globalDeps);
 }
 
-// registry allowCodex=false：primary 是 codex 就標 denied（不換模型）；fallback 是 codex 一律丟掉；其餘（含未設定）行為不變
+// registry claudeOnly=true：primary 不是 claude（codex、agy）就標 denied（不換模型）；fallback 不是 claude 一律丟掉；其餘（含未設定）行為不變
 {
-  const route = (primaryAdapter: 'claude' | 'codex', fallbackAdapter: 'claude' | 'codex' | null) => ({
+  const route = (primaryAdapter: 'claude' | 'codex' | 'agy', fallbackAdapter: 'claude' | 'codex' | 'agy' | null) => ({
     agentId: 'a', role: 'member', status: 'active', primaryAdapter, primaryModel: 'm1', effort: null,
     fallbackAdapter, fallbackModel: fallbackAdapter ? 'm2' : null,
   }) as Parameters<typeof resolveGoalRoutes>[0];
-  const codexPrimary = resolveGoalRoutes(route('codex', null), false);
-  assert.strictEqual(codexPrimary.primaryDenied, true, 'allowCodex=false 時 codex primary 必須被拒');
+  const codexPrimary = resolveGoalRoutes(route('codex', null), true);
+  assert.strictEqual(codexPrimary.primaryDenied, true, 'claudeOnly=true 時 codex primary 必須被拒');
   assert.deepStrictEqual(codexPrimary.primaryRoute, { runner: 'codex', model: 'm1' });
-  assert.strictEqual(resolveGoalRoutes(route('claude', null), false).primaryDenied, false, 'claude primary 照常');
-  assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'codex'), false).fallbackRoute, null, 'allowCodex=false 時 codex fallback 一律不用');
-  assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'claude'), false).fallbackRoute, { runner: 'claude', model: 'm2' }, 'claude fallback 保留');
-  for (const allowCodex of [undefined, true]) {
-    assert.strictEqual(resolveGoalRoutes(route('codex', 'codex'), allowCodex).primaryDenied, false, `allowCodex=${allowCodex} 時行為不變`);
-    assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'codex'), allowCodex).fallbackRoute, { runner: 'codex', model: 'm2' });
+  assert.strictEqual(resolveGoalRoutes(route('agy', null), true).primaryDenied, true, 'claudeOnly=true 時 agy primary 必須被拒');
+  assert.strictEqual(resolveGoalRoutes(route('claude', null), true).primaryDenied, false, 'claude primary 照常');
+  assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'codex'), true).fallbackRoute, null, 'claudeOnly=true 時 codex fallback 一律不用');
+  assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'agy'), true).fallbackRoute, null, 'claudeOnly=true 時 agy fallback 一律不用');
+  assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'claude'), true).fallbackRoute, { runner: 'claude', model: 'm2' }, 'claude fallback 保留');
+  for (const claudeOnly of [undefined, false]) {
+    assert.strictEqual(resolveGoalRoutes(route('codex', 'codex'), claudeOnly).primaryDenied, false, `claudeOnly=${claudeOnly} 時行為不變`);
+    assert.strictEqual(resolveGoalRoutes(route('agy', 'agy'), claudeOnly).primaryDenied, false, `claudeOnly=${claudeOnly} 時 agy 行為不變`);
+    assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'codex'), claudeOnly).fallbackRoute, { runner: 'codex', model: 'm2' });
   }
   const globalDeps = { repoRoot: '/global', allowedPrefixes: ['sim/'] } as unknown as Parameters<typeof depsForTask>[0];
-  const goalTask = { taskId: 't', goalId: 'g', targetRepo: '/ext/repo', allowCodex: false } as unknown as TaskSnapshot;
-  assert.strictEqual(depsForTask(globalDeps, goalTask).allowCodex, false, 'registry allowCodex 必須帶進 Goal task deps');
-  assert.strictEqual(depsForTask(globalDeps, { ...goalTask, allowCodex: undefined } as unknown as TaskSnapshot).allowCodex, undefined);
-  assert.strictEqual(depsForTask(globalDeps, { taskId: 't', allowCodex: false } as unknown as TaskSnapshot), globalDeps, '非 Goal task 完全不動 deps');
+  const goalTask = { taskId: 't', goalId: 'g', targetRepo: '/ext/repo', claudeOnly: true } as unknown as TaskSnapshot;
+  assert.strictEqual(depsForTask(globalDeps, goalTask).claudeOnly, true, 'registry claudeOnly 必須帶進 Goal task deps');
+  assert.strictEqual(depsForTask(globalDeps, { ...goalTask, claudeOnly: undefined } as unknown as TaskSnapshot).claudeOnly, undefined);
+  assert.strictEqual(depsForTask(globalDeps, { taskId: 't', claudeOnly: true } as unknown as TaskSnapshot), globalDeps, '非 Goal task 完全不動 deps');
 }
 
 async function runG1Tests(): Promise<void> {

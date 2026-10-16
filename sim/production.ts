@@ -269,7 +269,7 @@ export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<Coordina
     task.workCommands = config.workCommands;
     task.sandboxNetwork = config.network;
     task.denyRead = config.denyRead;
-    task.allowCodex = config.allowCodex;
+    task.claudeOnly = config.claudeOnly;
     task.deployment = task.deploymentNotRequired ? 'not_required' : config.deployment;
     deps.taskChecks?.set(task.taskId, config.checks);
   }
@@ -733,7 +733,7 @@ interface ResolvedDeps {
   /** Goal task 專用：由 actionDeps 依 registry 覆寫，其餘路徑維持 undefined（行為不變）。 */
   sandboxNetwork?: boolean;
   denyRead?: string[];
-  allowCodex?: boolean;
+  claudeOnly?: boolean;
   runOwnerSession?: OwnerSessionRunner;
   runMemberSession?: MemberSessionRunner;
   useAgentRoutes: boolean;
@@ -758,21 +758,21 @@ export function depsForTask(deps: ResolvedDeps, task: TaskSnapshot | undefined):
     ? {
       ...deps, repoRoot: task.targetRepo, allowedPrefixes: task.allowedPrefixes ?? deps.allowedPrefixes,
       seedFiles: task.seedFiles, workCommands: task.workCommands, goalDataScope: task.goalDataScope,
-      sandboxNetwork: task.sandboxNetwork, denyRead: task.denyRead, allowCodex: task.allowCodex,
+      sandboxNetwork: task.sandboxNetwork, denyRead: task.denyRead, claudeOnly: task.claudeOnly,
     }
     : deps;
 }
 
 /**
- * Goal Agent 的 primary／fallback 路線。repo 設 allowCodex=false 時 codex 讀得到整台機器的憑證：
- * primary 是 codex → primaryDenied（呼叫端不得執行，也不得改用別的模型）；fallback 是 codex → 一律丟掉。
+ * Goal Agent 的 primary／fallback 路線。repo 設 claudeOnly=true 時，codex 讀得到整台機器的憑證、agy 不吃 denyRead／network：
+ * primary 不是 claude → primaryDenied（呼叫端不得執行，也不得改用別的模型）；fallback 不是 claude → 一律丟掉。
  */
-export function resolveGoalRoutes(agent: AgentRouteSnapshot, allowCodex: boolean | undefined) {
+export function resolveGoalRoutes(agent: AgentRouteSnapshot, claudeOnly: boolean | undefined) {
   const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
   const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
-    && !(allowCodex === false && agent.fallbackAdapter === 'codex')
+    && !(claudeOnly === true && agent.fallbackAdapter !== 'claude')
     ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
-  return { primaryRoute, fallbackRoute, primaryDenied: allowCodex === false && primaryRoute.runner === 'codex' };
+  return { primaryRoute, fallbackRoute, primaryDenied: claudeOnly === true && primaryRoute.runner !== 'claude' };
 }
 
 function repoSandbox(deps: ResolvedDeps): RepoSandbox {
@@ -1514,10 +1514,10 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
   if (task.goalId && task.assigneeId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.agentId === task.assigneeId);
     if (!agent || agent.status !== 'active') throw new Error('Goal Task assignee 沒有 active Agent route');
-    const { primaryRoute, fallbackRoute, primaryDenied } = resolveGoalRoutes(agent, deps.allowCodex);
+    const { primaryRoute, fallbackRoute, primaryDenied } = resolveGoalRoutes(agent, deps.claudeOnly);
     if (primaryDenied) {
-      // 含憑證的 repo 不跑 codex，也不偷換模型：記一次無進展，讓 Owner／人類看得到並改 Agent 路線。
-      const reason = `repo 不允許 codex 成員：${deps.repoRoot}`;
+      // 含憑證的 repo 不跑 codex／agy，也不偷換模型：記一次無進展，讓 Owner／人類看得到並改 Agent 路線。
+      const reason = `repo 只允許 claude confined 成員：${deps.repoRoot}`;
       await failMemberBeforeSession(deps, action, workingRun, task, reason, reason, reason);
       return 'no_change';
     }
@@ -1688,11 +1688,11 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
   if (currentTask.goalId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.role === 'owner');
     if (!agent || agent.status !== 'active') throw new Error('Goal Owner 沒有 active Agent route');
-    const { primaryRoute, fallbackRoute, primaryDenied } = resolveGoalRoutes(agent, deps.allowCodex);
+    const { primaryRoute, fallbackRoute, primaryDenied } = resolveGoalRoutes(agent, deps.claudeOnly);
     if (primaryDenied) {
-      // 不跑 codex、不換模型。丟錯讓本 tick 的 errors／exit code 與 ERROR 行如實反映，需人改 Owner 路線（不走 noProgress／human_blocked）。
-      const reason = `repo 不允許 codex 成員：${deps.repoRoot}`;
-      deps.tracer(action.taskId)('gate.skipped', { reason: 'codex_not_allowed', detail: reason });
+      // 不跑 codex／agy、不換模型。丟錯讓本 tick 的 errors／exit code 與 ERROR 行如實反映，需人改 Owner 路線（不走 noProgress／human_blocked）。
+      const reason = `repo 只允許 claude confined 成員：${deps.repoRoot}`;
+      deps.tracer(action.taskId)('gate.skipped', { reason: 'non_claude_not_allowed', detail: reason });
       throw new Error(reason);
     }
     const primary = deps.useAgentRoutes ? createOwnerSessionRunner(primaryRoute, deps.repoRoot, repoSandbox(deps)) : ownerRunner;

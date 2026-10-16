@@ -166,8 +166,8 @@ export function selectGoalParticipants(
       if (agent && !JSON.parse(agent.repo_access_json || '[]').some((repo: string) => repo === '*' || repo === targetRepo)) {
         throw new CommandError('Agent 缺少 repo 權限');
       }
-      if (agent && repos.get(targetRepo ?? '')?.allowCodex === false && agent.primary_adapter === 'codex') {
-        throw new CommandError('repo 不允許 codex 成員');
+      if (agent && repos.get(targetRepo ?? '')?.claudeOnly === true && agent.primary_adapter !== 'claude') {
+        throw new CommandError('repo 只允許 claude confined 成員');
       }
       const load = agentWorkload(item.agentId, agent?.user_id ?? item.agentId, goalId, database);
       if (load > 0) throw new CommandError('Agent 已有不可並行工作');
@@ -239,8 +239,8 @@ export function eligibleGoalParticipants(goalId: string, database = db, includeB
   return agents.flatMap((agent) => {
     const access = JSON.parse(agent.repo_access_json || '[]') as string[];
     if (!targetRepo.target_repo || !access.some((repo) => repo === '*' || repo === targetRepo.target_repo)) return [];
-    // 含憑證的 repo 不派給 codex：primary 是 codex 的 Agent 不進候選，Owner 就選不到。
-    if (registered?.allowCodex === false && agent.primary_adapter === 'codex') return [];
+    // 含憑證的 repo 只派 claude confined：primary 不是 claude（codex、agy）的 Agent 不進候選，Owner 就選不到。
+    if (registered?.claudeOnly === true && agent.primary_adapter !== 'claude') return [];
     const profile = JSON.parse(agent.skill_profile_json) as { skills?: unknown };
     const skills = Array.isArray(profile.skills) ? profile.skills.filter((skill): skill is string => typeof skill === 'string').map((skill) => skill.toLowerCase()) : [];
     if (requiredSkills.length && !requiredSkills.some((skill) => skills.includes(skill))) return [];

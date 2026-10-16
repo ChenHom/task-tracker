@@ -25,10 +25,11 @@ export interface RegisteredRepo {
    */
   denyRead?: string[];
   /**
-   * false = 含憑證的 repo 不派給 codex（預設 true，維持現況）。codex sandbox 可讀整台機器、無法逐檔拒讀，
-   * network=false 也擋不住它把憑證寫進回報留言或會被 commit 的檔案，所以這類 repo 只用 claude confined。
+   * true = 含憑證的 repo 只允許 claude confined 路線（預設 false，維持現況）。codex 的 sandbox 可讀整台機器、
+   * 無法逐檔拒讀，agy（--mode accept-edits）也不吃 denyRead／network；network=false 還擋不住它們把憑證寫進
+   * 回報留言或會被 commit 的檔案，所以 codex、agy 一律不派。
    */
-  allowCodex?: boolean;
+  claudeOnly?: boolean;
 }
 
 export interface SeedFile {
@@ -55,7 +56,7 @@ interface RawRepoConfig {
   workCommands?: unknown;
   network?: unknown;
   denyRead?: unknown;
-  allowCodex?: unknown;
+  claudeOnly?: unknown;
 }
 
 /** 非空字串陣列；每項必須是相對路徑（不以 `/` 開頭、不含 `..` 段）。 */
@@ -108,7 +109,7 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
     if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
       throw new CommandError(`repo 設定不合法：${rawPath}`);
     }
-    const { checks, deployment, allowedPrefixes, seedFiles, workCommands, network, denyRead, allowCodex } = rawConfig as RawRepoConfig;
+    const { checks, deployment, allowedPrefixes, seedFiles, workCommands, network, denyRead, claudeOnly } = rawConfig as RawRepoConfig;
     if (!Array.isArray(checks) || checks.length === 0 || checks.some((check) => typeof check !== 'string')) {
       throw new CommandError(`repo checks 不合法：${rawPath}`);
     }
@@ -133,8 +134,8 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
     if (denyRead !== undefined && !isValidDenyReadList(denyRead)) {
       throw new CommandError(`repo denyRead 不合法：${rawPath}`);
     }
-    if (allowCodex !== undefined && typeof allowCodex !== 'boolean') {
-      throw new CommandError(`repo allowCodex 不合法：${rawPath}`);
+    if (claudeOnly !== undefined && typeof claudeOnly !== 'boolean') {
+      throw new CommandError(`repo claudeOnly 不合法：${rawPath}`);
     }
     registry.set(targetRepo, {
       targetRepo, checks: [...checks], deployment,
@@ -143,7 +144,7 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
       ...(workCommands ? { workCommands: [...workCommands] } : {}),
       ...(network !== undefined ? { network } : {}),
       ...(denyRead ? { denyRead: [...denyRead] } : {}),
-      ...(allowCodex !== undefined ? { allowCodex } : {}),
+      ...(claudeOnly !== undefined ? { claudeOnly } : {}),
     });
   }
   return registry;

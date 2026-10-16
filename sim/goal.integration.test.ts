@@ -236,7 +236,7 @@ async function main(): Promise<void> {
     assert.strictEqual(phaseCalls.get('followup'), 1, '重啟不可重跑 follow-up');
     assert.strictEqual(goalModule.getGoal(goalId, db)?.status, 'Done');
 
-    // ---- allowCodex=false：registry 事後改成不准 codex，派到 codex 成員／Owner 的 Goal Task 必須被擋下，且不換模型 ----
+    // ---- claudeOnly=true：registry 事後改成只准 claude，派到非 claude（此處為 codex）成員／Owner 的 Goal Task 必須被擋下，且不換模型 ----
     const goal2 = goalModule.createGoal('human', {
       workspaceId: 'ws', projectId: 'p', objective: 'ship again', successCriteria: 'merged and verified', ownerAgentId: owner,
       dataScope: '不得使用券商正式 API',
@@ -246,19 +246,19 @@ async function main(): Promise<void> {
     }
     const task2 = (db.prepare('SELECT task_id FROM tasks_read_model WHERE goal_id = ?').get(goal2) as { task_id: string }).task_id;
     const registryJson = JSON.parse(readFileSync(registryPath, 'utf8'));
-    writeFileSync(registryPath, JSON.stringify({ [repo]: { ...registryJson[repo], allowCodex: false } }));
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { ...registryJson[repo], claudeOnly: true } }));
     const traces: Array<{ event: string; reason: string | null; detail: string }> = [];
     let member2Calls = 0;
     let owner2Calls = 0;
     const noCodexOptions = {
       traceSink: (record: { event: string; reason: string | null; detail: string }) => traces.push(record),
-      runMemberSession: async () => { member2Calls++; throw new Error('allowCodex=false 時 codex 成員不得被執行'); },
-      runOwnerSession: async () => { owner2Calls++; throw new Error('allowCodex=false 時 codex Owner 不得被執行'); },
+      runMemberSession: async () => { member2Calls++; throw new Error('claudeOnly=true 時 codex 成員不得被執行'); },
+      runOwnerSession: async () => { owner2Calls++; throw new Error('claudeOnly=true 時 codex Owner 不得被執行'); },
     };
     assert.strictEqual(getAgent(member, db)?.primary_adapter, 'codex', '前提：成員 primary 是 codex');
     const refused = await runProduction(noCodexOptions);
     assert.strictEqual(member2Calls, 0, 'primary 是 codex 的成員不得被執行');
-    assert.ok(traces.some((record) => record.event === 'task.attempted' && record.detail.includes('repo 不允許 codex 成員')),
+    assert.ok(traces.some((record) => record.event === 'task.attempted' && record.detail.includes('repo 只允許 claude confined 成員')),
       `拒絕必須留下 trace，實際：${JSON.stringify(traces.map((record) => [record.event, record.detail]))}`);
     const stateDb = openCoordinatorState(coordinatorDb);
     const refusedRun = getTaskRun(stateDb, task2);
@@ -276,14 +276,14 @@ async function main(): Promise<void> {
       runOwnerSession: async () => { throw new Error('hold in Review'); },
     });
     assert.strictEqual((db.prepare('SELECT status FROM tasks_read_model WHERE task_id = ?').get(task2) as { status: string }).status, 'Review');
-    writeFileSync(registryPath, JSON.stringify({ [repo]: { ...registryJson[repo], allowCodex: false } }));
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { ...registryJson[repo], claudeOnly: true } }));
     db.prepare("UPDATE agents SET primary_adapter = 'codex', primary_model = 'gpt-5.6-sol' WHERE agent_id = ?").run(owner);
     traces.length = 0;
     const ownerRefused = await runProduction(noCodexOptions);
     assert.strictEqual(owner2Calls, 0, 'primary 是 codex 的 Owner 不得執行 owner_review');
     assert.strictEqual(ownerRefused.exitCode, 1, '拒絕 owner_review 要讓 tick 回報錯誤');
-    assert.ok(ownerRefused.lines.some((line) => line.includes('ERROR') && line.includes('repo 不允許 codex 成員')), ownerRefused.lines.join('\n'));
-    assert.ok(traces.some((record) => record.event === 'gate.skipped' && record.reason === 'codex_not_allowed'), 'owner_review 拒絕必須留下 trace');
+    assert.ok(ownerRefused.lines.some((line) => line.includes('ERROR') && line.includes('repo 只允許 claude confined 成員')), ownerRefused.lines.join('\n'));
+    assert.ok(traces.some((record) => record.event === 'gate.skipped' && record.reason === 'non_claude_not_allowed'), 'owner_review 拒絕必須留下 trace');
     assert.strictEqual((db.prepare('SELECT status FROM tasks_read_model WHERE task_id = ?').get(task2) as { status: string }).status, 'Review', 'task 不得被推進或退回');
   } finally {
     if (server) await close(server);
