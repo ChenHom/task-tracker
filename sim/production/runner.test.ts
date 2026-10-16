@@ -316,7 +316,7 @@ async function claudeConfinedRunnerTests(): Promise<void> {
     assert.strictEqual(member[member.indexOf('--tools') + 1], 'Read,Write,Edit,Glob,Grep,Bash');
     const memberRules = member.slice(member.indexOf('--allowedTools') + 1);
     assert.deepStrictEqual(memberRules, [
-      'Edit(./**)', 'Write(./**)',
+      'Edit(./**)',
       'Bash(npm test)', 'Bash(npm test *)',
       'Bash(git status)', 'Bash(git status *)', 'Bash(git log)', 'Bash(git log *)', 'Bash(git show)', 'Bash(git show *)',
       'Bash(git merge-base)', 'Bash(git merge-base *)', 'Bash(git diff)', 'Bash(git diff *)',

@@ -2054,7 +2054,8 @@ export function claudeConfinedArgs(confined: ClaudeConfined): string[] {
     autoMemoryEnabled: false,
   };
   const rules = writable
-    ? ['Edit(./**)', 'Write(./**)', ...bashAllow.flatMap((cmd) => [`Bash(${cmd})`, `Bash(${cmd} *)`])]
+    // Edit 規則涵蓋所有寫檔工具；Write(path) 不會被比對，claude 會在 stderr 警告。
+    ? ['Edit(./**)', ...bashAllow.flatMap((cmd) => [`Bash(${cmd})`, `Bash(${cmd} *)`])]
     : [];
   return [
     '--restricted',

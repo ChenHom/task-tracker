@@ -1437,7 +1437,7 @@ assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', 
     '--restricted', '--tools', 'Read,Write,Edit,Glob,Grep,Bash',
     '--settings', JSON.stringify(expectedSettings),
     '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--strict-mcp-config',
-    '--allowedTools', 'Edit(./**)', 'Write(./**)', 'Bash(npm test)', 'Bash(npm test *)', 'Bash(git diff)', 'Bash(git diff *)',
+    '--allowedTools', 'Edit(./**)', 'Bash(npm test)', 'Bash(npm test *)', 'Bash(git diff)', 'Bash(git diff *)',
   ], '成員 confined argv');
   assert.deepStrictEqual(JSON.parse(member.args[member.args.indexOf('--settings') + 1]), expectedSettings, 'settings 要同時含 //<MAIN>/.env（permission）與 <MAIN>/.env（sandbox）');
   assert.ok(!member.args.includes('--output-format'), '輸出維持純文字，extractJsonBlock 才抓得到最後的 JSON 區塊');
