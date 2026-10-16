@@ -259,7 +259,8 @@ export async function withoutMergeInheritedChanges(worktree: string, changes: Ch
   if (!(await isMergeInProgress(worktree))) return changes;
   const own: ChangedPath[] = [];
   for (const change of changes) {
-    if (change.status === 'conflicted') {
+    // 未解衝突、以及成員新建的未追蹤檔一定是成員的：一般的 git diff 看不到未追蹤檔，跟 MERGE_HEAD 比會誤判成「沒差異」
+    if (change.status === 'conflicted' || change.status === 'untracked') {
       own.push(change);
       continue;
     }

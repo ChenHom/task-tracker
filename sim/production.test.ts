@@ -6409,7 +6409,10 @@ async function runIntegrationConflictTests(): Promise<void> {
 
       // ---- 2) 成員解掉衝突：driver commit 成 merge commit，回到 Review，最後可以整合 ----
       const masterSha = f.g(['rev-parse', 'master']);
-      const session = await f.memberSession((wt) => writeFileSync(join(wt, 'src', 'app.txt'), 'top\nmerged version\nbottom\n'));
+      const session = await f.memberSession((wt) => {
+        writeFileSync(join(wt, 'src', 'app.txt'), 'top\nmerged version\nbottom\n');
+        writeFileSync(join(wt, 'src', 'helper.txt'), 'new helper\n'); // 解衝突時新增的檔案（未追蹤）也要算成員的改動
+      });
       assert.strictEqual(session.outcome, 'progressed', JSON.stringify(session.evidence));
       assert.strictEqual(f.board.status, 'Review');
       const parents = f.g(['rev-list', '--parents', '-n', '1', 'HEAD'], f.worktree).split(' ').slice(1);
@@ -6418,7 +6421,7 @@ async function runIntegrationConflictTests(): Promise<void> {
       assert.strictEqual(mergeHead(f), null);
       assert.strictEqual(f.g(['status', '--porcelain'], f.worktree), '');
       assert.ok(f.g(['log', '-1', '--format=%B'], f.worktree).includes(`Task-Id: ${TASK_ID}`));
-      assert.deepStrictEqual(session.evidence.commitChangedPaths, ['src/app.txt'], 'master 帶進來的檔案不算成員的改動');
+      assert.deepStrictEqual([...session.evidence.commitChangedPaths].sort(), ['src/app.txt', 'src/helper.txt'], 'master 帶進來的檔案不算成員的改動；成員新建的未追蹤檔要算');
       const integration = await createIntegrationWorktree(f.repoRoot, TASK_ID, taskBranchName(TASK_ID));
       await removeIntegrationWorktree(f.repoRoot, integration);
       assert.strictEqual(integration.conflict, false, '解完後必須能乾淨整合');
@@ -6430,6 +6433,7 @@ async function runIntegrationConflictTests(): Promise<void> {
       });
       assert.strictEqual(accepted.kind, 'deployed');
       assert.strictEqual(f.g(['show', 'master:src/app.txt']), 'top\nmerged version\nbottom');
+      assert.strictEqual(f.g(['show', 'master:src/helper.txt']), 'new helper', '新建檔案必須一路合進 master');
     } finally {
       f.cleanup();
     }
