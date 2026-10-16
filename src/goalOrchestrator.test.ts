@@ -74,6 +74,18 @@ async function main(): Promise<void> {
   cancelGoal(owner, scopeGoal, db);
   db.prepare('UPDATE agents SET skill_profile_json = ? WHERE agent_id = ?').run(originalProfile.skill_profile_json, a2);
 
+  // allowCodex=false：primary 是 codex 的 Agent 不進候選（Owner 選不到、強行選也會被擋）；claude primary 照常，fallback 是 codex 不受影響。
+  const noCodexRepos: RepoRegistry = new Map([['/srv/test', { ...repos.get('/srv/test')!, allowCodex: false }]]);
+  const noCodexGoal = makeGoal('plain codex-free work');
+  db.prepare("UPDATE agents SET primary_adapter = 'claude', primary_model = 'claude-sonnet-5-5', fallback_adapter = 'codex', fallback_model = 'gpt-5.6-sol' WHERE agent_id = ?").run(a3);
+  assert.deepStrictEqual(eligibleGoalParticipants(noCodexGoal, db, false, noCodexRepos).map((item) => item.agent.agent_id), [a3],
+    'allowCodex=false 只留下 primary 非 codex 的 Agent');
+  assert.deepStrictEqual(eligibleGoalParticipants(noCodexGoal, db, false, repos).map((item) => item.agent.agent_id).sort(), [a2, a3, a4, a5].sort(),
+    'allowCodex 未設定時行為不變');
+  assert.throws(() => selectGoalParticipants(owner, noCodexGoal, [{ agentId: a2, reason: 'x', assignment: 'x', selectedLoad: 0 }], db, noCodexRepos), /不允許 codex/);
+  cancelGoal(owner, noCodexGoal, db);
+  db.prepare("UPDATE agents SET primary_adapter = 'codex', primary_model = 'gpt-5.6-terra', fallback_adapter = NULL, fallback_model = NULL WHERE agent_id = ?").run(a3);
+
   const busyGoal = makeGoal('busy source');
   db.prepare("INSERT INTO goal_participations (participation_id, goal_id, revision, agent_id, reason, assignment, selected_load, created_at) VALUES ('busy-p', ?, 1, ?, 'busy', 'busy', 0, 't')").run(busyGoal, a2);
   const busyCandidate = makeGoal('busy target');

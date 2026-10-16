@@ -464,7 +464,7 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
   }
 
   if (goal.status === 'Discussing' && goal.discussion_phase === 'owner_scoping') {
-    const qualified = eligibleGoalParticipants(goalId, database, true);
+    const qualified = eligibleGoalParticipants(goalId, database, true, deps.repoRegistry);
     if (!qualified.length) {
       blockGoal(goal.owner_agent_id, goalId, '沒有符合 repo 權限與 skill 的 Agent', database);
       return 'Blocked';
@@ -497,7 +497,7 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
     const select = async (triggerRef?: string) => {
       const ownerRun = await ownerJsonRun({ ...scopingInput, triggerRef }, deps, database);
       return commitOwnerCheckpoint(ownerRun, database, () => selectGoalParticipants(
-        goal!.owner_agent_id, goalId, selections(ownerRun.output, candidateIds), database,
+        goal!.owner_agent_id, goalId, selections(ownerRun.output, candidateIds), database, deps.repoRegistry,
       ));
     };
     try {

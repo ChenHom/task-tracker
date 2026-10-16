@@ -56,6 +56,8 @@ export interface TaskSnapshot {
   /** registry 的 network / denyRead，原樣帶給成員與 owner session 的 sandbox。 */
   sandboxNetwork?: boolean;
   denyRead?: string[];
+  /** registry 的 allowCodex；false = 這個 repo 的成員／owner_review 不得用 codex 路線。 */
+  allowCodex?: boolean;
   deployment?: 'task-tracker' | 'not_required' | null;
   deploymentNotRequired?: boolean;
   repoUnavailable?: boolean;

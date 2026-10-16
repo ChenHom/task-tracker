@@ -24,6 +24,11 @@ export interface RegisteredRepo {
    * 不接受萬用字元。codex 無法逐檔拒讀，這個欄位對它沒有作用——codex 要靠 network=false 防外流。
    */
   denyRead?: string[];
+  /**
+   * false = 含憑證的 repo 不派給 codex（預設 true，維持現況）。codex sandbox 可讀整台機器、無法逐檔拒讀，
+   * network=false 也擋不住它把憑證寫進回報留言或會被 commit 的檔案，所以這類 repo 只用 claude confined。
+   */
+  allowCodex?: boolean;
 }
 
 export interface SeedFile {
@@ -50,6 +55,7 @@ interface RawRepoConfig {
   workCommands?: unknown;
   network?: unknown;
   denyRead?: unknown;
+  allowCodex?: unknown;
 }
 
 /** 非空字串陣列；每項必須是相對路徑（不以 `/` 開頭、不含 `..` 段）。 */
@@ -102,7 +108,7 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
     if (!rawConfig || typeof rawConfig !== 'object' || Array.isArray(rawConfig)) {
       throw new CommandError(`repo 設定不合法：${rawPath}`);
     }
-    const { checks, deployment, allowedPrefixes, seedFiles, workCommands, network, denyRead } = rawConfig as RawRepoConfig;
+    const { checks, deployment, allowedPrefixes, seedFiles, workCommands, network, denyRead, allowCodex } = rawConfig as RawRepoConfig;
     if (!Array.isArray(checks) || checks.length === 0 || checks.some((check) => typeof check !== 'string')) {
       throw new CommandError(`repo checks 不合法：${rawPath}`);
     }
@@ -127,6 +133,9 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
     if (denyRead !== undefined && !isValidDenyReadList(denyRead)) {
       throw new CommandError(`repo denyRead 不合法：${rawPath}`);
     }
+    if (allowCodex !== undefined && typeof allowCodex !== 'boolean') {
+      throw new CommandError(`repo allowCodex 不合法：${rawPath}`);
+    }
     registry.set(targetRepo, {
       targetRepo, checks: [...checks], deployment,
       ...(allowedPrefixes ? { allowedPrefixes: [...allowedPrefixes] } : {}),
@@ -134,6 +143,7 @@ export function loadRepoRegistry(path = process.env.TASK_TRACKER_REPO_REGISTRY_P
       ...(workCommands ? { workCommands: [...workCommands] } : {}),
       ...(network !== undefined ? { network } : {}),
       ...(denyRead ? { denyRead: [...denyRead] } : {}),
+      ...(allowCodex !== undefined ? { allowCodex } : {}),
     });
   }
   return registry;

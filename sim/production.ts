@@ -37,6 +37,7 @@ import {
 import {
   TaskTrackerClient,
   UncertainMutationError,
+  type AgentRouteSnapshot,
   type MemberSnapshot,
   type AuditEventSnapshot,
   type TaskSnapshot,
@@ -268,6 +269,7 @@ export async function gatherSnapshot(deps: GatherSnapshotDeps): Promise<Coordina
     task.workCommands = config.workCommands;
     task.sandboxNetwork = config.network;
     task.denyRead = config.denyRead;
+    task.allowCodex = config.allowCodex;
     task.deployment = task.deploymentNotRequired ? 'not_required' : config.deployment;
     deps.taskChecks?.set(task.taskId, config.checks);
   }
@@ -731,6 +733,7 @@ interface ResolvedDeps {
   /** Goal task 專用：由 actionDeps 依 registry 覆寫，其餘路徑維持 undefined（行為不變）。 */
   sandboxNetwork?: boolean;
   denyRead?: string[];
+  allowCodex?: boolean;
   runOwnerSession?: OwnerSessionRunner;
   runMemberSession?: MemberSessionRunner;
   useAgentRoutes: boolean;
@@ -755,9 +758,21 @@ export function depsForTask(deps: ResolvedDeps, task: TaskSnapshot | undefined):
     ? {
       ...deps, repoRoot: task.targetRepo, allowedPrefixes: task.allowedPrefixes ?? deps.allowedPrefixes,
       seedFiles: task.seedFiles, workCommands: task.workCommands, goalDataScope: task.goalDataScope,
-      sandboxNetwork: task.sandboxNetwork, denyRead: task.denyRead,
+      sandboxNetwork: task.sandboxNetwork, denyRead: task.denyRead, allowCodex: task.allowCodex,
     }
     : deps;
+}
+
+/**
+ * Goal Agent 的 primary／fallback 路線。repo 設 allowCodex=false 時 codex 讀得到整台機器的憑證：
+ * primary 是 codex → primaryDenied（呼叫端不得執行，也不得改用別的模型）；fallback 是 codex → 一律丟掉。
+ */
+export function resolveGoalRoutes(agent: AgentRouteSnapshot, allowCodex: boolean | undefined) {
+  const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
+  const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
+    && !(allowCodex === false && agent.fallbackAdapter === 'codex')
+    ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
+  return { primaryRoute, fallbackRoute, primaryDenied: allowCodex === false && primaryRoute.runner === 'codex' };
 }
 
 function repoSandbox(deps: ResolvedDeps): RepoSandbox {
@@ -1398,6 +1413,47 @@ export function productionMemberAdapter(
   };
 }
 
+/** member session 開跑前就確定失敗（worktree 建不起來、repo 不允許該路線）：合成一次無進展的結果，走同一套計數／升級狀態機。 */
+async function failMemberBeforeSession(
+  deps: ResolvedDeps, action: CoordinatorAction, workingRun: TaskRun, task: TaskSnapshot,
+  blocker: string, rejectedReason: string, traceNote: string,
+): Promise<void> {
+  const syntheticResult: MemberSessionResult = {
+    outcome: 'retryable_failure',
+    exitCode: -1,
+    output: { summary: '', changedPaths: [], verificationCommands: [], blocker },
+    evidence: {
+      commitSha: null,
+      commitChangedPaths: [],
+      verificationPassed: false,
+      verificationRanCommands: [],
+      reviewTransitionConfirmed: false,
+      reviewStatus: null,
+      summaryCommentId: null,
+      blockerRepeated: false,
+      rejectedReason,
+    },
+    evidenceChanged: false,
+  };
+  const transition = await applyMemberAttemptTransition(deps, action, workingRun, syntheticResult, task);
+  checkpointAndTrace(
+    deps,
+    {
+      taskId: action.taskId,
+      workspaceId: action.workspaceId,
+      phase: transition.run.phase,
+      workerId: workingRun.workerId,
+      branch: workingRun.branch,
+      baseSha: workingRun.baseSha,
+      headSha: workingRun.headSha,
+      evidenceFingerprint: transition.run.evidenceFingerprint,
+      noProgressCount: transition.run.noProgressCount,
+      ownerIntervened: transition.run.ownerIntervened,
+    },
+    traceNote,
+  );
+}
+
 async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction, run: TaskRun): Promise<'progressed' | 'no_change'> {
   const task = await deps.ownerClient.getTask(action.taskId);
 
@@ -1441,39 +1497,9 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
       // 重試仍然失敗：這次嘗試同樣沒有可驗證進展，餵進跟 member session 失敗完全相同的
       // no-progress／Owner 介入／human_blocked 狀態機，連續失敗最終會走到人類看得見的
       // @user09 留言，而不是永遠卡住又永遠回報健康。
-      const syntheticResult: MemberSessionResult = {
-        outcome: 'retryable_failure',
-        exitCode: -1,
-        output: { summary: '', changedPaths: [], verificationCommands: [], blocker: `task worktree 建立失敗：${(err as Error).message}` },
-        evidence: {
-          commitSha: null,
-          commitChangedPaths: [],
-          verificationPassed: false,
-          verificationRanCommands: [],
-          reviewTransitionConfirmed: false,
-          reviewStatus: null,
-          summaryCommentId: null,
-          blockerRepeated: false,
-          rejectedReason: `ensureTaskWorktree failed: ${(err as Error).message}`,
-        },
-        evidenceChanged: false,
-      };
-      const transition = await applyMemberAttemptTransition(deps, action, workingRun, syntheticResult, task);
-      checkpointAndTrace(
-        deps,
-        {
-          taskId: action.taskId,
-          workspaceId: action.workspaceId,
-          phase: transition.run.phase,
-          workerId: workingRun.workerId,
-          branch: null,
-          baseSha: workingRun.baseSha,
-          headSha: workingRun.headSha,
-          evidenceFingerprint: transition.run.evidenceFingerprint,
-          noProgressCount: transition.run.noProgressCount,
-          ownerIntervened: transition.run.ownerIntervened,
-        },
-        `worktree 建立失敗：${(err as Error).message}`,
+      await failMemberBeforeSession(
+        deps, action, workingRun, task,
+        `task worktree 建立失敗：${(err as Error).message}`, `ensureTaskWorktree failed: ${(err as Error).message}`, `worktree 建立失敗：${(err as Error).message}`,
       );
       return 'no_change';
     }
@@ -1488,10 +1514,14 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
   if (task.goalId && task.assigneeId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.agentId === task.assigneeId);
     if (!agent || agent.status !== 'active') throw new Error('Goal Task assignee 沒有 active Agent route');
-    const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
+    const { primaryRoute, fallbackRoute, primaryDenied } = resolveGoalRoutes(agent, deps.allowCodex);
+    if (primaryDenied) {
+      // 含憑證的 repo 不跑 codex，也不偷換模型：記一次無進展，讓 Owner／人類看得到並改 Agent 路線。
+      const reason = `repo 不允許 codex 成員：${deps.repoRoot}`;
+      await failMemberBeforeSession(deps, action, workingRun, task, reason, reason, reason);
+      return 'no_change';
+    }
     const primary = deps.useAgentRoutes ? createMemberSessionRunner(primaryRoute, deps.repoRoot, repoSandbox(deps)) : memberRunner;
-    const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
-      ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
     const fallback = deps.useAgentRoutes && fallbackRoute
       ? createMemberSessionRunner(fallbackRoute, deps.repoRoot, repoSandbox(deps)) : null;
     const triggerRef = goalRunTriggerRef(workingRun.workerId, task.taskId);
@@ -1658,10 +1688,14 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
   if (currentTask.goalId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.role === 'owner');
     if (!agent || agent.status !== 'active') throw new Error('Goal Owner 沒有 active Agent route');
-    const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
+    const { primaryRoute, fallbackRoute, primaryDenied } = resolveGoalRoutes(agent, deps.allowCodex);
+    if (primaryDenied) {
+      // 不跑 codex、不換模型。丟錯讓本 tick 的 errors／exit code 與 ERROR 行如實反映，需人改 Owner 路線（不走 noProgress／human_blocked）。
+      const reason = `repo 不允許 codex 成員：${deps.repoRoot}`;
+      deps.tracer(action.taskId)('gate.skipped', { reason: 'codex_not_allowed', detail: reason });
+      throw new Error(reason);
+    }
     const primary = deps.useAgentRoutes ? createOwnerSessionRunner(primaryRoute, deps.repoRoot, repoSandbox(deps)) : ownerRunner;
-    const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
-      ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
     const fallback = deps.useAgentRoutes && fallbackRoute
       ? createOwnerSessionRunner(fallbackRoute, deps.repoRoot, repoSandbox(deps)) : null;
     const triggerRef = goalRunTriggerRef(run.workerId, currentTask.taskId);

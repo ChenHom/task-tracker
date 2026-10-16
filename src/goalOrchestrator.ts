@@ -148,7 +148,7 @@ export function validateGoalSynthesis(output: unknown, workspaceId: string, data
 }
 
 export function selectGoalParticipants(
-  ownerAgentId: string, goalId: string, selections: readonly ParticipantSelection[], database = db,
+  ownerAgentId: string, goalId: string, selections: readonly ParticipantSelection[], database = db, repos: RepoRegistry = loadRepoRegistry(),
 ): 'selected' | 'blocked' {
   const goal = getGoal(goalId, database);
   if (!goal) throw new CommandError('goal 不存在');
@@ -156,7 +156,7 @@ export function selectGoalParticipants(
     throw new CommandError('Goal 目前不可選人');
   }
   if (selections.length < 1 || selections.length > 5) throw new CommandError('參與者必須為 1–5 位');
-  const candidates = eligibleGoalParticipants(goalId, database);
+  const candidates = eligibleGoalParticipants(goalId, database, false, repos);
   const eligible = new Map(candidates.map((candidate) => [candidate.agent.agent_id, candidate.selectedLoad]));
   if (new Set(selections.map((item) => item.agentId)).size !== selections.length) throw new CommandError('參與者不可重複');
   const normalized = selections.map((item) => {
@@ -165,6 +165,9 @@ export function selectGoalParticipants(
       const targetRepo = (database.prepare('SELECT target_repo FROM projects_read_model WHERE project_id = ?').get(goal.project_id) as { target_repo: string | null }).target_repo;
       if (agent && !JSON.parse(agent.repo_access_json || '[]').some((repo: string) => repo === '*' || repo === targetRepo)) {
         throw new CommandError('Agent 缺少 repo 權限');
+      }
+      if (agent && repos.get(targetRepo ?? '')?.allowCodex === false && agent.primary_adapter === 'codex') {
+        throw new CommandError('repo 不允許 codex 成員');
       }
       const load = agentWorkload(item.agentId, agent?.user_id ?? item.agentId, goalId, database);
       if (load > 0) throw new CommandError('Agent 已有不可並行工作');
@@ -218,11 +221,12 @@ function agentWorkload(agentId: string, userId: string, excludingGoalId: string,
   return participations + tasks;
 }
 
-export function eligibleGoalParticipants(goalId: string, database = db, includeBusy = false): EligibleGoalParticipant[] {
+export function eligibleGoalParticipants(goalId: string, database = db, includeBusy = false, repos: RepoRegistry = loadRepoRegistry()): EligibleGoalParticipant[] {
   const goal = getGoal(goalId, database);
   if (!goal) throw new CommandError('goal 不存在');
   const project = requireActiveProject(goal.workspace_id, goal.project_id, database);
   const targetRepo = database.prepare('SELECT target_repo FROM projects_read_model WHERE project_id = ?').get(project) as { target_repo: string | null };
+  const registered = targetRepo.target_repo ? repos.get(targetRepo.target_repo) : undefined;
   const agents = listWorkspaceAgents(goal.workspace_id, database).filter((agent) => agent.role === 'member' && agent.status === 'active');
   const knownSkills = new Set(listAgents(database).flatMap((agent) => {
     const profile = JSON.parse(agent.skill_profile_json) as { skills?: unknown };
@@ -233,8 +237,10 @@ export function eligibleGoalParticipants(goalId: string, database = db, includeB
   const goalTokens = new Set(goalText.match(/[a-z][a-z0-9-]*/g) ?? []);
   const requiredSkills = [...knownSkills].filter((skill) => goalTokens.has(skill));
   return agents.flatMap((agent) => {
-    const repos = JSON.parse(agent.repo_access_json || '[]') as string[];
-    if (!targetRepo.target_repo || !repos.some((repo) => repo === '*' || repo === targetRepo.target_repo)) return [];
+    const access = JSON.parse(agent.repo_access_json || '[]') as string[];
+    if (!targetRepo.target_repo || !access.some((repo) => repo === '*' || repo === targetRepo.target_repo)) return [];
+    // 含憑證的 repo 不派給 codex：primary 是 codex 的 Agent 不進候選，Owner 就選不到。
+    if (registered?.allowCodex === false && agent.primary_adapter === 'codex') return [];
     const profile = JSON.parse(agent.skill_profile_json) as { skills?: unknown };
     const skills = Array.isArray(profile.skills) ? profile.skills.filter((skill): skill is string => typeof skill === 'string').map((skill) => skill.toLowerCase()) : [];
     if (requiredSkills.length && !requiredSkills.some((skill) => skills.includes(skill))) return [];

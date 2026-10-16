@@ -59,7 +59,7 @@ async function main(): Promise<void> {
         seedFiles: [{ from: 'data/research.db', to: 'data/_run.db' }], workCommands: ['python3 scripts/backtest.py'], network: false, denyRead: ['Sinopac.pfx'] },
     }));
 
-    const [{ db }, { resetProjections }, { seedUsers }, { getUserIdByEmail }, goalModule, taskModule, workspaceModule, memberModule, notificationModule, coordinatorModule, productionModule, serverModule] = await Promise.all([
+    const [{ db }, { resetProjections }, { seedUsers }, { getUserIdByEmail }, goalModule, taskModule, workspaceModule, memberModule, notificationModule, coordinatorModule, productionModule, serverModule, { getAgent }, { openCoordinatorState, getTaskRun }] = await Promise.all([
       import('../src/db'),
       import('../src/eventStore'),
       import('../src/seed'),
@@ -72,6 +72,8 @@ async function main(): Promise<void> {
       import('./goalCoordinator'),
       import('./production'),
       import('../src/server'),
+      import('../src/agent'),
+      import('./production/state'),
     ]);
 
     resetProjections();
@@ -153,7 +155,7 @@ async function main(): Promise<void> {
     let ciCalls = 0;
     let completionBatchCalls = 0;
     let sandboxSeen = 0;
-    const runProduction = () => productionModule.runOnce({
+    const runProduction = (overrides: Record<string, unknown> = {}) => productionModule.runOnce({
       live: true,
       baseUrl,
       dbPath: coordinatorDb,
@@ -206,6 +208,7 @@ async function main(): Promise<void> {
         return 'goal-e2e-completion-batch';
       },
       traceSink: () => {},
+      ...overrides,
     });
 
     assert.strictEqual((await runProduction()).exitCode, 1, 'commit 後 crash 應保留 Review checkpoint');
@@ -232,6 +235,56 @@ async function main(): Promise<void> {
     assert.strictEqual(phaseCalls.get('owner_synthesis'), 1, '重啟不可重跑 synthesis');
     assert.strictEqual(phaseCalls.get('followup'), 1, '重啟不可重跑 follow-up');
     assert.strictEqual(goalModule.getGoal(goalId, db)?.status, 'Done');
+
+    // ---- allowCodex=false：registry 事後改成不准 codex，派到 codex 成員／Owner 的 Goal Task 必須被擋下，且不換模型 ----
+    const goal2 = goalModule.createGoal('human', {
+      workspaceId: 'ws', projectId: 'p', objective: 'ship again', successCriteria: 'merged and verified', ownerAgentId: owner,
+      dataScope: '不得使用券商正式 API',
+    }, db, repos);
+    for (const expected of ['round_1', 'round_2', 'awaiting_lease', 'Executing']) {
+      assert.strictEqual(await coordinatorModule.runGoalCoordinatorOnce(goal2, newGoalDeps()), expected);
+    }
+    const task2 = (db.prepare('SELECT task_id FROM tasks_read_model WHERE goal_id = ?').get(goal2) as { task_id: string }).task_id;
+    const registryJson = JSON.parse(readFileSync(registryPath, 'utf8'));
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { ...registryJson[repo], allowCodex: false } }));
+    const traces: Array<{ event: string; reason: string | null; detail: string }> = [];
+    let member2Calls = 0;
+    let owner2Calls = 0;
+    const noCodexOptions = {
+      traceSink: (record: { event: string; reason: string | null; detail: string }) => traces.push(record),
+      runMemberSession: async () => { member2Calls++; throw new Error('allowCodex=false 時 codex 成員不得被執行'); },
+      runOwnerSession: async () => { owner2Calls++; throw new Error('allowCodex=false 時 codex Owner 不得被執行'); },
+    };
+    assert.strictEqual(getAgent(member, db)?.primary_adapter, 'codex', '前提：成員 primary 是 codex');
+    const refused = await runProduction(noCodexOptions);
+    assert.strictEqual(member2Calls, 0, 'primary 是 codex 的成員不得被執行');
+    assert.ok(traces.some((record) => record.event === 'task.attempted' && record.detail.includes('repo 不允許 codex 成員')),
+      `拒絕必須留下 trace，實際：${JSON.stringify(traces.map((record) => [record.event, record.detail]))}`);
+    const stateDb = openCoordinatorState(coordinatorDb);
+    const refusedRun = getTaskRun(stateDb, task2);
+    stateDb.close();
+    assert.strictEqual(refusedRun?.noProgressCount, 1, '拒絕等同一次無進展，沿用 no-progress／human_blocked 狀態機');
+    assert.strictEqual(refused.exitCode, 0, '拒絕屬已追蹤的無進展，不是 tick-level error');
+
+    // owner_review：先改回允許、讓 task 走到 Review（Owner 這輪故意中斷），再禁 codex 並把 Owner primary 改成 codex
+    writeFileSync(registryPath, JSON.stringify(registryJson));
+    await runProduction({
+      runMemberSession: async (context: { worktreePath: string }) => {
+        writeFileSync(join(context.worktreePath, 'result.txt'), 'delivered again\n');
+        return { exitCode: 0, output: { summary: 'implemented again', changedPaths: ['result.txt'], verificationCommands: ['npm test'], blocker: null } };
+      },
+      runOwnerSession: async () => { throw new Error('hold in Review'); },
+    });
+    assert.strictEqual((db.prepare('SELECT status FROM tasks_read_model WHERE task_id = ?').get(task2) as { status: string }).status, 'Review');
+    writeFileSync(registryPath, JSON.stringify({ [repo]: { ...registryJson[repo], allowCodex: false } }));
+    db.prepare("UPDATE agents SET primary_adapter = 'codex', primary_model = 'gpt-5.6-sol' WHERE agent_id = ?").run(owner);
+    traces.length = 0;
+    const ownerRefused = await runProduction(noCodexOptions);
+    assert.strictEqual(owner2Calls, 0, 'primary 是 codex 的 Owner 不得執行 owner_review');
+    assert.strictEqual(ownerRefused.exitCode, 1, '拒絕 owner_review 要讓 tick 回報錯誤');
+    assert.ok(ownerRefused.lines.some((line) => line.includes('ERROR') && line.includes('repo 不允許 codex 成員')), ownerRefused.lines.join('\n'));
+    assert.ok(traces.some((record) => record.event === 'gate.skipped' && record.reason === 'codex_not_allowed'), 'owner_review 拒絕必須留下 trace');
+    assert.strictEqual((db.prepare('SELECT status FROM tasks_read_model WHERE task_id = ?').get(task2) as { status: string }).status, 'Review', 'task 不得被推進或退回');
   } finally {
     if (server) await close(server);
     rmSync(root, { recursive: true, force: true });

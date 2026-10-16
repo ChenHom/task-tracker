@@ -110,6 +110,25 @@ function finishSchedulingTasks(goalId: string, database: DatabaseSync): void {
   }
 }
 
+// registry allowCodex=false：候選全是 codex primary 時，Owner scoping 不會被呼叫，Goal 直接 Blocked（deps.repoRegistry 必須傳到候選篩選）。
+async function testNoCodexRepoLeavesNoCandidates(): Promise<void> {
+  const { database, createGoal } = createSchedulingFixture('/no-codex/repo');
+  try {
+    const goalId = createGoal('plain work');
+    startDiscussion('fair-owner', goalId, database);
+    const repoRegistry: RepoRegistry = new Map([['/no-codex/repo', { targetRepo: '/no-codex/repo', checks: ['npm test'], deployment: 'not_required', allowCodex: false }]]);
+    let ownerCalls = 0;
+    assert.strictEqual(await runGoalCoordinatorOnce(goalId, {
+      database, quotaSnapshot: async () => '{}', readRepoSources: () => [], repoRegistry,
+      invokeJson: async () => { ownerCalls += 1; throw new Error('沒有候選時不得呼叫 Owner'); },
+    }), 'Blocked');
+    assert.strictEqual(ownerCalls, 0);
+    assert.strictEqual(getGoal(goalId, database)?.status, 'Blocked');
+  } finally {
+    database.close();
+  }
+}
+
 async function testStaleOwnerRunBlocksForHumanResume(): Promise<void> {
   const { database, createGoal } = createSchedulingFixture('/stale/owner-run');
   try {
@@ -2272,7 +2291,7 @@ async function testOwnerProseOutputParsing(): Promise<void> {
   }
 }
 
-main().then(testFairGoalScheduling).then(testStaleOwnerRunBlocksForHumanResume).then(testOwnerScopingInvalidOutputRecovery).then(testOwnerSynthesisInvalidOutputRecovery).then(testOwnerCommentFailureDoesNotBlockGoal)
+main().then(testFairGoalScheduling).then(testStaleOwnerRunBlocksForHumanResume).then(testNoCodexRepoLeavesNoCandidates).then(testOwnerScopingInvalidOutputRecovery).then(testOwnerSynthesisInvalidOutputRecovery).then(testOwnerCommentFailureDoesNotBlockGoal)
   .then(testProductionBlockedEvidenceWakesGoalOnce).then(testBlockedReassignmentInvalidOutputRecovery).then(testTransitionHeartbeats).then(testPreemptedGoalResumesDiscussion)
   .then(testResumedSynthesisReconcilesExistingTasks).then(testDiscussionTokenTotals).then(testGoalCheckpointCrashRecovery)
   .then(testOwnerCheckpointAtomicity).then(testBlockedEvidenceSkippedAfterTaskAdvanced).then(testOwnerProseOutputParsing)

@@ -152,7 +152,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
 import { enqueueHeartbeat, finishRun, markRunRunning, prepareRun, type FinishRunInput, type PrepareRunInput } from '../src/goalRun';
 import { trackGoalRunAttempt } from './goalUsage';
-import { applyMemberAttemptTransition, assignAndStartDoing, coordinatorChildEnvironment, depsForTask, execAllowlistedCommand, goalRunTriggerRef, productionMemberAdapter, withAction } from './production';
+import { applyMemberAttemptTransition, assignAndStartDoing, coordinatorChildEnvironment, depsForTask, execAllowlistedCommand, goalRunTriggerRef, productionMemberAdapter, resolveGoalRoutes, withAction } from './production';
 
 assert.deepStrictEqual(coordinatorChildEnvironment({ PATH: '/bin', TASK_TRACKER_COORDINATOR_TOKEN: 'secret' }), { PATH: '/bin' });
 
@@ -170,6 +170,29 @@ assert.deepStrictEqual(coordinatorChildEnvironment({ PATH: '/bin', TASK_TRACKER_
   assert.strictEqual(unset.denyRead, undefined);
   assert.strictEqual(depsForTask(globalDeps, { taskId: 't', sandboxNetwork: false, denyRead: ['x'] } as unknown as TaskSnapshot), globalDeps, '非 Goal task 完全不動 deps');
   assert.strictEqual(depsForTask(globalDeps, undefined), globalDeps);
+}
+
+// registry allowCodex=false：primary 是 codex 就標 denied（不換模型）；fallback 是 codex 一律丟掉；其餘（含未設定）行為不變
+{
+  const route = (primaryAdapter: 'claude' | 'codex', fallbackAdapter: 'claude' | 'codex' | null) => ({
+    agentId: 'a', role: 'member', status: 'active', primaryAdapter, primaryModel: 'm1', effort: null,
+    fallbackAdapter, fallbackModel: fallbackAdapter ? 'm2' : null,
+  }) as Parameters<typeof resolveGoalRoutes>[0];
+  const codexPrimary = resolveGoalRoutes(route('codex', null), false);
+  assert.strictEqual(codexPrimary.primaryDenied, true, 'allowCodex=false 時 codex primary 必須被拒');
+  assert.deepStrictEqual(codexPrimary.primaryRoute, { runner: 'codex', model: 'm1' });
+  assert.strictEqual(resolveGoalRoutes(route('claude', null), false).primaryDenied, false, 'claude primary 照常');
+  assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'codex'), false).fallbackRoute, null, 'allowCodex=false 時 codex fallback 一律不用');
+  assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'claude'), false).fallbackRoute, { runner: 'claude', model: 'm2' }, 'claude fallback 保留');
+  for (const allowCodex of [undefined, true]) {
+    assert.strictEqual(resolveGoalRoutes(route('codex', 'codex'), allowCodex).primaryDenied, false, `allowCodex=${allowCodex} 時行為不變`);
+    assert.deepStrictEqual(resolveGoalRoutes(route('claude', 'codex'), allowCodex).fallbackRoute, { runner: 'codex', model: 'm2' });
+  }
+  const globalDeps = { repoRoot: '/global', allowedPrefixes: ['sim/'] } as unknown as Parameters<typeof depsForTask>[0];
+  const goalTask = { taskId: 't', goalId: 'g', targetRepo: '/ext/repo', allowCodex: false } as unknown as TaskSnapshot;
+  assert.strictEqual(depsForTask(globalDeps, goalTask).allowCodex, false, 'registry allowCodex 必須帶進 Goal task deps');
+  assert.strictEqual(depsForTask(globalDeps, { ...goalTask, allowCodex: undefined } as unknown as TaskSnapshot).allowCodex, undefined);
+  assert.strictEqual(depsForTask(globalDeps, { taskId: 't', allowCodex: false } as unknown as TaskSnapshot), globalDeps, '非 Goal task 完全不動 deps');
 }
 
 async function runG1Tests(): Promise<void> {
