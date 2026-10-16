@@ -6604,6 +6604,23 @@ async function runIntegrationConflictTests(): Promise<void> {
     }
   }
 
+  // ---- 7c) 上次在貼通知前崩潰，留下 pending 的 action 列：停下之前要讀回並補貼通知，不能無聲 human_blocked ----
+  {
+    const f = await setup('clean');
+    try {
+      (f.deps as unknown as { runOwnerSession: unknown }).runOwnerSession = async () =>
+        ({ exitCode: 0, decision: { action: 'intervene', rationale: '需要人', evidenceCommentIds: [] } });
+      const run = getTaskRun(f.db, TASK_ID)!;
+      const key = `human_blocked_notice:${TASK_ID}:owner:${run.headSha ?? 'none'}:${f.board.comments.length}`;
+      beginAction(f.db, { actionKey: key, taskId: TASK_ID, kind: 'human_blocked_notice' }, new Date(NOW));
+      assert.strictEqual(await f.review(), 'progressed');
+      assert.strictEqual(getTaskRun(f.db, TASK_ID)?.phase, 'human_blocked');
+      assert.ok(f.board.comments.some((c) => c.content.includes(`action_key: ${key}`)), 'pending 列被略過時要補貼通知');
+    } finally {
+      f.cleanup();
+    }
+  }
+
   // ---- 7b) Owner 審查期間有人留言：那則留言不能被吞進 fingerprint；不停下，下次帶著它重審 ----
   {
     const f = await setup('clean');

@@ -2044,6 +2044,8 @@ export interface ClaudeConfined {
  */
 export function claudeVenv(mainRepo: string): { python: string; readRoots: string[] } | null {
   const dir = join(mainRepo, '.venv');
+  // allowRead 會沿著 symlink 開放目標：.venv 本身若是 symlink（例如指到 home），整個不放行
+  try { if (!lstatSync(dir).isDirectory()) return null; } catch { return null; }
   let cfg: string;
   try { cfg = readFileSync(join(dir, 'pyvenv.cfg'), 'utf8'); } catch { return null; }
   let bin: string | undefined;

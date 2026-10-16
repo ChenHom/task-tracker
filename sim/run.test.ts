@@ -1529,6 +1529,25 @@ assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', 
   } finally {
     rmSync(venvTmp, { recursive: true, force: true });
   }
+  // .venv 本身是 symlink（例如指到 home）：allowRead 會沿著 symlink 開放目標，整個不放行
+  const linkTmp = realpathSync(mkdtempSync(join(tmpdir(), 'venv-symlink-')));
+  try {
+    const install = join(linkTmp, 'py', 'cpython-3.11.13');
+    mkdirSync(join(install, 'bin'), { recursive: true });
+    mkdirSync(join(install, 'lib', 'python3.11'), { recursive: true });
+    writeFileSync(join(install, 'bin', 'python3.11'), '');
+    const realVenv = join(linkTmp, 'elsewhere', 'venv');
+    mkdirSync(join(realVenv, 'bin'), { recursive: true });
+    symlinkSync(join(install, 'bin', 'python3.11'), join(realVenv, 'bin', 'python'));
+    writeFileSync(join(realVenv, 'pyvenv.cfg'), `home = ${join(install, 'bin')}\n`);
+    const linkRepo = join(linkTmp, 'repo');
+    mkdirSync(linkRepo);
+    symlinkSync(realVenv, join(linkRepo, '.venv'));
+    const linked = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: linkRepo, bashAllow: [] } });
+    assert.ok(!('allowRead' in JSON.parse(linked.args[linked.args.indexOf('--settings') + 1]).sandbox.filesystem), '.venv 是 symlink 時不得放行任何路徑');
+  } finally {
+    rmSync(linkTmp, { recursive: true, force: true });
+  }
 }
 // codex network：未設定／true 維持 network_access=true；只有明確 false 才關網路；read-only 仍不附加
 {

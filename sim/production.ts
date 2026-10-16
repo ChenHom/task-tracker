@@ -1764,6 +1764,10 @@ async function blockOnUnhandledOwnerDecision(
   await withAction(deps, key, HUMAN_BLOCKED_ACTION_KIND, action.taskId, async () => {
     await deps.ownerClient.postCommentOnce(action.taskId, content, key);
   });
+  // withAction 遇到上次崩潰留下的 pending 列會直接略過：停下之前讀回確認通知真的貼出去了，沒有就補貼（X-Action-Key 去重）
+  if (!(await deps.ownerClient.listComments(action.taskId)).some((comment) => comment.content.includes(`action_key: ${key}`))) {
+    await deps.ownerClient.postCommentOnce(action.taskId, content, key);
+  }
   const evidenceAfterNotice = await buildTaskEvidence(deps.ownerClient, task);
   // Owner 審查期間有人留言：Owner 沒看過那則留言，不能把它記進 fingerprint 吞掉（否則它永遠觸發不了恢復）。
   // 不停下，維持 Review，下個 tick 帶著新留言重新審查。
