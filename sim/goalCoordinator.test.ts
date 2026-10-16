@@ -16,6 +16,7 @@ import { runMigrations } from '../src/schema';
 import { changeTaskStatus, createTask, registerTaskProjections } from '../src/task';
 import { registerNotificationProjections } from '../src/notification';
 import type { RepoRegistry } from '../src/repoRegistry';
+import { SAFE_DISCUSSION_ROUTE } from '../src/safeDiscussionRoute';
 import { boundedOwnerInput, goalCoordinatorCliExitCode, handleGoalCoordinatorError, parseJsonOutput, runGoalCoordinatorOnce, selectPendingGoalId } from './goalCoordinator';
 
 const repo = mkdtempSync(join(tmpdir(), 'goal-coordinator-'));
@@ -2275,7 +2276,7 @@ main().then(testFairGoalScheduling).then(testStaleOwnerRunBlocksForHumanResume).
   .then(testProductionBlockedEvidenceWakesGoalOnce).then(testBlockedReassignmentInvalidOutputRecovery).then(testTransitionHeartbeats).then(testPreemptedGoalResumesDiscussion)
   .then(testResumedSynthesisReconcilesExistingTasks).then(testDiscussionTokenTotals).then(testGoalCheckpointCrashRecovery)
   .then(testOwnerCheckpointAtomicity).then(testBlockedEvidenceSkippedAfterTaskAdvanced).then(testOwnerProseOutputParsing)
-  .then(testOwnerPromptBudget)
+  .then(testOwnerPromptBudget).then(testOwnerStagesUseOwnerAgentRoute)
   .then(() => console.log('goalCoordinator.test.ts OK'));
 
 // 925ef0b0 的 owner_synthesis：9 個欄位各自 ≤4,000 字，總和卻超過 16,000，coordinator 每輪都丟「超過安全上限」
@@ -2289,4 +2290,58 @@ function testOwnerPromptBudget(): void {
   assert.ok(prompt.length <= 16_000, `prompt 必須在安全上限內，實際 ${prompt.length}`);
   assert.strictEqual(sourceTexts[2], dataScope, '短欄位（dataScope）必須保留全文');
   assert.ok(sourceTexts[4].length < 4_000 && sourceTexts[5].length < 4_000, '只截長欄位');
+}
+
+// Owner 階段（scoping／synthesis）沿用 Owner Agent 的 claude model/effort；成員 round 與非 claude Owner 維持固定 route
+async function testOwnerStagesUseOwnerAgentRoute(): Promise<void> {
+  const runFlow = async (targetRepo: string, owner: { adapter: string; model: string; effort: string | null }) => {
+    const { database, createGoal } = createSchedulingFixture(targetRepo);
+    try {
+      database.prepare("UPDATE agents SET primary_adapter = ?, primary_model = ?, effort = ? WHERE agent_id = 'fair-owner'")
+        .run(owner.adapter, owner.model, owner.effort);
+      const goalId = createGoal('owner route');
+      startDiscussion('fair-owner', goalId, database);
+      const calls: Array<{ phase: string; route: unknown }> = [];
+      const deps = {
+        database, quotaSnapshot: async () => '{}', readRepoSources: () => [],
+        invokeJson: async ({ phase, route }: { phase: string; route?: unknown }) => {
+          calls.push({ phase, route });
+          if (phase === 'owner_scoping') return { selections: [{ agentId: 'fair-member', reason: 'fit', assignment: 'review', selectedLoad: 0 }] };
+          if (phase === 'round_1') return { stance: 'analysis', claim: 'viable', reason: 'evidence', evidenceRefs: ['round:1'] };
+          if (phase === 'owner_synthesis') return schedulingPlan('route task');
+          throw new Error(`unexpected phase ${phase}`);
+        },
+      };
+      assert.strictEqual(await runGoalCoordinatorOnce(goalId, deps), 'round_1');
+      assert.strictEqual(await runGoalCoordinatorOnce(goalId, deps), 'awaiting_lease');
+      assert.strictEqual(await runGoalCoordinatorOnce(goalId, deps), 'Executing');
+      const runs = database.prepare(
+        "SELECT phase, adapter, model FROM goal_runs WHERE goal_id = ? AND attempt = 'primary' ORDER BY rowid",
+      ).all(goalId) as unknown as Array<{ phase: string; adapter: string; model: string }>;
+      return { calls, runs: runs.map((run) => ({ ...run })) };
+    } finally {
+      database.close();
+    }
+  };
+  const routeOf = (calls: Array<{ phase: string; route: unknown }>, phase: string) => calls.find((call) => call.phase === phase)?.route;
+
+  const claudeOwner = await runFlow('/route/claude', { adapter: 'claude', model: 'claude-opus-x', effort: 'xhigh' });
+  const ownerRoute = { runner: 'claude', model: 'claude-opus-x', effort: 'xhigh' };
+  assert.deepStrictEqual(routeOf(claudeOwner.calls, 'owner_scoping'), ownerRoute, 'Owner 為 claude 時 owner_scoping 用 Owner 的 model/effort');
+  assert.deepStrictEqual(routeOf(claudeOwner.calls, 'owner_synthesis'), ownerRoute, 'Owner 為 claude 時 owner_synthesis 用 Owner 的 model/effort');
+  assert.strictEqual(routeOf(claudeOwner.calls, 'round_1'), undefined, '成員 round 不帶 route，維持 SAFE_DISCUSSION_ROUTE');
+  for (const run of claudeOwner.runs.filter((item) => item.phase.startsWith('owner_'))) {
+    assert.deepStrictEqual([run.adapter, run.model], ['claude', 'claude-opus-x'], `${run.phase} 的 goal_runs 必須記錄實際 route`);
+  }
+  assert.ok(claudeOwner.runs.filter((item) => item.phase === 'round_1').every((item) => item.model !== 'claude-opus-x'), '成員 round 的 Run 不得記成 Owner 的 model');
+
+  const noEffort = await runFlow('/route/no-effort', { adapter: 'claude', model: 'claude-opus-x', effort: null });
+  assert.deepStrictEqual(routeOf(noEffort.calls, 'owner_scoping'), { runner: 'claude', model: 'claude-opus-x' }, '沒有 effort 時 route 不帶 effort');
+
+  const codexOwner = await runFlow('/route/codex', { adapter: 'codex', model: 'gpt-x', effort: 'high' });
+  assert.deepStrictEqual(routeOf(codexOwner.calls, 'owner_scoping'), SAFE_DISCUSSION_ROUTE, 'Owner 不是 claude 時維持 SAFE_DISCUSSION_ROUTE');
+  assert.deepStrictEqual(routeOf(codexOwner.calls, 'owner_synthesis'), SAFE_DISCUSSION_ROUTE);
+  for (const run of codexOwner.runs.filter((item) => item.phase.startsWith('owner_'))) {
+    assert.deepStrictEqual([run.adapter, run.model], ['claude', SAFE_DISCUSSION_ROUTE.model]);
+  }
 }

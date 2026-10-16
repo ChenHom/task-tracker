@@ -22,7 +22,7 @@ import { getMemberRole } from '../src/member';
 import { changeTaskAssignee, getTask } from '../src/task';
 import type { RepoRegistry } from '../src/repoRegistry';
 import { buildGoalDiscussionPacket, readGoalRepoSources, runGoalDiscussion, type GoalRepoSource } from './goalDiscussion';
-import { runSafeDiscussionSession, SAFE_DISCUSSION_ROUTE } from './run';
+import { runSafeDiscussionSession, SAFE_DISCUSSION_ROUTE, type ModelRoute } from './run';
 import { extractJsonBlock } from './production/runner';
 import { DISCUSSION_MAX_PROMPT_CHARS, sanitizeUntrustedText } from './notificationSecurity';
 import { initializeGoalCoordinatorProjections } from './goalCoordinatorSetup';
@@ -41,7 +41,8 @@ class TerminalOwnerDiscussionRunError extends Error {
 export interface GoalCoordinatorDeps {
   database?: DatabaseSync;
   quotaSnapshot: () => Promise<string>;
-  invokeJson: (input: { phase: string; prompt: string; sourceTexts: string[] }) => Promise<JsonObject | { output: JsonObject; tokenTotal?: number | null }>;
+  // route 只有 Owner 階段會帶（見 ownerRoute）；成員 round 不帶，一律用 SAFE_DISCUSSION_ROUTE。
+  invokeJson: (input: { phase: string; prompt: string; sourceTexts: string[]; route?: ModelRoute }) => Promise<JsonObject | { output: JsonObject; tokenTotal?: number | null }>;
   readRepoSources?: (targetRepo: string) => GoalRepoSource[];
   isSafeCheckpoint?: (goalId: string) => boolean;
   repoRegistry?: RepoRegistry;
@@ -109,6 +110,14 @@ function safeCheckpoint(goalId: string, database: DatabaseSync): boolean {
   }
 }
 
+// Owner 階段沿用 Owner Agent 的 claude model/effort（safe discussion 的限制不變）；
+// Owner 的 primary adapter 不是 claude 時，safe discussion 只允許 Claude，維持固定 route。
+function ownerRoute(ownerAgentId: string, database: DatabaseSync): ModelRoute {
+  const owner = getAgent(ownerAgentId, database);
+  if (owner?.primary_adapter !== 'claude') return SAFE_DISCUSSION_ROUTE;
+  return { runner: 'claude', model: owner.primary_model, ...(owner.effort ? { effort: owner.effort } : {}) };
+}
+
 async function ownerJsonRun(input: {
   goalId: string; phase: string; prompt: string; sourceTexts: string[]; triggerRef?: string;
   sourceRefs?: string[];
@@ -157,9 +166,10 @@ async function ownerJsonRun(input: {
     if (run.status !== 'pending') throw new CommandError(`${input.phase} 已有終態 Run`);
   }
   const estimate = Math.ceil(input.prompt.length / 4);
+  const route = ownerRoute(goal.owner_agent_id, database);
   const runId = prior?.run_id ?? prepareRun({
     heartbeatId, goalId: goal.goal_id, agentId: goal.owner_agent_id, phase: input.phase,
-    adapter: 'claude', model: SAFE_DISCUSSION_ROUTE.model, attempt: 'primary',
+    adapter: route.runner, model: route.model, attempt: 'primary',
     estimatedInputTokens: estimate, estimatedOutputTokens: 800,
     estimateBasis: 'bounded_context_chars', estimateConfidence: 'medium', quotaSnapshotJson: await deps.quotaSnapshot(),
     sourceRefsJson: JSON.stringify(input.sourceRefs ?? []),
@@ -174,7 +184,7 @@ async function ownerJsonRun(input: {
   }
   let outputReceived = false;
   try {
-    const invocation = invocationOutput(await deps.invokeJson({ phase: input.phase, prompt: input.prompt, sourceTexts: input.sourceTexts }));
+    const invocation = invocationOutput(await deps.invokeJson({ phase: input.phase, prompt: input.prompt, sourceTexts: input.sourceTexts, route }));
     const output = invocation.output;
     outputReceived = true;
     if (input.validateBeforeStore) input.validate?.(output);
@@ -733,8 +743,8 @@ export async function runGoalCoordinatorOnce(goalId: string, deps: GoalCoordinat
   }
 }
 
-async function invokeLiveJson(input: { phase: string; prompt: string; sourceTexts: string[] }): Promise<{ output: JsonObject; tokenTotal: number | null }> {
-  const result = await runSafeDiscussionSession({ route: SAFE_DISCUSSION_ROUTE, prompt: input.prompt, sourceTexts: input.sourceTexts, label: `goal-${input.phase}` });
+async function invokeLiveJson(input: { phase: string; prompt: string; sourceTexts: string[]; route?: ModelRoute }): Promise<{ output: JsonObject; tokenTotal: number | null }> {
+  const result = await runSafeDiscussionSession({ route: input.route ?? SAFE_DISCUSSION_ROUTE, prompt: input.prompt, sourceTexts: input.sourceTexts, label: `goal-${input.phase}` });
   if (result.errored || result.timedOut || !result.output) throw new Error(`safe discussion ${input.phase} failed`);
   return { output: parseJsonOutput(result.output), tokenTotal: result.tokenTotal ?? null };
 }

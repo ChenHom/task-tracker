@@ -1463,7 +1463,7 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
   if (task.goalId && task.assigneeId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.agentId === task.assigneeId);
     if (!agent || agent.status !== 'active') throw new Error('Goal Task assignee 沒有 active Agent route');
-    const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel };
+    const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
     const primary = deps.useAgentRoutes ? createMemberSessionRunner(primaryRoute) : memberRunner;
     const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
       ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;
@@ -1625,7 +1625,7 @@ async function dispatchOwnerReview(deps: ResolvedDeps, action: CoordinatorAction
   if (currentTask.goalId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.role === 'owner');
     if (!agent || agent.status !== 'active') throw new Error('Goal Owner 沒有 active Agent route');
-    const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel };
+    const primaryRoute = { runner: agent.primaryAdapter, model: agent.primaryModel, ...(agent.effort ? { effort: agent.effort } : {}) };
     const primary = deps.useAgentRoutes ? createOwnerSessionRunner(primaryRoute) : ownerRunner;
     const fallbackRoute: typeof primaryRoute | null = agent.fallbackAdapter && agent.fallbackModel
       ? { runner: agent.fallbackAdapter, model: agent.fallbackModel } : null;

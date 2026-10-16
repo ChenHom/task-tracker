@@ -56,6 +56,19 @@ assert.throws(() => updateAgent(member.agent_id, { repoAccess: [] }, db), /repoA
 assert.throws(() => updateAgent(member.agent_id, { repoAccess: ['relative/repo'] }, db), /repoAccess/);
 assert.throws(() => updateAgent(member.agent_id, { repoAccess: ['/no/such/repo'] }, db), /repoAccess/);
 
+assert.strictEqual(getAgent(member.agent_id, db)?.effort, null, 'effort 預設 null（用 CLI 預設）');
+for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+  updateAgent(member.agent_id, { effort }, db);
+  assert.strictEqual(getAgent(member.agent_id, db)?.effort, effort);
+}
+assert.strictEqual(getAgent(member.agent_id, db)?.primary_adapter, 'agy', '只改 effort 不動 primary route');
+assert.throws(() => updateAgent(member.agent_id, { effort: 'ultra' }, db), /effort/);
+assert.throws(() => updateAgent(member.agent_id, { effort: '' }, db), /effort/);
+assert.throws(() => updateAgent(member.agent_id, { effort: 3 }, db), /effort/);
+assert.strictEqual(getAgent(member.agent_id, db)?.effort, 'max', '不合法的 effort 不得改動既有值');
+updateAgent(member.agent_id, { effort: null }, db);
+assert.strictEqual(getAgent(member.agent_id, db)?.effort, null, 'null 清除 effort');
+
 syncAgents(db);
 assert.strictEqual(listAgents(db).length, 6, '同步必須 idempotent 且保留人工 route 修改');
 assert.strictEqual(getAgent(member.agent_id, db)?.primary_adapter, 'agy');
