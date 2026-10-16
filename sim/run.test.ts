@@ -1476,6 +1476,7 @@ assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', 
   try {
     const install = join(venvTmp, 'uv', 'python', 'cpython-3.11.13-linux-x86_64-gnu');
     mkdirSync(join(install, 'bin'), { recursive: true });
+    mkdirSync(join(install, 'lib', 'python3.11'), { recursive: true });
     writeFileSync(join(install, 'bin', 'python3.11'), '');
     const venvRepo = join(venvTmp, 'repo');
     mkdirSync(join(venvRepo, '.venv', 'bin'), { recursive: true });
@@ -1490,13 +1491,30 @@ assert.deepStrictEqual(claudeEffort.args, ['-p', 'p', '--model', 'claude-test', 
     // owner 唯讀、沒有 Bash：不放行
     const venvOwner = buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: false, mainRepo: venvRepo, bashAllow: [] } });
     assert.ok(!('allowRead' in settingsOf(venvOwner.args).sandbox.filesystem), 'owner 不放行 venv');
-    // python 連結壞掉：退回 pyvenv.cfg 的 home（<root>/bin）
+    const allowReadOf = () => settingsOf(buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: venvRepo, bashAllow: [] } }).args).sandbox.filesystem.allowRead;
+    // 推出來的根目錄若涵蓋 HOME（例如 venv python 在 ~/bin），不得放行：否則整個家目錄都進 allowRead
+    const savedHome = process.env.HOME;
+    process.env.HOME = join(install, 'fake-home');
+    try {
+      assert.deepStrictEqual(allowReadOf(), [join(venvRepo, '.venv')], '涵蓋 HOME 的根目錄不得放行');
+    } finally {
+      process.env.HOME = savedHome;
+    }
+    // 根目錄沒有 lib/python3*：不像 Python 安裝，不放行
+    rmSync(join(install, 'lib'), { recursive: true });
+    assert.deepStrictEqual(allowReadOf(), [join(venvRepo, '.venv')], '沒有 lib/python3* 的根目錄不得放行');
+    // 根目錄是 mainRepo 的上層（python 放在 <tmp>/bin、repo 在 <tmp>/repo）：不得放行
+    mkdirSync(join(venvTmp, 'bin'), { recursive: true });
+    mkdirSync(join(venvTmp, 'lib', 'python3.11'), { recursive: true });
+    writeFileSync(join(venvTmp, 'bin', 'python3.11'), '');
+    rmSync(join(venvRepo, '.venv', 'bin', 'python'));
+    symlinkSync(join(venvTmp, 'bin', 'python3.11'), join(venvRepo, '.venv', 'bin', 'python'));
+    assert.deepStrictEqual(allowReadOf(), [join(venvRepo, '.venv')], '涵蓋 mainRepo 的根目錄不得放行');
+    // python 連結壞掉：退回 pyvenv.cfg 的 home；安裝已不存在（沒有 lib/python3*）就只放行 venv
+    rmSync(join(venvRepo, '.venv', 'bin', 'python'));
+    symlinkSync(join(install, 'bin', 'python3.11'), join(venvRepo, '.venv', 'bin', 'python'));
     rmSync(install, { recursive: true });
-    assert.deepStrictEqual(
-      settingsOf(buildRunnerInvocation(route, 'p', { ...base, claudeConfined: { writable: true, mainRepo: venvRepo, bashAllow: [] } }).args).sandbox.filesystem.allowRead,
-      [join(venvRepo, '.venv'), install],
-      '連結壞掉時改用 pyvenv.cfg 的 home',
-    );
+    assert.deepStrictEqual(allowReadOf(), [join(venvRepo, '.venv')], '連結壞掉且安裝不存在時只放行 venv');
     // venv python 其實是系統 Python（根目錄只剩一層，例如 /usr）：只放行 venv 本身
     rmSync(join(venvRepo, '.venv', 'bin', 'python'));
     symlinkSync('/bin/sh', join(venvRepo, '.venv', 'bin', 'python'));

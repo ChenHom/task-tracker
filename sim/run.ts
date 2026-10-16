@@ -10,7 +10,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createTracer, createFileSink, formatTraceRecord, type Tracer, type TraceSink } from './trace';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { SAFE_DISCUSSION_ROUTE } from '../src/safeDiscussionRoute';
 import type { AgentEffort } from '../src/agent';
@@ -2053,8 +2053,23 @@ export function claudeVenv(mainRepo: string): { python: string; readRoots: strin
   const root = bin && isAbsolute(bin) && basename(bin) === 'bin' ? dirname(bin) : undefined;
   return {
     python: join(dir, 'bin', 'python'),
-    readRoots: [dir, ...(root && root.split(sep).filter(Boolean).length >= 2 ? [root] : [])],
+    readRoots: [dir, ...(root && isPythonInstallRoot(root, mainRepo) ? [root] : [])],
   };
+}
+
+/**
+ * venv 的 symlink 與 pyvenv.cfg 是 repo 可控的資料：推出來的根目錄必須真的像 Python 安裝（有 lib/python3*），
+ * 而且不能是 home、mainRepo 或它們的上層——否則一個 `home = /home/u/bin` 就把整個家目錄開放給 sandbox。
+ */
+function isPythonInstallRoot(root: string, mainRepo: string): boolean {
+  if (root.split(sep).filter(Boolean).length < 2) return false;
+  const covers = (path: string) => path === root || path.startsWith(`${root}${sep}`);
+  if (covers(homedir()) || covers(mainRepo)) return false;
+  try {
+    return readdirSync(join(root, 'lib')).some((name) => name.startsWith('python3'));
+  } catch {
+    return false;
+  }
 }
 
 export function claudeConfinedArgs(confined: ClaudeConfined, cwd?: string): string[] {
