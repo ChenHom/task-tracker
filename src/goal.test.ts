@@ -134,6 +134,16 @@ assert.strictEqual(pauseGoal('human-1', second, false, db), 'scheduled');
 assert.strictEqual(getGoal(second, db)?.status, 'Executing');
 assert.strictEqual(getGoal(second, db)?.pause_requested, 1);
 db.prepare("UPDATE goal_worktrees SET unmerged = 0 WHERE goal_id = ?").run(second);
+// 已封存 task 的 worktree 旗標清不掉，不擋暫停；同樣的 worktree 換成未封存 task 就要擋
+db.prepare(`INSERT INTO tasks_read_model
+  (task_id, workspace_id, project_id, goal_id, title, description, status, priority, version)
+  VALUES ('archived-task', 'ws-1', 'project-1', ?, 'archived', '', 'Doing', 'Medium', 1)`).run(second);
+db.prepare(`INSERT INTO goal_worktrees (worktree_path, goal_id, target_repo, dirty, unmerged, created_at, updated_at)
+  VALUES ('/srv/app/sim-work/tasks/archived-task', ?, '/srv/app', 1, 1, 't', 't')`).run(second);
+assert.strictEqual(isGoalSafeCheckpoint(second, db), false, '未封存 task 的 dirty/unmerged worktree 要擋暫停');
+db.prepare("UPDATE tasks_read_model SET status = 'Archived' WHERE task_id = 'archived-task'").run();
+assert.strictEqual(isGoalSafeCheckpoint(second, db), true, '已封存 task 的 worktree 不擋暫停');
+db.prepare("DELETE FROM goal_worktrees WHERE worktree_path = '/srv/app/sim-work/tasks/archived-task'").run();
 const coordinatorDb = new DatabaseSync(':memory:');
 coordinatorDb.exec('CREATE TABLE action_log (task_id TEXT, kind TEXT, status TEXT)');
 db.prepare(`INSERT INTO tasks_read_model
