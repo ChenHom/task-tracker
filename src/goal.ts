@@ -496,8 +496,13 @@ export function applyPendingGoalPause(actorId: string, goalId: string, safeCheck
 }
 
 export function isGoalSafeCheckpoint(goalId: string, database = db, coordinatorDatabase?: DatabaseSync): boolean {
+  // 已封存 task 的 worktree（路徑以 task id 結尾）不會再合併，unmerged 永遠清不掉，不能擋暫停（2026-10-19 Goal 925ef0b0 實例）。
+  // dirty 照擋：封存不會停掉進行中的 member session，session 期間 driver 把 dirty 設成 1。
   if (database.prepare(
-    'SELECT 1 FROM goal_worktrees WHERE goal_id = ? AND (dirty = 1 OR unmerged = 1) LIMIT 1',
+    `SELECT 1 FROM goal_worktrees w
+      WHERE w.goal_id = ? AND (w.dirty = 1 OR (w.unmerged = 1 AND NOT EXISTS (SELECT 1 FROM tasks_read_model t
+          WHERE t.goal_id = w.goal_id AND t.status = 'Archived' AND w.worktree_path LIKE '%/' || t.task_id)))
+      LIMIT 1`,
   ).get(goalId)) return false;
   if (!coordinatorDatabase) return true;
   const taskIds = (database.prepare('SELECT task_id FROM tasks_read_model WHERE goal_id = ?').all(goalId) as unknown as Array<{ task_id: string }>)
