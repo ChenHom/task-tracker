@@ -2650,6 +2650,7 @@ async function runAgentTests(): Promise<void> {
       const wt = await ensureTaskWorktree(repoRoot, taskId, baseSha0);
       const verify = makeVerify();
       const driver = makeDriverActions({});
+      let seenContext: Parameters<MemberSessionRunner>[0] | undefined;
       const result = await runMemberSession({
         taskId,
         worktreePath: wt.path,
@@ -2660,13 +2661,18 @@ async function runAgentTests(): Promise<void> {
         acceptanceCriteria: 'n/a',
         comments: [],
         previousBlocker: null,
-        runner: makeRunner(0, makeOutput({ verificationCommands: ['npx tsc --noEmit'] })),
+        runner: async (context) => {
+          seenContext = context;
+          return { exitCode: 0, output: makeOutput({ verificationCommands: ['npx tsc --noEmit'] }) };
+        },
         runVerificationCommand: verify.run,
         driverActions: driver.actions,
       });
       assert.strictEqual(result.outcome, 'retryable_failure', '不在這個 task 自己宣告的 verificationCommandAllowlist 裡的指令必須被拒絕，即使它在全域 allowlist 上');
       assert.match(result.evidence.rejectedReason ?? '', /declared verificationCommandAllowlist/);
-      assert.strictEqual(verify.calls.length, 0, '被拒絕的 session 不應該執行任何 verification command');
+      // session 前 driver 先跑一次宣告的驗證指令（基準結果進 runner context）；session 後被拒絕的指令不執行
+      assert.deepStrictEqual(verify.calls, ['npm test'], '被拒絕的 session 只跑過 session 前的基準驗證');
+      assert.deepStrictEqual(seenContext?.baselineVerification, [{ command: 'npm test', exitCode: 0, output: '' }], '基準驗證結果要交給 runner');
 
       // 對照組：宣告的指令同時落在全域 allowlist 與這個 task 自己的宣告清單裡——
       // 正常通過這一關，且真的往下執行到 verification 這一步（需要真實 diff 才會

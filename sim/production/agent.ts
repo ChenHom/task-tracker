@@ -61,6 +61,8 @@ export interface MemberSessionRunnerContext {
   workCommands?: readonly string[];
   /** Goal 的 data_scope（不可信文字，由 runner 清理後放進 prompt）；非 Goal task 或為空則不帶。 */
   dataScope?: string;
+  /** session 開始前 driver 用正確環境跑過的宣告驗證指令（output 只留末段）；沒有宣告指令則不帶。 */
+  baselineVerification?: { command: string; exitCode: number; output: string }[];
 }
 
 export interface MemberSessionRunnerResult {
@@ -182,6 +184,12 @@ function emptyEvidence(blockerRepeated: boolean, rejectedReason: string | null):
  */
 export async function runMemberSession(input: RunMemberSessionInput): Promise<MemberSessionResult> {
   const declaredAllowlist = input.verificationCommandAllowlist ?? [];
+  // 受限成員常因 Bash 白名單跑不了測試（2026-10-16 fe844a73）：session 前先由 driver 跑一次，結果放進 prompt。
+  const baselineVerification: NonNullable<MemberSessionRunnerContext['baselineVerification']> = [];
+  for (const command of declaredAllowlist) {
+    const { exitCode, output } = await input.runVerificationCommand(command, input.worktreePath);
+    baselineVerification.push({ command, exitCode, output: output.slice(-2000) });
+  }
   const context: MemberSessionRunnerContext = {
     taskId: input.taskId,
     acceptanceCriteria: input.acceptanceCriteria,
@@ -191,6 +199,7 @@ export async function runMemberSession(input: RunMemberSessionInput): Promise<Me
     worktreePath: input.worktreePath,
     ...(input.workCommands?.length ? { workCommands: input.workCommands } : {}),
     ...(input.dataScope ? { dataScope: input.dataScope } : {}),
+    ...(baselineVerification.length ? { baselineVerification } : {}),
   };
 
   const { exitCode, output } = await input.runner(context);
