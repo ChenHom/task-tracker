@@ -293,7 +293,34 @@ function venvPythonSection(venvPython: string | undefined): string {
     : '';
 }
 
-export function memberPrompt(context: MemberSessionRunnerContext, venvPython?: string): string {
+// 受限 claude 的 Bash 是白名單逐條比對：串接、cd、git -C 都會被拒，成員被拒一次就以為 Bash 不能用（2026-10-16 fe844a73 實例）。
+function confinedBashSection(allowed: readonly string[] | undefined): string {
+  return allowed?.length
+    ? `
+
+受限模式的 Bash 規則（不照做就會被拒絕）：
+- 盡量每次 Bash 呼叫只執行一個下面清單上的指令（後面可以接參數）；串接時每一段都必須在清單上，否則整串被拒。不要用 \`git -C <路徑>\`，也不需要 \`cd\`：工作目錄已經是 worktree。
+- 某個指令被拒絕不代表 Bash 不能用：拆成多次呼叫、改成清單上的寫法再試一次。讀檔與搜尋改用 Read／Grep／Glob 工具。
+- 允許的指令：
+${allowed.map((c) => `  - ${c}`).join('\n')}`
+    : '';
+}
+
+// driver 在 session 前跑的驗證結果；輸出來自 worktree 內的程式，當不可信資料清理後放進 prompt。
+function baselineVerificationSection(results: MemberSessionRunnerContext['baselineVerification']): string {
+  return results?.length
+    ? `
+
+系統在這個 session 開始前，已經在 worktree 用正確的環境跑過上面的驗證指令（你動手前的結果）。
+要回報測試數字可以直接引用；改動之後想確認就自己再跑一次，commit 後 driver 也會再獨立跑一次。
+${results.map((r) => `- ${r.command} → exit ${r.exitCode}，輸出末段：
+UNTRUSTED_COMMAND_OUTPUT
+${sanitizeUntrustedText(r.output, 2_000).trim()}
+END_UNTRUSTED_COMMAND_OUTPUT`).join('\n')}`
+    : '';
+}
+
+export function memberPrompt(context: MemberSessionRunnerContext, venvPython?: string, confinedBash?: readonly string[]): string {
   return `你是 task ${context.taskId} 的實作者。
 
 工作目錄：${context.worktreePath}
@@ -307,9 +334,9 @@ ${context.acceptanceCriteria}
 ${context.comments.map((c, i) => `#${i} ${c}`).join('\n') || '（無）'}
 
 回報用驗證指令：最後 JSON 的 verificationCommands 只能列這些：
-${context.verificationCommandAllowlist.map((c) => `- ${c}`).join('\n') || '（無）'}
+${context.verificationCommandAllowlist.map((c) => `- ${c}`).join('\n') || '（無）'}${baselineVerificationSection(context.baselineVerification)}
 
-${workCommandsSection(context.workCommands)}${venvPythonSection(venvPython)}
+${workCommandsSection(context.workCommands)}${venvPythonSection(venvPython)}${confinedBashSection(confinedBash)}
 
 規則：
 - 不要執行任何 git 寫入操作（add／commit／merge／branch／checkout）；commit 由 driver 代勞。
@@ -452,7 +479,10 @@ export function protectedPathInGitHistory(mainRepo: string, paths: string[]): st
 }
 
 // 成員除了 task 的驗證指令外，只開唯讀 git；commit／merge 都由 driver 做。
-const MEMBER_READONLY_GIT = ['git status', 'git log', 'git show', 'git merge-base', 'git diff'];
+const MEMBER_READONLY_GIT = ['git status', 'git log', 'git show', 'git merge-base', 'git diff', 'git rev-parse', 'git branch'];
+// 模型習慣把 cd／pwd／echo 跟其他指令串在一起；串接時每段都要在白名單上，否則整串被拒。
+// 安全邊界是 OS sandbox（只能寫 worktree、讀不到 worktree 外、無網路），這幾個指令不會擴大它；git 的寫入指令刻意不開。
+const MEMBER_SHELL_BASICS = ['cd', 'pwd', 'echo'];
 
 // repoSandbox 來自 repo registry：network=false 讓 codex 不開網路；denyRead 讓 claude 額外拒讀 mainRepo 內的路徑。
 export interface RepoSandbox { network?: boolean; denyRead?: string[] }
@@ -462,14 +492,14 @@ export function createMemberSessionRunner(route: ModelRoute = MEMBER_ROUTE, main
     const label = `member-${context.taskId.slice(0, 8)}`;
     const { cwd, cleanup } = resolveSessionCwd(context.worktreePath);
     try {
-      const bashAllow = [...context.verificationCommandAllowlist, ...(context.workCommands ?? []), ...MEMBER_READONLY_GIT];
+      const bashAllow = [...context.verificationCommandAllowlist, ...(context.workCommands ?? []), ...MEMBER_READONLY_GIT, ...MEMBER_SHELL_BASICS];
       const confined = confinedFor(route, mainRepo, true, bashAllow, repoSandbox.denyRead);
       // 有 venv 時，每條 `python3 ...` 另加一份 venv python 絕對路徑的版本（受限 session 的 python3 是系統 Python）
       const venvPython = confined && mainRepo ? claudeVenv(mainRepo)?.python : undefined;
       if (confined && venvPython) {
         confined.bashAllow = bashAllow.flatMap((cmd) => (cmd.startsWith('python3 ') ? [cmd, `${venvPython}${cmd.slice('python3'.length)}`] : [cmd]));
       }
-      const session = await runAiSession(label, route, memberPrompt(context, venvPython), cwd, MEMBER_SANDBOX, context.taskId, confined, repoSandbox.network);
+      const session = await runAiSession(label, route, memberPrompt(context, venvPython, confined?.bashAllow), cwd, MEMBER_SANDBOX, context.taskId, confined, repoSandbox.network);
       assertSessionUsable(label, session);
       const raw = extractJsonBlock(session.text);
       if (raw === null) {
