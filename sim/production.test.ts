@@ -152,7 +152,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { runMigrations } from '../src/schema';
 import { enqueueHeartbeat, finishRun, markRunRunning, prepareRun, type FinishRunInput, type PrepareRunInput } from '../src/goalRun';
 import { trackGoalRunAttempt } from './goalUsage';
-import { applyMemberAttemptTransition, assignAndStartDoing, dispatchOwnerReview, sendBackIntegrationConflict, coordinatorChildEnvironment, depsForTask, execAllowlistedCommand, goalRunTriggerRef, productionMemberAdapter, resolveGoalRoutes, withAction } from './production';
+import { applyMemberAttemptTransition, memberReportAuthor, assignAndStartDoing, dispatchOwnerReview, sendBackIntegrationConflict, coordinatorChildEnvironment, depsForTask, execAllowlistedCommand, goalRunTriggerRef, productionMemberAdapter, resolveGoalRoutes, withAction } from './production';
 
 assert.deepStrictEqual(coordinatorChildEnvironment({ PATH: '/bin', TASK_TRACKER_COORDINATOR_TOKEN: 'secret' }), { PATH: '/bin' });
 
@@ -280,6 +280,24 @@ async function runF5Tests(): Promise<void> {
       rmSync(repoRoot, { recursive: true, force: true });
     }
   }
+}
+
+// 實作回報留言的作者：只有 active Agent 負責人用自己的帳號，人類負責人不可被代貼 AI 留言
+async function runMemberReportAuthorTest(): Promise<void> {
+  const ownerClient = {
+    listAgents: async () => [{ agentId: 'agent-1', status: 'active' }, { agentId: 'agent-2', status: 'paused' }],
+  } as unknown as TaskTrackerClient;
+  const agentClient = {} as TaskTrackerClient;
+  const asked: string[] = [];
+  const memberClientFor = async (userId: string) => { asked.push(userId); return agentClient; };
+  assert.strictEqual(await memberReportAuthor({ ownerClient, memberClientFor }, 'ws', 'agent-1'), agentClient, 'active Agent 用自己的帳號');
+  assert.strictEqual(await memberReportAuthor({ ownerClient, memberClientFor }, 'ws', 'human-1'), ownerClient, '人類負責人由 Owner 帳號代貼');
+  assert.strictEqual(await memberReportAuthor({ ownerClient, memberClientFor }, 'ws', 'agent-2'), ownerClient, '非 active Agent 由 Owner 帳號代貼');
+  assert.strictEqual(await memberReportAuthor({ ownerClient, memberClientFor }, 'ws', null), ownerClient);
+  assert.deepStrictEqual(asked, ['agent-1'], '非 Agent 負責人不得嘗試登入其帳號');
+  const failing = async () => { throw new Error('login failed'); };
+  assert.strictEqual(await memberReportAuthor({ ownerClient, memberClientFor: failing }, 'ws', 'agent-1'), ownerClient, '登入失敗退回 Owner 帳號');
+  assert.strictEqual(await memberReportAuthor({ ownerClient }, 'ws', 'agent-1'), ownerClient, '沒有 memberClientFor（測試／非 live）用 Owner 帳號');
 }
 
 async function runCoordinatorEnvironmentTest(): Promise<void> {
@@ -6656,6 +6674,7 @@ async function main(): Promise<void> {
   await runG1Tests();
   await runF5Tests();
   await runGoalAttemptTests();
+  await runMemberReportAuthorTest();
   await runCoordinatorEnvironmentTest();
   await runApiTests();
   await runGitTests();

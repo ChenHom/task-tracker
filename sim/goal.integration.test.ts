@@ -289,9 +289,10 @@ async function main(): Promise<void> {
     await runProduction(blockedMember); // noProgress 1→2，標記 ownerIntervened
     await runProduction(blockedMember); // 已介入後再無進展 → human_blocked
     const problems = reportComments(task2, 'member_problem');
-    assert.strictEqual(problems.length, 2, `每輪各一則，實際：${JSON.stringify(problems)}`);
+    assert.strictEqual(problems.length, 3, `claudeOnly 拒絕一則＋兩輪各一則，實際：${JSON.stringify(problems)}`);
     assert.ok(problems.every((comment) => comment.user_id === assigneeOf(task2)), '沒進展的回報也由負責人帳號貼出');
-    assert.ok(problems[1].content.includes('這輪沒有交付：worktree 沒有任何改動。') && problems[1].content.includes('遇到的問題：第 2 次：data/research.db 讀取被拒'), problems[1].content);
+    assert.ok(problems[0].content.includes('這輪沒有開始實作') && problems[0].content.includes('repo 只允許 claude confined 成員'), `session 前就失敗也要回報：${problems[0].content}`);
+    assert.ok(problems[2].content.includes('這輪沒有交付：worktree 沒有任何改動。') && problems[2].content.includes('遇到的問題：第 2 次：data/research.db 讀取被拒'), problems[2].content);
     const blockedState = openCoordinatorState(coordinatorDb);
     assert.strictEqual(getTaskRun(blockedState, task2)?.phase, 'human_blocked');
     blockedState.close();

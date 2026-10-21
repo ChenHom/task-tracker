@@ -1306,6 +1306,39 @@ async function dispatchAssignMember(
 // 摘要留言）走 ownerClient；no-progress／human_blocked 狀態機交給 coordinator.ts。
 // ---------------------------------------------------------------------------
 
+/**
+ * 實作回報留言的作者（同舊協作方式，負責人自己留言）。只有 active Agent 負責人才用其帳號：
+ * 人類負責人不可被代貼 AI 寫的留言。拿不到 Agent 帳號一律由 Owner 帳號代貼，不擋進度。
+ */
+export async function memberReportAuthor(
+  deps: Pick<ResolvedDeps, 'ownerClient' | 'memberClientFor'>, workspaceId: string, assigneeId: string | null,
+): Promise<TaskTrackerClient> {
+  if (!assigneeId || !deps.memberClientFor) return deps.ownerClient;
+  try {
+    const agent = (await deps.ownerClient.listAgents(workspaceId)).find((a) => a.agentId === assigneeId && a.status === 'active');
+    return (agent && await deps.memberClientFor(assigneeId, workspaceId)) || deps.ownerClient;
+  } catch {
+    return deps.ownerClient;
+  }
+}
+
+/**
+ * 沒進展的這輪由負責人留言說明卡在哪；同一 head、同樣內容只貼一次。
+ * 必須在 applyMemberAttemptTransition 之前呼叫：轉 human_blocked 時記的 fingerprint 要含這則留言，否則它會立刻觸發恢復。
+ */
+async function postMemberProblem(
+  deps: ResolvedDeps, action: CoordinatorAction, workingRun: TaskRun, author: TaskTrackerClient, content: string,
+): Promise<void> {
+  const key = `member_problem:${action.taskId}:${workingRun.headSha ?? 'none'}:${createHash('sha256').update(content).digest('hex').slice(0, 12)}`;
+  try {
+    if (!(await deps.ownerClient.listComments(action.taskId)).some((c) => c.content.includes(key))) {
+      await author.postCommentOnce(action.taskId, `${content}\n\naction_key: ${key}`, key);
+    }
+  } catch (err) {
+    deps.tracer(action.taskId)('gate.skipped', { reason: 'member_problem_comment_failed', detail: (err as Error).message });
+  }
+}
+
 /** 沒進展的這輪，用 driver 的獨立證據說明結果（不採信成員自稱）。 */
 function memberAttemptResultLine(result: MemberSessionResult): string {
   const evidence = result.evidence;
@@ -1461,6 +1494,10 @@ async function failMemberBeforeSession(
     },
     evidenceChanged: false,
   };
+  await postMemberProblem(
+    deps, action, workingRun, await memberReportAuthor(deps, action.workspaceId, task.assigneeId),
+    `這輪沒有開始實作：driver 在 session 前就失敗（${blocker}）。`,
+  );
   const transition = await applyMemberAttemptTransition(deps, action, workingRun, syntheticResult, task);
   checkpointAndTrace(
     deps,
@@ -1536,10 +1573,7 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
   const previousBlocker = comments.length > 0 ? null : null; // 沒有獨立持久化上一次 blocker 文字，保守視為無上一輪
 
   const summaryActionKeyBase = `member_summary:${action.taskId}:${workingRun.headSha ?? 'none'}`;
-  // 回報留言用負責人自己的帳號貼（同舊協作方式）；拿不到就由 Owner 帳號代貼，不擋進度。
-  const authorClient = (task.assigneeId
-    ? await deps.memberClientFor?.(task.assigneeId, action.workspaceId).catch(() => null)
-    : null) ?? deps.ownerClient;
+  const authorClient = await memberReportAuthor(deps, action.workspaceId, task.assigneeId);
   let memberRunner = deps.runMemberSession!;
   if (task.goalId && task.assigneeId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.agentId === task.assigneeId);
@@ -1660,18 +1694,8 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
     });
   }
 
-  // 沒進展的這輪也由負責人留言說明卡在哪；同一 head、同樣內容只貼一次。
-  // 必須在 applyMemberAttemptTransition 之前：轉 human_blocked 時記的 fingerprint 要含這則留言，否則它會立刻觸發恢復。
   if (result.outcome !== 'progressed') {
-    const content = memberReportText(result.output, memberAttemptResultLine(result));
-    const key = `member_problem:${action.taskId}:${workingRun.headSha ?? 'none'}:${createHash('sha256').update(content).digest('hex').slice(0, 12)}`;
-    try {
-      if (!(await deps.ownerClient.listComments(action.taskId)).some((c) => c.content.includes(key))) {
-        await authorClient.postCommentOnce(action.taskId, `${content}\n\naction_key: ${key}`, key);
-      }
-    } catch (err) {
-      deps.tracer(action.taskId)('gate.skipped', { reason: 'member_problem_comment_failed', detail: (err as Error).message });
-    }
+    await postMemberProblem(deps, action, workingRun, authorClient, memberReportText(result.output, memberAttemptResultLine(result)));
   }
 
   const transition = await applyMemberAttemptTransition(deps, action, workingRun, result, task);
