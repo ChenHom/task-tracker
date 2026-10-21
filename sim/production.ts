@@ -15,7 +15,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { loadRepoRegistry, type RegisteredRepo, type SeedFile } from '../src/repoRegistry';
 
@@ -79,6 +79,7 @@ import {
 import {
   runOwnerSession,
   runMemberSession,
+  memberReportText,
   type OwnerSessionRunner,
   type MemberSessionRunner,
   type VerificationCommandRunner,
@@ -755,6 +756,8 @@ interface ResolvedDeps {
   /** 取得綁好本 tick base 的 tracer；taskId 省略即 tick 層級事件。見 docs/sim-trace.md。 */
   tracer: (taskId?: string | null) => Tracer;
   taskChecks: Map<string, string[]>;
+  /** 用負責人自己的帳號登入的 client（實作回報留言用）；沒有或登入失敗回 null，改由 ownerClient 代貼。 */
+  memberClientFor?: (userId: string, workspaceId: string) => Promise<TaskTrackerClient | null>;
 }
 
 // Goal task 改用 registry 登記的 repo 設定（repoRoot、allowedPrefixes、sandbox）；其餘 task 沿用全域 deps。
@@ -880,6 +883,13 @@ export async function runOnce(options: RunOnceOptions): Promise<RunOnceResult> {
 
     const taskChecks = new Map<string, string[]>();
     const deps: ResolvedDeps = {
+      memberClientFor: async (userId, workspaceId) => {
+        const member = (await discovery.ownerClient.listMembers(workspaceId)).find((m) => m.userId === userId);
+        if (!member) return null;
+        const client = new TaskTrackerClient({ baseUrl });
+        await client.login(member.email, PASSWORD);
+        return client;
+      },
       db,
       ownerClient: discovery.ownerClient,
       user09Client: discovery.user09Client,
@@ -1296,6 +1306,17 @@ async function dispatchAssignMember(
 // 摘要留言）走 ownerClient；no-progress／human_blocked 狀態機交給 coordinator.ts。
 // ---------------------------------------------------------------------------
 
+/** 沒進展的這輪，用 driver 的獨立證據說明結果（不採信成員自稱）。 */
+function memberAttemptResultLine(result: MemberSessionResult): string {
+  const evidence = result.evidence;
+  if (evidence.rejectedReason) return `這輪沒有交付：系統沒收下這次的改動（${evidence.rejectedReason}）。`;
+  if (!evidence.commitSha) return '這輪沒有交付：worktree 沒有任何改動。';
+  if (!evidence.verificationPassed) {
+    return `這輪沒有交付：改動已 commit（${evidence.commitSha.slice(0, 7)}），但 driver 重跑驗證沒有通過（${evidence.verificationRanCommands.join('、') || '沒有回報驗證指令'}）。`;
+  }
+  return `這輪沒有交付：改動已 commit（${evidence.commitSha.slice(0, 7)}）且驗證通過，但沒能移到 Review。`;
+}
+
 /**
  * 把一次「完整嘗試但沒有可驗證進展」的結果（不論是真正的 member session 失敗，還是
  * worktree 建立這種更早期的機械式失敗）餵進 policy.ts 既有的 no-progress／Owner
@@ -1515,6 +1536,10 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
   const previousBlocker = comments.length > 0 ? null : null; // 沒有獨立持久化上一次 blocker 文字，保守視為無上一輪
 
   const summaryActionKeyBase = `member_summary:${action.taskId}:${workingRun.headSha ?? 'none'}`;
+  // 回報留言用負責人自己的帳號貼（同舊協作方式）；拿不到就由 Owner 帳號代貼，不擋進度。
+  const authorClient = (task.assigneeId
+    ? await deps.memberClientFor?.(task.assigneeId, action.workspaceId).catch(() => null)
+    : null) ?? deps.ownerClient;
   let memberRunner = deps.runMemberSession!;
   if (task.goalId && task.assigneeId) {
     const agent = (await deps.ownerClient.listAgents(action.workspaceId)).find((candidate) => candidate.agentId === task.assigneeId);
@@ -1584,7 +1609,7 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
       const found = existing.find((c) => c.content.includes(summaryActionKeyBase));
       if (found) return { commentId: found.commentId };
       try {
-        const commentId = await deps.ownerClient.postCommentOnce(action.taskId, content, summaryActionKeyBase);
+        const commentId = await authorClient.postCommentOnce(action.taskId, content, summaryActionKeyBase);
         return { commentId };
       } catch (err) {
         if (err instanceof UncertainMutationError) {
@@ -1633,6 +1658,20 @@ async function dispatchMemberWork(deps: ResolvedDeps, action: CoordinatorAction,
       kind: 'commit.recorded', ref: result.evidence.commitSha,
       detail: result.evidence.commitChangedPaths.join(', '),
     });
+  }
+
+  // 沒進展的這輪也由負責人留言說明卡在哪；同一 head、同樣內容只貼一次。
+  // 必須在 applyMemberAttemptTransition 之前：轉 human_blocked 時記的 fingerprint 要含這則留言，否則它會立刻觸發恢復。
+  if (result.outcome !== 'progressed') {
+    const content = memberReportText(result.output, memberAttemptResultLine(result));
+    const key = `member_problem:${action.taskId}:${workingRun.headSha ?? 'none'}:${createHash('sha256').update(content).digest('hex').slice(0, 12)}`;
+    try {
+      if (!(await deps.ownerClient.listComments(action.taskId)).some((c) => c.content.includes(key))) {
+        await authorClient.postCommentOnce(action.taskId, `${content}\n\naction_key: ${key}`, key);
+      }
+    } catch (err) {
+      deps.tracer(action.taskId)('gate.skipped', { reason: 'member_problem_comment_failed', detail: (err as Error).message });
+    }
   }
 
   const transition = await applyMemberAttemptTransition(deps, action, workingRun, result, task);

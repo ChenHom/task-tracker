@@ -59,7 +59,7 @@ async function main(): Promise<void> {
         seedFiles: [{ from: 'data/research.db', to: 'data/_run.db' }], workCommands: ['python3 scripts/backtest.py'], network: false, denyRead: ['Sinopac.pfx'] },
     }));
 
-    const [{ db }, { resetProjections }, { seedUsers }, { getUserIdByEmail }, goalModule, taskModule, workspaceModule, memberModule, notificationModule, coordinatorModule, productionModule, serverModule, { getAgent }, { openCoordinatorState, getTaskRun }] = await Promise.all([
+    const [{ db }, { resetProjections }, { seedUsers }, { getUserIdByEmail }, goalModule, taskModule, workspaceModule, memberModule, notificationModule, coordinatorModule, productionModule, serverModule, { getAgent }, { openCoordinatorState, getTaskRun }, { createComment }] = await Promise.all([
       import('../src/db'),
       import('../src/eventStore'),
       import('../src/seed'),
@@ -74,6 +74,7 @@ async function main(): Promise<void> {
       import('../src/server'),
       import('../src/agent'),
       import('./production/state'),
+      import('../src/comment'),
     ]);
 
     resetProjections();
@@ -214,6 +215,14 @@ async function main(): Promise<void> {
     assert.strictEqual((await runProduction()).exitCode, 1, 'commit 後 crash 應保留 Review checkpoint');
     const committedHead = git(repo, 'rev-parse', `sim/task/${task.task_id}`);
     assert.strictEqual(memberCalls, 1);
+    // 實作回報留言用負責人自己的帳號貼，內容含 driver 重跑的驗證結果（同舊協作方式的完成留言）
+    const assigneeOf = (taskId: string) => (db.prepare('SELECT assignee_id FROM tasks_read_model WHERE task_id = ?').get(taskId) as { assignee_id: string }).assignee_id;
+    const reportComments = (taskId: string, kind: string) => db.prepare('SELECT user_id, content FROM comments WHERE task_id = ? AND content LIKE ?')
+      .all(taskId, `%action_key: ${kind}:%`) as unknown as Array<{ user_id: string; content: string }>;
+    const [report] = reportComments(task.task_id, 'member_summary');
+    assert.ok(assigneeOf(task.task_id) !== owner, '前提：負責人不是 Owner');
+    assert.strictEqual(report?.user_id, assigneeOf(task.task_id), '實作回報留言必須由負責人帳號貼出');
+    assert.ok(report.content.includes('implemented') && report.content.includes('驗證：commit 後由 driver 重跑 npm test，全部通過。'), report.content);
     assert.strictEqual((await runProduction()).exitCode, 1, 'CI checkpoint crash 應停在 Review 等待重跑');
     assert.strictEqual(git(repo, 'rev-parse', `sim/task/${task.task_id}`), committedHead, '重跑不可重複建立 task commit');
     assert.strictEqual((await runProduction()).exitCode, 1, 'CI 重跑通過後、完成 checkpoint crash 前 Task 應已 Done');
@@ -268,6 +277,28 @@ async function main(): Promise<void> {
 
     // owner_review：先改回允許、讓 task 走到 Review（Owner 這輪故意中斷），再禁 codex 並把 Owner primary 改成 codex
     writeFileSync(registryPath, JSON.stringify(registryJson));
+
+    // 沒進展的輪次：負責人帳號留言說明卡在哪；轉 human_blocked 那輪的新留言不可觸發自動恢復（AI 每輪措辭不同，留言一定是新的）
+    let blockedCalls = 0;
+    const blockedMember = {
+      runMemberSession: async () => {
+        blockedCalls++;
+        return { exitCode: 0, output: { summary: '讀不到主 DB', changedPaths: [], verificationCommands: [], blocker: `第 ${blockedCalls} 次：data/research.db 讀取被拒` } };
+      },
+    };
+    await runProduction(blockedMember); // noProgress 1→2，標記 ownerIntervened
+    await runProduction(blockedMember); // 已介入後再無進展 → human_blocked
+    const problems = reportComments(task2, 'member_problem');
+    assert.strictEqual(problems.length, 2, `每輪各一則，實際：${JSON.stringify(problems)}`);
+    assert.ok(problems.every((comment) => comment.user_id === assigneeOf(task2)), '沒進展的回報也由負責人帳號貼出');
+    assert.ok(problems[1].content.includes('這輪沒有交付：worktree 沒有任何改動。') && problems[1].content.includes('遇到的問題：第 2 次：data/research.db 讀取被拒'), problems[1].content);
+    const blockedState = openCoordinatorState(coordinatorDb);
+    assert.strictEqual(getTaskRun(blockedState, task2)?.phase, 'human_blocked');
+    blockedState.close();
+    await runProduction(blockedMember);
+    assert.strictEqual(blockedCalls, 2, 'human_blocked 不可因負責人自己的回報留言而恢復');
+    createComment(task2, human, '環境已修好，請重試', db);
+
     await runProduction({
       runMemberSession: async (context: { worktreePath: string }) => {
         writeFileSync(join(context.worktreePath, 'result.txt'), 'delivered again\n');
