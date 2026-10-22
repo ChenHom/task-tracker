@@ -114,6 +114,15 @@ export interface MemberSessionEvidence {
   rejectedReason: string | null;
 }
 
+/** 實作者的回報留言：做了什麼、這輪的結果、遇到的問題（同舊協作方式的完成／阻塞留言）。 */
+export function memberReportText(output: MemberSessionOutput, resultLine: string): string {
+  return [
+    output.summary.trim() || '（這輪沒有寫摘要）',
+    resultLine,
+    output.blocker?.trim() ? `遇到的問題：${output.blocker.trim()}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
 export interface MemberSessionResult {
   outcome: ActionOutcome;
   /** 診斷用途；不參與 outcome 判斷（見檔頭：process exit 只供診斷）。 */
@@ -294,7 +303,9 @@ export async function runMemberSession(input: RunMemberSessionInput): Promise<Me
   if (verificationPassed) {
     reviewStatus = await input.driverActions.confirmReviewTransition();
     reviewTransitionConfirmed = reviewStatus === 'Review';
-    const commentResult = await input.driverActions.createSummaryComment(output.summary);
+    const commentResult = await input.driverActions.createSummaryComment(
+      memberReportText(output, `驗證：commit 後由 driver 重跑 ${output.verificationCommands.join('、')}，全部通過。`),
+    );
     summaryCommentId = commentResult?.commentId ?? null;
   }
 
