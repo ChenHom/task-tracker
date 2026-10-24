@@ -209,6 +209,9 @@ async function main(): Promise<void> {
   assert.throws(() => validateGoalSynthesis(twoPlans([], ['T2']), 'ws', db),
     /taskPlans\[0\]\.dependsOn 必須完全等於排在前面/, 'dependsOn 指向排在後面的 title');
   assert.throws(() => validateGoalSynthesis(twoPlans(['T2']), 'ws', db), /taskPlans\[1\]\.dependsOn/, '不得依賴自己');
+  assert.throws(() => validateGoalSynthesis({ ...validPlan, taskPlans: [
+    { ...validPlan.taskPlans[0], title: 'T1' }, { ...validPlan.taskPlans[0], title: ' T1 ' },
+  ] }, 'ws', db), /Owner synthesis 格式不合法：taskPlans\[1\]\.title 與前面的 taskPlan 重複/, 'trim 後重複的 title 會讓依賴對不到唯一 Task');
   assert.throws(() => validateGoalSynthesis(badPlan({ assigneeId: owner }), 'ws', db),
     /Owner synthesis 格式不合法：taskPlans\[0\]\.assigneeId 不得是 Owner/, 'Owner 只規劃，不得被指派 Task');
   assert.throws(() => validateGoalSynthesis(badPlan({ assigneeId: owner }), 'ws', db, solo),

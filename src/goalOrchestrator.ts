@@ -129,6 +129,8 @@ export function validateGoalSynthesis(output: unknown, workspaceId: string, data
     if (dependsOn.some((dependency) => !earlierTitles.includes(dependency))) {
       throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.dependsOn 必須完全等於排在前面的 taskPlan title`);
     }
+    // title 是依賴的識別，重複會讓 dependsOn 對不到唯一的 Task
+    if (earlierTitles.includes(title)) throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.title 與前面的 taskPlan 重複`);
     earlierTitles.push(title);
     if (typeof plan.deploymentNotRequired !== 'boolean') {
       throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.deploymentNotRequired 必須是 boolean`);
