@@ -74,6 +74,7 @@ interface WireTaskRow {
   goal_id?: string | null;
   project_id?: string | null;
   deployment_not_required?: number;
+  depends_on_json?: string;
 }
 
 function mapTask(row: WireTaskRow): TaskSnapshot {
@@ -90,6 +91,7 @@ function mapTask(row: WireTaskRow): TaskSnapshot {
     goalId: row.goal_id ?? null,
     projectId: row.project_id ?? null,
     deploymentNotRequired: row.deployment_not_required === 1,
+    dependsOnTaskIds: JSON.parse(row.depends_on_json ?? '[]') as string[],
   };
 }
 

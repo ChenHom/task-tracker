@@ -97,6 +97,7 @@ export function validateGoalSynthesis(output: unknown, workspaceId: string, data
       AND task_id NOT IN (SELECT value FROM json_each(?)) LIMIT 1`,
   ).get(goalId, JSON.stringify(archiveTaskIds));
   if (value.taskPlans.length === 0 && !retainedTask) throw new InvalidGoalSynthesisError('synthesis 必須包含 Task');
+  const earlierTitles: string[] = [];
   const taskPlans = value.taskPlans.map((item, index) => {
     const at = `taskPlans[${index}]`;
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at} 必須是 object`);
@@ -123,6 +124,12 @@ export function validateGoalSynthesis(output: unknown, workspaceId: string, data
       || plan.dependsOn.some((dependency) => typeof dependency !== 'string' || !dependency.trim())) {
       throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.dependsOn 必須是非空字串陣列`);
     }
+    const dependsOn = (plan.dependsOn as string[]).map((dependency) => dependency.trim());
+    // 只能依賴排在前面的 plan（title 完全相等），排程才有順序可依、也不會循環
+    if (dependsOn.some((dependency) => !earlierTitles.includes(dependency))) {
+      throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.dependsOn 必須完全等於排在前面的 taskPlan title`);
+    }
+    earlierTitles.push(title);
     if (typeof plan.deploymentNotRequired !== 'boolean') {
       throw new InvalidGoalSynthesisError(`${INVALID_SYNTHESIS}：${at}.deploymentNotRequired 必須是 boolean`);
     }
@@ -130,7 +137,7 @@ export function validateGoalSynthesis(output: unknown, workspaceId: string, data
       title,
       description,
       assigneeId,
-      dependsOn: (plan.dependsOn as string[]).map((dependency) => dependency.trim()),
+      dependsOn,
       deploymentNotRequired: plan.deploymentNotRequired,
       acceptanceCriteria: synthesisText(plan.acceptanceCriteria, 'acceptanceCriteria'),
       rollbackCondition: synthesisText(plan.rollbackCondition, 'rollbackCondition'),
@@ -418,6 +425,7 @@ export function materializeGoalTasks(ownerAgentId: string, goalId: string, datab
       evidenceRefs: JSON.parse(String(synthesis.evidence_json)),
     }, goal.workspace_id, database, goalId);
     for (const taskId of validated.archiveTaskIds ?? []) archiveTask(ownerAgentId, taskId, database);
+    const taskIdByTitle = new Map<string, string>();
     for (const plan of validated.taskPlans) {
       const taskId = randomUUID();
       appendEventInTransaction('Task', taskId, 0, 'task.created', {
@@ -425,7 +433,9 @@ export function materializeGoalTasks(ownerAgentId: string, goalId: string, datab
         title: plan.title, description: `${plan.description}\n\nDepends on: ${plan.dependsOn.join(', ') || 'none'}\n驗收：${plan.acceptanceCriteria}\nRollback：${plan.rollbackCondition}`,
         status: 'Todo', priority: 'Medium', assigneeId: plan.assigneeId, dueAt: null,
         deploymentNotRequired: plan.deploymentNotRequired,
+        dependsOnTaskIds: plan.dependsOn.map((title) => taskIdByTitle.get(title)),
       }, meta(ownerAgentId), database);
+      taskIdByTitle.set(plan.title, taskId);
       ids.push(taskId);
     }
     appendEventInTransaction('Goal', goalId, goal.version, 'goal.execution_started', {}, meta(ownerAgentId), database);

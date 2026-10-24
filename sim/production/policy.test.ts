@@ -38,6 +38,16 @@ const now = new Date('2026-10-12T00:00:00.000Z');
 assert.deepStrictEqual(selectCoordinatorActions(snapshot(task('Todo')), now), [], 'pause_requested Goal 不得開始 Todo Task');
 assert.strictEqual(selectCoordinatorActions(snapshot(task('Doing')), now)[0]?.kind, 'member_work', 'Doing Task 應繼續到安全 checkpoint');
 
+// Goal synthesis dependsOn：依賴 Task 未 Done／Archived 前不得開始；依賴不在 snapshot 視為已滿足
+const dependent: TaskSnapshot = { ...task('Todo'), taskId: 'dependent', goalPauseRequested: false, dependsOnTaskIds: ['dependency'] };
+const dependencyIn = (status: TaskSnapshot['status']): TaskSnapshot => ({ ...task('Todo'), taskId: 'dependency', status, assigneeId: 'other-user', goalPauseRequested: false });
+const plannedTaskIds = (tasks: TaskSnapshot[]) => selectCoordinatorActions({ ...snapshot(dependent), tasks, agentIds: ['agent-user', 'other-user'] }, now).map((action) => action.taskId);
+assert.deepStrictEqual(plannedTaskIds([dependent, dependencyIn('Todo')]), ['dependency'], '依賴還在 Todo 時只能選依賴，不得選 dependent');
+assert.deepStrictEqual(plannedTaskIds([dependent, dependencyIn('Doing')]), ['dependency'], '依賴還在 Doing 時 dependent 不得開始');
+assert.deepStrictEqual(plannedTaskIds([dependent, dependencyIn('Done')]), ['dependent'], '依賴 Done 後 dependent 才會被選中');
+assert.deepStrictEqual(plannedTaskIds([dependent, dependencyIn('Archived')]), ['dependent'], '依賴 Archived 視為已滿足');
+assert.deepStrictEqual(plannedTaskIds([dependent]), ['dependent'], '依賴不在 snapshot 視為已滿足');
+
 const boardTask = (taskId: string, status: TaskSnapshot['status'], assigneeId: string | null = null): TaskSnapshot => ({
   taskId,
   workspaceId: MAIN_WORKSPACE_ID,

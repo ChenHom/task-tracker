@@ -426,14 +426,15 @@ export function registerTaskProjections(): void {
       assigneeId: string | null;
       dueAt: string | null;
       deploymentNotRequired?: boolean;
+      dependsOnTaskIds?: string[];
     };
     database
       .prepare(
         `INSERT INTO tasks_read_model
-         (task_id, workspace_id, project_id, goal_id, title, description, status, priority, assignee_id, due_at, done_at, version, updated_at, deployment_not_required)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+         (task_id, workspace_id, project_id, goal_id, title, description, status, priority, assignee_id, due_at, done_at, version, updated_at, deployment_not_required, depends_on_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
       )
-      .run(e.aggregate_id, p.workspaceId, p.projectId, p.goalId ?? null, p.title, p.description, p.status, p.priority, p.assigneeId, p.dueAt, e.aggregate_version, e.occurred_at, p.deploymentNotRequired === true ? 1 : 0);
+      .run(e.aggregate_id, p.workspaceId, p.projectId, p.goalId ?? null, p.title, p.description, p.status, p.priority, p.assigneeId, p.dueAt, e.aggregate_version, e.occurred_at, p.deploymentNotRequired === true ? 1 : 0, JSON.stringify(p.dependsOnTaskIds ?? []));
   });
 
   const setCol = (col: string) => (e: StoredEvent, database: DatabaseSync, value: unknown) => {
@@ -512,6 +513,7 @@ export interface TaskRow {
   version: number;
   updated_at: string | null;
   deployment_not_required: number;
+  depends_on_json: string;
 }
 
 function getTaskCreatorId(taskId: string, database: DatabaseSync): string | null {
