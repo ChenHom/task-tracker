@@ -60,6 +60,8 @@ export interface TaskSnapshot {
   claudeOnly?: boolean;
   deployment?: 'task-tracker' | 'not_required' | null;
   deploymentNotRequired?: boolean;
+  /** Goal synthesis 的 dependsOn 對應的 Task ID；舊資料無此欄位視為沒有依賴。 */
+  dependsOnTaskIds?: string[];
   repoUnavailable?: boolean;
 }
 
@@ -587,6 +589,10 @@ export function selectCoordinatorPlan(snapshot: CoordinatorSnapshot, now: Date):
       !(task.goalId && task.repoUnavailable) &&
       !handledIds.has(task.taskId) &&
       !isBlockedTask(task.taskId, snapshot) &&
+      !task.dependsOnTaskIds?.some((id) => {
+        const status = tasksById.get(id)?.status; // 不在 snapshot 的依賴視為已滿足
+        return status !== undefined && status !== 'Done' && status !== 'Archived';
+      }) &&
       genericTier(task) !== null,
   );
 

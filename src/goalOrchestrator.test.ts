@@ -143,7 +143,7 @@ async function main(): Promise<void> {
   storeGoalSynthesis(normal, {
     summary: 'Implement project ownership',
     decisionRationale: '採納有來源的 API 建議，拒絕未佐證替代方案', changeScope: 'src/goal.ts', uncertainties: ['production timing'],
-    taskPlans: [{ title: 'Implement', description: 'Do work', assigneeId: a2, dependsOn: ['design approved'], deploymentNotRequired: false, acceptanceCriteria: 'tests pass', rollbackCondition: 'tests fail' }],
+    taskPlans: [{ title: 'Implement', description: 'Do work', assigneeId: a2, dependsOn: [], deploymentNotRequired: false, acceptanceCriteria: 'tests pass', rollbackCondition: 'tests fail' }],
     evidenceRefs: ['src/goal.ts'],
   }, db);
   const storedSynthesis = getGoalSynthesis(normal, 1, db)!;
@@ -156,8 +156,8 @@ async function main(): Promise<void> {
   assert.strictEqual(taskIds.length, 1);
   assert.deepStrictEqual({ ...db.prepare('SELECT project_id, goal_id, assignee_id, deployment_not_required FROM tasks_read_model WHERE task_id = ?').get(taskIds[0]) },
     { project_id: 'p', goal_id: normal, assignee_id: a2, deployment_not_required: 0 });
-  assert.match(String((db.prepare('SELECT description FROM tasks_read_model WHERE task_id = ?').get(taskIds[0]) as { description: string }).description), /Depends on: design approved/,
-    'materialize 不得丟失 dependsOn');
+  assert.match(String((db.prepare('SELECT description FROM tasks_read_model WHERE task_id = ?').get(taskIds[0]) as { description: string }).description), /Depends on: none/,
+    'materialize 無依賴時寫 none');
   assert.strictEqual(getGoal(normal, db)?.status, 'Executing');
   db.prepare("UPDATE tasks_read_model SET status = 'Done' WHERE goal_id = ?").run(normal);
   for (const kind of ['ci.checked', 'merge.integrated', 'deployment_not_required'] as const) recordDeliveryEvidence(taskIds[0], { kind, ref: kind, detail: kind === 'ci.checked' ? 'passed: branch CI completed' : '' }, db);
@@ -200,6 +200,18 @@ async function main(): Promise<void> {
   assert.throws(() => validateGoalSynthesis(badPlan({ title: 42 }), 'ws', db), /Owner synthesis 格式不合法：taskPlans\[0\]\.title 必須是字串/);
   assert.throws(() => validateGoalSynthesis({ ...validPlan, evidenceRefs: [''] }, 'ws', db), /Owner synthesis 格式不合法：evidenceRefs/);
   assert.doesNotThrow(() => validateGoalSynthesis(validPlan, 'ws', db));
+  const twoPlans = (dependsOn: string[], firstDependsOn: string[] = []) => ({ ...validPlan, taskPlans: [
+    { ...validPlan.taskPlans[0], title: 'T1', dependsOn: firstDependsOn }, { ...validPlan.taskPlans[0], title: 'T2', dependsOn },
+  ] });
+  assert.doesNotThrow(() => validateGoalSynthesis(twoPlans([' T1 ']), 'ws', db), 'dependsOn trim 後等於前面 plan 的 title 即合法');
+  assert.throws(() => validateGoalSynthesis(twoPlans(['no such title']), 'ws', db),
+    /Owner synthesis 格式不合法：taskPlans\[1\]\.dependsOn 必須完全等於排在前面的 taskPlan title/, 'dependsOn 指向不存在的 title');
+  assert.throws(() => validateGoalSynthesis(twoPlans([], ['T2']), 'ws', db),
+    /taskPlans\[0\]\.dependsOn 必須完全等於排在前面/, 'dependsOn 指向排在後面的 title');
+  assert.throws(() => validateGoalSynthesis(twoPlans(['T2']), 'ws', db), /taskPlans\[1\]\.dependsOn/, '不得依賴自己');
+  assert.throws(() => validateGoalSynthesis({ ...validPlan, taskPlans: [
+    { ...validPlan.taskPlans[0], title: 'T1' }, { ...validPlan.taskPlans[0], title: ' T1 ' },
+  ] }, 'ws', db), /Owner synthesis 格式不合法：taskPlans\[1\]\.title 與前面的 taskPlan 重複/, 'trim 後重複的 title 會讓依賴對不到唯一 Task');
   assert.throws(() => validateGoalSynthesis(badPlan({ assigneeId: owner }), 'ws', db),
     /Owner synthesis 格式不合法：taskPlans\[0\]\.assigneeId 不得是 Owner/, 'Owner 只規劃，不得被指派 Task');
   assert.throws(() => validateGoalSynthesis(badPlan({ assigneeId: owner }), 'ws', db, solo),
@@ -305,6 +317,23 @@ async function main(): Promise<void> {
     /缺少 ci\.checked/,
   );
   cancelGoal('human', regressedCi.goalId, db);
+
+  const chained = makeGoal('chained');
+  selectGoalParticipants(owner, chained, [{ agentId: a2, reason: 'chain', assignment: 'dependency order', selectedLoad: 0 }], db);
+  assert.strictEqual(await advanceGoalDiscussion(chained, deps), 'awaiting_lease');
+  const planOf = (title: string, dependsOn: string[]) => ({ title, description: 'D', assigneeId: a2, dependsOn, deploymentNotRequired: true, acceptanceCriteria: 'pass', rollbackCondition: 'fail' });
+  storeGoalSynthesis(chained, {
+    summary: 'chained', decisionRationale: 'dependency order test', changeScope: 'src/', uncertainties: [], evidenceRefs: ['test:evidence'],
+    taskPlans: [planOf('Backtest', []), planOf('Report', []), planOf('Wire up', ['Backtest', 'Report'])],
+  }, db);
+  const [backtestId, reportId, wireId] = materializeGoalTasks(owner, chained, db);
+  const dependsOnOf = (id: string) => JSON.parse((db.prepare('SELECT depends_on_json FROM tasks_read_model WHERE task_id = ?').get(id) as { depends_on_json: string }).depends_on_json);
+  assert.deepStrictEqual(dependsOnOf(backtestId), [], '無依賴的 Task 為空陣列');
+  assert.deepStrictEqual(dependsOnOf(reportId), []);
+  assert.deepStrictEqual(dependsOnOf(wireId), [backtestId, reportId], 'dependsOn title 必須對應成前面 Task 的 taskId');
+  assert.match(String((db.prepare('SELECT description FROM tasks_read_model WHERE task_id = ?').get(wireId) as { description: string }).description), /Depends on: Backtest, Report/,
+    'description 的 Depends on 文字保留');
+  cancelGoal('human', chained, db);
 }
 
 main().then(() => console.log('goalOrchestrator.test.ts OK'));

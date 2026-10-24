@@ -79,7 +79,8 @@ export function runMigrations(db: DatabaseSync): void {
       done_at     TEXT,
       version     INTEGER NOT NULL,
       updated_at  TEXT,
-      deployment_not_required INTEGER NOT NULL DEFAULT 0
+      deployment_not_required INTEGER NOT NULL DEFAULT 0,
+      depends_on_json TEXT NOT NULL DEFAULT '[]'
     );
 
     -- Project：DESIGN 指定不走 ES，這張就是主表（傳統 CRUD 直接讀寫，無 event_store / projection）。
@@ -487,6 +488,7 @@ export function runMigrations(db: DatabaseSync): void {
   for (const sql of [
     'ALTER TABLE goal_runs ADD COLUMN session_id TEXT',
     'ALTER TABLE tasks_read_model ADD COLUMN deployment_not_required INTEGER NOT NULL DEFAULT 0',
+    "ALTER TABLE tasks_read_model ADD COLUMN depends_on_json TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE goal_syntheses ADD COLUMN decision_rationale TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE goal_syntheses ADD COLUMN change_scope TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE goal_syntheses ADD COLUMN uncertainties_json TEXT NOT NULL DEFAULT '[]'",

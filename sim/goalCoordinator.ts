@@ -550,7 +550,7 @@ async function runGoalCoordinatorStep(goalId: string, deps: GoalCoordinatorDeps)
         : '收斂 Goal 並直接產生實作 Task。';
       const synthesisInput = {
         goalId, phase: 'owner_synthesis', triggerRef: `lease:${goal.version}`, sourceRefs: contextSourceRefs(),
-        ...boundedOwnerInput(`${instruction}只回 JSON {"summary":"...","decisionRationale":"採納與拒絕理由","changeScope":"修改範圍","uncertainties":[],"archiveTaskIds":[],"taskPlans":[{"title":"...","description":"...","assigneeId":"...","dependsOn":[],"deploymentNotRequired":false,"acceptanceCriteria":"...","rollbackCondition":"..."}],"evidenceRefs":["..."]}`, {
+        ...boundedOwnerInput(`${instruction}只回 JSON {"summary":"...","decisionRationale":"採納與拒絕理由","changeScope":"修改範圍","uncertainties":[],"archiveTaskIds":[],"taskPlans":[{"title":"...","description":"...","assigneeId":"...","dependsOn":[],"deploymentNotRequired":false,"acceptanceCriteria":"...","rollbackCondition":"..."}],"evidenceRefs":["..."]}。dependsOn 只能填排在前面的 taskPlan 的完整 title；有依賴的 Task 要等依賴 Done 才會開始。`, {
           ...commonContext(),
           participations: contributionRevision == null ? [] : listParticipations(goalId, contributionRevision, database),
           contributions: contributionRevision == null ? [] : listContributions(goalId, contributionRevision, database),
